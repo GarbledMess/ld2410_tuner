@@ -1,9 +1,48 @@
 # LD2410 Tuner
 
 Home Assistant custom integration for labelled radar calibration and gate history.
-Copy this directory into `custom_components/ld2410_tuner`, restart Home Assistant,
-then refresh the browser fully to load the updated panel. Existing stored training
-and history are preserved. Old recommendations must be learned again before Apply.
+
+## Installation
+
+### HACS
+
+In HACS, open **Custom repositories**, add
+`https://github.com/GarbledMess/ld2410_tuner` with type **Integration**, then download
+**LD2410 Tuner**. The GitHub repository must be public for HACS to access it.
+Restart Home Assistant, then add **LD2410 Tuner** under **Settings → Devices &
+services → Add integration**. Refresh the browser fully to load the panel.
+
+### Manual
+
+Copy only the repository's `custom_components/ld2410_tuner` directory into
+`<Home Assistant config>/custom_components/ld2410_tuner`, then restart Home Assistant
+and add the integration as above. Do not copy the repository root into that folder.
+Existing stored training/history are preserved; earlier recommendations must be
+learned again before Apply. Local brand icons are supported by Home Assistant 2026.3+.
+
+## Repository layout
+
+```text
+custom_components/
+  ld2410_tuner/
+    __init__.py
+    config_flow.py
+    inference.py
+    learning.py
+    manifest.json
+    services.yaml
+    brand/icon.png
+    static/ld2410-tuner-panel.js
+    translations/en.json
+hacs.json
+README.md
+tests/
+.github/workflows/validate.yml
+```
+
+Only the integration directory is installed by HACS. Repository metadata, tests
+and CI stay outside it. The layout follows the
+[HACS integration requirements](https://www.hacs.dev/docs/publish/integration/).
 
 ## Calibration workflow
 
@@ -131,16 +170,16 @@ occupancy entity.
 
 ## Verification
 
-Run backend/algorithm regressions (Python standard library; HA boundaries stubbed):
+From the repository root, run backend/algorithm regressions (Python standard library; HA boundaries stubbed):
 
 ```sh
-python3 projects/ld2410_tuner/tests/test_tuner.py
+python3 tests/test_tuner.py
 ```
 
 Run the real Chromium panel harness with Playwright installed externally:
 
 ```sh
-PLAYWRIGHT_MODULE=/path/to/node_modules/playwright node projects/ld2410_tuner/tests/panel.cjs
+PLAYWRIGHT_MODULE=/path/to/node_modules/playwright node tests/panel.cjs
 ```
 
 The browser harness supplies simulated HA websocket responses and checks populated
@@ -150,3 +189,10 @@ blocking, mobile overflow, and reconnect. It writes
 screenshots to `/tmp/ld2410-desktop.png` and `/tmp/ld2410-mobile.png`. Set
 `PANEL_SOURCE` to another panel file to run the same regression against it.
 These checks do not exercise a deployed Home Assistant instance or physical radar.
+
+GitHub Actions runs HACS and Hassfest validation plus the Python regressions on
+pushes and pull requests. Hosted validation runs after these files are pushed;
+local regression success does not establish HACS store inclusion or live HA compatibility.
+The license is currently undecided, so the HACS license validation check is expected
+to fail until an appropriate open-source license is selected. GitHub repository
+visibility, description, topics and issue tracking also need to satisfy HACS checks.

@@ -1,4 +1,4 @@
-"""Run with: python3 projects/ld2410_tuner/tests/test_tuner.py.
+"""Run from the repository root with: python3 tests/test_tuner.py.
 
 HA adapters are stubbed at the boundary; no live HA installation or radar required.
 """
@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "ld2410_tuner"
 
 
 def load_runtime():

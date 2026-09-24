@@ -10,7 +10,7 @@ const path = require("node:path");
     const errors=[];
     page.on("pageerror", error => errors.push(error.message));
     await page.setContent('<style>body{margin:0;font-family:Arial;--primary-text-color:#222;--secondary-text-color:#666;--divider-color:#ddd;--card-background-color:#fff;--secondary-background-color:#f4f4f4;--primary-color:#1976d2}</style>');
-    await page.addScriptTag({path:process.env.PANEL_SOURCE || path.join(__dirname,"../static/ld2410-tuner-panel.js")});
+    await page.addScriptTag({path:process.env.PANEL_SOURCE || path.join(__dirname,"../custom_components/ld2410_tuner/static/ld2410-tuner-panel.js")});
     await page.evaluate(() => {
       window.requests=[];
       window.fail=false;
