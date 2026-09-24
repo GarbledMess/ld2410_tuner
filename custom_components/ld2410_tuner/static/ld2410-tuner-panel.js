@@ -39,6 +39,8 @@ class LD2410TunerPanel extends HTMLElement {
     this._chartState = new Map();
     this._dragging = false;
     this._drafts = new Map();
+    this._chartQueue = [];
+    this._activeCharts = 0;
     this._onVisibilityChange = () => { if (!document.hidden) this._load(); };
   }
 
@@ -143,8 +145,10 @@ class LD2410TunerPanel extends HTMLElement {
         .subsection-body { padding:12px; }
         .subsection.collapsed .subsection-body { display:none; }
         .sub-toggle { min-height:28px; padding:2px 8px; font-size:14px; flex-shrink:0; }
-        .chart-controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px; }
-        .chart-controls select { min-width:150px; }
+        .chart-controls { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin-bottom:8px; }
+        .chart-controls select { min-width:120px; }
+        .chart-status { height:3.2em; overflow:auto; margin:4px 0; }
+        .chart-controls button { min-width:90px; }
         .gate-chips { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:8px; }
         .gate-chip { min-height:30px; padding:3px 9px; font-size:12px; border-width:2px; border-color:var(--chip-color); color:var(--chip-color); background:transparent; font-weight:600; }
         .gate-chip.active { background:var(--chip-color); color:#fff; }
@@ -152,7 +156,7 @@ class LD2410TunerPanel extends HTMLElement {
         .value-band { opacity:.16; stroke:none; }
         .value-line { fill:none; stroke-width:1.6; }
         .value-line.active { stroke-width:2.6; }
-        .chart-canvas { width:100%; border:1px solid var(--divider-color); border-radius:9px; overflow:hidden; background:var(--card-background-color); min-height:120px; position:relative; }
+        .chart-canvas { width:100%; border:1px solid var(--divider-color); border-radius:9px; overflow:hidden; background:var(--card-background-color); min-height:320px; position:relative; }
         .chart-canvas > .muted { padding:30px 10px; text-align:center; }
         .chart-canvas svg { display:block; width:100%; height:auto; }
         .plot-bg { fill:var(--secondary-background-color); opacity:.35; }
@@ -215,7 +219,7 @@ class LD2410TunerPanel extends HTMLElement {
       <div class="wrap">
         <div id="error" role="alert" class="notice warn" hidden></div>
         <h1>LD2410 Tuner</h1>
-        <div class="subtitle">Automatic estimates learn from signal patterns over time and carry confidence scores. Add empty-room, moving and quiet-sitting examples to improve them. Learn prioritizes reliable presence across sessions; human-labelled validation is required before Apply.</div>
+        <div class="subtitle">Automatic estimates learn from signal patterns over time and carry confidence scores. Add empty-room, moving and quiet-sitting examples to improve them. Learn prioritizes reliable presence across sessions; human labels always take priority over lower-confidence estimates. Inferred data proportions do not block Apply.</div>
         <div class="grid" id="grid"></div>
       </div>`;
     // If a poll landed while a field was focused, it's queued instead of
@@ -231,12 +235,12 @@ class LD2410TunerPanel extends HTMLElement {
     });
   }
 
-  async _call(type, data={}) {
+  async _call(type, data={}, timeout=30000) {
     let timer;
     try {
       return await Promise.race([
         this._hass.callWS({type:`ld2410_tuner/${type}`, ...data}),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Request timed out. Refresh before retrying a change; it may have completed.")), 30000); }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Request timed out. Refresh before retrying a change; it may have completed.")), timeout); }),
       ]);
     } finally { clearTimeout(timer); }
   }
@@ -347,6 +351,7 @@ class LD2410TunerPanel extends HTMLElement {
         <button data-action="chart-refresh" type="button">Refresh</button>
       </div>
       <div class="gate-chips">${gateChips}</div>
+      <div class="chart-status muted" role="status" data-chart-status="${id}"></div>
       <div class="chart-canvas" data-chart-canvas="${id}"><div class="muted">Loading…</div></div>
       <div class="chart-legend">
         <span><i class="swatch present"></i>Present (labelled)</span>
@@ -364,56 +369,110 @@ class LD2410TunerPanel extends HTMLElement {
   _maybeFetchChart(id, d) {
     const cs = this._chartState.get(id);
     if (!cs) return;
-    // The chart section's HTML always starts each redraw with a "Loading…"
-    // placeholder (see _chartHtml), since the card DOM is fully rebuilt
-    // every poll. If we already have matching data cached, that placeholder
-    // needs to be replaced with it immediately - otherwise the chart just
-    // sits on "Loading…" forever after the first successful fetch, since
-    // nothing else would re-sync it back in. This call is cheap (no
-    // network) even when the card/section is collapsed.
     this._renderChartCanvas(id);
     if (this._collapsed.has(id) || this._sectionCollapsed(id, "chart")) return;
-    if (cs.loading) return;
-    if (cs.error) return; // Explicit Refresh retries a failed request.
-    if (cs.data && cs.loadedKind === cs.kind && cs.loadedHours === cs.hours && Date.now() - cs.loadedAt < 15000) return;
+    if (cs.loading || cs.error) return;
+    const revision = d.history?.revision || 0;
+    if (cs.loadedRevision !== revision) cs.cache?.clear();
+    if (cs.data && cs.loadedKind === cs.kind && cs.loadedHours === cs.hours && cs.loadedRevision === revision) return;
     this._fetchChartData(id);
   }
 
-  async _fetchChartData(id) {
+  _queueChartCall(call) {
+    return new Promise((resolve, reject) => {
+      this._chartQueue.push({call, resolve, reject});
+      this._drainChartQueue();
+    });
+  }
+
+  _drainChartQueue() {
+    while (this._activeCharts < 2 && this._chartQueue.length) {
+      const {call, resolve, reject} = this._chartQueue.shift();
+      this._activeCharts++;
+      Promise.resolve().then(call).then(resolve, reject).finally(() => {
+        this._activeCharts--;
+        this._drainChartQueue();
+      });
+    }
+  }
+
+  async _fetchChartData(id, refresh=false) {
     const cs = this._chartState.get(id);
     if (!cs) return;
-    const request = (cs.request || 0) + 1;
-    cs.request = request;
+    if (refresh) { cs.end = null; cs.cache?.clear(); cs.selection = null; cs.panelOpen = false; }
     const {kind, hours} = cs;
+    const end = cs.end;
+    const revision = this._data?.devices?.[id]?.history?.revision || 0;
+    const key = JSON.stringify([kind, hours, end, revision]);
+    if (cs.loading && cs.pendingKey === key) return;
+    const request = (cs.request || 0) + 1;
+    cs.request = request; cs.pendingKey = key;
+    cs.cache ||= new Map();
+    const cached = cs.cache.get(key);
+    if (cached) {
+      cs.data = cached; cs.loadedKind = kind; cs.loadedHours = hours;
+      cs.loadedRevision = revision; cs.error = null; cs.loading = false;
+      this._renderChartCanvas(id);
+      return;
+    }
     cs.loading = true; cs.error = null;
     this._renderChartCanvas(id);
     try {
-      const data = await this._call("history_series_multi", {device_id:id, keys:this._chartKeys({kind}), hours});
-      if (request !== cs.request) return;
-      cs.data = data; cs.loadedKind = kind; cs.loadedHours = hours; cs.loadedAt = Date.now(); cs.error = null;
+      const data = await this._queueChartCall(() => {
+        if (request !== cs.request || !this.isConnected) return null;
+        return this._call("history_series_multi", {
+          device_id:id, keys:this._chartKeys({kind}), hours,
+          ...(end != null ? {end} : {}),
+        }, 15000);
+      });
+      if (request !== cs.request || !data) return;
+      cs.data = data; cs.end = data.end;
+      cs.loadedKind = kind; cs.loadedHours = hours; cs.loadedRevision = revision;
+      cs.loadedAt = Date.now(); cs.error = null;
+      cs.cache.set(JSON.stringify([kind, hours, cs.end, revision]), data);
+      while (cs.cache.size > 6) cs.cache.delete(cs.cache.keys().next().value);
     } catch (err) {
       if (request === cs.request) cs.error = err?.message || String(err);
     } finally {
       if (request === cs.request) {
         cs.loading = false;
-        if (!this._isEditing()) this._renderChartCanvas(id);
+        // A focused range/kind selector must not prevent a completed chart
+        // from rendering. Only an active drag or chart text edit defers it.
+        this._renderChartCanvas(id);
       }
     }
   }
 
-  _renderChartCanvas(id) {
-    // Looked up fresh each time rather than via a closure captured earlier,
-    // since a poll can rebuild the whole card while a fetch is in flight -
-    // the closed-over node from before the rebuild would be detached.
+  _renderChartCanvas(id, force=false) {
     const el = this.shadowRoot?.querySelector(`[data-chart-canvas="${CSS.escape(id)}"]`);
     if (!el) return;
     const cs = this._chartState.get(id);
     const d = this._data?.devices?.[id];
     if (!cs || !d) { el.innerHTML = `<div class="muted">Unavailable</div>`; return; }
-    if (cs.error) { el.innerHTML = `<div class="muted">Couldn't load history: ${this._esc(cs.error)}</div>`; return; }
-    if (cs.loading && !cs.data) { el.innerHTML = `<div class="muted">Loading…</div>`; return; }
-    const anyPoints = cs.data && Object.values(cs.data.series||{}).some(s=>s.points?.length);
-    if (!cs.data || !anyPoints) { el.innerHTML = `<div class="muted">No recorded history for this kind in this range yet.</div>`; return; }
+    const active = this.shadowRoot.activeElement;
+    if (this._dragging || (cs.panelOpen && el.contains(active) && active?.tagName === "INPUT")) return;
+    const card = el.closest("[data-device-id]");
+    for (const [action,value] of [["chart-kind",cs.kind],["chart-gate",cs.gate],["chart-range",cs.hours]]) {
+      const control = card.querySelector(`[data-action="${action}"]`);
+      if (control && control.value !== String(value)) control.value = String(value);
+    }
+    this._updateGateChipHighlight(card, cs.gate);
+    const activeKey = `g${cs.gate}_${cs.kind}`;
+    const signature = JSON.stringify([cs.gate,cs.kind,cs.hours,cs.loadedKind,cs.loadedHours,cs.loading,cs.error,cs.selection,cs.panelOpen,d.current_thresholds?.[activeKey],d.last_learning?.proposals?.[activeKey]]);
+    if (!force && el._renderedData === cs.data && el._renderedState === signature) return;
+    el._renderedData = cs.data; el._renderedState = signature;
+    const matches = cs.data && cs.loadedKind === cs.kind && cs.loadedHours === cs.hours;
+    const status = this.shadowRoot.querySelector(`[data-chart-status="${CSS.escape(id)}"]`);
+    if (status) {
+      const windowText = matches ? `Window ends ${new Date(cs.data.end*1000).toLocaleString()}. ${cs.data.bucket_seconds || "—"}s buckets: mean line, sampled min–max band. Refresh moves to latest.` : "";
+      status.textContent = cs.error ? `Couldn't refresh history: ${cs.error}${matches ? " Showing the previous window." : ""}` : `${cs.loading ? "Loading history… " : ""}${windowText}`;
+    }
+    if (!matches) {
+      el.innerHTML = `<div class="muted">${cs.error ? "History unavailable. Use Refresh to retry." : "Loading history…"}</div>`;
+      return;
+    }
+    const anyPoints = Object.values(cs.data.series||{}).some(series=>series.points?.length);
+    if (!anyPoints) { el.innerHTML = `<div class="muted">No recorded history in this window.</div>`; return; }
     try {
       el.innerHTML = this._buildChartSvg(d, cs);
       this._wireChartSelection(id, el, d, cs);
@@ -424,13 +483,15 @@ class LD2410TunerPanel extends HTMLElement {
 
   _learnStatusHtml(proposal, cs) {
     const label = `Gate ${cs.gate} · ${cs.kind==="move"?"Movement":"Still"}`;
-    if (!proposal) return `<div class="learn-status muted">${this._esc(label)}: click "Learn safe thresholds" to compute a recommendation.</div>`;
+    if (!proposal) return `<div class="learn-status muted">${this._esc(label)}: click "Learn thresholds" to compute a recommendation.</div>`;
     const noiseNote = (proposal.noise_ceiling != null)
       ? ` Highest ${proposal.noise_source==="automatic"?"estimated":"labelled"} NOT PRESENT sample seen: ${Math.round(proposal.noise_ceiling)} (99th percentile: ${Math.round(proposal.noise_floor_p99)}).`
       : "";
-    if (proposal.status === "provisional") return `<div class="learn-status warn">${this._esc(label)}: provisional threshold ${Math.round(proposal.threshold)} uses confidence-weighted estimates. Add human-labelled sessions to validate before Apply.</div>`;
-    if (proposal.status === "ok" && proposal.role === "suppressed") return `<div class="learn-status muted">${this._esc(label)}: threshold 100 suppresses this gate; other gates provide the validated presence coverage.</div>`;
-    if (proposal.status === "ok") return `<div class="learn-status ok">${this._esc(label)}: learned threshold ${Math.round(proposal.threshold)} — this gate detects ${Math.round((proposal.sensitivity||0)*100)}% of presence samples, ${proposal.false_positives||0} exception(s) out of ${proposal.not_present_samples} not-present samples.${noiseNote}</div>`;
+    if (proposal.status === "provisional") return `<div class="learn-status warn">${this._esc(label)}: saved threshold ${Math.round(proposal.threshold)} was produced by the previous learner. Learn again with the current model before Apply.</div>`;
+    if (proposal.status === "ok" && proposal.evidence_basis === "automatic") return `<div class="learn-status muted">${this._esc(label)}: estimated threshold ${Math.round(proposal.threshold)} from confidence-weighted observations. No human-labelled accuracy measurement yet.${noiseNote}</div>`;
+    if (proposal.status === "ok" && proposal.role === "unchanged") return `<div class="learn-status muted">${this._esc(label)}: no usable observations for this gate; its current threshold is preserved.</div>`;
+    if (proposal.status === "ok" && proposal.role === "suppressed") return `<div class="learn-status muted">${this._esc(label)}: threshold 100 suppresses this gate; its observed background requires suppression; inspect the device-wide results.</div>`;
+    if (proposal.status === "ok") return `<div class="learn-status ok">${this._esc(label)}: learned threshold ${Math.round(proposal.threshold)} — this gate detects ${Math.round((proposal.sensitivity||0)*100)}% of human-labelled training samples, ${proposal.false_positives||0} exception(s) out of ${proposal.not_present_samples} not-present samples.${noiseNote}</div>`;
     if (proposal.status === "unsafe") return `<div class="learn-status warn">${this._esc(label)}: candidate threshold ${Math.round(proposal.threshold)}, marked <b>unsafe</b> — ${this._esc(proposal.message||"present and not-present data overlap too much")}.${noiseNote} Shown as a red dashed line; not applied automatically. Correct labels only when you know the actual occupancy at that time.</div>`;
     return `<div class="learn-status warn">${this._esc(label)}: not enough data yet — ${this._esc(proposal.message||"need more present and not-present samples")}.</div>`;
   }
@@ -479,37 +540,46 @@ class LD2410TunerPanel extends HTMLElement {
     const tickCount = 5;
     const timeFmt = t => {
       const dt = new Date(t*1000);
-      return spanHours > 36
-        ? dt.toLocaleDateString(undefined,{month:"short",day:"numeric"})
-        : dt.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
+      return dt.toLocaleString(undefined,{...(spanHours >= 12 ? {month:"short",day:"numeric"} : {}),hour:"2-digit",minute:"2-digit"});
     };
     const xTicks = Array.from({length:tickCount}, (_,i) => {
       const t = data.start + (i/(tickCount-1)) * span;
       const x = xScale(t);
-      return `<line x1="${x.toFixed(1)}" y1="${CHART_MARGIN.top}" x2="${x.toFixed(1)}" y2="${CHART_H-CHART_MARGIN.bottom}" class="grid-line"></line><text x="${x.toFixed(1)}" y="${CHART_H-CHART_MARGIN.bottom+16}" class="axis-label" text-anchor="middle">${this._esc(timeFmt(t))}</text>`;
+      return `<line x1="${x.toFixed(1)}" y1="${CHART_MARGIN.top}" x2="${x.toFixed(1)}" y2="${CHART_H-CHART_MARGIN.bottom}" class="grid-line"></line><text x="${x.toFixed(1)}" y="${CHART_H-CHART_MARGIN.bottom+16}" class="axis-label" text-anchor="${i===0?"start":i===tickCount-1?"end":"middle"}">${this._esc(timeFmt(t))}</text>`;
     }).join("");
 
     // Every non-highlighted gate of this kind gets a thin, muted line for
     // silhouette/comparison; the highlighted gate gets the full treatment
     // (shaded min-max band, bold line).
+    const segments = points => {
+      const groups = [];
+      for (const point of points) {
+        const last = groups.at(-1);
+        if (!last || (data.bucket_seconds && point.t-last.at(-1).t > data.bucket_seconds*2)) groups.push([point]);
+        else last.push(point);
+      }
+      return groups;
+    };
     let otherLines = "";
     for (let g=0; g<9; g++) {
       if (g === cs.gate) continue;
       const s = data.series?.[`g${g}_${cs.kind}`];
       if (!s || !s.points.length) continue;
-      const path = s.points.map((p,i)=>`${i===0?"M":"L"}${xScale(p.t).toFixed(1)},${yScale(p.avg).toFixed(1)}`).join(" ");
+      const path = segments(s.points).map(points=>points.map((p,i)=>`${i===0?"M":"L"}${xScale(p.t).toFixed(1)},${yScale(p.avg).toFixed(1)}`).join(" ")).join(" ");
       otherLines += `<path d="${path}" class="gate-line" style="stroke:${GATE_COLORS[g]}"></path>`;
     }
 
     const activeSeries = data.series?.[activeKey];
     let activeBandSvg = "", activeLineSvg = "";
     if (activeSeries && activeSeries.points.length) {
-      const points = activeSeries.points;
-      const linePath = points.map((p,i)=>`${i===0?"M":"L"}${xScale(p.t).toFixed(1)},${yScale(p.avg).toFixed(1)}`).join(" ");
-      const bandTop = points.map(p=>`${xScale(p.t).toFixed(1)},${yScale(p.max).toFixed(1)}`).join(" L ");
-      const bandBottom = points.slice().reverse().map(p=>`${xScale(p.t).toFixed(1)},${yScale(p.min).toFixed(1)}`).join(" L ");
-      activeBandSvg = `<path d="M ${bandTop} L ${bandBottom} Z" class="value-band" style="fill:${GATE_COLORS[cs.gate]}"></path>`;
-      activeLineSvg = `<path d="${linePath}" class="value-line active" style="stroke:${GATE_COLORS[cs.gate]}"></path>`;
+      for (const points of segments(activeSeries.points)) {
+        const linePath = points.map((p,i)=>`${i===0?"M":"L"}${xScale(p.t).toFixed(1)},${yScale(p.avg).toFixed(1)}`).join(" ");
+        const bandTop = points.map(p=>`${xScale(p.t).toFixed(1)},${yScale(p.max).toFixed(1)}`).join(" L ");
+        const bandBottom = points.slice().reverse().map(p=>`${xScale(p.t).toFixed(1)},${yScale(p.min).toFixed(1)}`).join(" L ");
+        activeBandSvg += `<path d="M ${bandTop} L ${bandBottom} Z" class="value-band" style="fill:${GATE_COLORS[cs.gate]}"></path>`;
+        activeLineSvg += `<path d="${linePath}" class="value-line active" style="stroke:${GATE_COLORS[cs.gate]}"></path>`;
+        if (points.length === 1) activeLineSvg += `<circle cx="${xScale(points[0].t)}" cy="${yScale(points[0].avg)}" r="2" fill="${GATE_COLORS[cs.gate]}"></circle>`;
+      }
     }
 
     // Persistent time-range selection: two independently draggable handles
@@ -729,7 +799,7 @@ class LD2410TunerPanel extends HTMLElement {
         const {start, end} = cs.selection;
         try {
           await this._call("label_history", {device_id:id, start:Math.floor(start), end:Math.floor(end), state:label});
-          cs.selection = null; cs.panelOpen = false; cs.data = null;
+          cs.selection = null; cs.panelOpen = false; cs.data = null; cs.cache?.clear(); cs.cache?.clear();
         } catch (err) { alert(`Unable to label history: ${err?.message||err}`); return; }
         await this._load();
       };
@@ -749,6 +819,7 @@ class LD2410TunerPanel extends HTMLElement {
       card.querySelectorAll('[data-action="history-start"], [data-action="history-end"], [data-action="history-state"], [data-action="timeout-hours"], [data-action="timeout-minutes"]').forEach(el => { draft[el.dataset.action] = el.value; });
       this._drafts.set(card.dataset.deviceId, draft);
     }
+    const charts = new Map([...grid.querySelectorAll("[data-device-id]")].map(card=>[card.dataset.deviceId, card.querySelector('[data-section="chart"]')]));
     const fragment = document.createDocumentFragment();
     const devices=this._data?.devices||{};
     if (!Object.keys(devices).length) { grid.innerHTML=`<div class="card">No LD2410 gate energy entities were discovered.</div>`; return; }
@@ -767,7 +838,7 @@ class LD2410TunerPanel extends HTMLElement {
         rows.push(`<tr><td>G${g}</td><td>${this._fmt(d.current_thresholds?.[keys[0]])}</td><td class="${mp?.status==='ok'?'learned':''}">${this._fmt(mp?.threshold)}</td><td>${mc.present||0}/${mc.not_present||0}</td><td>${this._fmt(d.current_thresholds?.[keys[1]])}</td><td class="${sp?.status==='ok'?'learned':''}">${this._fmt(sp?.threshold)}</td><td>${sc.present||0}/${sc.not_present||0}</td></tr>`);
         mobile.push(`<div class="gate"><div class="gate-head"><span>Gate ${g}</span><span>Move / Still</span></div><div class="gate-grid"><div><span>Current</span>${this._fmt(d.current_thresholds?.[keys[0]])} / ${this._fmt(d.current_thresholds?.[keys[1]])}</div><div><span>Learned</span><b class="${mp?.status==='ok'||sp?.status==='ok'?'learned':''}">${this._fmt(mp?.threshold)} / ${this._fmt(sp?.threshold)}</b></div><div><span>Move P/N</span>${mc.present||0} / ${mc.not_present||0}</div><div><span>Still P/N</span>${sc.present||0} / ${sc.not_present||0}</div></div></div>`);
       }
-      const warning=d.last_learning?.warnings?.length ? `<div class="notice warn">${d.last_learning.warnings.map(this._esc).join("<br>")}</div>` : "";
+      const warning=d.last_learning?.warnings?.length ? `<div class="notice ${d.last_learning.status==="unsafe"?"warn":""}">${d.last_learning.warnings.map(this._esc).join("<br>")}</div>` : "";
       const auto=d.auto_learning||{};
       const al=auto.last;
       const autoState=al?.state||"unknown";
@@ -790,13 +861,15 @@ class LD2410TunerPanel extends HTMLElement {
 
       const autoHtml=`<div class="auto-head"><span class="pill ${autoState}">${autoPill}</span><span class="muted">Training weight: 20% × confidence; human labels take priority</span></div><div class="auto-details"><div><span>Estimated confidence</span>${al?`${Math.round((al.confidence||0)*100)}%`:"—"}</div><div><span>Evidence source</span>${al?.basis==="human-guided"?"Labelled examples":"Background estimate"}</div><div><span>Segments</span>${auto.segments||0}</div></div><div class="muted" style="margin-top:7px">${this._esc(top)}</div><div class="muted">${auto.observations||0} estimates stored. Confidence is an estimate, not measured accuracy.</div><div class="feedback-row"><span class="muted">Was this reading right?</span><button class="fb-btn correct" data-action="auto-feedback" data-correct="true" ${canFeedback?"":"disabled"}>✓ Correct</button><button class="fb-btn incorrect" data-action="auto-feedback" data-correct="false" ${canFeedback?"":"disabled"}>✗ Incorrect</button></div><div class="muted" style="margin-top:5px">Feedback accuracy — present: ${fbText("present")}, not present: ${fbText("not_present")}${calibNote}</div>`;
 
-      const detailsHtml=`<div class="stats"><div class="stat">Present<b>${totalPresent}</b></div><div class="stat">Not present<b>${totalAbsent}</b></div><div class="stat">Storage<b>Compressed</b></div></div><div class="table-scroll"><table><thead><tr><th>Gate</th><th>Move now</th><th>Move learned</th><th>Move P/N</th><th>Still now</th><th>Still learned</th><th>Still P/N</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="mobile-gates">${mobile.join("")}</div>${warning}${d.last_learning?`<div class="notice">Learning checks coverage across presence episodes, missed runs and false-trigger bursts. Estimates carry less weight than human labels. A gate at 100 is suppressed. Apply requires human-labelled validation.</div>`:""}`;
+      const detailsHtml=`<div class="stats"><div class="stat">Human gate samples · present<b>${totalPresent}</b></div><div class="stat">Human gate samples · absent<b>${totalAbsent}</b></div><div class="stat">Storage<b>Compressed</b></div></div><div class="table-scroll"><table><thead><tr><th>Gate</th><th>Move now</th><th>Move learned</th><th>Move P/N</th><th>Still now</th><th>Still learned</th><th>Still P/N</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="mobile-gates">${mobile.join("")}</div>${warning}${d.last_learning?`<div class="notice">Learning checks coverage across presence episodes, missed runs and false-trigger bursts. Estimates carry less weight than human labels. A gate at 100 is suppressed. Human labels take priority. Source proportions do not block Apply.</div>`:""}`;
 
-      const validation=d.last_learning?.validation;
+      const measured=d.last_learning?.training;
+      const validation=measured && (measured.present_samples || measured.not_present_samples) ? measured : null;
+      const backtest=d.last_learning?.validation;
       const inferred=d.last_learning?.automatic_evidence;
       const inferenceHtml=inferred ? `<div class="notice">Automatic evidence: ${inferred.samples?.present||0} present / ${inferred.samples?.not_present||0} empty estimates. Mean confidence: ${inferred.mean_confidence?.present==null?"—":`${Math.round(inferred.mean_confidence.present*100)}%`} / ${inferred.mean_confidence?.not_present==null?"—":`${Math.round(inferred.mean_confidence.not_present*100)}%`}. Effective training weight: ${(inferred.effective_weight?.present||0).toFixed(1)} / ${(inferred.effective_weight?.not_present||0).toFixed(1)} human-sample equivalents.${inferred.deferred_samples?` ${inferred.deferred_samples} newer estimates await later human-labelled validation.`:""}</div>` : "";
-      const validationHtml=(validation ? `<div class="notice">Human-labelled validation: <b>${validation.false_negatives??"—"} missed / ${validation.present_samples} presence samples</b> (${(validation.sensitivity*100).toFixed(2)}%; target 99.9%). Missed episodes: ${validation.missed_presence_episodes??"—"}; longest missed run: ${validation.longest_missed_run_samples??"—"} samples. False-trigger bursts: ${validation.false_trigger_bursts??"—"} (${(validation.false_positive_rate*100).toFixed(2)}% of empty samples). ${d.last_learning.status==="ok"?"Ready to apply.":"Application blocked: targets not met."}</div>` : "")+inferenceHtml;
-      const actionsHtml=`${validationHtml}${warning}<div class="controls"><button class="primary" data-action="learn">Learn safe thresholds</button><button data-action="apply" ${d.last_learning?.status==="ok"&&d.last_learning?.method==="joint_temporal_v2"?"":"disabled"}>Apply validated thresholds</button><button data-action="clear">Clear data</button></div><div class="export"><button data-action="json">Export JSON</button><button data-action="csv">Export CSV</button></div>`;
+      const validationHtml=(validation ? `<div class="notice">Human-labelled timed observations: <b>${validation.false_negatives??"—"} missed / ${validation.present_samples} presence samples</b> (${validation.present_samples ? (validation.sensitivity*100).toFixed(2)+"%" : "not measured"}; target 99.9%). Missed episodes: ${validation.missed_presence_episodes??"—"}; longest missed run: ${validation.longest_missed_run_samples??"—"} samples. False-trigger bursts: ${validation.false_trigger_bursts??"—"} (${validation.not_present_samples ? (validation.false_positive_rate*100).toFixed(2)+"% of empty samples" : "no human-labelled empty samples"}). ${d.last_learning.status==="ok"?"Recommendation available.":"Review the reported human-label conflicts."}</div>` : d.last_learning?.proposals && Object.keys(d.last_learning.proposals).length ? `<div class="notice">No human-labelled measurement is available. This recommendation uses confidence-weighted estimates; test it in the room.</div>` : "")+(backtest ? `<div class="notice">Earlier-data backtest: ${backtest.false_negatives??0} missed presence samples; ${backtest.false_positives??0} false triggers. The final recommendation uses all observations.</div>` : "")+inferenceHtml;
+      const actionsHtml=`${validationHtml}${warning}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button data-action="apply" ${d.last_learning?.status==="ok"&&d.last_learning?.method==="human_priority_v3"?"":"disabled"}>Apply recommended thresholds</button><button data-action="clear">Clear data</button></div><div class="export"><button data-action="json">Export JSON</button><button data-action="csv">Export CSV</button></div>`;
 
       const bodyHtml=[
         this._section(id,"training","Training",trainingHtml),
@@ -809,6 +882,9 @@ class LD2410TunerPanel extends HTMLElement {
 
       card.innerHTML=`<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${canFeedback?` · ${Math.round((al.confidence||0)*100)}%`:""}</span></div><div class="area">${this._esc(d.area_id||"No area")}</div></div><button class="toggle" data-action="toggle" aria-label="${isCollapsed?"Expand":"Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed?"▸":"▾"}</button></div>
         <div class="body${isCollapsed?" collapsed":""}">${bodyHtml}</div>`;
+
+      const previousChart = charts.get(id);
+      if (previousChart) card.querySelector('[data-section="chart"]').replaceWith(previousChart);
 
       const toggleBody=()=>{
         const willCollapse=!this._collapsed.has(id);
@@ -862,10 +938,10 @@ class LD2410TunerPanel extends HTMLElement {
         if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start){alert("The end time must be after the start time.");return;}
         const label=card.querySelector('[data-action="history-state"]').value;
         if(!confirm(`Label this period ${label.replace("_"," ").toUpperCase()}?`)) return;
-        try{await this._call("label_history",{device_id:id,start,end,state:label});this._chartState.get(id).data=null;await this._load();}catch(err){alert(`Unable to label history: ${err?.message||err}`);}
+        try{await this._call("label_history",{device_id:id,start,end,state:label});this._chartState.get(id).data=null;this._chartState.get(id).cache?.clear();await this._load();}catch(err){alert(`Unable to label history: ${err?.message||err}`);}
       };
-      card.querySelector('[data-action="learn"]').onclick=e=>this._action(e.currentTarget,async()=>{await this._call("learn",{device_id:id});this._setSectionCollapsed(id,"details",false);await this._load();});
-      card.querySelector('[data-action="apply"]').onclick=e=>this._action(e.currentTarget,async()=>{if(confirm("Apply these validated thresholds to this LD2410?")){const result=await this._call("apply",{device_id:id});await this._load();if(Object.keys(result.skipped||{}).length) throw new Error(`Applied ${Object.keys(result.applied||{}).length} thresholds. Incomplete: ${Object.entries(result.skipped).map(([key,reason])=>`${key}: ${reason}`).join("; ")}`);}});
+      card.querySelector('[data-action="learn"]').onclick=e=>this._action(e.currentTarget,async()=>{await this._call("learn",{device_id:id},120000);this._setSectionCollapsed(id,"details",false);await this._load();});
+      card.querySelector('[data-action="apply"]').onclick=e=>this._action(e.currentTarget,async()=>{if(confirm("Apply these recommended thresholds? Inferred results are estimates; verify quiet presence and empty-room behaviour.")){const result=await this._call("apply",{device_id:id});await this._load();if(Object.keys(result.skipped||{}).length) throw new Error(`Applied ${Object.keys(result.applied||{}).length} thresholds. Incomplete: ${Object.entries(result.skipped).map(([key,reason])=>`${key}: ${reason}`).join("; ")}`);}});
       card.querySelector('[data-action="clear"]').onclick=e=>this._action(e.currentTarget,async()=>{if(confirm("Clear training, history and learned thresholds for this device?")){await this._call("clear",{device_id:id});this._chartState.delete(id);await this._load();}});
       card.querySelector('[data-action="json"]').onclick=()=>this._export(id,"json");
       card.querySelector('[data-action="csv"]').onclick=()=>this._export(id,"csv");
@@ -882,10 +958,10 @@ class LD2410TunerPanel extends HTMLElement {
       const chartRange=card.querySelector('[data-action="chart-range"]');
       const chartRefresh=card.querySelector('[data-action="chart-refresh"]');
       const cs=this._chartState.get(id);
-      chartKind.onchange=()=>{cs.kind=chartKind.value; cs.data=null; this._fetchChartData(id);};
+      chartKind.onchange=()=>{cs.kind=chartKind.value; this._fetchChartData(id);};
       chartGate.onchange=()=>{cs.gate=Number(chartGate.value); this._updateGateChipHighlight(card,cs.gate); this._renderChartCanvas(id);};
-      chartRange.onchange=()=>{cs.hours=Number(chartRange.value); cs.data=null; cs.selection=null; this._fetchChartData(id);};
-      chartRefresh.onclick=()=>{cs.data=null; this._fetchChartData(id);};
+      chartRange.onchange=()=>{cs.hours=Number(chartRange.value); cs.selection=null; cs.panelOpen=false; this._fetchChartData(id);};
+      chartRefresh.onclick=()=>{this._fetchChartData(id,true);};
       card.querySelectorAll('[data-action="chart-pick-gate"]').forEach(btn=>{
         btn.onclick=()=>{
           cs.gate=Number(btn.dataset.gate);

@@ -8,7 +8,10 @@ import math
 import struct
 import time
 import zlib
-from collections import defaultdict, deque
+from collections import defaultdict, deque, OrderedDict
+from bisect import bisect_right
+from functools import lru_cache
+import heapq
 from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
@@ -25,7 +28,7 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.helpers.entity_registry import EVENT_ENTITY_REGISTRY_UPDATED
 from homeassistant.helpers.storage import Store
 
-from .learning import AUTO_WEIGHT, MAX_CLASS_SAMPLES, MIN_AUTO_CONFIDENCE, fit_thresholds
+from .learning import AUTO_WEIGHT, MAX_CLASS_SAMPLES, MIN_AUTO_CONFIDENCE, METHOD, fit_thresholds
 from .inference import estimate_presence
 
 DOMAIN = "ld2410_tuner"
@@ -60,6 +63,38 @@ ABSENT_BIAS_MIN = 0.0
 ABSENT_BIAS_MAX = AUTO_ABSENT_SCORE * 0.9
 FEEDBACK_LOG_MAX = 200
 HISTORY_KEYS = [f"g{gate}_{kind}" for gate in range(9) for kind in ("move", "still")]
+
+
+@lru_cache(maxsize=1024)
+def _decode_history_block(encoded):
+    return zlib.decompress(base64.b64decode(encoded))
+
+
+def _history_label_reader(device):
+    """Resolve labels once, keeping last-label-wins semantics in logarithmic time."""
+    intervals = list(device.get("history_labels", []))
+    start = device.get("training_label_start")
+    if start is not None:
+        intervals.append({"start": start, "end": device.get("training_expires_at") or float("inf"),
+                          "state": device.get("training_state", "unknown")})
+    events = defaultdict(list)
+    for order, label in enumerate(intervals):
+        start, end = float(label.get("start", 0)), float(label.get("end", 0))
+        if end > start:
+            events[start].append((-order, end, label.get("state", "unknown")))
+            events[end]  # Endpoints are needed even when no new interval starts.
+    times, states, active = [], [], []
+    for timestamp, additions in sorted(events.items()):
+        for entry in additions:
+            heapq.heappush(active, entry)
+        while active and active[0][1] <= timestamp:
+            heapq.heappop(active)
+        times.append(timestamp)
+        states.append(active[0][2] if active else None)
+    def read(timestamp):
+        index = bisect_right(times, timestamp) - 1
+        return states[index] if index >= 0 else None
+    return read
 
 
 class TunerStore(Store):
@@ -129,7 +164,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": "ld2410-tuner-panel",
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": "/api/ld2410_tuner/static/ld2410-tuner-panel.js",
+                    "js_url": "/api/ld2410_tuner/static/ld2410-tuner-panel.js?v=1.9.0",
                 }
             },
         )
@@ -177,6 +212,9 @@ class TunerRuntime:
         self._live: dict[str, dict[str, float]] = defaultdict(dict)
         self._auto_runtime: dict[str, dict[str, Any]] = {}
         self._history_runtime: dict[str, dict[str, Any]] = {}
+        self._history_cache = OrderedDict()
+        self._history_jobs = {}
+        self._learning_jobs = {}
 
     @callback
     def subscribe_state_changes(self) -> None:
@@ -413,7 +451,7 @@ class TunerRuntime:
                 start = float(block["start"])
                 if float(block.get("end", start + 65535)) < cutoff:
                     continue
-                raw = zlib.decompress(base64.b64decode(block["data"]))
+                raw = _decode_history_block(block["data"])
                 count = int(block["count"])
                 version = block.get("version", 1)
                 if version not in (1, 2):
@@ -475,8 +513,9 @@ class TunerRuntime:
         labels.append({"start": start, "end": end, "state": state, "source": "manual"})
         # Rebuild manual histograms from all retained labelled history.
         rebuilt = {key: {"present": [0] * HISTOGRAM_BINS, "not_present": [0] * HISTOGRAM_BINS} for key in HISTORY_KEYS}
+        label_at = _history_label_reader(device)
         for timestamp, row in self._iter_history_samples(device):
-            label = self._history_label_at(device, timestamp)
+            label = label_at(timestamp)
             if label not in {"present", "not_present"}:
                 continue
             for index, key in enumerate(HISTORY_KEYS):
@@ -515,7 +554,7 @@ class TunerRuntime:
     def _history_label_at(device: dict[str, Any], timestamp: float) -> str:
         return TunerRuntime._manual_history_state(device, timestamp) or "unknown"
 
-    def history_series_multi(self, device_id: str, keys: list[str], hours: float, max_points: int = 400) -> dict[str, Any]:
+    def history_series_multi(self, device_id: str, keys: list[str], hours: float, max_points: int = 400, end: float | None = None) -> dict[str, Any]:
         """Downsampled time series for several gates at once, sharing one pass
         over the history and one set of labels, so the chart can overlay
         every gate of a kind (move or still) together instead of one at a
@@ -537,29 +576,32 @@ class TunerRuntime:
             raise ValueError("Hours must be finite")
         hours = max(0.1, min(HISTORY_RETENTION_DAYS * 24, float(hours)))
         max_points = max(50, min(1000, int(max_points)))
-        end = time.time()
+        if end is not None and not math.isfinite(float(end)):
+            raise ValueError("End time must be finite")
+        end = min(time.time(), float(end)) if end is not None else time.time()
         start = end - hours * 3600
         span = end - start
 
         buckets = {key: {} for key in keys}
         counts = dict.fromkeys(keys, 0)
-        bucket_span = span / max_points
+        bucket_span = next((seconds for seconds in (6, 12, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 21600, 43200, 86400) if seconds >= span/max_points), 86400)
         for ts, row in self._iter_history_samples(device, start):
             if ts < start or ts > end:
                 continue
-            bucket = min(max_points - 1, int((ts - start) / bucket_span))
+            bucket = math.floor(ts / bucket_span)
             for key, index in indices.items():
                 value = row[index]
                 if value > 100:
                     continue
                 counts[key] += 1
-                acc = buckets[key].setdefault(bucket, [value, value, 0, 0])
+                acc = buckets[key].setdefault(bucket, [value, value, 0, 0, ts, ts])
                 acc[0], acc[1] = min(acc[0], value), max(acc[1], value)
                 acc[2] += value
                 acc[3] += 1
+                acc[4], acc[5] = min(acc[4], ts), max(acc[5], ts)
         series = {
             key: {"sample_count": counts[key], "points": [
-                {"t": start + (index + 0.5) * bucket_span, "min": acc[0], "max": acc[1], "avg": acc[2] / acc[3]}
+                {"t": round((acc[4]+acc[5])/2, 3), "min": acc[0], "max": acc[1], "avg": round(acc[2] / acc[3], 3), "count": acc[3]}
                 for index, acc in sorted(buckets[key].items())
             ]} for key in keys
         }
@@ -579,7 +621,7 @@ class TunerRuntime:
             active_end = min(end, device.get("training_expires_at") or end)
             if active_end > max(start, active_start):
                 labels.append({"start": max(start, active_start), "end": active_end, "state": device.get("training_state", "unknown")})
-        return {"start": start, "end": end, "series": series, "labels": labels}
+        return {"start": start, "end": end, "bucket_seconds": bucket_span, "series": series, "labels": labels}
 
     def _find_threshold_entity(self, device_id: str, key: str) -> str:
         registry = er.async_get(self.hass)
@@ -686,7 +728,7 @@ class TunerRuntime:
             "weight": AUTO_WEIGHT,
             "feedback": feedback_summary,
             "calibration": dict(auto.get("calibration", {"present_bias": 0.0, "absent_bias": 0.0})),
-            "note": "Automatic estimates contribute at 20% × confidence. Human labels override guesses; validation remains human-labelled.",
+            "note": "Automatic estimates contribute at 20% × confidence. Human labels always take priority; inferred proportions do not block Apply.",
         }
 
     def record_auto_feedback(self, device_id: str, correct: bool) -> dict[str, Any]:
@@ -854,31 +896,64 @@ class TunerRuntime:
         view._history_runtime[device_id] = {"samples": list(self._history_runtime.get(device_id, {}).get("samples", []))}
         return view
 
-    async def async_history_series(self, device_id, keys, hours, max_points):
-        view = self._history_view(device_id)
-        return await self.hass.async_add_executor_job(view.history_series_multi, device_id, keys, hours, max_points)
+    async def async_history_series(self, device_id, keys, hours, max_points, end=None):
+        if end is not None and not math.isfinite(float(end)):
+            raise ValueError("End time must be finite")
+        end = min(time.time(), float(end)) if end is not None else time.time()
+        device = self.data["devices"].get(device_id)
+        if not device:
+            raise ValueError("Unknown device")
+        cache_key = (device_id, tuple(sorted(set(keys))), hours, max_points, end,
+                     device.get("label_revision", 0), device.get("training_state"),
+                     device.get("training_label_start"), device.get("training_expires_at"))
+        if cache_key in self._history_cache:
+            self._history_cache.move_to_end(cache_key)
+            return self._history_cache[cache_key]
+        if cache_key not in self._history_jobs:
+            view = self._history_view(device_id)
+            async def build():
+                try:
+                    result = await self.hass.async_add_executor_job(view.history_series_multi, device_id, keys, hours, max_points, end)
+                    self._history_cache[cache_key] = result
+                    while len(self._history_cache) > 16:
+                        self._history_cache.popitem(last=False)
+                    return result
+                finally:
+                    self._history_jobs.pop(cache_key, None)
+            self._history_jobs[cache_key] = asyncio.create_task(build())
+        return await asyncio.shield(self._history_jobs[cache_key])
 
     async def async_learn(self, device_id):
-        entities, current = self._threshold_configuration(device_id)
-        view = self._history_view(device_id)
-        device = self.data["devices"][device_id]
-        revision = device.get("label_revision", 0)
-        learned = await self.hass.async_add_executor_job(view._fit_history, device_id, entities, current)
-        if revision != device.get("label_revision", 0):
-            raise ValueError("Training labels changed while learning; learn again")
-        device["last_learning"] = learned
-        self._schedule_save()
-        return learned
+        if device_id not in self._learning_jobs:
+            self._learning_jobs[device_id] = asyncio.create_task(self._learn_once(device_id))
+        return await asyncio.shield(self._learning_jobs[device_id])
+
+    async def _learn_once(self, device_id):
+        try:
+            entities, current = self._threshold_configuration(device_id)
+            view = self._history_view(device_id)
+            device = self.data["devices"][device_id]
+            revision = device.get("label_revision", 0)
+            learned = await self.hass.async_add_executor_job(view._fit_history, device_id, entities, current)
+            if revision != device.get("label_revision", 0):
+                raise ValueError("Training labels changed while learning; learn again")
+            learned["label_revision"] = revision
+            device["last_learning"] = learned
+            self._schedule_save()
+            return learned
+        finally:
+            self._learning_jobs.pop(device_id, None)
 
     def _fit_history(self, device_id, entities, current):
         device = self.data["devices"][device_id]
         groups = {label: deque(maxlen=MAX_CLASS_SAMPLES) for label in ("present", "not_present")}
         automatic = {label: deque(maxlen=MAX_CLASS_SAMPLES) for label in groups}
         indices = [HISTORY_KEYS.index(key) for key in entities]
+        label_at = _history_label_reader(device)
         for ts, row in self._iter_history_samples(device, include_auto=True):
-            if not all(row[index] <= 100 for index in indices):
+            if not any(row[index] <= 100 for index in indices):
                 continue
-            label = self._manual_history_state(device, ts)
+            label = label_at(ts)
             if label in groups:
                 groups[label].append((ts, row, label))
             elif label is None and len(row) >= len(HISTORY_KEYS)+2:
@@ -939,8 +1014,10 @@ class TunerRuntime:
         if not device:
             raise ValueError("Unknown device")
         learned = device.get("last_learning") or {}
-        if learned.get("method") != "joint_temporal_v2" or learned.get("status") != "ok":
-            raise ValueError("Learn and validate thresholds before applying")
+        if learned.get("method") != METHOD or learned.get("status") != "ok":
+            raise ValueError("Learn thresholds with the current model before applying")
+        if learned.get("label_revision", device.get("label_revision", 0)) != device.get("label_revision", 0):
+            raise ValueError("Training labels changed; learn again before applying")
         entities, current = self._threshold_configuration(device_id)
         if entities != learned.get("entities") or current != learned.get("configuration") or set(current) != set(entities):
             raise ValueError("Threshold configuration changed or is unavailable; learn again before applying")
@@ -1013,6 +1090,7 @@ class TunerRuntime:
                 "auto_learning": device.get("auto", {}),
                 "history": {
                     "retention_days": HISTORY_RETENTION_DAYS,
+                    "revision": device.get("label_revision", 0),
                     "labels": device.get("history_labels", []),
                     "blocks": len(device.get("history", [])),
                     "samples": sum(int(b.get("count", 0)) for b in device.get("history", [])),
@@ -1087,6 +1165,7 @@ class TunerRuntime:
                 "auto_learning": self.auto_learning_summary(device),
                 "history": {
                     "retention_days": HISTORY_RETENTION_DAYS,
+                    "revision": device.get("label_revision", 0),
                     "blocks": len(device.get("history", [])),
                     "samples": sum(int(b.get("count", 0)) for b in device.get("history", [])),
                     "labels": device.get("history_labels", []),
@@ -1282,6 +1361,7 @@ def _register_websocket_commands(hass: HomeAssistant, runtime: TunerRuntime) -> 
             vol.Required("keys"): [str],
             vol.Optional("hours", default=6): vol.Coerce(float),
             vol.Optional("max_points", default=400): vol.Coerce(int),
+            vol.Optional("end"): vol.Coerce(float),
         }
     )
     @websocket_api.async_response
@@ -1291,7 +1371,7 @@ def _register_websocket_commands(hass: HomeAssistant, runtime: TunerRuntime) -> 
             connection.send_error(msg["id"], "not_loaded", "LD2410 Tuner is not loaded")
             return
         try:
-            result = await runtime.async_history_series(msg["device_id"], msg["keys"], msg["hours"], msg["max_points"])
+            result = await runtime.async_history_series(msg["device_id"], msg["keys"], msg["hours"], msg["max_points"], msg.get("end"))
         except ValueError as err:
             connection.send_error(msg["id"], "invalid_request", str(err))
             return

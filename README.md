@@ -63,17 +63,35 @@ and CI stay outside it. The layout follows the
 4. Select UNKNOWN between sessions to let automatic estimates contribute, or
    correct recorded periods using the chart. Human labels override guesses. A
    chart range explicitly marked UNKNOWN is excluded from both training sources.
-5. Click **Learn safe thresholds**. Review device-wide validation in Details/Actions,
-   then **Apply validated thresholds** if the candidate passes. Test again in the
+5. Click **Learn thresholds**. Review device-wide validation in Details/Actions,
+   then **Apply recommended thresholds** if the candidate passes. Test again in the
    actual room, especially quiet sitting and empty-room false triggers.
 
-The learner can propose provisional thresholds from automatic estimates before
-human labels exist. Apply requires at least 50 complete human-labelled time
-samples in each class for separate validation.
-It retains up to 5,000 recent complete samples per class for fitting. History is
-sampled at a minimum five-second spacing on a two-second timer (normally six
-seconds), independently of whether values change. Unknown/unavailable gates are
-missing observations, never zero or reused cached energies.
+The learner needs at least 50 usable timed observations of each state, combining
+human labels and confident automatic estimates. There is no minimum human percentage
+and no human-only sample quota for Apply. It retains up to 5,000 recent observations
+per class and source for fitting. Missing gate readings remain missing; usable
+observations from other gates still contribute. Gates with no observations keep
+their current threshold.
+
+History is sampled at a minimum five-second spacing on a two-second timer (normally
+six seconds), independently of whether values change. Existing gate histograms can
+include legacy data without timestamps; the learning result reports the timed
+human and inferred observations actually used, separately from gate histogram counts.
+
+## Charts
+
+Changing the history window (for example 6h to 24h) keeps the same ending timestamp.
+**Refresh** explicitly advances to the latest data. Chart history stays pinned
+between refreshes while the live state and energy summaries continue polling.
+Returning to a previously loaded window uses a bounded cache. Label changes
+invalidate cached labels, and the graph remains visible during refresh failures.
+
+The line is the bucket mean and the highlighted band is the sampled minimum–maximum.
+The bucket duration is shown above the plot: wider windows use coarser aggregation,
+so averages can look smoother while recorded peaks remain in the band. Buckets are
+aligned to absolute time rather than shifted on every request. Gaps are not joined
+with invented continuous lines; labels and selections use the same timestamps.
 
 ## What learning measures
 
@@ -104,38 +122,45 @@ invented confidence retroactively. Human corrections and explicit UNKNOWN ranges
 always override the stored guesses. Feedback buttons adjust the estimator's bias;
 use the chart/training labels to supply authoritative occupancy examples.
 
-The threshold search first covers distinct human-labelled presence episodes, then
-improves the weakest episode and total presence coverage. Confidence-weighted
-inferred presence/absence helps choose between equal human-coverage candidates and
-cover additional likely occupied locations. It uses a whole-device false-positive
-budget; a two-point background margin is a tie preference, not a floor that must
-reject faint stationary presence. Uninformative gates can be suppressed at 100.
+The threshold search starts each observed gate near its background level, rather
+than disabling every gate at 100. It compares improvements across all gates, keeping
+useful overlapping coverage. A threshold of 100 is still possible when the observed
+background warrants suppression, but is no longer the default for redundant gates.
 
-The latest 20% of each human-labelled class is held out from fitting. Automatic
-observations at or after the first held-out timestamp are deferred until later
-human-labelled validation is available; this prevents predictions whose estimator
-has seen holdout labels from leaking them back into fitting. Provisional proposals
-can use newer guesses, but they cannot be applied without human validation.
+Human-labelled episode coverage, missed presence samples and false positives take
+absolute priority in that order. Confidence-weighted inferred observations improve
+coverage and reduce false triggers without worsening the human-labelled objective.
+The weight cap limits their influence; it never rejects a recommendation based on
+the proportion of automatic data. Human corrections and explicit UNKNOWN exclusions
+continue to win over any stored estimate for the same period.
 
-Both human-labelled training and validation must meet:
+When enough human-labelled observations exist, the latest 20% of each class is used
+for an earlier-data backtest. That evaluation excludes newer inferred observations
+to avoid leaking holdout labels through the estimator. The final recommendation is
+then refit using **all** eligible observations, including newer estimates. Its
+training results and the earlier-data backtest are reported separately. A failed
+backtest does not veto a final candidate that learned the newly observed pattern.
 
-- At least **99.9% presence recall** (small sets therefore permit zero misses).
+The final candidate is checked against available human labels, both overall and in
+the recent labelled slice, targeting:
+
+- At least **99.9% presence recall**.
 - No completely missed presence episodes and no run longer than one missed sample.
 - At most 0.5% false-positive samples and one false-trigger burst per observed hour.
 
-Metrics expose missed samples, missed episodes, longest missed runs and false-trigger
-bursts rather than hiding failures behind one accuracy percentage. Burst rates use
-observed samples and approximately six-second spacing, not unobserved wall-clock
-periods. Current thresholds are evaluated on the same holdout when available.
+Actual human-label conflicts still block Apply and report the measured reasons.
+Automatic-only recommendations can be applied, are explicitly described as estimates,
+and do not claim human-validated accuracy. Degenerate candidates that miss every
+estimated presence observation or trigger on every estimated empty-room observation
+are rejected when no human examples of that class are available.
 
-These are observed sample metrics, **not proof of near-perfect field accuracy**.
-Adjacent samples are correlated; a holdout from the same session is not an
-independent room trial. Firmware occupancy hold time, installation, unsampled
-spikes, range resolution, and custom sensor filtering can affect actual detection.
-The optimizer is greedy, so a blocked candidate does not prove no configuration
-could work. Quiet-presence and different-position sessions remain essential.
-The richer estimator guides training; the physical radar still receives static
-per-gate thresholds, not the Bayesian model itself.
+These are observed metrics, **not proof of near-perfect field accuracy**. Adjacent
+samples are correlated; a backtest from the same session is not an independent room
+trial. Firmware hold time, installation, unsampled spikes, range resolution, and
+custom filtering can affect actual detection. Search is iterative and is not a
+proof that no feasible configuration exists. The physical radar still receives
+static per-gate thresholds, not the Bayesian estimator itself. Test quiet sitting,
+different positions and empty-room sessions after applying a recommendation.
 
 All active gate threshold entities must be exposed. Exposed maximum-distance gate
 settings restrict the modeled gates; absent maximum-distance entities are assumed
@@ -149,7 +174,7 @@ occupancy entity.
 - The missing chart threshold renderer caused populated charts to throw and could
   interrupt card rebuilding, removing subsequent cards. Chart errors are now local
   and the grid is replaced only after cards are constructed.
-- Chart fetches have a timeout, ignore obsolete responses, refresh periodically,
+- Chart fetches have a timeout, ignore obsolete responses, retain a fixed window,
   and expose failures with a Refresh retry. Current buffered history is visible.
 - History/timeout drafts, collapse state and chart selections survive polling.
   Pointer cancellation, component disconnect and reconnect clean up correctly.
@@ -158,15 +183,17 @@ occupancy entity.
 - Retrospective corrections are idempotent, include buffered/live intervals, and
   use half-open ranges. Empty legacy snapshots no longer double-count early data.
 - Earlier recommendations must be learned again with the temporal model and
-  stricter acceptance targets. Clear stops training and invalidates learned values. Expired sessions end at the
+  human-priority fitting model (version 1.9.0). Restart Home Assistant and reload the panel after updating. Clear stops training and invalidates learned values. Expired sessions end at the
   actual deadline; cancelling an old timeout cannot remove a replacement timer.
 - Unload flushes partial history and cancels the pending save. Long gaps start a
   new history block instead of overflowing timestamp offsets. An abrupt process
   failure can still lose the current in-memory history block (up to 60 samples).
 - Chart aggregation uses bounded buckets. Chart/history reads and calibration run
   on detached snapshots in HA's executor; snapshot polling no longer schedules
-  unnecessary storage writes. Retrospective histogram rebuilding remains on the
-  event loop and may be noticeable with a large 30-day history.
+  unnecessary storage writes. Label lookup is indexed, decoded blocks and chart
+  responses have bounded caches, and duplicate history/learning jobs are shared.
+  Retrospective histogram rebuilding remains on the event loop and may be noticeable
+  with a large 30-day history.
 - Apply requires the reviewed, passing recommendation and unchanged available
   threshold configuration. Writes are serialized per device, raise thresholds
   before lowering others, and stop/report partial failure. Concurrent Apply calls
@@ -191,8 +218,9 @@ PLAYWRIGHT_MODULE=/path/to/node_modules/playwright node tests/panel.cjs
 
 The browser harness supplies simulated HA websocket responses and checks populated
 charts, three-card collapse/expand and polling, draft retention, out-of-order
-requests, errors/retry, drag/cancel, confidence displays, provisional application
-blocking, mobile overflow, and reconnect. It writes
+requests, errors/retry, drag/cancel, confidence displays, automatic-only recommendations, focused range
+changes, fixed ending timestamps, cached windows, stable refresh geometry, mobile
+overflow, and reconnect. It writes
 screenshots to `/tmp/ld2410-desktop.png` and `/tmp/ld2410-mobile.png`. Set
 `PANEL_SOURCE` to another panel file to run the same regression against it.
 These checks do not exercise a deployed Home Assistant instance or physical radar.

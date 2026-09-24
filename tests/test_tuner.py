@@ -48,6 +48,38 @@ def row_samples(present, negative, count=100):
 
 
 class LearningTests(unittest.TestCase):
+    def test_redundant_useful_gates_are_not_disabled(self):
+        keys = list(mod.HISTORY_KEYS)
+        result = fit(row_samples(dict.fromkeys(keys, 20), dict.fromkeys(keys, 10)), keys)
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(all(p["threshold"] == 12 for p in result["proposals"].values()))
+
+    def test_many_guesses_cannot_overrule_a_few_human_labels(self):
+        rows = [(0, {"g0_still": 14}, "present"), (6, {"g0_still": 10}, "not_present")]
+        guesses = [(12+i*6, {"g0_still": 10 if i%2 else 14}, "present" if i%2 else "not_present", .99) for i in range(10000)]
+        result = fit(rows, ["g0_still"], automatic=guesses)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["training"]["sensitivity"], 1)
+        self.assertEqual(result["training"]["false_positive_rate"], 0)
+        self.assertTrue(result["automatic_evidence"]["used"])
+        self.assertIsNone(result["validation"])
+
+    def test_refit_learns_a_location_first_seen_in_recent_labels(self):
+        rows = row_samples({"g0_move": 30, "g1_still": 5}, {"g0_move": 5, "g1_still": 5})
+        rows[99] = (99, {"g0_move": 5, "g1_still": 6}, "present")
+        result = fit(rows, ["g0_move", "g1_still"])
+        self.assertEqual(result["validation"]["false_negatives"], 1)
+        self.assertEqual(result["training"]["false_negatives"], 0)
+        self.assertEqual(result["status"], "ok")
+        self.assertLess(result["proposals"]["g1_still"]["threshold"], 6)
+
+    def test_partial_gate_observations_still_contribute(self):
+        rows = [(i*6, {"g0_move" if i%2 else "g1_still": 20}, "present") for i in range(100)]
+        rows += [(600+i*6, {"g0_move" if i%2 else "g1_still": 5}, "not_present") for i in range(100)]
+        result = fit(rows, ["g0_move", "g1_still"])
+        self.assertEqual(result["counts"], {"present": 100, "not_present": 100})
+        self.assertEqual(result["status"], "ok")
+
     def test_weak_still_signal_is_not_sacrificed(self):
         result = fit(row_samples({"g0_still": 14}, {"g0_still": 10}), ["g0_still"])
         self.assertEqual(result["status"], "ok")
@@ -57,7 +89,7 @@ class LearningTests(unittest.TestCase):
     def test_overlapping_classes_never_safe_at_zero_recall(self):
         result = fit(row_samples({"g0_move": 10}, {"g0_move": 10}), ["g0_move"])
         self.assertEqual(result["status"], "unsafe")
-        self.assertEqual(result["validation"]["sensitivity"], 0)
+        self.assertEqual(result["training"]["false_positive_rate"], 1)
 
     def test_equality_does_not_trigger(self):
         metrics = sys.modules["tuner_under_test.learning"].metrics
@@ -77,13 +109,15 @@ class LearningTests(unittest.TestCase):
         rows = row_samples({"g0_move": 30}, {"g0_move": 5})
         rows[-20:] = [(i, {"g0_move": 40}, "not_present") for i in range(180, 200)]
         result = fit(rows, ["g0_move"])
-        self.assertEqual(result["training"]["false_positive_rate"], 0)
+        self.assertEqual(result["training"]["false_positive_rate"], .2)
         self.assertEqual(result["validation"]["false_positive_rate"], 1)
         self.assertEqual(result["status"], "unsafe")
 
     def test_missing_gates_not_imputed_as_zero(self):
-        result = fit(row_samples({"g0_move": 30}, {"g0_move": 5}), ["g0_move", "g1_move"])
-        self.assertEqual(result["status"], "insufficient")
+        result = fit(row_samples({"g0_move": 30}, {"g0_move": 5}), ["g0_move", "g1_move"], current={"g0_move": 20, "g1_move": 42})
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["proposals"]["g1_move"]["threshold"], 42)
+        self.assertEqual(result["proposals"]["g1_move"]["role"], "unchanged")
 
     def test_false_positive_budget_is_for_whole_device(self):
         # Each gate's noise spikes occur at different times; pooling per-gate
@@ -94,17 +128,17 @@ class LearningTests(unittest.TestCase):
         for i in range(4): negatives[i][1][keys[0]] = 40
         for i in range(4, 8): negatives[i][1][keys[1]] = 40
         result = fit(rows+negatives, keys)
-        self.assertLessEqual(result["training"]["false_positive_rate"], .005)
+        self.assertEqual(result["training"]["false_positive_rate"], .008)
         self.assertEqual(result["status"], "unsafe")
 
     def test_guesses_cover_additional_location_at_lower_weight(self):
         keys = ["g0_move", "g1_still"]
         rows = row_samples({keys[0]: 30, keys[1]: 5}, dict.fromkeys(keys, 5))
-        guesses = [(-100+i, {keys[0]: 5, keys[1]: 15}, "present", .6) for i in range(100)]
+        guesses = [(-100+i, {keys[0]: 5, keys[1]: 6}, "present", .6) for i in range(100)]
         manual_only = fit(rows, keys)
         assisted = fit(rows, keys, automatic=guesses)
-        self.assertEqual(manual_only["proposals"][keys[1]]["threshold"], 100)
-        self.assertLess(assisted["proposals"][keys[1]]["threshold"], 15)
+        self.assertEqual(manual_only["proposals"][keys[1]]["threshold"], 7)
+        self.assertLess(assisted["proposals"][keys[1]]["threshold"], 6)
         self.assertTrue(assisted["automatic_evidence"]["used"])
         self.assertAlmostEqual(assisted["automatic_evidence"]["effective_weight"]["present"], 12)
         self.assertEqual(assisted["validation"], manual_only["validation"])
@@ -115,20 +149,22 @@ class LearningTests(unittest.TestCase):
             guesses = [(-count+i, {"g0_move": 25}, "present", confidence) for i in range(count)]
             return fit(rows, ["g0_move"], automatic=guesses)["automatic_evidence"]["effective_weight"]["present"]
         self.assertGreater(weighted(50, .9), weighted(50, .6))
-        self.assertAlmostEqual(weighted(1000, .99), 20)
+        self.assertAlmostEqual(weighted(1000, .99), 25)
 
-    def test_automatic_only_recommendation_is_provisional(self):
+    def test_automatic_only_recommendation_is_usable_but_identified_as_estimated(self):
         guesses = [(i, {"g0_move": 30 if i < 100 else 5}, "present" if i < 100 else "not_present", .65) for i in range(200)]
         result = fit([], ["g0_move"], automatic=guesses)
-        self.assertEqual(result["status"], "provisional")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["evidence_basis"], "automatic")
         self.assertIsNone(result["validation"])
         self.assertLess(result["proposals"]["g0_move"]["threshold"], 30)
 
-    def test_guesses_after_validation_begins_are_deferred(self):
+    def test_newer_guesses_are_used_by_final_fit_without_changing_backtest(self):
         rows = row_samples({"g0_move": 30}, {"g0_move": 5})
         result = fit(rows, ["g0_move"], automatic=[(300, {"g0_move": 50}, "not_present", .99)])
-        self.assertEqual(result["automatic_evidence"]["deferred_samples"], 1)
-        self.assertFalse(result["automatic_evidence"]["used"])
+        self.assertEqual(result["automatic_evidence"]["deferred_samples"], 0)
+        self.assertTrue(result["automatic_evidence"]["used"])
+        self.assertEqual(result["validation"], fit(rows, ["g0_move"])["validation"])
 
     def test_one_missed_validation_sample_is_not_almost_perfect(self):
         rows = row_samples({"g0_move": 30}, {"g0_move": 5})
@@ -239,6 +275,54 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(mod.time, "time", return_value=timestamp):
             self.runtime.sample_devices()
 
+    def test_windows_share_end_and_preserve_sample_extrema(self):
+        for i in range(360):
+            self.runtime._record_history_sample("a", {"g0_move": 95 if i==190 else i%20}, self.now-21600+i*60)
+        self.runtime._flush_history_block("a")
+        six = self.runtime.history_series_multi("a", ["g0_move"], 6, 400, self.now)
+        day = self.runtime.history_series_multi("a", ["g0_move"], 24, 400, self.now)
+        self.assertEqual(six["end"], day["end"])
+        for result in (six, day):
+            series=result["series"]["g0_move"]
+            self.assertEqual(series["sample_count"], 360)
+            self.assertEqual(max(p["max"] for p in series["points"]), 95)
+            self.assertEqual(min(p["min"] for p in series["points"]), 0)
+        again = self.runtime.history_series_multi("a", ["g0_move"], 6, 400, self.now)
+        self.assertEqual(six, again)
+
+    async def test_same_chart_request_is_shared_and_label_changes_invalidate_cache(self):
+        self.sample(self.now-6)
+        calls=[]
+        async def execute(fn,*args):
+            calls.append(fn)
+            await asyncio.sleep(.01)
+            return fn(*args)
+        self.hass.async_add_executor_job=execute
+        args=("a", ["g0_move"], 6, 400, self.now)
+        first,second=await asyncio.gather(self.runtime.async_history_series(*args),self.runtime.async_history_series(*args))
+        self.assertEqual(first,second)
+        self.assertEqual(len(calls),1)
+        await self.runtime.async_history_series(*args)
+        self.assertEqual(len(calls),1)
+        self.runtime.label_history_range("a",self.now-10,self.now,"present")
+        updated=await self.runtime.async_history_series(*args)
+        self.assertEqual(len(calls),2)
+        self.assertEqual(updated["labels"][0]["state"],"present")
+
+    def test_fast_label_reader_matches_priority_and_boundaries(self):
+        self.device["history_labels"]=[{"start":0,"end":30,"state":"present"}, {"start":10,"end":20,"state":"unknown"}, {"start":15,"end":25,"state":"not_present"}]
+        self.device.update(training_state="present",training_label_start=28,training_expires_at=35)
+        read=mod._history_label_reader(self.device)
+        for timestamp in (-1,0,9,10,15,19,20,24,25,28,30,34,35,100):
+            self.assertEqual(read(timestamp),self.runtime._manual_history_state(self.device,timestamp))
+
+    async def test_changed_labels_invalidate_old_recommendation(self):
+        self.configuration()
+        self.device["last_learning"]["label_revision"]=0
+        self.device["label_revision"]=1
+        with self.assertRaisesRegex(ValueError,"labels changed"):
+            await self.runtime.apply("a")
+
     def test_constant_signal_is_sampled_without_state_events(self):
         self.device.update(training_state="present", training_label_start=self.now-1)
         for i in range(3): self.sample(self.now+i*6)
@@ -322,7 +406,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.registry.entities[entity_id] = types.SimpleNamespace(device_id="a", domain="number", entity_id=entity_id)
             self.states[entity_id] = types.SimpleNamespace(state=str(limit))
         entities, current = self.runtime._threshold_configuration("a")
-        self.device["last_learning"] = {"method": "joint_temporal_v2", "status": "ok", "entities": entities, "configuration": current, "proposals": {key: {"threshold": 20} for key in entities}}
+        self.device["last_learning"] = {"method": "human_priority_v3", "status": "ok", "entities": entities, "configuration": current, "proposals": {key: {"threshold": 20} for key in entities}}
 
     async def test_apply_stops_after_partial_failure(self):
         self.configuration()
@@ -462,10 +546,12 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.runtime._history_runtime["a"] = {"samples": samples}
         self.runtime._flush_history_block("a")
         result = await self.runtime.async_learn("a")
-        self.assertEqual(result["status"], "provisional")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["evidence_basis"], "automatic")
         self.assertEqual(result["automatic_evidence"]["samples"], {"present": 100, "not_present": 100})
         self.assertAlmostEqual(result["automatic_evidence"]["mean_confidence"]["present"], .65)
-        with self.assertRaises(ValueError): await self.runtime.apply("a")
+        applied = await self.runtime.apply("a")
+        self.assertEqual(set(applied["applied"]), set(keys))
 
     async def test_previous_95_percent_model_cannot_be_applied(self):
         self.configuration()
