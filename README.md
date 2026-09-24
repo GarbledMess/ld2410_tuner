@@ -4,21 +4,27 @@ Home Assistant custom integration for labelled radar calibration and gate histor
 
 ## Installation
 
-### HACS
-
-In HACS, open **Custom repositories**, add
-`https://github.com/GarbledMess/ld2410_tuner` with type **Integration**, then download
-**LD2410 Tuner**. The GitHub repository must be public for HACS to access it.
-Restart Home Assistant, then add **LD2410 Tuner** under **Settings → Devices &
-services → Add integration**. Refresh the browser fully to load the panel.
-
-### Manual
+### Manual installation (private repository)
 
 Copy only the repository's `custom_components/ld2410_tuner` directory into
-`<Home Assistant config>/custom_components/ld2410_tuner`, then restart Home Assistant
-and add the integration as above. Do not copy the repository root into that folder.
-Existing stored training/history are preserved; earlier recommendations must be
-learned again before Apply. Local brand icons are supported by Home Assistant 2026.3+.
+`<Home Assistant config>/custom_components/ld2410_tuner`, then restart Home Assistant.
+Add **LD2410 Tuner** under **Settings → Devices & services → Add integration** and
+refresh the browser fully to load the panel. Do not copy the repository root into
+that folder. Existing stored training/history are preserved; earlier recommendations
+must be learned again before Apply. Local brand icons are supported by Home Assistant
+2026.3+.
+
+### HACS custom repository (requires a public GitHub repository)
+
+This project uses the HACS-compatible folder layout but is not being submitted to
+the HACS default catalogue. [HACS cannot install private repositories](https://www.hacs.dev/docs/faq/private_repositories/),
+so use manual installation while this repository remains private.
+
+If you later choose to make the GitHub repository public, it can be added manually
+in HACS under **Custom repositories** using
+`https://github.com/GarbledMess/ld2410_tuner` with type **Integration**. Download
+**LD2410 Tuner**, restart Home Assistant, and add the integration as above.
+Adding a custom repository does not require submitting it to the default catalogue.
 
 ## Repository layout
 
@@ -37,6 +43,7 @@ custom_components/
 hacs.json
 README.md
 tests/
+tools/validate_package.py
 .github/workflows/validate.yml
 ```
 
@@ -190,9 +197,20 @@ screenshots to `/tmp/ld2410-desktop.png` and `/tmp/ld2410-mobile.png`. Set
 `PANEL_SOURCE` to another panel file to run the same regression against it.
 These checks do not exercise a deployed Home Assistant instance or physical radar.
 
-GitHub Actions runs HACS and Hassfest validation plus the Python regressions on
-pushes and pull requests. Hosted validation runs after these files are pushed;
-local regression success does not establish HACS store inclusion or live HA compatibility.
-The license is currently undecided, so the HACS license validation check is expected
-to fail until an appropriate open-source license is selected. GitHub repository
-visibility, description, topics and issue tracking also need to satisfy HACS checks.
+GitHub Actions checks the local integration package, runs Hassfest, and runs the
+Python regressions on pushes and pull requests. It does not publish anything or
+submit this repository to the HACS catalogue. Run the local package check with:
+
+```sh
+python3 tools/validate_package.py
+```
+
+The package check verifies the directory layout, required runtime assets, JSON
+files, domain and basic HACS settings. Hassfest provides the broader Home Assistant
+integration validation. The remote `hacs/action` is not used: its catalogue metadata
+checks are outside this project's scope, and its public manifest downloads fail
+for private repositories. No license, repository description or topics are required
+by the local package check; the license remains undecided.
+
+Hosted validation runs after these files are pushed. Local checks do not establish
+live Home Assistant compatibility.
