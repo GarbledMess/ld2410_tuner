@@ -34,6 +34,7 @@ custom_components/
     __init__.py
     config_flow.py
     inference.py
+    history.py
     learning.py
     manifest.json
     services.yaml
@@ -93,6 +94,14 @@ so averages can look smoother while recorded peaks remain in the band. Buckets a
 aligned to absolute time rather than shifted on every request. Gaps are not joined
 with invented continuous lines; labels and selections use the same timestamps.
 
+An unsafe chart separates the selected gate's own false-positive sample count from
+the combined device failure reasons. The largest per-gate contributors are shown
+in the chart and learning details. A device-wide rejection does not mean every gate
+is noisy: detection uses any enabled gate, and overlapping per-gate counts cannot
+be added. These counts describe sampled threshold crossings, not individual physical
+occupancy events. Version 1.9.2 corrects this diagnostic attribution and updates the search while
+retaining the existing acceptance criteria.
+
 ## What learning measures
 
 The candidate models detection as any enabled gate energy **strictly above** its
@@ -127,9 +136,19 @@ than disabling every gate at 100. It compares improvements across all gates, kee
 useful overlapping coverage. A threshold of 100 is still possible when the observed
 background warrants suppression, but is no longer the default for redundant gates.
 
-Human-labelled episode coverage, missed presence samples and false positives take
-absolute priority in that order. Confidence-weighted inferred observations improve
-coverage and reduce false triggers without worsening the human-labelled objective.
+The search first satisfies the existing human-labelled presence, missed-episode,
+consecutive-miss, false-positive and burst-rate limits, across both the full and
+recent observations. It then minimizes missed presence and false positives within
+those limits. It no longer demands a perfect sample score at the cost of making a
+gate nearly always on: an isolated miss within the 99.9% target can be preferable
+to thousands of false positives. Entire missed episodes and consecutive misses
+remain unacceptable. Human targets and refinements always outrank inferred evidence.
+
+If the background starting point fails, the search also tries thresholds bounded
+by the per-gate false-positive limits and a quiet starting point. This lets several
+cleaner gates replace a noisy detector. A bounded pair search can raise a noisy gate
+and lower a supporting gate together, escaping single-gate search traps.
+Confidence-weighted inferred observations then refine otherwise tied human results.
 The weight cap limits their influence; it never rejects a recommendation based on
 the proportion of automatic data. Human corrections and explicit UNKNOWN exclusions
 continue to win over any stored estimate for the same period.
@@ -183,7 +202,7 @@ occupancy entity.
 - Retrospective corrections are idempotent, include buffered/live intervals, and
   use half-open ranges. Empty legacy snapshots no longer double-count early data.
 - Earlier recommendations must be learned again with the temporal model and
-  human-priority fitting model (version 1.9.0). Restart Home Assistant and reload the panel after updating. Clear stops training and invalidates learned values. Expired sessions end at the
+  human-priority fitting model (version 1.9.2). Restart Home Assistant and reload the panel after updating. Clear stops training and invalidates learned values. Expired sessions end at the
   actual deadline; cancelling an old timeout cannot remove a replacement timer.
 - Unload flushes partial history and cancels the pending save. Long gaps start a
   new history block instead of overflowing timestamp offsets. An abrupt process
@@ -226,8 +245,10 @@ screenshots to `/tmp/ld2410-desktop.png` and `/tmp/ld2410-mobile.png`. Set
 These checks do not exercise a deployed Home Assistant instance or physical radar.
 
 GitHub Actions checks the local integration package, runs Hassfest, and runs the
-Python regressions on pushes and pull requests. It does not publish anything or
-submit this repository to the HACS catalogue. Run the local package check with:
+Python and release regressions on pushes and pull requests. A successful push to
+`main` publishes a GitHub release only when `manifest.json` has an increased
+`major.minor.patch` version compared with the previous pushed commit. No workflow
+submits this repository to the HACS catalogue. Run the local package check with:
 
 ```sh
 python3 tools/validate_package.py
@@ -242,3 +263,53 @@ by the local package check; the license remains undecided.
 
 Hosted validation runs after these files are pushed. Local checks do not establish
 live Home Assistant compatibility.
+
+## Automatic history maintenance
+
+At startup and hourly, the integration normalizes history in Home Assistant's
+executor. Valid version-1 blocks become version 2 with unknown automatic labels
+and confidence; confidence is never invented for older observations. Recorded
+energies, timestamps, missing values, and human-label precedence are preserved.
+
+Expired samples and labels are removed after the 30-day retention window. Corrupt
+blocks and wholly unusable rows are removed; invalid individual gate readings
+become missing. Duplicate timestamps keep the later stored record. Histograms are
+rebuilt from retained labels plus the separate untimed legacy baseline. Untimed
+legacy evidence is retained because its age cannot be inferred. A second cleanup
+of unchanged data is idempotent. Concurrent sampling or corrections defer that
+device's cleanup to the next pass. Removing or repairing observations invalidates
+old recommendations; format-only normalization preserves current-model results.
+
+## Versioned releases and HACS updates
+
+Change only `custom_components/ld2410_tuner/manifest.json` to increase the version;
+the panel URL automatically uses that version to invalidate the browser cache.
+After the version-changing commit is pushed to `main` and validation succeeds,
+the release job creates `v<version>` at that exact commit and attaches
+`ld2410_tuner.zip`. Commits with an unchanged version do not create a release.
+Release jobs queue rather than cancelling earlier pending versions.
+
+The archive contains only the runtime files explicitly listed in
+`tools/validate_package.py`, with `manifest.json` at its root. Tests, local recordings,
+exports, repository metadata, and credentials are not packaged. Local builds need
+no credentials and publish nothing:
+
+```sh
+python3 tools/release.py
+python3 -m unittest discover -s tests -p 'test_release.py'
+```
+
+Uploads are completed while the release is a draft. Reruns verify existing tags
+and asset hashes instead of replacing published content. A failed upload can be
+retried by rerunning its original workflow. A version rollback or reuse for another
+commit fails explicitly. Use another version for changed release contents.
+
+HACS detects published release tags and downloads the configured ZIP asset; the
+repository must be public and added as a custom integration repository. HACS update
+availability does not itself schedule installation or restart Home Assistant.
+For unattended installation, configure the integration's HACS update entity with
+Home Assistant's `update.install` action and your own restart policy. See the
+[HACS version rules](https://www.hacs.dev/docs/publish/start/#versions) and
+[update entity documentation](https://www.hacs.dev/docs/use/entities/update/).
+Publishing a GitHub release does not add this integration to the HACS catalogue.
+The license remains undecided.

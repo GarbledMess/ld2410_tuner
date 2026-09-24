@@ -6,6 +6,11 @@ import sys
 
 
 DOMAIN = "ld2410_tuner"
+RUNTIME_FILES = (
+    "__init__.py", "config_flow.py", "inference.py", "learning.py", "history.py",
+    "manifest.json", "services.yaml", "translations/en.json", "brand/icon.png",
+    "static/ld2410-tuner-panel.js",
+)
 
 
 def read_object(path: Path) -> dict:
@@ -32,12 +37,10 @@ def validate(root: Path) -> None:
     if not isinstance(hacs.get("render_readme", False), bool):
         raise ValueError("render_readme must be a boolean")
 
+    if hacs.get("zip_release") is not True or hacs.get("filename") != f"{DOMAIN}.zip":
+        raise ValueError("HACS must use the versioned integration ZIP asset")
     package = components / DOMAIN
-    for name in (
-        "__init__.py", "config_flow.py", "inference.py", "learning.py",
-        "manifest.json", "translations/en.json", "brand/icon.png",
-        "static/ld2410-tuner-panel.js",
-    ):
+    for name in RUNTIME_FILES:
         if not (package / name).is_file():
             raise ValueError(f"Missing integration file: {name}")
 

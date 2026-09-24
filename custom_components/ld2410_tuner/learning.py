@@ -5,13 +5,13 @@ Validation is chronological within each class, not a claim of field accuracy.
 """
 from __future__ import annotations
 
-from math import isfinite
+from math import floor, isfinite
 
 MIN_CLASS_SAMPLES = 50
 MIN_RECALL = 0.999
 MAX_FPR = 0.005
 MAX_CLASS_SAMPLES = 5000
-METHOD = "human_priority_v3"
+METHOD = "human_priority_v4"
 AUTO_WEIGHT = 0.20
 AUTO_CLASS_CAP = 0.25  # At most 20% of combined class evidence when manual data exists.
 MIN_AUTO_CONFIDENCE = 0.55
@@ -73,7 +73,7 @@ def _temporal_metrics(rows, thresholds):
 def _episode_masks(positives, negatives):
     """Keep short/quiet labelled episodes visible beside long active sessions."""
     ordered = sorted([(row[0], "present", i) for i, row in enumerate(positives)] +
-                     [(row[0], "not_present", -1) for row in negatives])
+                     [(row[0], "not_present", -1) for row in negatives], key=lambda row: row[0])
     episodes, previous = [], None
     for timestamp, label, index in ordered:
         if label == "present":
@@ -113,68 +113,189 @@ def _weight(mask, groups):
     return sum(weight * (mask & bucket).bit_count() for weight, bucket in groups.items())
 
 
-def _search(positives, negatives, auto_groups, keys, current=None):
-    """Coordinate search with strict human priority and data-based gate defaults.
+def _human_ranker(positives, negatives):
+    """Rank target violations before refinements, for full and recent evidence.
 
-    A whole-device set-cover search leaves redundant useful gates at 100. Start
-    each observed gate near its background instead, retaining redundant coverage.
-    Human episode coverage, misses and false triggers always outrank guesses.
+    Bit links describe actual consecutive observations, not adjacent rows across
+    gaps/label changes. A budgeted isolated miss is never a licence to lose an
+    entire presence episode or a run of quiet presence.
+    """
+    windows = []
+    starts = [(0, 0)]
+    if min(len(positives), len(negatives)) >= MIN_CLASS_SAMPLES:
+        starts.append((int(len(positives)*.8), int(len(negatives)*.8)))
+    for pstart, nstart in starts:
+        present, absent = positives[pstart:], negatives[nstart:]
+        episodes = [mask << pstart for mask, _ in _episode_masks(present, absent)]
+        empty_episodes = [mask << nstart for mask, _ in _episode_masks(absent, present)]
+        presence_mask = ((1 << len(present))-1) << pstart
+        absent_mask = ((1 << len(absent))-1) << nstart
+        presence_links = presence_mask ^ sum(mask & -mask for mask in episodes)
+        absent_links = absent_mask ^ sum(mask & -mask for mask in empty_episodes)
+        seconds = _temporal_metrics(present + absent, {})["observed_absent_seconds"]
+        windows.append((presence_mask, absent_mask, episodes, presence_links, absent_links,
+                        floor(len(present)*(1-MIN_RECALL)+1e-9),
+                        floor(len(absent)*MAX_FPR+1e-9),
+                        floor(seconds*MAX_FALSE_BURSTS_PER_HOUR/3600+1e-9)))
+
+    def rank(detected, false):
+        violations = [0]*5
+        refinements = None
+        for pmask, nmask, episodes, plinks, nlinks, miss_budget, false_budget, burst_budget in windows:
+            missed = pmask & ~detected
+            false_here = nmask & false
+            missed_count, false_count = missed.bit_count(), false_here.bit_count()
+            bursts = (false_here & ~((false_here << 1) & nlinks)).bit_count()
+            # Count runs exceeding the allowed length without scanning samples.
+            too_long = missed
+            for _ in range(MAX_MISSED_RUN):
+                too_long = missed & (too_long << 1) & plinks
+            failures = (sum(not (detected & mask) for mask in episodes),
+                        max(0, missed_count-miss_budget), too_long.bit_count(),
+                        max(0, false_count-false_budget), max(0, bursts-burst_budget))
+            violations = [a+b for a, b in zip(violations, failures)]
+            if refinements is None:
+                refinements = (missed_count, false_count, bursts)
+        return (*violations, *refinements)
+    return rank
+
+
+def _search(positives, negatives, auto_groups, keys, current=None):
+    """Fit hardware thresholds to human targets, then lower-confidence evidence.
+
+    Start near the background to retain useful redundant gates. If that search
+    fails the targets, also start above observed empty-room values: correlated
+    noisy gates can otherwise prevent any single-coordinate improvement.
     """
     ap, an = auto_groups["present"], auto_groups["not_present"]
     pw, pmass = _weighted_masks(ap, len(positives))
     nw, nmass = _weighted_masks(an, len(negatives))
-    tables, preferred, thresholds = {}, {}, {}
-    episodes = _episode_masks(positives, negatives)
+    tables, preferred, quiet = {}, {}, {}
+    human_rank = _human_ranker(positives, negatives)
     for key in keys:
         noise = sorted(row[1][key] for row in (negatives or an) if key in row[1])
-        observed = [row[1][key] for row in positives + negatives + ap + an if key in row[1]]
-        fallback = (current or {}).get(key, 50)
+        observed = any(key in row[1] for row in positives + negatives + ap + an)
+        fallback = int((current or {}).get(key, 50))
         preferred[key] = min(100, noise[int((len(noise)-1)*.99)] + 2) if noise else fallback
-        thresholds[key] = preferred[key] if observed else fallback
+        quiet[key] = max(noise) if noise else preferred[key]
         masks = [_masks(rows, key) for rows in (positives, negatives, ap, an)]
-        # Search every hardware threshold so a tied solution can keep its
-        # background margin instead of being forced onto an observed energy.
-        candidates = range(101) if observed else [int(fallback)]
+        candidates = range(101) if observed else [fallback]
         tables[key] = {t: tuple(mask[t] for mask in masks) for t in candidates}
 
     def rank(bits):
         detected, false, auto_detected, auto_false = bits
-        missed_episodes = sum(not (detected & mask) for mask, _ in episodes)
-        missed = len(positives) - detected.bit_count()
-        # Guesses optimize quiet-presence coverage with a lower penalty for a
-        # false trigger. They can never purchase a worse human-labelled result.
         auto_loss = (20 * (1 - _weight(auto_detected, pw)/pmass) if pmass else 0)
         auto_loss += _weight(auto_false, nw)/nmass if nmass else 0
-        return missed_episodes, missed, false.bit_count(), round(auto_loss, 10)
+        # Every human target and refinement outranks every automatic estimate.
+        return (*human_rank(detected, false), round(auto_loss, 10))
 
-    selected = {key: tables[key][int(value)] for key, value in thresholds.items()}
-    for _step in range(len(keys)*4):
-        combined = [0, 0, 0, 0]
-        for bits in selected.values():
-            for index, mask in enumerate(bits):
-                combined[index] |= mask
+    def optimize(seed):
+        thresholds = dict(seed)
+        selected = {key: tables[key][value] for key, value in thresholds.items()}
+        for _step in range(len(keys)*4):
+            combined = [0, 0, 0, 0]
+            for bits in selected.values():
+                for index, mask in enumerate(bits):
+                    combined[index] |= mask
+            distance = sum(abs(thresholds[key]-preferred[key]) for key in keys)
+            best_rank = (*rank(combined), distance)
+            best = None
+            for key in keys:
+                other = [0, 0, 0, 0]
+                for other_key, bits in selected.items():
+                    if other_key != key:
+                        for index, mask in enumerate(bits):
+                            other[index] |= mask
+                for threshold, bits in tables[key].items():
+                    candidate = tuple(a | b for a, b in zip(other, bits))
+                    change_distance = distance-abs(thresholds[key]-preferred[key])+abs(threshold-preferred[key])
+                    candidate_rank = (*rank(candidate), change_distance)
+                    if candidate_rank < best_rank:
+                        best_rank, best = candidate_rank, (key, threshold, bits)
+            if best is None:
+                break
+            key, threshold, bits = best
+            thresholds[key], selected[key] = threshold, bits
+        return thresholds, best_rank
+
+    def repair_pair(thresholds, score):
+        # A noisy detector may be indispensable until a second gate is lowered.
+        # Neither single change improves the score, so test the handover jointly.
+        selected = {key: tables[key][thresholds[key]] for key in keys}
         distance = sum(abs(thresholds[key]-preferred[key]) for key in keys)
-        best_rank = (*rank(combined), distance)
-        best = None
-        # Choose the best improvement across ALL gates before changing one.
-        # Updating the first gate immediately can mask a much cleaner solution
-        # at a later gate and trap a coordinate search in an always-on result.
+        options = {}
         for key in keys:
-            other = [0, 0, 0, 0]
-            for other_key, bits in selected.items():
-                if other_key != key:
-                    for index, mask in enumerate(bits):
-                        other[index] |= mask
+            unique = {}
             for threshold, bits in tables[key].items():
-                candidate = tuple(a | b for a, b in zip(other, bits))
-                change_distance = distance-abs(thresholds[key]-preferred[key])+abs(threshold-preferred[key])
-                candidate_rank = (*rank(candidate), change_distance)
-                if candidate_rank < best_rank:
-                    best_rank, best = candidate_rank, (key, threshold, bits)
-        if best is None:
+                previous = unique.get(bits)
+                if previous is None or abs(threshold-preferred[key]) < abs(previous-preferred[key]):
+                    unique[bits] = threshold
+            options[key] = [(threshold, bits) for bits, threshold in unique.items()]
+        best = None
+        for noisy in keys:
+            raises = [(t, bits) for t, bits in options[noisy]
+                      if t > thresholds[noisy] and selected[noisy][1] & ~bits[1]]
+            if not raises:
+                continue
+            for support in keys:
+                if support == noisy:
+                    continue
+                lowers = [(t, bits) for t, bits in options[support]
+                          if t < thresholds[support] and bits[0] & ~selected[support][0]]
+                if not lowers:
+                    continue
+                other = [0]*4
+                for key, bits in selected.items():
+                    if key not in (noisy, support):
+                        for index, mask in enumerate(bits):
+                            other[index] |= mask
+                base_distance = distance-abs(thresholds[noisy]-preferred[noisy])-abs(thresholds[support]-preferred[support])
+                for raised, raised_bits in raises:
+                    partial = tuple(a | b for a, b in zip(other, raised_bits))
+                    lost = selected[noisy][0] & ~(partial[0] | selected[support][0])
+                    if not lost:
+                        continue
+                    seen = set()
+                    for lowered, lowered_bits in lowers:
+                        if not (lowered_bits[0] & lost):
+                            continue
+                        candidate = tuple(a | b for a, b in zip(partial, lowered_bits))
+                        if candidate in seen:
+                            continue
+                        seen.add(candidate)
+                        candidate_score = (*rank(candidate), base_distance+abs(raised-preferred[noisy])+abs(lowered-preferred[support]))
+                        if candidate_score < score:
+                            score = candidate_score
+                            best = {**thresholds, noisy: raised, support: lowered}
+        return best
+
+    thresholds, score = optimize(preferred)
+    if any(score[:5]):
+        # Any passing whole-device solution must satisfy each gate's individual
+        # false-positive bounds. Start at the most sensitive such thresholds,
+        # allowing several supporting gates to take over a noisy gate together.
+        negative_windows = [((1 << len(negatives))-1, floor(len(negatives)*MAX_FPR+1e-9))]
+        if min(len(positives), len(negatives)) >= MIN_CLASS_SAMPLES:
+            start = int(len(negatives)*.8)
+            negative_windows.append((((1 << len(negatives))-1) ^ ((1 << start)-1),
+                                     floor((len(negatives)-start)*MAX_FPR+1e-9)))
+        bounded = {key: next(t for t, bits in options.items()
+                            if all((bits[1] & mask).bit_count() <= budget
+                                   for mask, budget in negative_windows))
+                   for key, options in tables.items()}
+        for seed in (bounded, quiet):
+            if seed == preferred:
+                continue
+            alternative, alternative_score = optimize(seed)
+            if alternative_score < score:
+                thresholds, score = alternative, alternative_score
+    for _ in range(2):
+        if not any(score[:5]):
             break
-        key, threshold, bits = best
-        thresholds[key], selected[key] = threshold, bits
+        repaired = repair_pair(thresholds, score)
+        if repaired is None:
+            break
+        thresholds, score = optimize(repaired)
     return thresholds, {"present": pmass, "not_present": nmass}
 
 

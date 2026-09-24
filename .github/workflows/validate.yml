@@ -19,6 +19,7 @@ jobs:
           python-version: '3.12'
       # Validate the checkout without HACS catalogue or public-download checks.
       - run: python3 tools/validate_package.py
+      - run: python3 tools/release.py
 
   hassfest:
     name: Hassfest
@@ -36,3 +37,27 @@ jobs:
         with:
           python-version: '3.12'
       - run: python3 tests/test_tuner.py
+      - run: python3 -m unittest discover -s tests -p "test_release.py"
+
+  release:
+    name: Publish versioned HACS archive
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [package, hassfest, tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: ld2410-tuner-release
+      queue: max
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Publish only when the manifest version increases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIOUS_SHA: ${{ github.event.before }}
+        run: python3 tools/release.py --publish

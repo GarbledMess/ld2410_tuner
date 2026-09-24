@@ -48,6 +48,68 @@ def row_samples(present, negative, count=100):
 
 
 class LearningTests(unittest.TestCase):
+    def test_isolated_miss_within_targets_does_not_make_device_always_on(self):
+        keys = ["g1_move", "g3_still"]
+        rows = [(i*6, {keys[0]: 7, keys[1]: 4 if i == 100 else 40}, "present") for i in range(2868)]
+        rows += [(30000+i*6, {keys[0]: 9 if i < 4316 else 4, keys[1]: 4}, "not_present") for i in range(5000)]
+        result = fit(rows, keys)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["training"]["false_negatives"], 1)
+        self.assertEqual(result["training"]["false_positives"], 0)
+        self.assertGreaterEqual(result["training"]["sensitivity"], .999)
+        self.assertEqual(result["training"]["missed_presence_episodes"], 0)
+        self.assertEqual(result["training"]["longest_missed_run_samples"], 1)
+        self.assertEqual(result["recent_training"]["false_negatives"], 0)
+
+    def test_recent_presence_target_is_part_of_search(self):
+        keys = ["g1_move", "g3_still"]
+        rows = [(i*6, {keys[0]: 7, keys[1]: 4 if i == 2800 else 40}, "present") for i in range(2868)]
+        rows += [(30000+i*6, {keys[0]: 9, keys[1]: 4}, "not_present") for i in range(5000)]
+        result = fit(rows, keys)
+        self.assertEqual(result["status"], "unsafe")
+        self.assertEqual(result["recent_training"]["false_negatives"], 0)
+
+    def test_small_miss_budget_does_not_allow_consecutive_misses(self):
+        keys = ["g1_move", "g3_still"]
+        rows = [(i*6, {keys[0]: 7, keys[1]: 4 if i in (100, 101) else 40}, "present") for i in range(5000)]
+        rows += [(40000+i*6, {keys[0]: 9, keys[1]: 4}, "not_present") for i in range(5000)]
+        result = fit(rows, keys)
+        self.assertEqual(result["status"], "unsafe")
+        self.assertLessEqual(result["training"]["longest_missed_run_samples"], 1)
+
+    def test_overlapping_noisy_gates_do_not_trap_coordinate_search(self):
+        keys = ["g0_move", "g1_move", "g2_still"]
+        rows = [(i*6, dict.fromkeys(keys, 30), "present") for i in range(1000)]
+        rows += [(10000+i*6, {keys[0]: 20 if i < 6 else 10,
+                             keys[1]: 20 if i < 6 else 10, keys[2]: 10}, "not_present") for i in range(1000)]
+        result = fit(rows, keys)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["training"]["false_positives"], 0)
+        self.assertEqual(result["training"]["false_negatives"], 0)
+        self.assertTrue(all(p["threshold"] < 100 for p in result["proposals"].values()))
+
+    def test_fast_search_constraints_match_public_validation(self):
+        import random
+        learning = sys.modules["tuner_under_test.learning"]
+        rng = random.Random(42)
+        for case in range(30):
+            timestamp = 0
+            rows = []
+            for i in range(160):
+                timestamp += rng.choice([1, 6, 6, 20])
+                rows.append((timestamp, {"g0_move": rng.randrange(31)}, "present" if (i//20)%2 else "not_present"))
+            positive = [row for row in rows if row[2] == "present"]
+            negative = [row for row in rows if row[2] == "not_present"]
+            threshold = rng.randrange(31)
+            detected = learning._masks(positive, "g0_move")[threshold]
+            false = learning._masks(negative, "g0_move")[threshold]
+            score = learning._human_ranker(positive, negative)(detected, false)
+            all_metrics = learning.metrics(positive+negative, {"g0_move": threshold})
+            recent = learning.metrics(positive[int(.8*len(positive)):]+negative[int(.8*len(negative)):], {"g0_move": threshold})
+            failures = learning._human_failures(all_metrics)+learning._human_failures(recent)
+            self.assertEqual(any(score[:5]), bool(failures))
+            self.assertEqual(score[5:], (all_metrics["false_negatives"], all_metrics["false_positives"], all_metrics["false_trigger_bursts"]))
+
     def test_redundant_useful_gates_are_not_disabled(self):
         keys = list(mod.HISTORY_KEYS)
         result = fit(row_samples(dict.fromkeys(keys, 20), dict.fromkeys(keys, 10)), keys)
@@ -130,6 +192,11 @@ class LearningTests(unittest.TestCase):
         result = fit(rows+negatives, keys)
         self.assertEqual(result["training"]["false_positive_rate"], .008)
         self.assertEqual(result["status"], "unsafe")
+        self.assertEqual(result["training"]["false_positives"], 8)
+        for proposal in result["proposals"].values():
+            self.assertEqual(proposal["false_positives"], 4)
+            self.assertEqual(proposal["not_present_samples"], 1000)
+            self.assertIn("8 false triggers in 1000", proposal["message"])
 
     def test_guesses_cover_additional_location_at_lower_weight(self):
         keys = ["g0_move", "g1_still"]
@@ -203,6 +270,64 @@ class LearningTests(unittest.TestCase):
         self.assertGreater(result["validation"]["false_trigger_bursts_per_hour"], 1)
         self.assertEqual(result["status"], "unsafe")
 
+
+
+class HistoryCleanupTests(unittest.TestCase):
+    def block(self, start, samples, version=1):
+        import base64, struct, zlib
+        raw = b"".join(struct.pack(">H", offset)+bytes(values) for offset, values in samples)
+        return {"start": start, "end": start+max(offset for offset, values in samples),
+                "version": version, "count": len(samples),
+                "data": base64.b64encode(zlib.compress(raw)).decode()}
+
+    def test_migration_preserves_timestamps_and_unknown_confidence(self):
+        from tuner_under_test.history import clean_history
+        first = self.block(100.25, [(0, [5]*18), (6, [7]*18)])
+        second = self.block(112.75, [(0, [9]*18+[1, 80])], 2)
+        device = {"history": [first, second], "history_labels": [{"start": 99, "end": 120, "state": "present"}]}
+        updated, stats = clean_history(device, [], 130, 1000)
+        runtime = mod.TunerRuntime(None, None, {"devices": {"a": updated}})
+        with patch.object(mod.time, "time", return_value=130):
+            rows = list(runtime._iter_history_samples(updated, include_auto=True))
+        self.assertEqual([ts for ts, row in rows], [100.25, 106.25, 112.75])
+        self.assertEqual([row[-2:] for ts, row in rows], [bytes(2), bytes(2), bytes([1,80])])
+        self.assertEqual(stats["migrated_blocks"], 1)
+        self.assertEqual(sum(updated["histograms"]["g0_move"]["present"]), 3)
+        again, _ = clean_history(updated, [], 130, 1000)
+        self.assertEqual(again, updated)
+        self.assertEqual(first["version"], 1, "input is unchanged")
+
+    def test_cleanup_removes_expired_corrupt_and_duplicate_data(self):
+        from tuner_under_test.history import clean_history
+        values = [5]*18
+        old = self.block(50, [(0, values)])
+        current = self.block(100, [(0, values), (6, values)])
+        duplicate = self.block(100, [(0, [9]*18)])
+        bad = dict(current, data="not valid base64")
+        repaired = self.block(112, [(0, [200]+values[1:]+[1,255])], 2)
+        device = {"history": [current, old, bad, duplicate, repaired],
+                  "history_labels": [{"start": 40, "end": 110, "state": "present"},
+                                     {"start": 100, "end": 120, "state": "not_present"}]}
+        updated, stats = clean_history(device, [], 150, 60)
+        self.assertEqual(sum(b["count"] for b in updated["history"]), 3)
+        self.assertEqual(stats["invalid_blocks"], 1)
+        self.assertEqual(stats["expired_samples"], 1)
+        self.assertEqual(stats["duplicate_samples"], 1)
+        self.assertEqual(stats["repaired_samples"], 1)
+        self.assertEqual(updated["history_labels"], [{"start":90,"end":100,"state":"present"}, {"start":100,"end":120,"state":"not_present"}])
+        self.assertEqual(updated["histograms"]["g0_move"]["not_present"][9], 1)
+        self.assertEqual(sum(updated["histograms"]["g0_move"]["not_present"]), 2)
+
+    def test_unknown_label_and_pending_samples_are_preserved(self):
+        from tuner_under_test.history import clean_history
+        device = {"history": [self.block(100, [(0, [5]*18), (6, [5]*18)])],
+                  "history_labels": [{"start":90,"end":120,"state":"present"},
+                                     {"start":105,"end":108,"state":"unknown"}]}
+        pending = [(112, bytes([5]*18+[2,90]))]
+        updated, _ = clean_history(device, pending, 130, 1000)
+        self.assertEqual(sum(b["count"] for b in updated["history"]), 2)
+        self.assertEqual(sum(updated["histograms"]["g0_move"]["present"]), 2)
+        self.assertEqual(mod._history_label_reader(updated)(106), "unknown")
 
 
 class InferenceTests(unittest.TestCase):
@@ -406,7 +531,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.registry.entities[entity_id] = types.SimpleNamespace(device_id="a", domain="number", entity_id=entity_id)
             self.states[entity_id] = types.SimpleNamespace(state=str(limit))
         entities, current = self.runtime._threshold_configuration("a")
-        self.device["last_learning"] = {"method": "human_priority_v3", "status": "ok", "entities": entities, "configuration": current, "proposals": {key: {"threshold": 20} for key in entities}}
+        self.device["last_learning"] = {"method": "human_priority_v4", "status": "ok", "entities": entities, "configuration": current, "proposals": {key: {"threshold": 20} for key in entities}}
 
     async def test_apply_stops_after_partial_failure(self):
         self.configuration()
@@ -555,9 +680,43 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_previous_95_percent_model_cannot_be_applied(self):
         self.configuration()
-        self.device["last_learning"]["method"] = "joint_labelled_v1"
-        with self.assertRaises(ValueError): await self.runtime.apply("a")
+        for previous in ("joint_labelled_v1", "human_priority_v3"):
+            self.device["last_learning"]["method"] = previous
+            with self.assertRaises(ValueError): await self.runtime.apply("a")
         self.hass.services.async_call.assert_not_awaited()
+
+    async def test_format_cleanup_preserves_current_model_recommendation(self):
+        self.sample(self.now-10)
+        self.runtime._flush_history_block("a")
+        self.device["last_learning"] = {"method": mod.METHOD, "status": "ok"}
+        saved = self.device["last_learning"]
+        self.hass.async_add_executor_job = AsyncMock(side_effect=lambda fn,*args: fn(*args))
+        await self.runtime.async_clean_history(persist=False)
+        self.assertIs(self.device["last_learning"], saved)
+        self.assertIn("history_cleanup", self.device)
+
+    async def test_invalid_history_cleanup_invalidates_recommendation(self):
+        self.device["history"] = [{"data": "corrupt"}]
+        self.device["last_learning"] = {"method": mod.METHOD, "status": "ok"}
+        self.hass.async_add_executor_job = AsyncMock(side_effect=lambda fn,*args: fn(*args))
+        await self.runtime.async_clean_history(persist=False)
+        self.assertNotIn("last_learning", self.device)
+        self.assertEqual(self.device["history"], [])
+        self.assertEqual(self.device["history_cleanup"]["invalid_blocks"], 1)
+
+    async def test_cleanup_does_not_overwrite_concurrent_sample(self):
+        self.sample(self.now-10)
+        self.runtime._flush_history_block("a")
+        original = self.runtime.data["devices"]["a"]["history"]
+        def executor(fn, *args):
+            result = fn(*args)
+            self.sample(self.now)
+            return result
+        self.hass.async_add_executor_job = AsyncMock(side_effect=executor)
+        await self.runtime.async_clean_history()
+        self.assertIs(self.device["history"], original)
+        self.assertEqual(len(self.runtime._history_runtime["a"]["samples"]), 1)
+        self.assertNotIn("history_cleanup", self.device)
 
     async def test_unload_flushes_partial_history(self):
         self.sample(self.now-2)

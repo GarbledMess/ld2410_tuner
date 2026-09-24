@@ -18,7 +18,7 @@ const path = require("node:path");
       window.fixture={devices:Object.fromEntries(["a","b","c"].map(id=>[id,{
         name:`Room ${id}`, sample_counts:{g0_move:{present:100,not_present:100}},
         current_thresholds:{g0_move:20},
-        last_learning:{method:"human_priority_v3",status:"ok",automatic_evidence:{samples:{present:10,not_present:20},mean_confidence:{present:.73,not_present:.85},effective_weight:{present:1.46,not_present:3.4},deferred_samples:0},proposals:{g0_move:{threshold:15,status:"ok",sensitivity:1,not_present_samples:100,noise_ceiling:5,noise_floor_p99:5}},training:{sensitivity:1,false_positive_rate:0,present_samples:100,not_present_samples:100},validation:{sensitivity:1,false_positive_rate:0,present_samples:20,not_present_samples:20}},
+        last_learning:{method:"human_priority_v4",status:"ok",automatic_evidence:{samples:{present:10,not_present:20},mean_confidence:{present:.73,not_present:.85},effective_weight:{present:1.46,not_present:3.4},deferred_samples:0},proposals:{g0_move:{threshold:15,status:"ok",sensitivity:1,not_present_samples:100,noise_ceiling:5,noise_floor_p99:5}},training:{sensitivity:1,false_positive_rate:0,present_samples:100,not_present_samples:100},validation:{sensitivity:1,false_positive_rate:0,present_samples:20,not_present_samples:20}},
         history:{labels:[]},auto_learning:{observations:14,last:{state:"present",confidence:.73,basis:"human-guided"}},
       }]))};
       const panel=document.createElement("ld2410-tuner-panel");
@@ -73,6 +73,29 @@ const path = require("node:path");
     await page.evaluate(()=>{fixture.devices.b.last_learning.status="ok";fixture.devices.b.last_learning.validation=null;fixture.devices.b.last_learning.training=null;fixture.devices.b.last_learning.evidence_basis="automatic";fixture.devices.b.last_learning.proposals.g0_move.evidence_basis="automatic";return panel._load();});
     assert.match(await cards.nth(1).locator('.learn-status').innerText(),/estimated threshold/);
     assert.equal(await cards.nth(1).locator('[data-action="apply"]').isDisabled(),false);
+
+    // Device failure counts must not be attributed to the selected clean gate.
+    await page.evaluate(() => {
+      window.savedLearning = structuredClone(fixture.devices.a.last_learning);
+      const learning = fixture.devices.a.last_learning;
+      learning.status = "unsafe";
+      learning.training.false_positives = 4317;
+      learning.training.not_present_samples = 5000;
+      learning.proposals.g0_move = {threshold:16,status:"unsafe",false_positives:0,not_present_samples:5000,noise_ceiling:7,noise_floor_p99:7,message:"4317 false triggers in 5000 human-labelled empty-room samples"};
+      learning.proposals.g2_still = {threshold:3,status:"unsafe",false_positives:4317,not_present_samples:5000};
+      return panel._load();
+    });
+    let diagnostic = await cards.first().locator('.learn-status').innerText();
+    assert.match(diagnostic, /This gate alone triggers on 0 \/ 5000/);
+    assert.match(diagnostic, /Combined device recommendation unsafe.*4317/s);
+    assert.match(diagnostic, /Gate 2 Still at 3: 4317 \/ 5000/);
+    assert.match(diagnostic, /counts must not be added/);
+    assert.doesNotMatch(diagnostic, /Correct labels/);
+    assert.equal(await cards.first().locator('[data-action="apply"]').isDisabled(),true);
+    // Changes to another gate must invalidate the chart's cached diagnostic.
+    await page.evaluate(()=>{fixture.devices.a.last_learning.proposals.g2_still.false_positives=4000;return panel._load();});
+    assert.match(await cards.first().locator('.learn-status').innerText(), /Gate 2 Still at 3: 4000 \/ 5000/);
+    await page.evaluate(()=>{fixture.devices.a.last_learning=window.savedLearning;return panel._load();});
 
     // A real focused selector must render the response without needing blur.
     const range=cards.first().locator('[data-action="chart-range"]');

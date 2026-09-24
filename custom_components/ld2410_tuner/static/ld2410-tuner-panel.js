@@ -458,7 +458,7 @@ class LD2410TunerPanel extends HTMLElement {
     }
     this._updateGateChipHighlight(card, cs.gate);
     const activeKey = `g${cs.gate}_${cs.kind}`;
-    const signature = JSON.stringify([cs.gate,cs.kind,cs.hours,cs.loadedKind,cs.loadedHours,cs.loading,cs.error,cs.selection,cs.panelOpen,d.current_thresholds?.[activeKey],d.last_learning?.proposals?.[activeKey]]);
+    const signature = JSON.stringify([cs.gate,cs.kind,cs.hours,cs.loadedKind,cs.loadedHours,cs.loading,cs.error,cs.selection,cs.panelOpen,d.current_thresholds?.[activeKey],d.last_learning?.proposals]);
     if (!force && el._renderedData === cs.data && el._renderedState === signature) return;
     el._renderedData = cs.data; el._renderedState = signature;
     const matches = cs.data && cs.loadedKind === cs.kind && cs.loadedHours === cs.hours;
@@ -481,7 +481,20 @@ class LD2410TunerPanel extends HTMLElement {
     }
   }
 
-  _learnStatusHtml(proposal, cs) {
+  _falsePositiveSourcesHtml(learning) {
+    if (learning?.status !== "unsafe") return "";
+    const sources = Object.entries(learning.proposals || {})
+      .filter(([key, proposal]) => /^g[0-8]_(move|still)$/.test(key) && proposal.false_positives > 0)
+      .sort((a, b) => b[1].false_positives - a[1].false_positives)
+      .slice(0, 3)
+      .map(([key, proposal]) => {
+        const [, gate, kind] = key.match(/^g([0-8])_(move|still)$/);
+        return `Gate ${gate} ${kind === "move" ? "Movement" : "Still"} at ${Math.round(proposal.threshold)}: ${proposal.false_positives} / ${proposal.not_present_samples} empty-room samples`;
+      });
+    return sources.length ? `<div class="false-positive-sources">Largest per-gate false-positive counts: ${this._esc(sources.join("; "))}. Gates can trigger on the same samples; these counts must not be added.</div>` : "";
+  }
+
+  _learnStatusHtml(proposal, cs, learning) {
     const label = `Gate ${cs.gate} · ${cs.kind==="move"?"Movement":"Still"}`;
     if (!proposal) return `<div class="learn-status muted">${this._esc(label)}: click "Learn thresholds" to compute a recommendation.</div>`;
     const noiseNote = (proposal.noise_ceiling != null)
@@ -492,7 +505,12 @@ class LD2410TunerPanel extends HTMLElement {
     if (proposal.status === "ok" && proposal.role === "unchanged") return `<div class="learn-status muted">${this._esc(label)}: no usable observations for this gate; its current threshold is preserved.</div>`;
     if (proposal.status === "ok" && proposal.role === "suppressed") return `<div class="learn-status muted">${this._esc(label)}: threshold 100 suppresses this gate; its observed background requires suppression; inspect the device-wide results.</div>`;
     if (proposal.status === "ok") return `<div class="learn-status ok">${this._esc(label)}: learned threshold ${Math.round(proposal.threshold)} — this gate detects ${Math.round((proposal.sensitivity||0)*100)}% of human-labelled training samples, ${proposal.false_positives||0} exception(s) out of ${proposal.not_present_samples} not-present samples.${noiseNote}</div>`;
-    if (proposal.status === "unsafe") return `<div class="learn-status warn">${this._esc(label)}: candidate threshold ${Math.round(proposal.threshold)}, marked <b>unsafe</b> — ${this._esc(proposal.message||"present and not-present data overlap too much")}.${noiseNote} Shown as a red dashed line; not applied automatically. Correct labels only when you know the actual occupancy at that time.</div>`;
+    if (proposal.status === "unsafe") {
+      const gateResult = proposal.not_present_samples > 0 && proposal.false_positives != null
+        ? ` This gate alone triggers on ${proposal.false_positives} / ${proposal.not_present_samples} human-labelled empty-room samples.`
+        : " No human-labelled empty-room measurement is available for this gate.";
+      return `<div class="learn-status warn"><div>${this._esc(label)}: candidate threshold ${Math.round(proposal.threshold)}.${this._esc(gateResult)}${noiseNote}</div><div><b>Combined device recommendation unsafe</b> — ${this._esc(proposal.message || "The combined thresholds did not meet the learning targets")}. These failure counts cover all enabled gates, not just this gate.</div>${this._falsePositiveSourcesHtml(learning)}<div>Candidate shown as a red dashed line; the combined recommendation has not been applied.</div></div>`;
+    }
     return `<div class="learn-status warn">${this._esc(label)}: not enough data yet — ${this._esc(proposal.message||"need more present and not-present samples")}.</div>`;
   }
 
@@ -600,7 +618,7 @@ class LD2410TunerPanel extends HTMLElement {
 
     const toolbarHtml = this._selectionToolbarHtml(cs);
 
-    return `${this._learnStatusHtml(learnedProposal, cs)}<svg viewBox="0 0 ${CHART_W} ${CHART_H}" preserveAspectRatio="xMidYMid meet">
+    return `${this._learnStatusHtml(learnedProposal, cs, d.last_learning)}<svg viewBox="0 0 ${CHART_W} ${CHART_H}" preserveAspectRatio="xMidYMid meet">
       <rect x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${CHART_PLOT_W}" height="${CHART_PLOT_H}" class="plot-bg"></rect>
       ${bands}
       ${yTicks}
@@ -868,8 +886,8 @@ class LD2410TunerPanel extends HTMLElement {
       const backtest=d.last_learning?.validation;
       const inferred=d.last_learning?.automatic_evidence;
       const inferenceHtml=inferred ? `<div class="notice">Automatic evidence: ${inferred.samples?.present||0} present / ${inferred.samples?.not_present||0} empty estimates. Mean confidence: ${inferred.mean_confidence?.present==null?"—":`${Math.round(inferred.mean_confidence.present*100)}%`} / ${inferred.mean_confidence?.not_present==null?"—":`${Math.round(inferred.mean_confidence.not_present*100)}%`}. Effective training weight: ${(inferred.effective_weight?.present||0).toFixed(1)} / ${(inferred.effective_weight?.not_present||0).toFixed(1)} human-sample equivalents.${inferred.deferred_samples?` ${inferred.deferred_samples} newer estimates await later human-labelled validation.`:""}</div>` : "";
-      const validationHtml=(validation ? `<div class="notice">Human-labelled timed observations: <b>${validation.false_negatives??"—"} missed / ${validation.present_samples} presence samples</b> (${validation.present_samples ? (validation.sensitivity*100).toFixed(2)+"%" : "not measured"}; target 99.9%). Missed episodes: ${validation.missed_presence_episodes??"—"}; longest missed run: ${validation.longest_missed_run_samples??"—"} samples. False-trigger bursts: ${validation.false_trigger_bursts??"—"} (${validation.not_present_samples ? (validation.false_positive_rate*100).toFixed(2)+"% of empty samples" : "no human-labelled empty samples"}). ${d.last_learning.status==="ok"?"Recommendation available.":"Review the reported human-label conflicts."}</div>` : d.last_learning?.proposals && Object.keys(d.last_learning.proposals).length ? `<div class="notice">No human-labelled measurement is available. This recommendation uses confidence-weighted estimates; test it in the room.</div>` : "")+(backtest ? `<div class="notice">Earlier-data backtest: ${backtest.false_negatives??0} missed presence samples; ${backtest.false_positives??0} false triggers. The final recommendation uses all observations.</div>` : "")+inferenceHtml;
-      const actionsHtml=`${validationHtml}${warning}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button data-action="apply" ${d.last_learning?.status==="ok"&&d.last_learning?.method==="human_priority_v3"?"":"disabled"}>Apply recommended thresholds</button><button data-action="clear">Clear data</button></div><div class="export"><button data-action="json">Export JSON</button><button data-action="csv">Export CSV</button></div>`;
+      const validationHtml=(validation ? `<div class="notice">Human-labelled timed observations: <b>${validation.false_negatives??"—"} missed / ${validation.present_samples} presence samples</b> (${validation.present_samples ? (validation.sensitivity*100).toFixed(2)+"%" : "not measured"}; target 99.9%). Missed episodes: ${validation.missed_presence_episodes??"—"}; longest missed run: ${validation.longest_missed_run_samples??"—"} samples. False-trigger bursts: ${validation.false_trigger_bursts??"—"} (${validation.not_present_samples ? (validation.false_positive_rate*100).toFixed(2)+"% of empty samples" : "no human-labelled empty samples"}). ${d.last_learning.status==="ok"?"Recommendation available.":"The combined thresholds did not meet the targets."}</div>` : d.last_learning?.proposals && Object.keys(d.last_learning.proposals).length ? `<div class="notice">No human-labelled measurement is available. This recommendation uses confidence-weighted estimates; test it in the room.</div>` : "")+(backtest ? `<div class="notice">Earlier-data backtest: ${backtest.false_negatives??0} missed presence samples; ${backtest.false_positives??0} false triggers. The final recommendation uses all observations.</div>` : "")+this._falsePositiveSourcesHtml(d.last_learning)+inferenceHtml;
+      const actionsHtml=`${validationHtml}${warning}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button data-action="apply" ${d.last_learning?.status==="ok"&&d.last_learning?.method==="human_priority_v4"?"":"disabled"}>Apply recommended thresholds</button><button data-action="clear">Clear data</button></div><div class="export"><button data-action="json">Export JSON</button><button data-action="csv">Export CSV</button></div>`;
 
       const bodyHtml=[
         this._section(id,"training","Training",trainingHtml),

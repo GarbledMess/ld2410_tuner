@@ -12,6 +12,7 @@ from collections import defaultdict, deque, OrderedDict
 from bisect import bisect_right
 from functools import lru_cache
 import heapq
+import json
 from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
@@ -30,8 +31,10 @@ from homeassistant.helpers.storage import Store
 
 from .learning import AUTO_WEIGHT, MAX_CLASS_SAMPLES, MIN_AUTO_CONFIDENCE, METHOD, fit_thresholds
 from .inference import estimate_presence
+from .history import clean_history
 
 DOMAIN = "ld2410_tuner"
+INTEGRATION_VERSION = json.loads(Path(__file__).with_name("manifest.json").read_text())["version"]
 STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}.data"
 
@@ -127,6 +130,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = TunerStore(hass, STORAGE_VERSION, STORAGE_KEY)
     data = await store.async_load() or {"devices": {}, "training": {}}
     runtime = TunerRuntime(hass, store, data)
+    if await runtime.async_clean_history(persist=False):
+        await store.async_save(runtime.data)
     hass.data[DOMAIN] = runtime
 
     _register_websocket_commands(hass, runtime)
@@ -136,7 +141,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass, runtime.sample_devices, timedelta(seconds=AUTO_SAMPLE_INTERVAL)
     )
     runtime.restore_timeouts()
-    runtime._enforce_history_retention()
     runtime.unsub_registry = hass.bus.async_listen(
         EVENT_ENTITY_REGISTRY_UPDATED, runtime.handle_registry_update
     )
@@ -164,7 +168,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": "ld2410-tuner-panel",
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": "/api/ld2410_tuner/static/ld2410-tuner-panel.js?v=1.9.0",
+                    "js_url": f"/api/ld2410_tuner/static/ld2410-tuner-panel.js?v={INTEGRATION_VERSION}",
                 }
             },
         )
@@ -182,6 +186,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             runtime.unsub_retention()
         if runtime.unsub_sampling:
             runtime.unsub_sampling()
+        if runtime._cleanup_task:
+            runtime._cleanup_task.cancel()
+            await asyncio.gather(runtime._cleanup_task, return_exceptions=True)
         for task in list(runtime._timeout_tasks.values()):
             task.cancel()
         runtime._timeout_tasks.clear()
@@ -215,6 +222,7 @@ class TunerRuntime:
         self._history_cache = OrderedDict()
         self._history_jobs = {}
         self._learning_jobs = {}
+        self._cleanup_task = None
 
     @callback
     def subscribe_state_changes(self) -> None:
@@ -388,26 +396,43 @@ class TunerRuntime:
 
     @callback
     def _enforce_history_retention(self, *_args) -> None:
-        """Prune history blocks older than the retention window.
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = self.hass.async_create_task(self.async_clean_history())
 
-        Previously this only happened inside _flush_history_block, i.e. only
-        for devices that were still actively reporting - a device that goes
-        quiet or gets removed would keep its old blocks forever. This runs
-        once at startup and hourly thereafter so stale history ages out
-        regardless of whether the device is still live.
-        """
-        cutoff = time.time() - HISTORY_RETENTION_SECONDS
+    async def async_clean_history(self, *, persist=True):
+        """Normalize stored history at startup and hourly, without racing writes."""
         changed = False
-        for device in self.data.get("devices", {}).values():
-            history = device.get("history")
-            if not history:
+        for device_id, device in list(self.data.get("devices", {}).items()):
+            snapshot = {key: deepcopy(device[key]) for key in (
+                "history", "history_labels", "histograms", "history_legacy_histograms",
+                "training_state", "training_label_start", "training_expires_at",
+            ) if key in device}
+            pending = list(self._history_runtime.get(device_id, {}).get("samples", []))
+            revision = device.get("label_revision", 0)
+            updated, stats = await self.hass.async_add_executor_job(
+                clean_history, snapshot, pending, time.time(), HISTORY_RETENTION_SECONDS)
+            # Sampling, Clear or a human correction may have run in the meantime.
+            # Leave their new data intact; the next maintenance pass retries.
+            if (self.data.get("devices", {}).get(device_id) is not device
+                    or device.get("label_revision", 0) != revision
+                    or any(device.get(key) != snapshot.get(key) for key in snapshot)
+                    or self._history_runtime.get(device_id, {}).get("samples", []) != pending):
                 continue
-            pruned = [b for b in history if float(b.get("end", float(b.get("start", 0)) + 65535)) >= cutoff]
-            if len(pruned) != len(history):
-                device["history"] = pruned
+            if any(device.get(key) != value for key, value in updated.items()):
+                device.update(updated)
+                device["history_cleanup"] = stats
+                if any(stats[key] for key in ("invalid_blocks", "expired_samples", "duplicate_samples",
+                                               "repaired_samples", "discarded_samples")):
+                    device["label_revision"] = revision+1
+                    device.pop("last_learning", None)
+                elif (device.get("last_learning") or {}).get("method") not in (None, METHOD):
+                    device.pop("last_learning", None)
                 changed = True
         if changed:
-            self._schedule_save()
+            self._history_cache.clear()
+            if persist:
+                self._schedule_save()
+        return changed
 
     @staticmethod
     def _compact_history_labels(device: dict[str, Any]) -> None:
