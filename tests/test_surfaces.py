@@ -141,6 +141,12 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await mod.async_setup_entry(self.hass, None))
             register.assert_called_once()
             self.assertTrue(panel.call_args.kwargs["require_admin"])
+            custom = panel.call_args.kwargs["config"]["_panel_custom"]
+            self.assertEqual(
+                custom["module_url"],
+                f"/api/ld2410_tuner/static/ld2410-tuner-panel.js?v={mod.INTEGRATION_VERSION}",
+            )
+            self.assertNotIn("js_url", custom)
             self.assertEqual(self.hass.http.async_register_static_paths.await_count, 1)
             runtime = self.hass.data[mod.DOMAIN]
             runtime._save_task = asyncio.create_task(asyncio.sleep(100))

@@ -93,7 +93,8 @@ async def _start_runtime(hass):
                     "name": "ld2410-tuner-panel",
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"/api/ld2410_tuner/static/ld2410-tuner-panel.js?v={INTEGRATION_VERSION}",
+                    # The entrypoint imports panel modules and must use HA's module loader.
+                    "module_url": f"/api/ld2410_tuner/static/ld2410-tuner-panel.js?v={INTEGRATION_VERSION}",
                 }
             },
         )

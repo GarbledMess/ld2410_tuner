@@ -4,7 +4,15 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs/promises");
 const os = require("node:os");
+const { execFileSync } = require("node:child_process");
 (async () => {
+  const registration = JSON.parse(
+    execFileSync(
+      process.env.PYTHON || "python3",
+      [path.join(__dirname, "panel_bootstrap.py")],
+      { encoding: "utf8" },
+    ),
+  );
   const screenshotDir = await fs.mkdtemp(
     path.join(os.tmpdir(), "ld2410-panel-"),
   );
@@ -28,17 +36,36 @@ const os = require("node:os");
         "../custom_components/ld2410_tuner/static/ld2410-tuner-panel.js",
       );
     await page.route("http://tuner.test/**", async (route) => {
-      const filename = new URL(route.request().url()).pathname.slice(1);
-      if (!filename)
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === "/")
         return route.fulfill({ contentType: "text/html", body: documentHtml });
+      assert.ok(pathname.startsWith(registration.static_url + "/"));
+      const filename = pathname.slice(registration.static_url.length + 1);
       const body = await fs.readFile(path.join(path.dirname(source), filename));
       return route.fulfill({ contentType: "text/javascript", body });
     });
     await page.goto("http://tuner.test/");
     await page.addScriptTag({
-      type: "module",
-      url: "http://tuner.test/" + path.basename(source),
+      // Match Home Assistant's loader choice instead of forcing module mode.
+      type: registration.panel.module_url ? "module" : "text/javascript",
+      url: new URL(
+        registration.panel.module_url || registration.panel.js_url,
+        "http://tuner.test",
+      ).href,
     });
+    assert.deepEqual(
+      errors,
+      [],
+      "registered panel script must load without errors",
+    );
+    assert.equal(
+      await page.evaluate(
+        (name) => !!customElements.get(name),
+        registration.panel.name,
+      ),
+      true,
+      "Home Assistant's registered URL must define the panel element",
+    );
     await page.evaluate(() => {
       window.requests = [];
       window.fail = false;
