@@ -30,7 +30,36 @@ export const panelView = {
         .history-fields { display:grid; grid-template-columns:1fr 1fr 180px; gap:8px; margin:10px 0; }
         .history-fields label { color:var(--secondary-text-color); font-size:12px; }
         .history-fields input,.history-fields select { display:block; width:100%; margin-top:4px; min-height:44px; padding:8px; border:1px solid var(--divider-color); border-radius:9px; background:var(--card-background-color); color:var(--primary-text-color); box-sizing:border-box; }
-        .label-list { margin-top:10px; font-size:12px; color:var(--secondary-text-color); max-height:130px; overflow:auto; }
+        .history-calendar { margin-top:12px; }
+        .calendar-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+        .calendar-grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:3px; margin-bottom:8px; }
+        .calendar-weekday { font-size:11px; text-align:center; color:var(--secondary-text-color); }
+        .calendar-day { display:flex; flex-direction:column; justify-content:center; align-items:center; min-height:44px; padding:4px 0; font-size:13px; }
+        .calendar-day.other-month { color:var(--secondary-text-color); border-color:transparent; }
+        .calendar-day.today { border-color:var(--primary-color); }
+        .calendar-day[aria-pressed="true"] { background:var(--secondary-background-color); outline:2px solid var(--primary-color); outline-offset:-2px; font-weight:700; }
+        .calendar-dots { display:flex; gap:2px; height:6px; margin-top:3px; }
+        .calendar-dots i { width:5px; height:5px; border-radius:50%; }
+        .history-navigation { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px; margin:12px 0; }
+        .history-navigation label { flex:1; min-width:130px; font-size:12px; }
+        .history-navigation input { display:block; width:100%; min-width:0; min-height:44px; box-sizing:border-box; padding:8px; font:inherit; border:1px solid var(--divider-color); border-radius:9px; background:var(--card-background-color); color:var(--primary-text-color); }
+        .history-timeline { display:flex; height:28px; border:1px solid var(--divider-color); border-radius:6px; overflow:hidden; }
+        .history-segment { display:block; height:100%; }
+        .history-segment.present { background:#43a047; }
+        .history-segment.not_present { background:#78909c; }
+        .history-segment.unknown { background:#ffc107; }
+        .history-segment.unlabelled { background:repeating-linear-gradient(135deg,transparent,transparent 4px,var(--divider-color) 4px,var(--divider-color) 6px); }
+        .history-axis { display:flex; justify-content:space-between; gap:8px; font-size:11px; margin:4px 0 8px; }
+        .history-legend { display:flex; flex-wrap:wrap; gap:8px; font-size:12px; }
+        .history-legend span { display:flex; align-items:center; gap:4px; }
+        .history-legend i { width:12px; height:12px; border:1px solid var(--divider-color); }
+        .history-periods { display:grid; gap:6px; max-height:300px; overflow:auto; margin:12px 0; }
+        .history-period { display:flex; flex-wrap:wrap; gap:8px; justify-content:space-between; text-align:left; font-size:12px; width:100%; min-height:48px; }
+        .history-status.present { color:var(--state-active-color,#2e7d32); }
+        .history-edit-note { font-size:13px; margin:12px 0 0; }
+        .history-buttons { display:flex; flex-wrap:wrap; gap:8px; }
+        .history-fields label { min-width:0; }
+        .history-buttons [hidden] { display:none; }
         .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:12px; }
         .stat { padding:10px; border-radius:9px; background:var(--secondary-background-color); }
         .stat b { display:block; font-size:17px; margin-top:2px; }
@@ -78,7 +107,7 @@ export const panelView = {
         .value-line.active { stroke-width:2.6; }
         .chart-canvas { width:100%; border:1px solid var(--divider-color); border-radius:9px; overflow:hidden; background:var(--card-background-color); min-height:320px; position:relative; }
         .chart-canvas > .muted { padding:30px 10px; text-align:center; }
-        .chart-canvas svg { display:block; width:100%; height:auto; }
+        .chart-canvas svg { display:block; width:100%; height:auto; touch-action:none; user-select:none; -webkit-user-select:none; }
         .plot-bg { fill:var(--secondary-background-color); opacity:.35; }
         .grid-line { stroke:var(--divider-color); stroke-width:1; }
         .axis-label { font-size:9px; fill:var(--secondary-text-color); }

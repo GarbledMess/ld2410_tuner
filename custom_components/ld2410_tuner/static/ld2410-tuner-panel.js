@@ -4,6 +4,8 @@ import { panelControls } from "./panel/controls.js";
 import { panelLearning } from "./panel/learning.js";
 import { panelChart } from "./panel/chart.js";
 import { panelSelection } from "./panel/selection.js";
+import { panelCalendar } from "./panel/calendar.js";
+import { panelHistory } from "./panel/history.js";
 import { panelView } from "./panel/view.js";
 
 // One distinct color per gate (0-8), shared between "move" and "still" views
@@ -31,6 +33,7 @@ class LD2410TunerPanel extends HTMLElement {
     this._chartState = new Map();
     this._dragging = false;
     this._drafts = new Map();
+    this._historyState = new Map();
     this._chartQueue = [];
     this._activeCharts = 0;
     this._onVisibilityChange = () => {
@@ -278,5 +281,7 @@ Object.assign(
   panelCards,
   panelControls,
   panelLearning,
+  panelHistory,
+  panelCalendar,
 );
 customElements.define("ld2410-tuner-panel", LD2410TunerPanel);

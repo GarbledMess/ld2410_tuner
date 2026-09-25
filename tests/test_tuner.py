@@ -491,7 +491,7 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
         await self.commands[f"{mod.DOMAIN}/{name}"](self.hass, self.connection, {"id": 7, **fields})
 
     async def test_commands_remain_admin_only_and_lookup_live_runtime(self):
-        self.assertEqual(len(self.commands), 10)
+        self.assertEqual(len(self.commands), 11)
         self.assertTrue(all(command.admin_only for command in self.commands.values()))
         self.hass.data[mod.DOMAIN] = types.SimpleNamespace(snapshot=lambda: {"reloaded": True})
         await self.call("snapshot")

@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "test": "node tests/panel.cjs",
-    "format:check": "prettier --check \"custom_components/ld2410_tuner/static/**/*.js\" tests/panel.cjs"
+    "format:check": "prettier --check \"custom_components/ld2410_tuner/static/**/*.js\" \"tests/**/*.cjs\""
   },
   "devDependencies": {
     "playwright": "1.63.0",

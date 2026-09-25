@@ -90,40 +90,6 @@ export const panelControls = {
     timeoutHours.onchange = (e) => this._action(e.currentTarget, saveTimeout);
     timeoutMinutes.onchange = (e) => this._action(e.currentTarget, saveTimeout);
   },
-  _wireHistory(card, id) {
-    card.querySelector('[data-action="history-apply"]').onclick = async () => {
-      const from = card.querySelector('[data-action="history-start"]').value;
-      const to = card.querySelector('[data-action="history-end"]').value;
-      if (!from || !to) {
-        alert("Choose both a start and end time.");
-        return;
-      }
-      const start = Math.floor(new Date(from).getTime() / 1000),
-        end = Math.floor(new Date(to).getTime() / 1000);
-      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-        alert("The end time must be after the start time.");
-        return;
-      }
-      const label = card.querySelector('[data-action="history-state"]').value;
-      if (
-        !confirm(`Label this period ${label.replace("_", " ").toUpperCase()}?`)
-      )
-        return;
-      try {
-        await this._call("label_history", {
-          device_id: id,
-          start,
-          end,
-          state: label,
-        });
-        this._chartState.get(id).data = null;
-        this._chartState.get(id).cache?.clear();
-        await this._load();
-      } catch (err) {
-        alert(`Unable to label history: ${err?.message || err}`);
-      }
-    };
-  },
   _wireActions(card, id) {
     card.querySelector('[data-action="learn"]').onclick = (e) =>
       this._action(e.currentTarget, async () => {

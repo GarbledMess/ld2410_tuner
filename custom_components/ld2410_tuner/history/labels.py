@@ -52,41 +52,78 @@ def label_history_range(
     runtime, device_id: str, start: float, end: float, state: str
 ) -> dict[str, Any]:
     """Apply a retrospective manual label to historical samples in a time range."""
-    if state not in {"present", "not_present", "unknown"}:
-        raise ValueError("Invalid training state")
-    if not math.isfinite(start) or not math.isfinite(end) or end <= start:
-        raise ValueError("End time must be after start time")
-    device = runtime.data.get("devices", {}).get(device_id)
-    if not device:
-        raise ValueError("Unknown device")
-    runtime._ensure_histograms(device)
-    device.setdefault("history_legacy_histograms", deepcopy(device["histograms"]))
-    # Close the active interval first; an explicit retrospective correction
-    # must win over a live label when these histograms are rebuilt.
-    now = time.time()
-    runtime._close_training_interval(device, now)
-    if device.get("training_state") in {"present", "not_present"}:
-        device["training_label_start"] = now
-    # Remove any previous retrospective labels from this exact range before
-    # reapplying the requested state. This makes corrections idempotent.
-    labels = device.setdefault("history_labels", [])
-    preserved = _preserved_labels(labels, start, end)
-    labels[:] = preserved
+    _validate_history_range(start, end, state)
+    device = _history_device(runtime, device_id)
+    _prepare_history_edit(runtime, device)
+    labels = _preserved_labels(device.get("history_labels", []), start, end)
     labels.append({"start": start, "end": end, "state": state, "source": "manual"})
-    # Rebuild manual histograms from all retained labelled history.
-    rebuilt = _rebuild_histograms(runtime, device)
-    device["histograms"] = rebuilt
-    device.pop("last_learning", None)
-    device["label_revision"] = device.get("label_revision", 0) + 1
-    runtime._compact_history_labels(device)
-    runtime._schedule_save()
+    _save_history_edit(runtime, device, labels)
     return {
         "ok": True,
         "labelled_samples": sum(
             1 for ts, _ in runtime._iter_history_samples(device) if start <= ts < end
         ),
-        "history_labels": labels,
+        "history_labels": device["history_labels"],
     }
+
+
+def edit_history_label(runtime, device_id, label_start, label_end, start, end, state, revision):
+    """Replace or remove one saved period, rejecting edits to a stale snapshot."""
+    _validate_history_range(start, end, "unknown" if state == "unlabelled" else state)
+    device = _history_device(runtime, device_id)
+    if device.get("label_revision", 0) != revision:
+        raise ValueError("History labels changed. Refresh and select the period again.")
+    original = next(
+        (
+            label
+            for label in device.get("history_labels", [])
+            if label["start"] == label_start and label["end"] == label_end
+        ),
+        None,
+    )
+    if original is None:
+        raise ValueError("This saved period no longer exists. Refresh and select it again.")
+    _prepare_history_edit(runtime, device)
+    # Remove the original boundaries before applying the replacement. Shrinking or
+    # moving a period must not silently leave its former label behind.
+    labels = _preserved_labels(device["history_labels"], label_start, label_end)
+    if state != "unlabelled":
+        labels = _preserved_labels(labels, start, end)
+        labels.append({"start": start, "end": end, "state": state, "source": "manual"})
+    _save_history_edit(runtime, device, labels)
+    return {"ok": True, "history_labels": device["history_labels"]}
+
+
+def _validate_history_range(start, end, state):
+    if state not in {"present", "not_present", "unknown"}:
+        raise ValueError("Invalid training state")
+    if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+        raise ValueError("End time must be after start time")
+
+
+def _history_device(runtime, device_id):
+    device = runtime.data.get("devices", {}).get(device_id)
+    if not device:
+        raise ValueError("Unknown device")
+    return device
+
+
+def _prepare_history_edit(runtime, device):
+    runtime._ensure_histograms(device)
+    device.setdefault("history_legacy_histograms", deepcopy(device["histograms"]))
+    now = time.time()
+    runtime._close_training_interval(device, now)
+    if device.get("training_state") in {"present", "not_present"}:
+        device["training_label_start"] = now
+
+
+def _save_history_edit(runtime, device, labels):
+    device["history_labels"] = labels
+    device["histograms"] = _rebuild_histograms(runtime, device)
+    device.pop("last_learning", None)
+    device["label_revision"] = device.get("label_revision", 0) + 1
+    runtime._compact_history_labels(device)
+    runtime._schedule_save()
 
 
 def _manual_history_state(device: dict[str, Any], timestamp: float) -> str | None:

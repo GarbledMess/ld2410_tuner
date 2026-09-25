@@ -39,35 +39,65 @@ export const panelSelection = {
     </div>`;
   },
 
-  _beginDrag(onMove, onUp) {
+  _beginDrag(event, onMove, onUp, onCancel) {
     this._endDrag?.();
     this._dragging = true;
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    const move = (next) => {
+      if (next.pointerId === pointerId) onMove(next);
+    };
     const end = () => {
-      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cancel);
       window.removeEventListener("blur", cancel);
+      target.removeEventListener("lostpointercapture", cancel);
+      if (target.hasPointerCapture(pointerId))
+        target.releasePointerCapture(pointerId);
       this._dragging = false;
       this._endDrag = null;
     };
-    const up = (event) => {
+    const up = (next) => {
+      if (next.pointerId !== pointerId) return;
       end();
-      onUp(event);
+      onUp(next);
     };
-    const cancel = () => {
+    const cancel = (next) => {
+      if (next?.pointerId != null && next.pointerId !== pointerId) return;
       end();
-      this._draw();
+      onCancel();
     };
-    this._endDrag = end;
-    window.addEventListener("pointermove", onMove);
+    this._endDrag = () => cancel();
+    window.addEventListener("pointermove", move, { passive: false });
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", cancel);
     window.addEventListener("blur", cancel);
+    target.addEventListener("lostpointercapture", cancel);
+    if (event.isTrusted) target.setPointerCapture(pointerId);
+  },
+
+  _selectionPointerAllowed(event) {
+    return event.isPrimary !== false && event.button === 0 && !this._dragging;
   },
 
   _wireChartSelection(id, container, d, cs) {
     const svg = container.querySelector("svg");
     if (!svg) return;
+    // Keep handle targets finger-sized even when the SVG is scaled on a phone.
+    const width = svg.getBoundingClientRect().width || CHART_W;
+    const handleWidth = Math.max(22, (44 * CHART_W) / width);
+    container.querySelectorAll(".handle-hit").forEach((hit) => {
+      const center =
+        Number(hit.getAttribute("x")) + Number(hit.getAttribute("width")) / 2;
+      hit.setAttribute("width", handleWidth);
+      hit.setAttribute("x", center - handleWidth / 2);
+    });
+    const restore = () => {
+      cs.selection = previous ? { ...previous } : null;
+      this._renderChartCanvas(id, true);
+    };
+    let previous;
     const data = cs.data;
     const span = Math.max(1, data.end - data.start);
     const xScale = (t) =>
@@ -82,10 +112,6 @@ export const panelSelection = {
         Math.min(CHART_W - CHART_MARGIN.right, (clientX - rect.left) * scale),
       );
     };
-    const clientXOf = (ev) => {
-      if (ev.touches) return ev.touches[0].clientX;
-      return ev.changedTouches ? ev.changedTouches[0].clientX : ev.clientX;
-    };
 
     const updateHandleVisual = (which) => {
       const x = xScale(cs.selection[which]);
@@ -99,7 +125,11 @@ export const panelSelection = {
           line.setAttribute("x2", x.toFixed(1));
         }
         if (circle) circle.setAttribute("cx", x.toFixed(1));
-        if (hit) hit.setAttribute("x", (x - 11).toFixed(1));
+        if (hit)
+          hit.setAttribute(
+            "x",
+            (x - Number(hit.getAttribute("width")) / 2).toFixed(1),
+          );
       }
       const rect = container.querySelector('[data-role="selection-rect"]');
       if (rect) {
@@ -123,12 +153,13 @@ export const panelSelection = {
       .forEach((g) => {
         const which = g.dataset.role === "handle-start" ? "start" : "end";
         g.onpointerdown = (ev) => {
+          if (!this._selectionPointerAllowed(ev)) return;
+          previous = cs.selection ? { ...cs.selection } : null;
           ev.preventDefault();
           ev.stopPropagation();
-          this._dragging = true;
           const onMove = (e2) => {
             e2.preventDefault();
-            let t = xToTime(pxFromClientX(clientXOf(e2)));
+            let t = xToTime(pxFromClientX(e2.clientX));
             if (which === "start") t = Math.min(t, cs.selection.end - 1);
             else t = Math.max(t, cs.selection.start + 1);
             cs.selection[which] = t;
@@ -136,11 +167,9 @@ export const panelSelection = {
             syncPanelFields();
           };
           const onUp = () => {
-            window.removeEventListener("pointermove", onMove);
-            this._dragging = false;
             this._renderChartCanvas(id);
           };
-          this._beginDrag(onMove, onUp);
+          this._beginDrag(ev, onMove, onUp, restore);
         };
       });
 
@@ -151,9 +180,10 @@ export const panelSelection = {
     const hit = container.querySelector('[data-role="selection-hit"]');
     if (hit) {
       hit.onpointerdown = (ev) => {
+        if (!this._selectionPointerAllowed(ev)) return;
+        previous = cs.selection ? { ...cs.selection } : null;
         ev.preventDefault();
-        this._dragging = true;
-        const startX = pxFromClientX(clientXOf(ev));
+        const startX = pxFromClientX(ev.clientX);
         const selRect = container.querySelector('[data-role="selection-rect"]');
         const showTemp = (x0, x1) => {
           if (!selRect) return;
@@ -164,23 +194,21 @@ export const panelSelection = {
         showTemp(startX, startX);
         const onMove = (e2) => {
           e2.preventDefault();
-          showTemp(startX, pxFromClientX(clientXOf(e2)));
+          showTemp(startX, pxFromClientX(e2.clientX));
         };
         const onUp = (e2) => {
-          window.removeEventListener("pointermove", onMove);
-          this._dragging = false;
-          const x = pxFromClientX(clientXOf(e2));
+          const x = pxFromClientX(e2.clientX);
           const x0 = Math.min(startX, x),
             x1 = Math.max(startX, x);
           if (x1 - x0 < 4) {
-            if (selRect) selRect.style.display = "none";
+            restore();
             return;
           }
           cs.selection = { start: xToTime(x0), end: xToTime(x1) };
           cs.panelOpen = false;
           this._renderChartCanvas(id);
         };
-        this._beginDrag(onMove, onUp);
+        this._beginDrag(ev, onMove, onUp, restore);
       };
     }
 
@@ -246,7 +274,6 @@ export const panelSelection = {
             cs.selection = null;
             cs.panelOpen = false;
             cs.data = null;
-            cs.cache?.clear();
             cs.cache?.clear();
           } catch (err) {
             alert(`Unable to label history: ${err?.message || err}`);

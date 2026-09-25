@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs/promises");
 const os = require("node:os");
+const testTouchSelection = require("./browser/touch.cjs");
+const testHistoryEditor = require("./browser/history.cjs");
 const { execFileSync } = require("node:child_process");
 (async () => {
   const registration = JSON.parse(
@@ -20,6 +22,7 @@ const { execFileSync } = require("node:child_process");
   try {
     const page = await browser.newPage({
       viewport: { width: 1400, height: 1000 },
+      timezoneId: "Europe/London",
     });
     page.setDefaultTimeout(5000);
     const errors = [];
@@ -534,7 +537,15 @@ const { execFileSync } = require("node:child_process");
     await page.evaluate(() => window.dispatchEvent(new Event("pointercancel")));
     assert.equal(await page.evaluate(() => panel._dragging), false);
 
+    await testTouchSelection(page);
+    await testHistoryEditor(page);
     await page.setViewportSize({ width: 390, height: 844 });
+    await cards
+      .first()
+      .locator('.subsection[data-section="history"]')
+      .screenshot({
+        path: path.join(screenshotDir, "history-mobile.png"),
+      });
     await page.screenshot({
       path: path.join(screenshotDir, "mobile.png"),
       fullPage: true,
@@ -558,8 +569,9 @@ const { execFileSync } = require("node:child_process");
     await page.evaluate(() => document.body.append(panel));
     assert.equal(await page.evaluate(() => Boolean(panel._pollTimer)), true);
     assert.deepEqual(errors, []);
+    console.log("Screenshots:", screenshotDir);
     console.log(
-      "PASS: focused range changes, stable window endpoints, cached range switching, stable refresh geometry, retained graph on refresh/error, chart controls across polling, cards, races, drafts, selection, mobile layout, reconnect; no browser errors",
+      "PASS: real touch selection and resizing, canceled gestures, day navigation, saved-period editing/removal, stale saves, DST, focused range changes, stable window endpoints, cached range switching, stable refresh geometry, retained graph on refresh/error, chart controls across polling, cards, races, drafts, selection, mobile layout, reconnect; no browser errors",
     );
   } finally {
     await browser.close();

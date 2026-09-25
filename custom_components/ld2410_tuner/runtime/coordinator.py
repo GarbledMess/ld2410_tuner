@@ -64,6 +64,7 @@ class TunerRuntime:
     flush_history = recording.flush_history
     _iter_history_samples = recording._iter_history_samples
     label_history_range = manual_training.label_history_range
+    edit_history_label = manual_training.edit_history_label
     _manual_history_state = staticmethod(manual_training._manual_history_state)
     _history_label_at = staticmethod(manual_training._history_label_at)
     history_series_multi = charts.history_series_multi

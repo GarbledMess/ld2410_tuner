@@ -31,7 +31,12 @@ export const panelCards = {
     return [
       this._section(id, "training", "Training", this._trainingHtml(d)),
       this._section(id, "chart", "Gate visualization", this._chartHtml(id, d)),
-      this._section(id, "history", "Label past data", this._historyHtml(d)),
+      this._section(
+        id,
+        "history",
+        "Past presence labels",
+        this._historyHtml(id, d),
+      ),
       this._section(
         id,
         "auto",
@@ -59,29 +64,6 @@ export const panelCards = {
       ? `<span class="area">Expires ${this._timeLeft(d.training_expires_at)}</span>`
       : "";
     return `<div class="training"><label>Training state</label><select data-action="state"><option value="unknown" ${state === "unknown" ? "selected" : ""}>UNKNOWN</option><option value="present" ${state === "present" ? "selected" : ""}>PRESENT</option><option value="not_present" ${state === "not_present" ? "selected" : ""}>NOT PRESENT</option></select><label>Timeout</label><div class="duration"><input data-action="timeout-hours" type="number" min="0" step="1" inputmode="numeric" placeholder="Hours"><span>h</span><input data-action="timeout-minutes" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="Minutes"><span>m</span></div>${expiry}</div>`;
-  },
-
-  _historyHtml(d) {
-    return `<div class="muted">Choose a time range from the stored ${d.history?.retention_days || 30}-day history. This replaces any existing label in the selected range.</div><div class="history-fields"><label>From<input data-action="history-start" type="datetime-local"></label><label>To<input data-action="history-end" type="datetime-local"></label><label>Label<select data-action="history-state"><option value="present">PRESENT</option><option value="not_present">NOT PRESENT</option><option value="unknown">UNKNOWN / exclude</option></select></label></div><button data-action="history-apply" class="primary">Label time range</button>${this._historyLabelsHtml(d.history?.labels || [])}`;
-  },
-
-  _historyLabelsHtml(labels) {
-    if (!labels.length) return "";
-    const rows = labels
-      .slice()
-      .sort((a, b) => a.start - b.start)
-      .map((label) => this._historyLabelHtml(label))
-      .join("");
-    return `<div class="label-list">${rows}</div>`;
-  },
-
-  _historyLabelHtml(label) {
-    const start = this._esc(
-      new Date(Number(label.start) * 1000).toLocaleString(),
-    );
-    const end = this._esc(new Date(Number(label.end) * 1000).toLocaleString());
-    const state = this._esc(label.state.replace("_", " ").toUpperCase());
-    return `<div>${start} → ${end}: <b>${state}</b></div>`;
   },
 
   _autoInfo(auto) {

@@ -45,6 +45,22 @@ def _websocket_routes():
             False,
         ),
         (
+            "edit_history_label",
+            {
+                **device,
+                vol.Required("label_start"): vol.Coerce(float),
+                vol.Required("label_end"): vol.Coerce(float),
+                vol.Required("start"): vol.Coerce(float),
+                vol.Required("end"): vol.Coerce(float),
+                vol.Required("state"): vol.In(["present", "not_present", "unknown", "unlabelled"]),
+                vol.Required("revision"): vol.Coerce(int),
+            },
+            "edit_history_label",
+            ("device_id", "label_start", "label_end", "start", "end", "state", "revision"),
+            "invalid_history_range",
+            False,
+        ),
+        (
             "auto_feedback",
             {**device, vol.Required("correct"): bool},
             "record_auto_feedback",
