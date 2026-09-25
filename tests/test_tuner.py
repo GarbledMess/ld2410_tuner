@@ -79,17 +79,19 @@ class LearningTests(unittest.TestCase):
         ]
         result = fit(rows, keys)
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["training"]["false_negatives"], 1)
+        self.assertEqual(result["training"]["false_negatives"], 0)
+        self.assertEqual(result["outlier_filter"]["human"]["excluded"]["present"], 1)
+        self.assertEqual(result["raw_audit"]["false_negatives"], 1)
         self.assertEqual(result["training"]["false_positives"], 0)
         self.assertGreaterEqual(result["training"]["sensitivity"], 0.999)
         self.assertEqual(result["training"]["missed_presence_episodes"], 0)
-        self.assertEqual(result["training"]["longest_missed_run_samples"], 1)
+        self.assertEqual(result["training"]["longest_missed_run_samples"], 0)
         self.assertEqual(result["recent_training"]["false_negatives"], 0)
 
     def test_recent_presence_target_is_part_of_search(self):
         keys = ["g1_move", "g3_still"]
         rows = [
-            (i * 6, {keys[0]: 7, keys[1]: 4 if i == 2800 else 40}, "present") for i in range(2868)
+            (i * 6, {keys[0]: 7, keys[1]: 4 if i == 2867 else 40}, "present") for i in range(2868)
         ]
         rows += [(30000 + i * 6, {keys[0]: 9, keys[1]: 4}, "not_present") for i in range(5000)]
         result = fit(rows, keys)
@@ -99,7 +101,11 @@ class LearningTests(unittest.TestCase):
     def test_small_miss_budget_does_not_allow_consecutive_misses(self):
         keys = ["g1_move", "g3_still"]
         rows = [
-            (i * 6, {keys[0]: 7, keys[1]: 4 if i in (100, 101) else 40}, "present")
+            (
+                i * 6 + (60 if i >= 100 else 0),
+                {keys[0]: 7, keys[1]: 4 if i in (100, 101) else 40},
+                "present",
+            )
             for i in range(5000)
         ]
         rows += [(40000 + i * 6, {keys[0]: 9, keys[1]: 4}, "not_present") for i in range(5000)]
@@ -167,7 +173,7 @@ class LearningTests(unittest.TestCase):
         keys = list(constants.HISTORY_KEYS)
         result = fit(row_samples(dict.fromkeys(keys, 20), dict.fromkeys(keys, 10)), keys)
         self.assertEqual(result["status"], "ok")
-        self.assertTrue(all(p["threshold"] == 12 for p in result["proposals"].values()))
+        self.assertTrue(all(p["threshold"] == 15 for p in result["proposals"].values()))
 
     def test_many_guesses_cannot_overrule_a_few_human_labels(self):
         rows = [(0, {"g0_still": 14}, "present"), (6, {"g0_still": 10}, "not_present")]
@@ -869,7 +875,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.states[entity_id] = types.SimpleNamespace(state=str(limit))
         entities, current = self.runtime._threshold_configuration("a")
         self.device["last_learning"] = {
-            "method": "human_priority_v4",
+            "method": "human_priority_v6",
             "status": "ok",
             "entities": entities,
             "configuration": current,

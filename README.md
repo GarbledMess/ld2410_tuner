@@ -135,43 +135,64 @@ invented confidence retroactively. Human corrections and explicit UNKNOWN ranges
 always override the stored guesses. Feedback buttons adjust the estimator's bias;
 use the chart/training labels to supply authoritative occupancy examples.
 
-The threshold search starts each observed gate near its background level, rather
-than disabling every gate at 100. It compares improvements across all gates, keeping
-useful overlapping coverage. A threshold of 100 is still possible when the observed
-background warrants suppression, but is no longer the default for redundant gates.
+Before fitting, a detector identifies rare low-energy clusters separated from the
+normal presence distribution. A candidate cluster must overlap recorded noise and
+be separated by at least three times its own interquartile spread (one energy unit
+for a flat cluster). Exclusion additionally requires a brief dip of at most six
+samples, two surrounding observations on each side, continuous timestamps, and no
+independent above-noise presence support from another informative gate. It never
+removes a complete presence episode, sustained quiet presence, or empty-room spikes.
+The 1% upper bound limits exclusions; it does not trim a fixed percentage of data.
 
-The search first satisfies the existing human-labelled presence, missed-episode,
-consecutive-miss, false-positive and burst-rate limits, across both the full and
-recent observations. It then minimizes missed presence and false positives within
-those limits. It no longer demands a perfect sample score at the cost of making a
-gate nearly always on: an isolated miss within the 99.9% target can be preferable
-to thousands of false positives. Entire missed episodes and consecutive misses
-remain unacceptable. Human targets and refinements always outrank inferred evidence.
+The same retained observations feed fitting, sample counts, accuracy, episode/run
+checks, feasibility diagnostics and Apply eligibility. Human and automatic outlier
+counts are shown separately. Original recordings and labels remain unchanged; raw
+measurements are available separately in the exported `raw_audit` result and do not
+participate in acceptance. The detector does not use candidate thresholds or errors
+to decide what to exclude.
 
-If the background starting point fails, the search also tries thresholds bounded
-by the per-gate false-positive limits and a quiet starting point. This lets several
-cleaner gates replace a noisy detector. A bounded pair search can raise a noisy gate
-and lower a supporting gate together, escaping single-gate search traps.
-Confidence-weighted inferred observations then refine otherwise tied human results.
-The weight cap limits their influence; it never rejects a recommendation based on
-the proportion of automatic data. Human corrections and explicit UNKNOWN exclusions
-continue to win over any stored estimate for the same period.
+The search first satisfies human-labelled presence, missed-episode, consecutive-miss,
+false-positive and burst-rate limits on the retained full and recent observations.
+It then minimizes missed presence and device-wide false positives within those
+limits. Each gate's own false-trigger count is also ranked, so another noisy gate
+cannot hide an unnecessarily sensitive setting.
+
+When both human-labelled classes establish separation, the preferred threshold
+is halfway between the highest
+recorded empty-room energy and the lower quartile of retained presence energies.
+Human-supported separation takes priority over automatic preferences; actual
+retained human detections take priority over that preferred margin. There is no
+fixed minimum threshold. Useful overlapping gates remain enabled; suppression at
+100 is still possible when a gate's observed background requires it.
+
+The search also tries per-gate false-positive bounds and a quiet starting point
+when there are target failures or, with both human classes available, remaining
+false triggers. A bounded pair search
+can raise a noisy gate and lower a supporting gate together. Confidence-weighted
+inferred observations refine the result after human performance and separation.
+Without examples of both human-labelled states, the existing background-anchored
+search is retained; automatic estimates alone do not enable the extra per-gate
+penalty or margin preference.
+Their proportion never rejects a recommendation; human labels and explicit UNKNOWN
+ranges override stored estimates for the same period.
 
 When enough human-labelled observations exist, the latest 20% of each class is used
 for an earlier-data backtest. That evaluation excludes newer inferred observations
-to avoid leaking holdout labels through the estimator. The final recommendation is
-then refit using **all** eligible observations, including newer estimates. Its
+to avoid leaking holdout labels through the estimator. The outlier detector is also
+trained on the earlier subset and frozen for the holdout; holdout exclusion counts
+are reported separately. The final recommendation is
+then refit using **all retained** eligible observations, including newer estimates. Its
 training results and the earlier-data backtest are reported separately. A failed
 backtest does not veto a final candidate that learned the newly observed pattern.
 
-The final candidate is checked against available human labels, both overall and in
-the recent labelled slice, targeting:
+The final candidate is checked against retained human-labelled observations, both
+overall and in the recent labelled slice, targeting:
 
 - At least **99.9% presence recall**.
 - No completely missed presence episodes and no run longer than one missed sample.
 - At most 0.5% false-positive samples and one false-trigger burst per observed hour.
 
-Actual human-label conflicts still block Apply and report the measured reasons.
+Conflicts in the retained human-labelled observations still block Apply and report the measured reasons.
 Automatic-only recommendations can be applied, are explicitly described as estimates,
 and do not claim human-validated accuracy. Degenerate candidates that miss every
 estimated presence observation or trigger on every estimated empty-room observation

@@ -7,7 +7,8 @@ export const panelView = {
       <style>
         :host { display:block; padding:12px; box-sizing:border-box; color:var(--primary-text-color); }
         .wrap { max-width:1500px; margin:auto; }
-        h1 { font-size:26px; margin:4px 0 6px; }
+        h1 { font-size:26px; margin:4px 0 6px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+        .panel-version { font-size:12px; font-weight:400; color:var(--secondary-text-color); border:1px solid var(--divider-color); border-radius:6px; padding:3px 6px; }
         .subtitle { color:var(--secondary-text-color); font-size:14px; margin-bottom:14px; }
         .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(500px,1fr)); gap:14px; }
         .card { min-width:0; align-self:start; background:var(--ha-card-background,var(--card-background-color,#fff)); border-radius:12px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 2px 8px rgba(0,0,0,.12)); }
@@ -167,7 +168,7 @@ export const panelView = {
       </style>
       <div class="wrap">
         <div id="error" role="alert" class="notice warn" hidden></div>
-        <h1>LD2410 Tuner</h1>
+        <h1>LD2410 Tuner <span class="panel-version" aria-label="Loaded panel version" title="Version requested when this panel loaded. Reload the page after updating.">${this._frontendVersion ? `v${this._esc(this._frontendVersion)}` : "Version unavailable"}</span></h1>
         <div class="subtitle">Automatic estimates learn from signal patterns over time and carry confidence scores. Add empty-room, moving and quiet-sitting examples to improve them. Learn prioritizes reliable presence across sessions; human labels always take priority over lower-confidence estimates. Inferred data proportions do not block Apply.</div>
         <div class="grid" id="grid"></div>
       </div>`;

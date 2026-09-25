@@ -1,4 +1,4 @@
-"""Fit threshold proposals and report unchanged human-priority validation."""
+"""Fit and validate thresholds against one consistently filtered evidence set."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from .constants import MIN_AUTO_CONFIDENCE as MIN_AUTO_CONFIDENCE
 from .constants import MIN_CLASS_SAMPLES as MIN_CLASS_SAMPLES
 from .constants import MIN_RECALL as MIN_RECALL
 from .constants import SAMPLE_SECONDS as SAMPLE_SECONDS
+from .feasibility import assess_feasibility, exclusive_presence
 from .metrics import _episode_masks as _episode_masks
 from .metrics import _human_ranker as _human_ranker
 from .metrics import _masks as _masks
@@ -22,7 +23,9 @@ from .metrics import _temporal_metrics as _temporal_metrics
 from .metrics import _weight as _weight
 from .metrics import _weighted_masks as _weighted_masks
 from .metrics import metrics as metrics
+from .reliability import filter_groups, prepare_evidence
 from .search import _search
+from .separation import gate_preference
 
 
 def _human_failures(measured):
@@ -53,10 +56,10 @@ def _human_failures(measured):
 
 
 def fit_thresholds(rows, keys, current=None, automatic=()):
-    """Fit all usable evidence; human observations take absolute priority.
+    """Fit all usable evidence; supported human observations take priority.
 
     Source proportions never block Apply. A chronological human backtest is
-    reported separately, then the final recommendation is refit with ALL data.
+    reported separately, then the final recommendation is refit with all retained data.
     Its measurements are training evidence, not held-out accuracy guarantees.
     """
     keys = list(dict.fromkeys(keys))
@@ -73,6 +76,10 @@ def fit_thresholds(rows, keys, current=None, automatic=()):
         }
 
     groups, counts, auto_groups, auto_counts = _group_observations(rows, automatic, clean, groups)
+    raw_groups, raw_auto, raw_counts = groups, auto_groups, counts
+    groups, auto_groups, exclusions, _ = prepare_evidence(groups, auto_groups, keys)
+    counts = {label: len(group) for label, group in groups.items()}
+    auto_counts = {label: len(group) for label, group in auto_groups.items()}
     evidence = {
         "samples": auto_counts,
         "deferred_samples": 0,
@@ -91,6 +98,7 @@ def fit_thresholds(rows, keys, current=None, automatic=()):
             "proposals": {},
             "counts": counts,
             "automatic_evidence": evidence,
+            "outlier_filter": exclusions,
             "method": METHOD,
             "warnings": [
                 f"Need {MIN_CLASS_SAMPLES} usable observations of each state, from human labels or confident estimates. Human: {counts}; automatic: {auto_counts}."
@@ -99,13 +107,18 @@ def fit_thresholds(rows, keys, current=None, automatic=()):
 
     # Backtest only earlier observations. Later estimates may have seen the
     # human holdout, so they must not enter this evaluation's fitting step.
-    held_out, validation = _backtest(counts, groups, auto_groups, keys, current)
-
+    held_out, validation, validation_exclusions = _backtest(
+        raw_counts, raw_groups, raw_auto, keys, current
+    )
     thresholds, mass = _search(groups["present"], groups["not_present"], auto_groups, keys, current)
     evidence["effective_weight"] = mass
     all_rows = groups["present"] + groups["not_present"]
     training = metrics(all_rows, thresholds)
-    recent = metrics(validation, thresholds) if held_out else None
+    recent = (
+        metrics(_recent_rows(groups), thresholds)
+        if min(counts.values()) >= MIN_CLASS_SAMPLES
+        else None
+    )
     estimated = metrics([row[:3] for group in auto_groups.values() for row in group], thresholds)
     failures = _candidate_failures(training, recent, counts, estimated)
     status = "unsafe" if failures else "ok"
@@ -116,6 +129,9 @@ def fit_thresholds(rows, keys, current=None, automatic=()):
     )
     result = {
         "method": METHOD,
+        "outlier_filter": exclusions,
+        "raw_audit": metrics(raw_groups["present"] + raw_groups["not_present"], thresholds),
+        "feasibility": assess_feasibility(groups["present"], groups["not_present"], keys),
         "status": status,
         "evidence_basis": basis,
         "proposals": proposals,
@@ -123,6 +139,7 @@ def fit_thresholds(rows, keys, current=None, automatic=()):
         "training": training,
         "validation": held_out,
         "validation_scope": "earlier_data_backtest",
+        "validation_outliers": validation_exclusions,
         "recent_training": recent,
         "estimated_training": estimated,
         "counts": counts,
@@ -163,31 +180,36 @@ def _group_observations(rows, automatic, clean, groups):
     return groups, counts, auto_groups, auto_counts
 
 
+def _recent_rows(groups):
+    return [row for group in groups.values() for row in group[int(len(group) * 0.8) :]]
+
+
 def _backtest(counts, groups, auto_groups, keys, current):
-    validation = []
-    held_out = None
-    if min(counts.values()) >= MIN_CLASS_SAMPLES:
-        training_groups = {label: group[: int(len(group) * 0.8)] for label, group in groups.items()}
-        validation = [
-            row for label, group in groups.items() for row in group[len(training_groups[label]) :]
-        ]
-        cutoff = min(row[0] for row in validation)
-        earlier_auto = {
-            label: [row for row in group if row[0] < cutoff] for label, group in auto_groups.items()
-        }
-        backtest, _ = _search(
-            training_groups["present"], training_groups["not_present"], earlier_auto, keys, current
-        )
-        held_out = metrics(validation, backtest)
-    return held_out, validation
+    if min(counts.values()) < MIN_CLASS_SAMPLES:
+        return None, [], None
+    earlier = {label: group[: int(len(group) * 0.8)] for label, group in groups.items()}
+    later = {label: group[len(earlier[label]) :] for label, group in groups.items()}
+    cutoff = min(row[0] for group in later.values() for row in group)
+    earlier_auto = {
+        label: [row for row in group if row[0] < cutoff] for label, group in auto_groups.items()
+    }
+    training, inferred, _, models = prepare_evidence(earlier, earlier_auto, keys)
+    # Freeze the detector learned from training: holdout values cannot choose
+    # outlier cutoffs or alter the fitted threshold configuration.
+    retained, excluded = filter_groups(later, models["human"])
+    validation = retained["present"] + retained["not_present"]
+    backtest, _ = _search(training["present"], training["not_present"], inferred, keys, current)
+    return metrics(validation, backtest), validation, excluded
 
 
 def _build_proposals(thresholds, all_rows, groups, auto_groups, status, failures, basis, evidence):
     proposals = {}
+    exclusive = exclusive_presence(groups["present"], thresholds)
     for key, threshold in thresholds.items():
         proposals[key] = _gate_proposal(
             key, threshold, all_rows, groups, auto_groups, status, failures, basis, evidence
         )
+        proposals[key].update(exclusive[key])
     return proposals
 
 
@@ -199,7 +221,7 @@ def _learning_warnings(failures, basis, held_out):
         )
     if held_out and _human_failures(held_out):
         warnings.append(
-            "Earlier-data backtest missed its targets; the final recommendation was refit using all observations. Test it in new sessions."
+            "Earlier-data backtest missed its targets; the final recommendation was refit using all retained observations. Test it in new sessions."
         )
     warnings.append(
         "These are observed training results, not proof of field accuracy. Automatic confidence is heuristic; verify quiet presence and empty-room behaviour."
@@ -259,7 +281,8 @@ def _gate_proposal(
         "noise_ceiling": max(noise) if noise else None,
         "noise_floor_p99": noise[int((len(noise) - 1) * 0.99)] if noise else None,
         "noise_source": "manual" if manual_noise else "automatic",
-        "safety_margin": 2,
+        "safety_margin": threshold - max(noise) if noise else None,
+        "separation": gate_preference(key, groups, auto_groups, threshold),
         "auto_used": evidence["used"],
         "role": _gate_role(observed, threshold),
     }

@@ -2,9 +2,10 @@ import { CHART_RANGES, GATE_COLORS } from "./constants.js";
 
 export const panelChart = {
   _defaultKindAndGate(d) {
-    const top = d.auto_learning?.last?.top_gates?.[0]?.key;
-    const m = top ? /^g(\d)_(move|still)$/.exec(top) : null;
-    return m ? { gate: Number(m[1]), kind: m[2] } : { gate: 0, kind: "move" };
+    const top = d.auto_learning?.last?.top_gates?.find((gate) =>
+      /^g[0-8]_still$/.test(gate.key),
+    );
+    return { gate: top ? Number(top.key[1]) : 0, kind: "still" };
   },
 
   _chartHtml(id, d) {
@@ -13,7 +14,7 @@ export const panelChart = {
       cs = { ...this._defaultKindAndGate(d), hours: 6 };
       this._chartState.set(id, cs);
     }
-    const kindOptions = ["move", "still"]
+    const kindOptions = ["still", "move"]
       .map(
         (k) =>
           `<option value="${k}" ${k === cs.kind ? "selected" : ""}>${k === "move" ? "Movement" : "Still"}</option>`,
@@ -198,6 +199,8 @@ export const panelChart = {
       cs.panelOpen,
       d.current_thresholds?.[activeKey],
       d.last_learning?.proposals,
+      d.last_learning?.feasibility,
+      d.last_learning?.outlier_filter,
     ]);
     if (
       !force &&
@@ -247,7 +250,7 @@ export const panelChart = {
       .slice(0, 3)
       .map(([key, proposal]) => {
         const [, gate, kind] = /^g([0-8])_(move|still)$/.exec(key);
-        return `Gate ${gate} ${kind === "move" ? "Movement" : "Still"} at ${Math.round(proposal.threshold)}: ${proposal.false_positives} / ${proposal.not_present_samples} empty-room samples`;
+        return `Gate ${gate} ${kind === "move" ? "Movement" : "Still"} at ${Math.round(proposal.threshold)}: ${proposal.false_positives} / ${proposal.not_present_samples} empty-room samples.${this._presenceDependencyText(proposal)}`;
       });
     return sources.length
       ? `<div class="false-positive-sources">Largest per-gate false-positive counts: ${this._esc(sources.join("; "))}. Gates can trigger on the same samples; these counts must not be added.</div>`
@@ -262,13 +265,16 @@ export const panelChart = {
     if (proposal.status === "provisional")
       return `<div class="learn-status warn">${this._esc(label)}: saved threshold ${Math.round(proposal.threshold)} was produced by the previous learner. Learn again with the current model before Apply.</div>`;
     if (proposal.status === "ok")
-      return this._acceptedStatusHtml(proposal, label, noiseNote);
+      return (
+        this._acceptedStatusHtml(proposal, label, noiseNote) +
+        this._outlierFilterHtml(learning)
+      );
     if (proposal.status === "unsafe") {
       const gateResult =
         proposal.not_present_samples > 0 && proposal.false_positives != null
           ? ` This gate alone triggers on ${proposal.false_positives} / ${proposal.not_present_samples} human-labelled empty-room samples.`
           : " No human-labelled empty-room measurement is available for this gate.";
-      return `<div class="learn-status warn"><div>${this._esc(label)}: candidate threshold ${Math.round(proposal.threshold)}.${this._esc(gateResult)}${noiseNote}</div><div><b>Combined device recommendation unsafe</b> — ${this._esc(proposal.message || "The combined thresholds did not meet the learning targets")}. These failure counts cover all enabled gates, not just this gate.</div>${this._falsePositiveSourcesHtml(learning)}<div>Candidate shown as a red dashed line; the combined recommendation has not been applied.</div></div>`;
+      return `<div class="learn-status warn"><div>${this._esc(label)}: candidate threshold ${Math.round(proposal.threshold)}.${this._esc(gateResult)}${noiseNote}${this._esc(this._presenceDependencyText(proposal))}</div><div><b>Combined device recommendation unsafe</b> — ${this._esc(proposal.message || "The combined thresholds did not meet the learning targets")}. These failure counts cover all enabled gates, not just this gate.</div>${this._outlierFilterHtml(learning)}${this._feasibilityHtml(learning)}${this._falsePositiveSourcesHtml(learning)}<div>Candidate shown as a red dashed line; the combined recommendation has not been applied.</div></div>`;
     }
     return `<div class="learn-status warn">${this._esc(label)}: not enough data yet — ${this._esc(proposal.message || "need more present and not-present samples")}.</div>`;
   },
@@ -300,7 +306,11 @@ export const panelChart = {
     if (proposal.noise_ceiling == null) return "";
     const source =
       proposal.noise_source === "automatic" ? "estimated" : "labelled";
-    return ` Highest ${source} NOT PRESENT sample seen: ${Math.round(proposal.noise_ceiling)} (99th percentile: ${Math.round(proposal.noise_floor_p99)}).`;
+    const separation = proposal.separation;
+    const margin = separation?.separated
+      ? ` Retained presence reference (lower quartile): ${Math.round(separation.presence_reference)}; preferred threshold between noise and presence: ${Math.round(separation.preferred_threshold)}.`
+      : "";
+    return ` Highest ${source} NOT PRESENT sample seen: ${Math.round(proposal.noise_ceiling)} (99th percentile: ${Math.round(proposal.noise_floor_p99)}).${margin}`;
   },
 
   _acceptedStatusHtml(proposal, label, noiseNote) {

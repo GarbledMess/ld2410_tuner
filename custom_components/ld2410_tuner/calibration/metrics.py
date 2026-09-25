@@ -146,6 +146,7 @@ def _weight(mask, groups):
 def _human_ranker(positives, negatives):
     """Rank target violations before refinements, for full and recent evidence.
 
+    Search and public validation receive the same prefiltered observations.
     Bit links describe actual consecutive observations, not adjacent rows across
     gaps/label changes. A budgeted isolated miss is never a licence to lose an
     entire presence episode or a run of quiet presence.

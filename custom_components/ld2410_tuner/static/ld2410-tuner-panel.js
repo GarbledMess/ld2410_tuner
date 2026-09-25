@@ -18,6 +18,8 @@ import { panelView } from "./panel/view.js";
 class LD2410TunerPanel extends HTMLElement {
   constructor() {
     super();
+    // Capture the version of this loaded entrypoint; polling must not relabel an old tab.
+    this._frontendVersion = new URL(import.meta.url).searchParams.get("v");
     // Which device cards are collapsed, keyed by device id. Kept on the
     // instance (not recomputed in _draw) so a collapse/expand survives the
     // periodic redraw instead of springing back open every poll.

@@ -82,7 +82,7 @@ const { execFileSync } = require("node:child_process");
               sample_counts: { g0_move: { present: 100, not_present: 100 } },
               current_thresholds: { g0_move: 20 },
               last_learning: {
-                method: "human_priority_v4",
+                method: "human_priority_v6",
                 status: "ok",
                 automatic_evidence: {
                   samples: { present: 10, not_present: 20 },
@@ -173,6 +173,18 @@ const { execFileSync } = require("node:child_process");
     assert.match(await cards.first().locator(".name").innerText(), /73%/);
     await cards.first().locator('[data-action="toggle"]').click();
     await cards.first().locator("svg").waitFor();
+    assert.equal(
+      await cards.first().locator('[data-action="chart-kind"]').inputValue(),
+      "still",
+    );
+    // The diagnostics below use movement fixtures; select that view explicitly.
+    await cards
+      .first()
+      .locator('[data-action="chart-kind"]')
+      .selectOption("move");
+    await page.waitForFunction(
+      () => panel._chartState.get("a").loadedKind === "move",
+    );
     for (let i = 0; i < 3; i++) {
       await cards.first().locator('[data-action="toggle"]').click();
       await cards.first().locator('[data-action="toggle"]').click();
@@ -186,6 +198,13 @@ const { execFileSync } = require("node:child_process");
     }
     await cards.nth(1).locator('[data-action="toggle"]').click();
     await cards.nth(1).locator("svg").waitFor();
+    await cards
+      .nth(1)
+      .locator('[data-action="chart-kind"]')
+      .selectOption("move");
+    await page.waitForFunction(
+      () => panel._chartState.get("b").loadedKind === "move",
+    );
     assert.equal(await cards.count(), 3);
     await cards
       .first()
@@ -282,6 +301,32 @@ const { execFileSync } = require("node:child_process");
         false_positives: 4317,
         not_present_samples: 5000,
       };
+      learning.proposals.g2_still.exclusive_presence_samples = 4;
+      learning.proposals.g2_still.weakest_exclusive_presence_energy = 5;
+      learning.outlier_filter = {
+        human: {
+          excluded: { present: 7, not_present: 0 },
+          periods: [{ start: 1700000000, end: 1700000030, samples: 5 }],
+          period_count: 2,
+        },
+        automatic: { excluded: { present: 2, not_present: 0 } },
+      };
+      learning.feasibility = {
+        status: "conflict",
+        windows: [
+          {
+            scope: "all_human",
+            conflict: true,
+            minimum_false_samples_for_recall: 62,
+            not_present_samples: 5000,
+            allowed_false_samples: 25,
+            allowed_missed_samples: 2,
+            unavoidable_missed_samples: 4,
+            unavoidable_longest_missed_run: 3,
+            periods: [{ start: 1000, end: 1018, samples: 3 }],
+          },
+        ],
+      };
       return panel._load();
     });
     let diagnostic = await cards.first().locator(".learn-status").innerText();
@@ -289,10 +334,43 @@ const { execFileSync } = require("node:child_process");
     assert.match(diagnostic, /Combined device recommendation unsafe.*4317/s);
     assert.match(diagnostic, /Gate 2 Still at 3: 4317 \/ 5000/);
     assert.match(diagnostic, /counts must not be added/);
+    assert.match(
+      diagnostic,
+      /the retained observations cannot meet both targets with any gate-threshold combination/,
+    );
+    assert.match(
+      diagnostic,
+      /at least 62 \/ 5000 false-trigger samples; the limit is 25/,
+    );
+    assert.match(
+      diagnostic,
+      /4 labelled presence samples depend on this gate alone; weakest energy 5/,
+    );
+    assert.match(diagnostic, /Recorded conflicts around/);
+    assert.match(
+      diagnostic,
+      /Excluded outliers: 7 human-labelled \/ 2 estimated presence samples/,
+    );
+    assert.match(
+      diagnostic,
+      /same retained observations determine thresholds, accuracy, episodes, feasibility and Apply eligibility/,
+    );
     assert.doesNotMatch(diagnostic, /Correct labels/);
     assert.equal(
       await cards.first().locator('[data-action="apply"]').isDisabled(),
       true,
+    );
+    // Updated conflict periods must also invalidate an otherwise identical chart.
+    await page.evaluate(() => {
+      fixture.devices.a.last_learning.feasibility.windows[0].minimum_false_samples_for_recall = 63;
+      return panel._load();
+    });
+    assert.match(
+      await cards
+        .first()
+        .locator(".chart-canvas .evidence-conflict")
+        .innerText(),
+      /at least 63/,
     );
     // Changes to another gate must invalidate the chart's cached diagnostic.
     await page.evaluate(() => {
@@ -302,6 +380,41 @@ const { execFileSync } = require("node:child_process");
     assert.match(
       await cards.first().locator(".learn-status").innerText(),
       /Gate 2 Still at 3: 4000 \/ 5000/,
+    );
+    // Exclusions remain visible on accepted candidates and update without new chart data.
+    await page.evaluate(() => {
+      const learning = fixture.devices.a.last_learning;
+      learning.status = "ok";
+      learning.feasibility.status = "not_ruled_out";
+      learning.proposals.g0_move.status = "ok";
+      learning.proposals.g0_move.threshold = 53;
+      learning.proposals.g0_move.noise_ceiling = 22;
+      learning.proposals.g0_move.separation = {
+        separated: true,
+        presence_reference: 84,
+        preferred_threshold: 53,
+      };
+      return panel._load();
+    });
+    assert.equal(
+      await cards.first().locator('[data-action="apply"]').isDisabled(),
+      false,
+    );
+    assert.match(
+      await cards.first().locator(".chart-canvas .outlier-filter").innerText(),
+      /Excluded outliers: 7/,
+    );
+    assert.match(
+      await cards.first().locator(".learn-status").innerText(),
+      /presence reference.*84.*preferred threshold.*53/s,
+    );
+    await page.evaluate(() => {
+      fixture.devices.a.last_learning.outlier_filter.human.excluded.present = 8;
+      return panel._load();
+    });
+    assert.match(
+      await cards.first().locator(".chart-canvas .outlier-filter").innerText(),
+      /Excluded outliers: 8/,
     );
     await page.evaluate(() => {
       fixture.devices.a.last_learning = window.savedLearning;
