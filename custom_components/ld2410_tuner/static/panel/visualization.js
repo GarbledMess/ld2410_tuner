@@ -90,7 +90,7 @@ export const panelVisualization = {
 
     const toolbarHtml = this._selectionToolbarHtml(cs);
 
-    return `${this._learnStatusHtml(learnedProposal, cs, d.last_learning)}<svg viewBox="0 0 ${CHART_W} ${CHART_H}" preserveAspectRatio="xMidYMid meet">
+    return `${this._learnStatusHtml(learnedProposal, cs)}<svg viewBox="0 0 ${CHART_W} ${CHART_H}" preserveAspectRatio="xMidYMid meet">
       <rect x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${CHART_PLOT_W}" height="${CHART_PLOT_H}" class="plot-bg"></rect>
       ${bands}
       ${yTicks}

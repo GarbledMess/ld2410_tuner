@@ -7,6 +7,8 @@ const os = require("node:os");
 const testTouchSelection = require("./browser/touch.cjs");
 const testHistoryEditor = require("./browser/history.cjs");
 const testApply = require("./browser/apply.cjs");
+const testActivity = require("./browser/activity.cjs");
+const testTimeline = require("./browser/timeline.cjs");
 const { execFileSync } = require("node:child_process");
 (async () => {
   const registration = JSON.parse(
@@ -243,10 +245,6 @@ const { execFileSync } = require("node:child_process");
       await cards.first().locator(".auto-details").innerText(),
       /73%/,
     );
-    await cards
-      .first()
-      .locator('[data-action="section-toggle"][data-section="details"]')
-      .click();
     assert.match(
       await cards
         .first()
@@ -333,27 +331,33 @@ const { execFileSync } = require("node:child_process");
     let diagnostic = await cards.first().locator(".learn-status").innerText();
     assert.match(diagnostic, /This gate alone triggers on 0 \/ 5000/);
     assert.match(diagnostic, /Combined device recommendation unsafe.*4317/s);
-    assert.match(diagnostic, /Gate 2 Still at 3: 4317 \/ 5000/);
-    assert.match(diagnostic, /counts must not be added/);
+    const results = cards
+      .first()
+      .locator('.subsection[data-section="details"]');
+    const report = await results.innerText();
+    assert.equal(await cards.first().locator(".evidence-conflict").count(), 1);
+    assert.equal(await cards.first().locator(".outlier-filter").count(), 1);
+    assert.match(report, /Gate 2 Still at 3: 4317 \/ 5000/);
+    assert.match(report, /counts must not be added/);
     assert.match(
-      diagnostic,
+      report,
       /the retained observations cannot meet both targets with any gate-threshold combination/,
     );
     assert.match(
-      diagnostic,
+      report,
       /at least 62 \/ 5000 false-trigger samples; the limit is 25/,
     );
     assert.match(
-      diagnostic,
+      report,
       /4 labelled presence samples depend on this gate alone; weakest energy 5/,
     );
-    assert.match(diagnostic, /Recorded conflicts around/);
+    assert.match(report, /Recorded conflicts around/);
     assert.match(
-      diagnostic,
+      report,
       /Excluded outliers: 7 human-labelled \/ 2 estimated presence samples/,
     );
     assert.match(
-      diagnostic,
+      report,
       /same retained observations determine thresholds, accuracy, episodes, feasibility and Apply eligibility/,
     );
     assert.doesNotMatch(diagnostic, /Correct labels/);
@@ -361,7 +365,7 @@ const { execFileSync } = require("node:child_process");
       await cards.first().locator('[data-action="apply"]').isDisabled(),
       true,
     );
-    // Updated conflict periods must also invalidate an otherwise identical chart.
+    // Updated conflict periods stay current even when chart data is unchanged.
     await page.evaluate(() => {
       fixture.devices.a.last_learning.feasibility.windows[0].minimum_false_samples_for_recall = 63;
       return panel._load();
@@ -369,20 +373,17 @@ const { execFileSync } = require("node:child_process");
     assert.match(
       await cards
         .first()
-        .locator(".chart-canvas .evidence-conflict")
+        .locator('.subsection[data-section="details"] .evidence-conflict')
         .innerText(),
       /at least 63/,
     );
-    // Changes to another gate must invalidate the chart's cached diagnostic.
+    // Device-wide sources update independently of the selected gate.
     await page.evaluate(() => {
       fixture.devices.a.last_learning.proposals.g2_still.false_positives = 4000;
       return panel._load();
     });
-    assert.match(
-      await cards.first().locator(".learn-status").innerText(),
-      /Gate 2 Still at 3: 4000 \/ 5000/,
-    );
-    // Exclusions remain visible on accepted candidates and update without new chart data.
+    assert.match(await results.innerText(), /Gate 2 Still at 3: 4000 \/ 5000/);
+    // The single recommendation report retains exclusions for accepted candidates.
     await page.evaluate(() => {
       const learning = fixture.devices.a.last_learning;
       learning.status = "ok";
@@ -402,7 +403,10 @@ const { execFileSync } = require("node:child_process");
       false,
     );
     assert.match(
-      await cards.first().locator(".chart-canvas .outlier-filter").innerText(),
+      await cards
+        .first()
+        .locator('.subsection[data-section="details"] .outlier-filter')
+        .innerText(),
       /Excluded outliers: 7/,
     );
     assert.match(
@@ -414,7 +418,10 @@ const { execFileSync } = require("node:child_process");
       return panel._load();
     });
     assert.match(
-      await cards.first().locator(".chart-canvas .outlier-filter").innerText(),
+      await cards
+        .first()
+        .locator('.subsection[data-section="details"] .outlier-filter')
+        .innerText(),
       /Excluded outliers: 8/,
     );
     await page.evaluate(() => {
@@ -652,8 +659,10 @@ const { execFileSync } = require("node:child_process");
     assert.equal(await page.evaluate(() => panel._dragging), false);
 
     await testApply(page);
+    await testActivity(page);
     await testTouchSelection(page);
     await testHistoryEditor(page);
+    await testTimeline(page);
     await page.setViewportSize({ width: 390, height: 844 });
     await cards
       .first()
@@ -686,7 +695,7 @@ const { execFileSync } = require("node:child_process");
     assert.deepEqual(errors, []);
     console.log("Screenshots:", screenshotDir);
     console.log(
-      "PASS: real touch selection and resizing, canceled gestures, day navigation, saved-period editing/removal, stale saves, DST, focused range changes, stable window endpoints, cached range switching, stable refresh geometry, retained graph on refresh/error, chart controls across polling, cards, races, drafts, selection, mobile layout, reconnect; no browser errors",
+      "PASS: action spinners, duplicate-action prevention, export failures/timeouts, initial/slow refresh progress, touch timeline selection/resizing, short periods, repeated-hour timestamps, real touch chart selection and resizing, canceled gestures, day navigation, saved-period editing/removal, stale saves, DST, focused range changes, stable window endpoints, cached range switching, stable refresh geometry, retained graph on refresh/error, chart controls across polling, cards, races, drafts, selection, mobile layout, reconnect; no browser errors",
     );
   } finally {
     await browser.close();

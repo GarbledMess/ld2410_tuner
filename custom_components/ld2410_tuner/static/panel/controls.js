@@ -6,6 +6,7 @@ export const panelControls = {
     this._wireActions(card, id);
     this._wireChartControls(card, id);
     this._restoreDraft(card, id);
+    this._wireHistoryRange(card, id);
   },
   _wireCollapse(card, id, d) {
     const toggleBody = () => {
@@ -72,7 +73,7 @@ export const panelControls = {
           state: current,
           timeout_seconds: 0,
         });
-      await this._load();
+      await this._load(true);
     };
     card.querySelector('[data-action="state"]').onchange = (e) =>
       this._action(e.currentTarget, async () => {
@@ -85,83 +86,81 @@ export const panelControls = {
               : Number(timeoutHours.value || 0) * 3600 +
                 Number(timeoutMinutes.value || 0) * 60,
         });
-        await this._load();
+        await this._load(true);
       });
     timeoutHours.onchange = (e) => this._action(e.currentTarget, saveTimeout);
     timeoutMinutes.onchange = (e) => this._action(e.currentTarget, saveTimeout);
   },
+  async _learnThresholds(id) {
+    await this._call("learn", { device_id: id }, 120000);
+    this._setSectionCollapsed(id, "details", false);
+    await this._load(true);
+  },
+
+  async _applyRecommendation(id) {
+    if (
+      !confirm(
+        "Apply these recommended thresholds? Inferred results are estimates; verify quiet presence and empty-room behaviour.",
+      )
+    )
+      return;
+    const result = await this._call("apply", { device_id: id }, 240000);
+    await this._load(true);
+    if (Object.keys(result.skipped || {}).length)
+      throw new Error(
+        `Reported matches for ${Object.keys(result.applied || {}).length} thresholds. Incomplete: ${Object.entries(
+          result.skipped,
+        )
+          .map(([key, reason]) => `${key}: ${reason}`)
+          .join("; ")}`,
+      );
+    if (result.note) alert(result.note);
+  },
+
+  async _clearDevice(id) {
+    if (
+      !confirm(
+        "Clear training, history and learned thresholds for this device?",
+      )
+    )
+      return;
+    await this._call("clear", { device_id: id });
+    this._chartState.delete(id);
+    this._historyState.delete(id);
+    this._drafts.delete(id);
+    await this._load(true);
+  },
+
   _wireActions(card, id) {
-    card.querySelector('[data-action="learn"]').onclick = (e) =>
-      this._action(e.currentTarget, async () => {
-        await this._call("learn", { device_id: id }, 120000);
-        this._setSectionCollapsed(id, "details", false);
-        await this._load();
-      });
-    card.querySelector('[data-action="apply"]').onclick = (e) =>
-      this._action(e.currentTarget, async () => {
-        if (
-          confirm(
-            "Apply these recommended thresholds? Inferred results are estimates; verify quiet presence and empty-room behaviour.",
-          )
-        ) {
-          const result = await this._call("apply", { device_id: id }, 240000);
-          await this._load();
-          if (Object.keys(result.skipped || {}).length)
-            throw new Error(
-              `Reported matches for ${Object.keys(result.applied || {}).length} thresholds. Incomplete: ${Object.entries(
-                result.skipped,
-              )
-                .map(([key, reason]) => `${key}: ${reason}`)
-                .join("; ")}`,
-            );
-          if (result.note) alert(result.note);
-        }
-      });
-    card.querySelector('[data-action="clear"]').onclick = (e) =>
-      this._action(e.currentTarget, async () => {
-        if (
-          confirm(
-            "Clear training, history and learned thresholds for this device?",
-          )
-        ) {
-          await this._call("clear", { device_id: id });
-          this._chartState.delete(id);
-          await this._load();
-        }
-      });
-    card.querySelector('[data-action="json"]').onclick = () =>
-      this._export(id, "json");
-    card.querySelector('[data-action="csv"]').onclick = () =>
-      this._export(id, "csv");
-    card.querySelectorAll('[data-action="auto-feedback"]').forEach((btn) => {
-      btn.onclick = async () => {
-        try {
+    const actions = {
+      learn: () => this._learnThresholds(id),
+      apply: () => this._applyRecommendation(id),
+      clear: () => this._clearDevice(id),
+      json: () => this._export(id, "json"),
+      csv: () => this._export(id, "csv"),
+    };
+    for (const [name, action] of Object.entries(actions))
+      card.querySelector(`[data-action="${name}"]`).onclick = (event) =>
+        this._action(event.currentTarget, action);
+    card.querySelectorAll('[data-action="auto-feedback"]').forEach((button) => {
+      button.onclick = () =>
+        this._action(button, async () => {
           await this._call("auto_feedback", {
             device_id: id,
-            correct: btn.dataset.correct === "true",
+            correct: button.dataset.correct === "true",
           });
-        } catch (err) {
-          alert(`Unable to record feedback: ${err?.message || err}`);
-          return;
-        }
-        await this._load();
-      };
+          await this._load(true);
+        });
     });
   },
   _wireChartControls(card, id) {
     const chartKind = card.querySelector('[data-action="chart-kind"]');
-    const chartGate = card.querySelector('[data-action="chart-gate"]');
     const chartRange = card.querySelector('[data-action="chart-range"]');
     const chartRefresh = card.querySelector('[data-action="chart-refresh"]');
     const cs = this._chartState.get(id);
     chartKind.onchange = () => {
       cs.kind = chartKind.value;
       this._fetchChartData(id);
-    };
-    chartGate.onchange = () => {
-      cs.gate = Number(chartGate.value);
-      this._updateGateChipHighlight(card, cs.gate);
-      this._renderChartCanvas(id);
     };
     chartRange.onchange = () => {
       cs.hours = Number(chartRange.value);
@@ -175,7 +174,6 @@ export const panelControls = {
     card.querySelectorAll('[data-action="chart-pick-gate"]').forEach((btn) => {
       btn.onclick = () => {
         cs.gate = Number(btn.dataset.gate);
-        chartGate.value = String(cs.gate);
         this._updateGateChipHighlight(card, cs.gate);
         this._renderChartCanvas(id);
       };

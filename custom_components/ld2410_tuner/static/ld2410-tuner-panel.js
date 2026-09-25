@@ -1,3 +1,5 @@
+import { panelTimeline } from "./panel/timeline.js";
+import { panelActivity } from "./panel/activity.js";
 import { panelVisualization } from "./panel/visualization.js";
 import { panelCards } from "./panel/card.js";
 import { panelControls } from "./panel/controls.js";
@@ -39,6 +41,7 @@ class LD2410TunerPanel extends HTMLElement {
     this._chartQueue = [];
     this._activeCharts = 0;
     this._activeActions = 0;
+    this._busyCards = new Set();
     this._actionError = "";
     this._onVisibilityChange = () => {
       if (!document.hidden) this._load();
@@ -84,98 +87,16 @@ class LD2410TunerPanel extends HTMLElement {
     return ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName);
   }
 
-  async _call(type, data = {}, timeout = 30000) {
-    let timer;
-    try {
-      return await Promise.race([
-        this._hass.callWS({ type: `ld2410_tuner/${type}`, ...data }),
-        new Promise((_, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  "Request timed out. Refresh before retrying a change; it may have completed.",
-                ),
-              ),
-            timeout,
-          );
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  _showError(message) {
-    const el = this.shadowRoot?.querySelector("#error");
-    if (el) {
-      el.textContent = message;
-      el.hidden = !message;
-    }
-  }
-
-  async _action(button, action) {
-    button.disabled = true;
-    this._activeActions++;
-    this._actionError = "";
-    this._showError("");
-    try {
-      await action();
-    } catch (err) {
-      this._actionError = err?.message || String(err);
-      this._showError(this._actionError);
-      this.shadowRoot?.querySelector("#error")?.scrollIntoView({
-        behavior: "smooth",
-        block: "nearest",
-      });
-    } finally {
-      button.disabled = false;
-      this._activeActions--;
-      if (this._redrawPending && !this._isEditing()) {
-        this._redrawPending = false;
-        this._draw();
-      }
-    }
-  }
-
-  async _load() {
-    if (!this._hass || this._loading) return;
-    this._loading = true;
-    try {
-      this._data = await this._call("snapshot");
-      this._showError(this._actionError);
-      this._loaded = true;
-      if (this._isEditing()) {
-        this._redrawPending = true;
-      } else {
-        this._draw();
-      }
-    } catch (err) {
-      this._showError(`Unable to refresh: ${err?.message || err}`);
-      if (!this._loaded) {
-        const grid = this.shadowRoot?.querySelector("#grid");
-        if (grid)
-          grid.innerHTML = `<div class="card">Unable to load LD2410 Tuner: ${this._esc(err?.message || err)}</div>`;
-      }
-    } finally {
-      this._loading = false;
-    }
-  }
-
   async _export(id, format) {
-    try {
-      const data = await this._call("export", { device_id: id });
-      if (format === "csv")
-        this._download(this._csv(data), `ld2410-tuner-${id}.csv`, "text/csv");
-      else
-        this._download(
-          JSON.stringify(data, null, 2),
-          `ld2410-tuner-${id}.json`,
-          "application/json",
-        );
-    } catch (err) {
-      alert(`Export failed: ${err?.message || err}`);
-    }
+    const data = await this._call("export", { device_id: id });
+    if (format === "csv")
+      this._download(this._csv(data), `ld2410-tuner-${id}.csv`, "text/csv");
+    else
+      this._download(
+        JSON.stringify(data, null, 2),
+        `ld2410-tuner-${id}.json`,
+        "application/json",
+      );
   }
 
   _download(content, filename, type) {
@@ -290,6 +211,8 @@ class LD2410TunerPanel extends HTMLElement {
 }
 Object.assign(
   LD2410TunerPanel.prototype,
+  panelTimeline,
+  panelActivity,
   panelChart,
   panelVisualization,
   panelSelection,

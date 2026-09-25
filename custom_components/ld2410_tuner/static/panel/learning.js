@@ -107,8 +107,18 @@ export const panelLearning = {
     );
   },
 
-  _actionsHtml(learning, validationHtml) {
-    const warning = this._learningWarningHtml(learning);
-    return `${validationHtml}${warning}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button data-action="apply" ${learning?.status === "ok" && learning?.method === "human_priority_v6" ? "" : "disabled"}>Apply recommended thresholds</button><button data-action="clear">Clear data</button></div><div class="export"><button data-action="json">Export JSON</button><button data-action="csv">Export CSV</button></div>`;
+  _recommendationsHtml(d) {
+    const learning = d.last_learning;
+    const enabled =
+      learning?.status === "ok" && learning?.method === "human_priority_v6";
+    return `<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button data-action="apply" ${enabled ? "" : "disabled"}>Apply recommended thresholds</button></div>
+      <div class="muted">Learn creates a preview. Apply writes it to the device.</div>
+      ${this._learningWarningHtml(learning)}${this._validationHtml(learning)}
+      <details class="gate-results"><summary>Gate thresholds and sample counts</summary>${this._detailsHtml(d)}</details>`;
+  },
+
+  _dataActionsHtml() {
+    return `<div class="export"><button data-action="json">Export JSON</button><button data-action="csv">Export CSV</button></div>
+      <div class="data-clear"><span class="muted">Remove recorded history, labels and recommendations for this device.</span><button data-action="clear">Clear data</button></div>`;
   },
 };

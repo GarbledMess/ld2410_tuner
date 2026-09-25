@@ -64,7 +64,7 @@ retains failures.
 4. Select UNKNOWN between sessions to let automatic estimates contribute, or
    correct recorded periods using the chart. Human labels override guesses. A
    chart range explicitly marked UNKNOWN is excluded from both training sources.
-5. Click **Learn thresholds**. Review device-wide validation in Details/Actions,
+5. Click **Learn thresholds**. Review device-wide validation in **Recommendations**,
    then **Apply recommended thresholds** if the candidate passes. Test again in the
    actual room, especially quiet sitting and empty-room false triggers.
 
@@ -79,6 +79,18 @@ History is sampled at a minimum five-second spacing on a two-second timer (norma
 six seconds), independently of whether values change. Existing gate histograms can
 include legacy data without timestamps; the learning result reports the timed
 human and inferred observations actually used, separately from gate histogram counts.
+
+The Recommendations section contains Learn/Apply and one device-wide report;
+expand its gate table for individual thresholds and sample counts. The chart shows
+the selected gate's results. Exports and Clear data are grouped under Data & export.
+Actions display a named spinner and lock conflicting controls on that device until
+they finish. Slow background refreshes show a separate loading indicator.
+
+In **Past presence labels**, choose a day and drag across the time bar to fill the
+From/To fields. Drag either handle to adjust the range, or use the time fields.
+Focused handles also support left/right arrows (one minute; Shift for 15 minutes).
+Choose the status and save to confirm the change; dragging alone never saves a label.
+Selecting a saved period keeps the existing edit/remove workflow.
 
 ## Charts
 

@@ -9,6 +9,15 @@ export const panelView = {
         .wrap { max-width:1500px; margin:auto; }
         h1 { font-size:26px; margin:4px 0 6px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
         .panel-version { font-size:12px; font-weight:400; color:var(--secondary-text-color); border:1px solid var(--divider-color); border-radius:6px; padding:3px 6px; }
+        .action-status, #snapshot-status { min-height:1.5em; font-size:13px; margin:6px 0; }
+        .is-busy::before { content:""; display:inline-block; width:12px; height:12px; border:2px solid var(--divider-color,#ccc); border-top-color:var(--primary-color,#1976d2); border-radius:50%; margin-right:7px; vertical-align:middle; animation:busy-spin .8s linear infinite; }
+        button[aria-busy="true"] { position:relative; color:transparent; }
+        button[aria-busy="true"]::after { content:""; position:absolute; left:calc(50% - 8px); top:calc(50% - 8px); width:12px; height:12px; border:2px solid var(--divider-color,#ccc); border-top-color:var(--primary-text-color,#222); border-radius:50%; animation:busy-spin .8s linear infinite; }
+        @keyframes busy-spin { to { transform:rotate(360deg); } }
+        @media (prefers-reduced-motion:reduce) { .is-busy::before, button[aria-busy="true"]::after { animation:none; } }
+        .gate-results { margin-top:12px; }
+        .gate-results summary { padding:10px 0; cursor:pointer; font-weight:600; }
+        .data-clear { border-top:1px solid var(--divider-color); padding-top:12px; margin-top:12px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
         .subtitle { color:var(--secondary-text-color); font-size:14px; margin-bottom:14px; }
         .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(500px,1fr)); gap:14px; }
         .card { min-width:0; align-self:start; background:var(--ha-card-background,var(--card-background-color,#fff)); border-radius:12px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 2px 8px rgba(0,0,0,.12)); }
@@ -44,6 +53,12 @@ export const panelView = {
         .history-navigation { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px; margin:12px 0; }
         .history-navigation label { flex:1; min-width:130px; font-size:12px; }
         .history-navigation input { display:block; width:100%; min-width:0; min-height:44px; box-sizing:border-box; padding:8px; font:inherit; border:1px solid var(--divider-color); border-radius:9px; background:var(--card-background-color); color:var(--primary-text-color); }
+        .history-range { position:relative; margin:12px 0; touch-action:none; user-select:none; -webkit-user-select:none; cursor:crosshair; }
+        .history-range .history-timeline { height:44px; }
+        .history-range-selection { position:absolute; top:0; bottom:0; background:rgba(30,136,229,.25); border-inline:2px solid #1565c0; box-sizing:border-box; pointer-events:none; }
+        .history-range-handle { position:absolute; top:0; bottom:0; left:clamp(0px,calc(var(--position) - 22px),calc(100% - 44px)); width:44px; padding:0; border:0; background:transparent; cursor:ew-resize; touch-action:none; }
+        .history-range-handle::after { content:""; display:block; margin:auto; height:24px; width:8px; background:#1565c0; border:2px solid #fff; border-radius:5px; }
+        .history-range [hidden] { display:none; }
         .history-timeline { display:flex; height:28px; border:1px solid var(--divider-color); border-radius:6px; overflow:hidden; }
         .history-segment { display:block; height:100%; }
         .history-segment.present { background:#43a047; }
@@ -61,7 +76,7 @@ export const panelView = {
         .history-buttons { display:flex; flex-wrap:wrap; gap:8px; }
         .history-fields label { min-width:0; }
         .history-buttons [hidden] { display:none; }
-        .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:12px; }
+        .stats { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-bottom:12px; }
         .stat { padding:10px; border-radius:9px; background:var(--secondary-background-color); }
         .stat b { display:block; font-size:17px; margin-top:2px; }
         .table-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
@@ -158,7 +173,7 @@ export const panelView = {
           .history-fields { grid-template-columns:1fr; }
           .history-fields input,.history-fields select { width:100%; }
           .controls button,.export button { flex:1 1 100%; }
-          .stats { grid-template-columns:1fr 1fr 1fr; gap:5px; }
+          .stats { grid-template-columns:1fr 1fr; gap:5px; }
           .stat { padding:8px 6px; font-size:11px; }
           .stat b { font-size:15px; }
           .table-scroll { display:none; }
@@ -170,11 +185,24 @@ export const panelView = {
         <div id="error" role="alert" class="notice warn" hidden></div>
         <h1>LD2410 Tuner <span class="panel-version" aria-label="Loaded panel version" title="Version requested when this panel loaded. Reload the page after updating.">${this._frontendVersion ? `v${this._esc(this._frontendVersion)}` : "Version unavailable"}</span></h1>
         <div class="subtitle">Automatic estimates learn from signal patterns over time and carry confidence scores. Add empty-room, moving and quiet-sitting examples to improve them. Learn prioritizes reliable presence across sessions; human labels always take priority over lower-confidence estimates. Inferred data proportions do not block Apply.</div>
+        <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         <div class="grid" id="grid"></div>
       </div>`;
     // If a poll landed while a field was focused, it's queued instead of
     // applied (see _load). Once focus leaves the panel, catch up on that
     // queued redraw so things don't just go stale until the next poll.
+    this.shadowRoot.addEventListener(
+      "toggle",
+      (event) => {
+        const card = event.target.closest?.("[data-device-id]");
+        if (card && event.target.matches(".gate-results"))
+          this._sectionState.set(
+            `${card.dataset.deviceId}:gate-table`,
+            event.target.open,
+          );
+      },
+      true,
+    );
     this.shadowRoot.addEventListener("focusout", () => {
       setTimeout(() => {
         if (this._redrawPending && !this._isEditing()) {

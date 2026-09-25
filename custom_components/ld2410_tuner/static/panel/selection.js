@@ -78,7 +78,14 @@ export const panelSelection = {
   },
 
   _selectionPointerAllowed(event) {
-    return event.isPrimary !== false && event.button === 0 && !this._dragging;
+    const id =
+      event.currentTarget.closest("[data-device-id]")?.dataset.deviceId;
+    return (
+      event.isPrimary !== false &&
+      event.button === 0 &&
+      !this._dragging &&
+      !this._busyCards.has(id)
+    );
   },
 
   _wireChartSelection(id, container, d, cs) {
@@ -261,32 +268,29 @@ export const panelSelection = {
     container
       .querySelectorAll('[data-action="selection-label"]')
       .forEach((btn) => {
-        btn.onclick = async () => {
-          const label = btn.dataset.label;
-          const { start, end } = cs.selection;
-          try {
+        btn.onclick = () =>
+          this._action(btn, async () => {
+            const { start, end } = cs.selection;
             await this._call("label_history", {
               device_id: id,
               start: Math.floor(start),
               end: Math.floor(end),
-              state: label,
+              state: btn.dataset.label,
             });
             cs.selection = null;
             cs.panelOpen = false;
             cs.data = null;
             cs.cache?.clear();
-          } catch (err) {
-            alert(`Unable to label history: ${err?.message || err}`);
-            return;
-          }
-          await this._load();
-        };
+            await this._load(true);
+          });
       });
   },
 
   _updateGateChipHighlight(card, gate) {
     card.querySelectorAll(".gate-chip").forEach((btn) => {
-      btn.classList.toggle("active", Number(btn.dataset.gate) === gate);
+      const selected = Number(btn.dataset.gate) === gate;
+      btn.classList.toggle("active", selected);
+      btn.setAttribute("aria-pressed", String(selected));
     });
   },
 };

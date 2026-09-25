@@ -20,12 +20,6 @@ export const panelChart = {
           `<option value="${k}" ${k === cs.kind ? "selected" : ""}>${k === "move" ? "Movement" : "Still"}</option>`,
       )
       .join("");
-    const gateOptions = Array.from({ length: 9 }, (_, g) => g)
-      .map(
-        (g) =>
-          `<option value="${g}" ${g === cs.gate ? "selected" : ""}>Gate ${g}</option>`,
-      )
-      .join("");
     const rangeOptions = CHART_RANGES.map(
       (r) =>
         `<option value="${r.hours}" ${r.hours === cs.hours ? "selected" : ""}>${this._esc(r.label)}</option>`,
@@ -33,12 +27,11 @@ export const panelChart = {
     const gateChips = Array.from({ length: 9 }, (_, g) => g)
       .map(
         (g) =>
-          `<button type="button" class="gate-chip${g === cs.gate ? " active" : ""}" data-action="chart-pick-gate" data-gate="${g}" style="--chip-color:${GATE_COLORS[g]}">G${g}</button>`,
+          `<button type="button" class="gate-chip${g === cs.gate ? " active" : ""}" data-action="chart-pick-gate" data-gate="${g}" aria-label="Highlight gate ${g}" aria-pressed="${g === cs.gate}" style="--chip-color:${GATE_COLORS[g]}">G${g}</button>`,
       )
       .join("");
     return `<div class="chart-controls">
         <label>Kind<br><select data-action="chart-kind">${kindOptions}</select></label>
-        <label>Highlight gate<br><select data-action="chart-gate">${gateOptions}</select></label>
         <label>Range<br><select data-action="chart-range">${rangeOptions}</select></label>
         <button data-action="chart-refresh" type="button">Refresh</button>
       </div>
@@ -53,7 +46,7 @@ export const panelChart = {
         <span><i class="lineswatch learned"></i>Learned threshold</span>
         <span><i class="lineswatch noise"></i>Highest not-present sample</span>
       </div>
-      <div class="muted" style="margin-top:6px">All 9 gates of the selected kind are shown together, each in its own color (click a G0–G8 chip or use "Highlight gate" to bring one to the front with its shaded band). Drag across the chart to select a time range — two handles appear so you can fine-tune each end — then use the toolbar below the chart to set its status.</div>`;
+      <div class="muted" style="margin-top:6px">All 9 gates of the selected kind are shown together, each in its own color (select a G0–G8 button to highlight its shaded band). Drag across the chart to select a time range — two handles appear so you can fine-tune each end — then use the toolbar below the chart to set its status.</div>`;
   },
 
   _chartKeys(cs) {
@@ -172,6 +165,10 @@ export const panelChart = {
       `[data-chart-canvas="${CSS.escape(id)}"]`,
     );
     if (!el) return;
+    if (this._busyCards.has(id)) {
+      this._redrawPending = true;
+      return;
+    }
     const cs = this._chartState.get(id);
     const d = this._data?.devices?.[id];
     if (!cs || !d) {
@@ -199,8 +196,6 @@ export const panelChart = {
       cs.panelOpen,
       d.current_thresholds?.[activeKey],
       d.last_learning?.proposals,
-      d.last_learning?.feasibility,
-      d.last_learning?.outlier_filter,
     ]);
     if (
       !force &&
@@ -215,7 +210,14 @@ export const panelChart = {
     const status = this.shadowRoot.querySelector(
       `[data-chart-status="${CSS.escape(id)}"]`,
     );
-    if (status) status.textContent = this._chartStatusText(cs, matches);
+    if (status) {
+      status.textContent = this._chartStatusText(cs, matches);
+      status.classList.toggle("is-busy", !!cs.loading);
+    }
+    const refresh = card.querySelector('[data-action="chart-refresh"]');
+    refresh.disabled = !!cs.loading;
+    refresh.setAttribute("aria-busy", String(!!cs.loading));
+    el.setAttribute("aria-busy", String(!!cs.loading));
     this._renderChartData(id, el, d, cs, matches);
   },
 
@@ -234,6 +236,20 @@ export const panelChart = {
     try {
       el.innerHTML = this._buildChartSvg(d, cs);
       this._wireChartSelection(id, el, d, cs);
+      const review = el.querySelector('[data-action="review-results"]');
+      if (review)
+        review.onclick = () => {
+          this._setSectionCollapsed(id, "details", false);
+          const section = el
+            .closest(".card")
+            .querySelector('.subsection[data-section="details"]');
+          section.classList.remove("collapsed");
+          section.querySelector(".sub-toggle").textContent = "▾";
+          section
+            .querySelector(".sub-toggle")
+            .setAttribute("aria-expanded", "true");
+          section.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        };
     } catch (err) {
       el.innerHTML = `<div class="muted">Unable to render chart: ${this._esc(err?.message || err)}</div>`;
     }
@@ -257,7 +273,7 @@ export const panelChart = {
       : "";
   },
 
-  _learnStatusHtml(proposal, cs, learning) {
+  _learnStatusHtml(proposal, cs) {
     const label = `Gate ${cs.gate} · ${cs.kind === "move" ? "Movement" : "Still"}`;
     if (!proposal)
       return `<div class="learn-status muted">${this._esc(label)}: click "Learn thresholds" to compute a recommendation.</div>`;
@@ -265,16 +281,13 @@ export const panelChart = {
     if (proposal.status === "provisional")
       return `<div class="learn-status warn">${this._esc(label)}: saved threshold ${Math.round(proposal.threshold)} was produced by the previous learner. Learn again with the current model before Apply.</div>`;
     if (proposal.status === "ok")
-      return (
-        this._acceptedStatusHtml(proposal, label, noiseNote) +
-        this._outlierFilterHtml(learning)
-      );
+      return this._acceptedStatusHtml(proposal, label, noiseNote);
     if (proposal.status === "unsafe") {
       const gateResult =
         proposal.not_present_samples > 0 && proposal.false_positives != null
           ? ` This gate alone triggers on ${proposal.false_positives} / ${proposal.not_present_samples} human-labelled empty-room samples.`
           : " No human-labelled empty-room measurement is available for this gate.";
-      return `<div class="learn-status warn"><div>${this._esc(label)}: candidate threshold ${Math.round(proposal.threshold)}.${this._esc(gateResult)}${noiseNote}${this._esc(this._presenceDependencyText(proposal))}</div><div><b>Combined device recommendation unsafe</b> — ${this._esc(proposal.message || "The combined thresholds did not meet the learning targets")}. These failure counts cover all enabled gates, not just this gate.</div>${this._outlierFilterHtml(learning)}${this._feasibilityHtml(learning)}${this._falsePositiveSourcesHtml(learning)}<div>Candidate shown as a red dashed line; the combined recommendation has not been applied.</div></div>`;
+      return `<div class="learn-status warn"><div>${this._esc(label)}: candidate threshold ${Math.round(proposal.threshold)}.${this._esc(gateResult)}${noiseNote}${this._esc(this._presenceDependencyText(proposal))}</div><div><b>Combined device recommendation unsafe</b> — ${this._esc(proposal.message || "The combined thresholds did not meet the learning targets")}. These failure counts cover all enabled gates, not just this gate.</div><button type="button" data-action="review-results">Review device results</button><div>Candidate shown as a red dashed line; the combined recommendation has not been applied.</div></div>`;
     }
     return `<div class="learn-status warn">${this._esc(label)}: not enough data yet — ${this._esc(proposal.message || "need more present and not-present samples")}.</div>`;
   },
@@ -282,7 +295,6 @@ export const panelChart = {
   _syncChartControls(card, cs) {
     for (const [action, value] of [
       ["chart-kind", cs.kind],
-      ["chart-gate", cs.gate],
       ["chart-range", cs.hours],
     ]) {
       const control = card.querySelector(`[data-action="${action}"]`);

@@ -13,7 +13,7 @@ module.exports = async function testApply(page) {
       }
       return window.originalApplyWS(message);
     };
-    panel._setSectionCollapsed("a", "actions", false);
+    panel._setSectionCollapsed("a", "details", false);
     panel._draw();
   });
   const apply = page.locator('[data-device-id="a"] [data-action="apply"]');
@@ -21,6 +21,11 @@ module.exports = async function testApply(page) {
   await apply.click();
   await page.waitForFunction(() => Boolean(window.failApply));
   await page.evaluate(() => panel._load());
+  assert.match(
+    await page.locator('[data-device-id="a"] .action-status').innerText(),
+    /Applying thresholds/,
+  );
+  assert.equal(await apply.getAttribute("aria-busy"), "true");
   assert.equal(
     await apply.isDisabled(),
     true,

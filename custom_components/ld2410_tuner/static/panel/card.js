@@ -11,9 +11,13 @@ export const panelCards = {
     const isCollapsed = this._collapsed.has(id);
     card.innerHTML =
       this._cardHeaderHtml(d, info, isCollapsed) +
+      `<div class="action-status muted" role="status" aria-live="polite"></div>` +
       `<div class="body${isCollapsed ? " collapsed" : ""}">${this._cardBodyHtml(id, d, info)}</div>`;
     if (previousChart)
       card.querySelector('[data-section="chart"]').replaceWith(previousChart);
+    card.querySelector(".gate-results").open = !!this._sectionState.get(
+      `${id}:gate-table`,
+    );
     this._wireCard(card, id, d);
     return card;
   },
@@ -27,9 +31,13 @@ export const panelCards = {
   },
 
   _cardBodyHtml(id, d, info) {
-    const validation = this._validationHtml(d.last_learning);
     return [
-      this._section(id, "training", "Training", this._trainingHtml(d)),
+      this._section(
+        id,
+        "training",
+        "Current presence label",
+        this._trainingHtml(d),
+      ),
       this._section(id, "chart", "Gate visualization", this._chartHtml(id, d)),
       this._section(
         id,
@@ -46,15 +54,10 @@ export const panelCards = {
       this._section(
         id,
         "details",
-        "Details & raw table",
-        validation + this._detailsHtml(d),
+        "Recommendations",
+        this._recommendationsHtml(d),
       ),
-      this._section(
-        id,
-        "actions",
-        "Actions & export",
-        this._actionsHtml(d.last_learning, validation),
-      ),
+      this._section(id, "actions", "Data & export", this._dataActionsHtml()),
     ].join("");
   },
 
@@ -140,10 +143,6 @@ export const panelCards = {
       0,
     );
     const { rows, mobile } = this._gateTables(d);
-    const warning = this._learningWarningHtml(d.last_learning);
-    const learningNote = d.last_learning
-      ? '<div class="notice">Learning checks coverage across presence episodes, missed runs and false-trigger bursts. Estimates carry less weight than human labels. A gate at 100 is suppressed. Human labels take priority. Source proportions do not block Apply.</div>'
-      : "";
-    return `<div class="stats"><div class="stat">Human gate samples · present<b>${totalPresent}</b></div><div class="stat">Human gate samples · absent<b>${totalAbsent}</b></div><div class="stat">Storage<b>Compressed</b></div></div><div class="table-scroll"><table><thead><tr><th>Gate</th><th>Move now</th><th>Move learned</th><th>Move P/N</th><th>Still now</th><th>Still learned</th><th>Still P/N</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="mobile-gates">${mobile.join("")}</div>${warning}${learningNote}`;
+    return `<div class="stats"><div class="stat">Human gate samples · present<b>${totalPresent}</b></div><div class="stat">Human gate samples · absent<b>${totalAbsent}</b></div></div><div class="table-scroll"><table><thead><tr><th>Gate</th><th>Move now</th><th>Move learned</th><th>Move P/N</th><th>Still now</th><th>Still learned</th><th>Still P/N</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="mobile-gates">${mobile.join("")}</div>`;
   },
 };

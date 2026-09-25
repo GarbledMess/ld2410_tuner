@@ -91,7 +91,7 @@ export const panelHistory = {
         <button type="button" data-action="history-next" aria-label="Next day">›</button>
         <button type="button" data-action="history-today">Today</button>
       </div>
-      <div class="history-timeline" role="img" aria-label="Manual label coverage for ${ui.day}">${timeline}</div>
+      ${this._historyRangeHtml(timeline, ui.day)}
       <div class="history-axis"><span>${this._esc(this._historyTime(bounds.start))}</span><span>${this._esc(this._historyTime(bounds.end))} (next day)</span></div>
       <div class="history-legend">${Object.entries(STATUS)
         .map(
@@ -174,6 +174,7 @@ export const panelHistory = {
       this._historyHtml(id, this._data.devices[id]);
     this._wireHistory(card, id);
     this._restoreDraft(card, id);
+    this._wireHistoryRange(card, id);
   },
 
   _changeHistoryDay(card, id, day) {
@@ -189,6 +190,7 @@ export const panelHistory = {
       (item) => item.start === start && item.end === end,
     );
     if (!label) return;
+    this._historyStateFor(id).range = null;
     this._historyStateFor(id).edit = {
       ...label,
       revision: device.history.revision || 0,
@@ -200,13 +202,16 @@ export const panelHistory = {
       ["state", label.state],
     ])
       card.querySelector(`[data-action="history-${name}"]`).value = value;
+    this._paintHistoryRange(card, id);
   },
 
   _newHistoryPeriod(card, id) {
+    this._historyStateFor(id).range = null;
     this._historyStateFor(id).edit = null;
     this._refreshHistorySection(card, id);
     for (const name of ["start", "end"])
       card.querySelector(`[data-action="history-${name}"]`).value = "";
+    this._paintHistoryRange(card, id);
   },
 
   _historyFieldTime(card, name, original) {
@@ -220,8 +225,9 @@ export const panelHistory = {
 
   async _saveHistoryPeriod(card, id) {
     const edit = this._historyStateFor(id).edit;
-    const start = this._historyFieldTime(card, "start", edit?.start);
-    const end = this._historyFieldTime(card, "end", edit?.end);
+    const original = this._historyStateFor(id).range || edit;
+    const start = this._historyFieldTime(card, "start", original?.start);
+    const end = this._historyFieldTime(card, "end", original?.end);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start)
       throw new Error(
         "Choose a start and end time, with the end after the start.",
@@ -266,11 +272,12 @@ export const panelHistory = {
   },
 
   async _historyChanged(id) {
+    this._historyStateFor(id).range = null;
     this._historyStateFor(id).edit = null;
     const chart = this._chartState.get(id);
     chart.data = null;
     chart.cache?.clear();
     chart.error = null;
-    await this._load();
+    await this._load(true);
   },
 };

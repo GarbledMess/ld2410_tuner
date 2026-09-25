@@ -33,6 +33,6 @@ export const SECTION_DEFAULTS = {
   chart: false,
   history: true,
   auto: true,
-  details: true,
+  details: false,
   actions: true,
 };
