@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from homeassistant import config_entries
 
-from . import DOMAIN
+from .const import DOMAIN
 
 
 class LD2410TunerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):

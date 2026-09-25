@@ -8,3 +8,12 @@ __pycache__/
 /dist/
 ld2410_tuner.data
 ld2410-tuner-*.json
+
+# Local quality reports and refactor session state
+.codex-refactor-loop/
+.coverage
+coverage.xml
+.ruff_cache/
+node_modules/
+playwright-report/
+test-results/

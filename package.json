@@ -1,0 +1,12 @@
+{
+  "name": "ld2410-tuner-checks",
+  "private": true,
+  "scripts": {
+    "test": "node tests/panel.cjs",
+    "format:check": "prettier --check \"custom_components/ld2410_tuner/static/**/*.js\" tests/panel.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0",
+    "prettier": "3.9.9"
+  }
+}

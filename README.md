@@ -28,25 +28,14 @@ Adding a custom repository does not require submitting it to the default catalog
 
 ## Repository layout
 
-```text
-custom_components/
-  ld2410_tuner/
-    __init__.py
-    config_flow.py
-    inference.py
-    history.py
-    learning.py
-    manifest.json
-    services.yaml
-    brand/icon.png
-    static/ld2410-tuner-panel.js
-    translations/en.json
-hacs.json
-README.md
-tests/
-tools/validate_package.py
-.github/workflows/validate.yml
-```
+The installable package is `custom_components/ld2410_tuner`. Its entrypoint owns
+Home Assistant setup/unload; separate modules own discovery, recording, manual
+labels, automatic inference, threshold fitting, charts, and websocket commands.
+Supporting Python modules are grouped into `runtime/`, `presence/`, `history/`,
+`calibration/`, and `presentation/`. The panel entrypoint loads focused modules
+from `static/panel/`.
+See [architecture and invariants](docs/architecture.md) for the full ownership map.
+Tests, developer dependencies, replay tools, and CI remain at the repository root.
 
 Only the integration directory is installed by HACS. Repository metadata, tests
 and CI stay outside it. The layout follows the
@@ -112,20 +101,35 @@ support and a two-state Bayesian temporal filter, accumulating persistent weak
 signals while making exit slower than entry. Move/still at one gate count as
 correlated evidence, not two independent votes. Entry confirmation requires
 continuing signal support, so residual filter memory after a brief spike cannot
-alone confirm presence. Missing readings produce UNKNOWN.
+alone confirm presence. Evidence accumulates by elapsed time, with four seconds
+of confirmation for presence and eight for absence. Gaps over ten seconds reset
+temporal confidence. Missing channels cannot certify absence; strong directly
+human-guided evidence on the available channels can support presence at no more
+than 60% confidence.
 
 Before human references exist, it warms up a background estimate and starts making
 tentative guesses. Its background stops adapting during likely occupancy so a
 stationary person is less likely to become the baseline. Bootstrap confidence is
 capped at 65%; partially human-guided estimates at 80%; fully guided estimates at
 98%. These scores are **heuristic**, not empirically calibrated probabilities.
-A room already occupied during startup can fool a background-only estimate.
+A completely flat startup stays UNKNOWN until observed variation or a human
+empty-room reference supplies more evidence. Empty-room p90 energy provides the
+baseline for elevation, and contradictory gates reduce weak positive evidence.
+A room already occupied during startup remains fundamentally ambiguous without
+human references; this is not solved by assigning a higher confidence score.
+
+The [autolabelling replay report](docs/autolabelling-validation.md) records gains,
+regressions, and limits on the supplied recordings. Version 1.9.3 changes automatic
+labels and code organization; Learn/Apply remain explicit and retain their fitting
+and acceptance behavior. No software presence entity or automatic Apply is added.
 
 Each stored observation retains its automatic label and confidence alongside the
-gate energies. A guess contributes `0.20 × confidence` of a human sample: 80%
+gate energies. A guess starts with weight `0.20 × confidence`: 80%
 confidence gives weight 0.16. Where human examples exist, total inferred weight in
 each class is capped at 25% of human weight (20% of the combined evidence), so
-volume cannot overwhelm human labels. Scores below 55% are not used. Previously
+volume cannot overturn human-priority ranking. These are internal sample weights,
+not a calibrated statement of influence: class-normalized automatic scores may
+cancel a uniform weight scale. Scores below 55% are not used. Previously
 stored history without per-sample confidence remains readable but is not assigned
 invented confidence retroactively. Human corrections and explicit UNKNOWN ranges
 always override the stored guesses. Feedback buttons adjust the estimator's bias;
@@ -223,29 +227,38 @@ occupancy entity.
 
 ## Verification
 
-From the repository root, run backend/algorithm regressions (Python standard library; HA boundaries stubbed):
+Install the development tools in a virtual environment, then run:
 
 ```sh
-python3 tests/test_tuner.py
+python3 -m pip install -r requirements-dev.txt
+python3 -m ruff check custom_components tools tests
+python3 -m ruff format --check custom_components tools tests
+python3 tools/check_complexity.py
+python3 -m pytest --cov --cov-report=xml --cov-report=term-missing
+npm ci
+npx playwright install chromium
+npm run format:check
+npm test
 ```
 
-Run the real Chromium panel harness with Playwright installed externally:
-
-```sh
-PLAYWRIGHT_MODULE=/path/to/node_modules/playwright node tests/panel.cjs
-```
+Python checks use synthetic data and stub Home Assistant boundaries. Coverage must
+be at least 85% across the entire integration and Python tools. Every production
+Python function, including nested functions, must have cognitive complexity at
+most 10. No private recordings are needed by CI. On Linux, Playwright may require
+`npx playwright install --with-deps chromium` to install system dependencies.
 
 The browser harness supplies simulated HA websocket responses and checks populated
 charts, three-card collapse/expand and polling, draft retention, out-of-order
 requests, errors/retry, drag/cancel, confidence displays, automatic-only recommendations, focused range
 changes, fixed ending timestamps, cached windows, stable refresh geometry, mobile
 overflow, and reconnect. It writes
-screenshots to `/tmp/ld2410-desktop.png` and `/tmp/ld2410-mobile.png`. Set
+screenshots as `desktop.png` and `mobile.png` inside a private, uniquely named
+`ld2410-panel-*` temporary directory. Set
 `PANEL_SOURCE` to another panel file to run the same regression against it.
 These checks do not exercise a deployed Home Assistant instance or physical radar.
 
 GitHub Actions checks the local integration package, runs Hassfest, and runs the
-Python and release regressions on pushes and pull requests. A successful push to
+Python, release, coverage, style, complexity, and Chromium regressions on pushes and pull requests. A successful push to
 `main` publishes a GitHub release only when `manifest.json` has an increased
 `major.minor.patch` version compared with the previous pushed commit. No workflow
 submits this repository to the HACS catalogue. Run the local package check with:
