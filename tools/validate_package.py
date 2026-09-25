@@ -10,6 +10,7 @@ RUNTIME_FILES = (
     "brand/icon.png",
     "calibration/__init__.py",
     "calibration/constants.py",
+    "calibration/device_io.py",
     "calibration/feasibility.py",
     "calibration/fitting.py",
     "calibration/metrics.py",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import time
 from collections import deque
@@ -12,7 +13,10 @@ from homeassistant.helpers import entity_registry as er
 
 from ..const import GATE_RE, HISTORY_KEYS
 from ..history.labels import _history_label_reader
+from . import device_io
 from .fitting import MAX_CLASS_SAMPLES, METHOD, MIN_AUTO_CONFIDENCE, fit_thresholds
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _find_threshold_entity(runtime, device_id: str, key: str) -> str:
@@ -33,17 +37,12 @@ def _find_threshold_entity(runtime, device_id: str, key: str) -> str:
 async def set_gate_threshold(runtime, device_id: str, key: str, value: float) -> dict[str, Any]:
     if key not in HISTORY_KEYS:
         raise ValueError("Unknown gate key")
-    entity_id = runtime._find_threshold_entity(device_id, key)
     if not math.isfinite(float(value)) or not 0 <= float(value) <= 100:
         raise ValueError("Threshold must be between 0 and 100")
     value = round(float(value))
-    await runtime.hass.services.async_call(
-        "number",
-        "set_value",
-        {"entity_id": entity_id, "value": value},
-        blocking=True,
-    )
-    return {"ok": True, "entity_id": entity_id, "value": value}
+    with device_io.device_operation(runtime, device_id):
+        button = await device_io.prepare_device(runtime, device_id, [key])
+        return await device_io.write_threshold(runtime, device_id, key, value, button)
 
 
 async def async_learn(runtime, device_id):
@@ -125,13 +124,24 @@ def _threshold_configuration(runtime, device_id):
 
 
 async def apply(runtime, device_id: str) -> dict[str, Any]:
-    if device_id in runtime._applying:
-        raise ValueError("Threshold application is already in progress")
-    runtime._applying.add(device_id)
-    try:
-        return await runtime._apply_validated(device_id)
-    finally:
-        runtime._applying.discard(device_id)
+    with device_io.device_operation(runtime, device_id):
+        try:
+            result = await runtime._apply_validated(device_id)
+        except ValueError as error:
+            _LOGGER.warning("Apply rejected before threshold writes: %s", error)
+            raise
+        if result["skipped"]:
+            _LOGGER.warning(
+                "Apply incomplete: %d reported matches; %s",
+                len(result["applied"]),
+                result["skipped"],
+            )
+        else:
+            _LOGGER.info(
+                "Apply completed with %d reported matches (not hardware acknowledgements)",
+                len(result["applied"]),
+            )
+        return result
 
 
 async def _apply_validated(runtime, device_id: str) -> dict[str, Any]:
@@ -139,12 +149,9 @@ async def _apply_validated(runtime, device_id: str) -> dict[str, Any]:
     if not device:
         raise ValueError("Unknown device")
     learned = device.get("last_learning") or {}
-    if learned.get("method") != METHOD or learned.get("status") != "ok":
-        raise ValueError("Learn thresholds with the current model before applying")
-    if learned.get("label_revision", device.get("label_revision", 0)) != device.get(
-        "label_revision", 0
-    ):
-        raise ValueError("Training labels changed; learn again before applying")
+    _validate_learning(device, learned)
+    button = await device_io.prepare_device(runtime, device_id, learned["entities"])
+    _validate_learning(device, learned)
     entities, current = runtime._threshold_configuration(device_id)
     if (
         entities != learned.get("entities")
@@ -156,16 +163,31 @@ async def _apply_validated(runtime, device_id: str) -> dict[str, Any]:
         )
     # A device receives serial configuration commands. Raise noisy thresholds
     # before lowering sensitive ones and stop on the first partial failure.
-    applied, skipped = await _apply_changes(runtime, device_id, entities, learned, current, device)
+    applied, skipped = await _apply_changes(runtime, device_id, entities, learned, current, button)
+    device["last_applied"] = applied
     runtime._schedule_save()
-    return {"applied": applied, "skipped": skipped}
+    return {
+        "applied": applied,
+        "skipped": skipped,
+        "verification": "reported_state",
+        "note": device_io.READBACK_NOTE,
+    }
+
+
+def _validate_learning(device, learned):
+    if learned.get("method") != METHOD or learned.get("status") != "ok":
+        raise ValueError("Learn thresholds with the current model before applying")
+    if learned.get("label_revision", device.get("label_revision", 0)) != device.get(
+        "label_revision", 0
+    ):
+        raise ValueError("Training labels changed; learn again before applying")
 
 
 def _read_threshold_configuration(runtime, device_id, registry, entities, current, limits):
     for entity in registry.entities.values():
         if entity.device_id != device_id or entity.domain != "number":
             continue
-        value = _number_value(runtime.hass.states.get(entity.entity_id))
+        value = device_io.number_value(runtime.hass.states.get(entity.entity_id))
         _distance_limit(entity.entity_id, value, limits)
         match = GATE_RE.match(entity.entity_id.split(".", 1)[1])
         if match and match.group("metric") == "threshold":
@@ -175,23 +197,16 @@ def _read_threshold_configuration(runtime, device_id, registry, entities, curren
                 current[key] = value
 
 
-def _number_value(state):
-    try:
-        return float(state.state) if state else float("nan")
-    except (TypeError, ValueError):
-        return float("nan")
-
-
 def _distance_limit(entity_id, value, limits):
-    for kind in ("move", "still"):
-        if not entity_id.endswith(f"max_{kind}_distance_gate"):
-            continue
-        if not math.isfinite(value) or not 2 <= value <= 8 or value != int(value):
-            raise ValueError("Maximum distance gate is unavailable or outside 2–8")
-        limits[kind] = int(value)
+    kind = device_io.distance_kind(entity_id)
+    if kind is None:
+        return
+    if not math.isfinite(value) or not 2 <= value <= 8 or value != int(value):
+        raise ValueError("Maximum distance gate is unavailable or outside 2–8")
+    limits[kind] = int(value)
 
 
-async def _apply_changes(runtime, device_id, entities, learned, current, device):
+async def _apply_changes(runtime, device_id, entities, learned, current, button):
     changes = sorted(
         entities,
         key=lambda key: learned["proposals"][key]["threshold"] - current[key],
@@ -205,12 +220,20 @@ async def _apply_changes(runtime, device_id, entities, learned, current, device)
             skipped[key] = "Not attempted after an earlier write failed"
             continue
         try:
-            await runtime.set_gate_threshold(device_id, key, value)
+            _validate_learning(runtime.data["devices"][device_id], learned)
+            await device_io.write_threshold(runtime, device_id, key, value, button)
+            device_io.check_reported(runtime, entities, applied)
             applied[key] = value
         except Exception as err:
             skipped[key] = str(err)
             failed = True
-    device["last_applied"] = applied
+    # A later paired write or delayed query can undo an earlier optimistic echo.
+    for key in applied.copy():
+        try:
+            device_io.check_reported(runtime, entities, {key: applied[key]})
+        except ValueError as error:
+            applied.pop(key)
+            skipped[key] = str(error)
     return applied, skipped
 
 

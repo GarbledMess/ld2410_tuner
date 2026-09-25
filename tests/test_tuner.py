@@ -679,12 +679,17 @@ class InferenceTests(unittest.TestCase):
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.states = {}
+        self.report_write = types.MethodType(RuntimeTests.report_write, self)
+        io = sys.modules["tuner_under_test.calibration.device_io"]
+        self.settle = patch.object(io, "SETTLE_SECONDS", 0)
+        self.settle.start()
+        self.addCleanup(self.settle.stop)
         self.registry = types.SimpleNamespace(entities={})
         mod.er.async_get = lambda hass: self.registry
         self.hass = types.SimpleNamespace(
             async_add_executor_job=lambda fn, *args: asyncio.to_thread(fn, *args),
             states=types.SimpleNamespace(get=self.states.get),
-            services=types.SimpleNamespace(async_call=AsyncMock()),
+            services=types.SimpleNamespace(async_call=AsyncMock(side_effect=self.report_write)),
             async_create_task=asyncio.create_task,
         )
         self.device = {
@@ -698,6 +703,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.runtime._schedule_save = lambda: None
         self.now = time.time()
+
+    async def report_write(self, domain, service, data, **kwargs):
+        if domain == "number" and service == "set_value":
+            self.states[data["entity_id"]] = types.SimpleNamespace(state=str(data["value"]))
 
     async def asyncTearDown(self):
         tasks = list(self.runtime._timeout_tasks.values())
@@ -884,7 +893,13 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_apply_stops_after_partial_failure(self):
         self.configuration()
-        self.hass.services.async_call.side_effect = [None, RuntimeError("offline")]
+
+        async def fail_second(domain, service, data, **kwargs):
+            if self.hass.services.async_call.await_count > 1:
+                raise RuntimeError("offline")
+            await self.report_write(domain, service, data, **kwargs)
+
+        self.hass.services.async_call.side_effect = fail_second
         result = await self.runtime.apply("a")
         self.assertEqual(len(result["applied"]), 1)
         self.assertEqual(len(result["skipped"]), 5)
@@ -964,6 +979,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         async def write(*args, **kwargs):
             entered.set()
             await release.wait()
+            await self.report_write(*args, **kwargs)
 
         self.hass.services.async_call.side_effect = write
         first = asyncio.create_task(self.runtime.apply("a"))

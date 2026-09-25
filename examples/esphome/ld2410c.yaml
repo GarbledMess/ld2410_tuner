@@ -1,0 +1,378 @@
+# Complete, self-contained single-radar package.
+# Keep each node's existing uart pins and host configuration; see docs/esphome-recovery.md.
+
+substitutions:
+  ld2410_presence_name: Presence
+  ld2410_presence_on_delay: 500ms
+  ld2410_presence_off_delay: 1s
+  ld2410_sensor_throttle: 1s
+  ld2410_gate_throttle: 2s
+
+uart:
+  baud_rate: 256000
+  rx_buffer_size: 1024
+  parity: NONE
+  stop_bits: 1
+
+ld2410:
+  id: ld2410_radar
+  # ESPHome binds the only UART automatically, including a locally named UART.
+
+binary_sensor:
+  - platform: ld2410
+    ld2410_id: ld2410_radar
+    has_target:
+      id: ld2410_presence
+      name: ${ld2410_presence_name}
+      filters:
+        - delayed_on: ${ld2410_presence_on_delay}
+        - delayed_off: ${ld2410_presence_off_delay}
+    has_moving_target:
+      id: ld2410_moving_target
+      name: Moving Target
+    has_still_target:
+      id: ld2410_still_target
+      name: Still Target
+    out_pin_presence_status:
+      id: ld2410_out_pin_presence
+      name: Out Pin Presence
+
+  - platform: template
+    id: ld2410_configuration_ready
+    internal: true
+    lambda: |-
+      // These settings share the radar's parameter-query response. Checking
+      // several fields also avoids trusting a lone optimistic threshold echo.
+      return id(ld2410_g0_move).has_state() && std::isfinite(id(ld2410_g0_move).state)
+          && id(ld2410_g0_still).has_state() && std::isfinite(id(ld2410_g0_still).state)
+          && id(ld2410_max_move).has_state() && std::isfinite(id(ld2410_max_move).state)
+          && id(ld2410_max_still).has_state() && std::isfinite(id(ld2410_max_still).state)
+          && id(ld2410_timeout).has_state() && std::isfinite(id(ld2410_timeout).state);
+
+sensor:
+  - platform: ld2410
+    ld2410_id: ld2410_radar
+    moving_distance:
+      id: ld2410_moving_distance
+      name: Moving Distance
+      filters:
+        - throttle: ${ld2410_sensor_throttle}
+    still_distance:
+      id: ld2410_still_distance
+      name: Still Distance
+      filters:
+        - throttle: ${ld2410_sensor_throttle}
+    moving_energy:
+      id: ld2410_moving_energy
+      name: Moving Energy
+      filters:
+        - throttle: ${ld2410_sensor_throttle}
+    still_energy:
+      id: ld2410_still_energy
+      name: Still Energy
+      filters:
+        - throttle: ${ld2410_sensor_throttle}
+    detection_distance:
+      id: ld2410_detection_distance
+      name: Detection Distance
+      filters:
+        - throttle: ${ld2410_sensor_throttle}
+    g0:
+      move_energy:
+        id: ld2410_g0_move_energy
+        name: G0 Move Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+      still_energy:
+        id: ld2410_g0_still_energy
+        name: G0 Still Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+    g1:
+      move_energy:
+        id: ld2410_g1_move_energy
+        name: G1 Move Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+      still_energy:
+        id: ld2410_g1_still_energy
+        name: G1 Still Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+    g2:
+      move_energy:
+        id: ld2410_g2_move_energy
+        name: G2 Move Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+      still_energy:
+        id: ld2410_g2_still_energy
+        name: G2 Still Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+    g3:
+      move_energy:
+        id: ld2410_g3_move_energy
+        name: G3 Move Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+      still_energy:
+        id: ld2410_g3_still_energy
+        name: G3 Still Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+    g4:
+      move_energy:
+        id: ld2410_g4_move_energy
+        name: G4 Move Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+      still_energy:
+        id: ld2410_g4_still_energy
+        name: G4 Still Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+    g5:
+      move_energy:
+        id: ld2410_g5_move_energy
+        name: G5 Move Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+      still_energy:
+        id: ld2410_g5_still_energy
+        name: G5 Still Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+    g6:
+      move_energy:
+        id: ld2410_g6_move_energy
+        name: G6 Move Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+      still_energy:
+        id: ld2410_g6_still_energy
+        name: G6 Still Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+    g7:
+      move_energy:
+        id: ld2410_g7_move_energy
+        name: G7 Move Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+      still_energy:
+        id: ld2410_g7_still_energy
+        name: G7 Still Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+    g8:
+      move_energy:
+        id: ld2410_g8_move_energy
+        name: G8 Move Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+      still_energy:
+        id: ld2410_g8_still_energy
+        name: G8 Still Energy
+        filters:
+          - throttle: ${ld2410_gate_throttle}
+
+number:
+  - platform: ld2410
+    ld2410_id: ld2410_radar
+    timeout:
+      id: ld2410_timeout
+      name: Timeout
+    max_move_distance_gate:
+      id: ld2410_max_move
+      name: Max Move Distance
+    max_still_distance_gate:
+      id: ld2410_max_still
+      name: Max Still Distance
+    g0:
+      move_threshold:
+        id: ld2410_g0_move
+        name: G0 Move Threshold
+      still_threshold:
+        id: ld2410_g0_still
+        name: G0 Still Threshold
+    g1:
+      move_threshold:
+        id: ld2410_g1_move
+        name: G1 Move Threshold
+      still_threshold:
+        id: ld2410_g1_still
+        name: G1 Still Threshold
+    g2:
+      move_threshold:
+        id: ld2410_g2_move
+        name: G2 Move Threshold
+      still_threshold:
+        id: ld2410_g2_still
+        name: G2 Still Threshold
+    g3:
+      move_threshold:
+        id: ld2410_g3_move
+        name: G3 Move Threshold
+      still_threshold:
+        id: ld2410_g3_still
+        name: G3 Still Threshold
+    g4:
+      move_threshold:
+        id: ld2410_g4_move
+        name: G4 Move Threshold
+      still_threshold:
+        id: ld2410_g4_still
+        name: G4 Still Threshold
+    g5:
+      move_threshold:
+        id: ld2410_g5_move
+        name: G5 Move Threshold
+      still_threshold:
+        id: ld2410_g5_still
+        name: G5 Still Threshold
+    g6:
+      move_threshold:
+        id: ld2410_g6_move
+        name: G6 Move Threshold
+      still_threshold:
+        id: ld2410_g6_still
+        name: G6 Still Threshold
+    g7:
+      move_threshold:
+        id: ld2410_g7_move
+        name: G7 Move Threshold
+      still_threshold:
+        id: ld2410_g7_still
+        name: G7 Still Threshold
+    g8:
+      move_threshold:
+        id: ld2410_g8_move
+        name: G8 Move Threshold
+      still_threshold:
+        id: ld2410_g8_still
+        name: G8 Still Threshold
+
+select:
+  - platform: ld2410
+    ld2410_id: ld2410_radar
+    distance_resolution:
+      id: ld2410_distance_resolution
+      name: Distance Resolution
+    baud_rate:
+      id: ld2410_baud_rate
+      name: Baud Rate
+
+switch:
+  - platform: ld2410
+    ld2410_id: ld2410_radar
+    engineering_mode:
+      id: ld2410_engineering_mode
+      name: Engineering Mode
+    bluetooth:
+      id: ld2410_bluetooth
+      name: Bluetooth
+
+text_sensor:
+  - platform: ld2410
+    ld2410_id: ld2410_radar
+    version:
+      id: ld2410_firmware_version
+      name: Firmware Version
+    mac_address:
+      id: ld2410_mac_address
+      name: Mac Address
+
+button:
+  - platform: ld2410
+    ld2410_id: ld2410_radar
+    query_params:
+      id: ld2410_query_params
+      name: Query Params
+    restart:
+      id: ld2410_radar_restart
+      name: Radar Restart
+
+globals:
+  - id: ld2410_recovery_restarted
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: ld2410_last_recovery_restart
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: ld2410_restore_engineering
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+script:
+  - id: ld2410_recover_parameters
+    mode: single
+    then:
+      - delay: 5s
+      - repeat: &ld2410_parameter_retries
+          count: 3
+          then:
+            - if:
+                condition:
+                  binary_sensor.is_off: ld2410_configuration_ready
+                then:
+                  - button.press: ld2410_query_params
+                  - delay: 2s
+      - if:
+          condition:
+            and:
+              - binary_sensor.is_off: ld2410_configuration_ready
+              - lambda: |-
+                  return !id(ld2410_recovery_restarted)
+                      || uint32_t(millis() - id(ld2410_last_recovery_restart)) >= 60000U;
+          then:
+            # Start the cooldown before sending, even if the UART is broken.
+            # A recurring fault can recover again without rebooting the ESP.
+            - globals.set:
+                id: ld2410_recovery_restarted
+                value: 'true'
+            - globals.set:
+                id: ld2410_last_recovery_restart
+                value: !lambda return millis();
+            - globals.set:
+                id: ld2410_restore_engineering
+                value: !lambda return id(ld2410_engineering_mode).state;
+            - logger.log:
+                level: WARN
+                format: "LD2410 settings missing; attempting radar restart"
+            - button.press: ld2410_radar_restart
+            # The driver schedules its own reread after one second. Let it
+            # finish before sending any further configuration commands.
+            - delay: 3s
+            - if:
+                condition:
+                  lambda: return id(ld2410_restore_engineering);
+                then:
+                  - switch.turn_on: ld2410_engineering_mode
+                  - delay: 1s
+            - repeat: *ld2410_parameter_retries
+      - if:
+          condition:
+            binary_sensor.is_off: ld2410_configuration_ready
+          then:
+            - logger.log:
+                level: WARN
+                format: "LD2410 settings still missing; recovery will retry with a restart cooldown"
+
+esphome:
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: ld2410_recover_parameters
+
+interval:
+  - interval: 60s
+    then:
+      - if:
+          condition:
+            binary_sensor.is_off: ld2410_configuration_ready
+          then:
+            - script.execute: ld2410_recover_parameters

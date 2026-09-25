@@ -41,6 +41,17 @@ Only the integration directory is installed by HACS. Repository metadata, tests
 and CI stay outside it. The layout follows the
 [HACS integration requirements](https://www.hacs.dev/docs/publish/integration/).
 
+## ESPHome recovery
+
+For missing settings after boot, Query Params / Radar Restart buttons, and Apply
+that appears to do nothing, see the [ESPHome recovery guide](docs/esphome-recovery.md)
+and [complete LD2410C package](examples/esphome/ld2410c.yaml). Keep each node's
+existing UART pins and host configuration; the package supplies all radar entities
+and includes recovery in one self-contained file. The package is optional: the
+tuner also supports existing ESPHome configurations with the required entities.
+Recovery runs primarily on the ESP; the tuner checks readiness, paces writes and
+retains failures.
+
 ## Calibration workflow
 
 1. Enable engineering mode and the per-gate energy and threshold entities on the

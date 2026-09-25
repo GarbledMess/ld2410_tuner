@@ -6,6 +6,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const testTouchSelection = require("./browser/touch.cjs");
 const testHistoryEditor = require("./browser/history.cjs");
+const testApply = require("./browser/apply.cjs");
 const { execFileSync } = require("node:child_process");
 (async () => {
   const registration = JSON.parse(
@@ -650,6 +651,7 @@ const { execFileSync } = require("node:child_process");
     await page.evaluate(() => window.dispatchEvent(new Event("pointercancel")));
     assert.equal(await page.evaluate(() => panel._dragging), false);
 
+    await testApply(page);
     await testTouchSelection(page);
     await testHistoryEditor(page);
     await page.setViewportSize({ width: 390, height: 844 });

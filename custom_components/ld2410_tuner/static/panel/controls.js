@@ -104,16 +104,17 @@ export const panelControls = {
             "Apply these recommended thresholds? Inferred results are estimates; verify quiet presence and empty-room behaviour.",
           )
         ) {
-          const result = await this._call("apply", { device_id: id });
+          const result = await this._call("apply", { device_id: id }, 240000);
           await this._load();
           if (Object.keys(result.skipped || {}).length)
             throw new Error(
-              `Applied ${Object.keys(result.applied || {}).length} thresholds. Incomplete: ${Object.entries(
+              `Reported matches for ${Object.keys(result.applied || {}).length} thresholds. Incomplete: ${Object.entries(
                 result.skipped,
               )
                 .map(([key, reason]) => `${key}: ${reason}`)
                 .join("; ")}`,
             );
+          if (result.note) alert(result.note);
         }
       });
     card.querySelector('[data-action="clear"]').onclick = (e) =>

@@ -38,6 +38,8 @@ class LD2410TunerPanel extends HTMLElement {
     this._historyState = new Map();
     this._chartQueue = [];
     this._activeCharts = 0;
+    this._activeActions = 0;
+    this._actionError = "";
     this._onVisibilityChange = () => {
       if (!document.hidden) this._load();
     };
@@ -76,7 +78,7 @@ class LD2410TunerPanel extends HTMLElement {
   // yank a chart's drag handle back mid-gesture, so a redraw during this
   // window is deferred rather than applied immediately.
   _isEditing() {
-    if (this._dragging) return true;
+    if (this._dragging || this._activeActions) return true;
     const active = this.shadowRoot?.activeElement;
     if (!active) return false;
     return ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName);
@@ -114,13 +116,25 @@ class LD2410TunerPanel extends HTMLElement {
 
   async _action(button, action) {
     button.disabled = true;
+    this._activeActions++;
+    this._actionError = "";
+    this._showError("");
     try {
       await action();
-      this._showError("");
     } catch (err) {
-      this._showError(err?.message || String(err));
+      this._actionError = err?.message || String(err);
+      this._showError(this._actionError);
+      this.shadowRoot?.querySelector("#error")?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
     } finally {
       button.disabled = false;
+      this._activeActions--;
+      if (this._redrawPending && !this._isEditing()) {
+        this._redrawPending = false;
+        this._draw();
+      }
     }
   }
 
@@ -129,7 +143,7 @@ class LD2410TunerPanel extends HTMLElement {
     this._loading = true;
     try {
       this._data = await this._call("snapshot");
-      this._showError("");
+      this._showError(this._actionError);
       this._loaded = true;
       if (this._isEditing()) {
         this._redrawPending = true;
