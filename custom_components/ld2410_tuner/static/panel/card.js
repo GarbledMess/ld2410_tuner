@@ -19,6 +19,7 @@ export const panelCards = {
       `${id}:gate-table`,
     );
     this._wireCard(card, id, d);
+    this._placeHistoryGraph(card, id);
     return card;
   },
 
@@ -38,7 +39,7 @@ export const panelCards = {
         "Current presence label",
         this._trainingHtml(d),
       ),
-      this._section(id, "chart", "Gate visualization", this._chartHtml(id, d)),
+      `<div class="chart-home">${this._section(id, "chart", "Gate visualization", this._chartHtml(id, d))}</div>`,
       this._section(
         id,
         "history",

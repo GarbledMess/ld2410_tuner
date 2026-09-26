@@ -65,8 +65,16 @@ retains failures.
    correct recorded periods using the chart. Human labels override guesses. A
    chart range explicitly marked UNKNOWN is excluded from both training sources.
 5. Click **Learn thresholds**. Review device-wide validation in **Recommendations**,
-   then **Apply recommended thresholds** if the candidate passes. Test again in the
+   then **Apply learned thresholds** when you choose to use the candidate. Test again in the
    actual room, especially quiet sitting and empty-room false triggers.
+
+The learner evaluates all enabled gates together: presence succeeds when any gate
+triggers; an empty-room trigger from any gate is a device false positive. Per-gate
+misses are not device misses. A threshold of 100 disables a noisy or redundant
+gate and can be valid when other gates cover presence. If retained empty and
+presence signals overlap so that no threshold combination meets both targets,
+the result is marked red and the conflicting periods are available for graph review.
+You can still apply those learned thresholds explicitly.
 
 The learner needs at least 50 usable timed observations of each state, combining
 human labels and confident automatic estimates. There is no minimum human percentage
@@ -80,6 +88,14 @@ six seconds), independently of whether values change. Existing gate histograms c
 include legacy data without timestamps; the learning result reports the timed
 human and inferred observations actually used, separately from gate histogram counts.
 
+The Apply button is red when combined targets fail, yellow for limited human
+measurements or backtest concerns, and green when measured results meet the targets.
+Its text also states the outcome. It is disabled when no learned thresholds exist
+(and temporarily while an operation is running). The confirmation remains explicit;
+quality failures never trigger automatic writes or prevent a manual Apply. Invalid
+thresholds, stale labels/models and changed/unavailable device configuration still
+require a fresh Learn preview.
+
 The Recommendations section contains Learn/Apply and one device-wide report;
 expand its gate table for individual thresholds and sample counts. The chart shows
 the selected gate's results. Exports and Clear data are grouped under Data & export.
@@ -87,7 +103,12 @@ Actions display a named spinner and lock conflicting controls on that device unt
 they finish. Slow background refreshes show a separate loading indicator.
 
 In **Past presence labels**, choose a day and drag across the time bar to fill the
-From/To fields. Drag either handle to adjust the range, or use the time fields.
+From/To fields. Opening this section brings the energy graph into the editor.
+Choosing a day loads that day's readings; choosing a saved period zooms around it.
+Graph selections, timeline handles and time fields share the same selected period.
+Refresh keeps the historical window fixed. Conflict-period buttons in Recommendations
+open the corresponding readings for review.
+Drag either handle to adjust the range, or use the time fields.
 Focused handles also support left/right arrows (one minute; Shift for 15 minutes).
 Choose the status and save to confirm the change; dragging alone never saves a label.
 Selecting a saved period keeps the existing edit/remove workflow.
@@ -144,7 +165,7 @@ human references; this is not solved by assigning a higher confidence score.
 The [autolabelling replay report](docs/autolabelling-validation.md) records gains,
 regressions, and limits on the supplied recordings. Version 1.9.3 changes automatic
 labels and code organization; Learn/Apply remain explicit and retain their fitting
-and acceptance behavior. No software presence entity or automatic Apply is added.
+targets. Quality is advisory for explicit Apply. No software presence entity or automatic Apply is added.
 
 Each stored observation retains its automatic label and confidence alongside the
 gate energies. A guess starts with weight `0.20 × confidence`: 80%
@@ -168,7 +189,7 @@ removes a complete presence episode, sustained quiet presence, or empty-room spi
 The 1% upper bound limits exclusions; it does not trim a fixed percentage of data.
 
 The same retained observations feed fitting, sample counts, accuracy, episode/run
-checks, feasibility diagnostics and Apply eligibility. Human and automatic outlier
+checks, feasibility diagnostics and recommendation quality. Human and automatic outlier
 counts are shown separately. Original recordings and labels remain unchanged; raw
 measurements are available separately in the exported `raw_audit` result and do not
 participate in acceptance. The detector does not use candidate thresholds or errors
@@ -215,11 +236,11 @@ overall and in the recent labelled slice, targeting:
 - No completely missed presence episodes and no run longer than one missed sample.
 - At most 0.5% false-positive samples and one false-trigger burst per observed hour.
 
-Conflicts in the retained human-labelled observations still block Apply and report the measured reasons.
+Conflicts in the retained human-labelled observations mark the recommendation red and report the measured reasons; they do not block explicit Apply.
 Automatic-only recommendations can be applied, are explicitly described as estimates,
 and do not claim human-validated accuracy. Degenerate candidates that miss every
 estimated presence observation or trigger on every estimated empty-room observation
-are rejected when no human examples of that class are available.
+are marked red when no human examples of that class are available.
 
 These are observed metrics, **not proof of near-perfect field accuracy**. Adjacent
 samples are correlated; a backtest from the same session is not an independent room
@@ -261,8 +282,9 @@ occupancy entity.
   responses have bounded caches, and duplicate history/learning jobs are shared.
   Retrospective histogram rebuilding remains on the event loop and may be noticeable
   with a large 30-day history.
-- Apply requires the reviewed, passing recommendation and unchanged available
-  threshold configuration. Writes are serialized per device, raise thresholds
+- Apply requires a complete current-model recommendation and unchanged available
+  threshold configuration. Quality failures do not block a user-requested Apply.
+  Writes are serialized per device, raise thresholds
   before lowering others, and stop/report partial failure. Concurrent Apply calls
   are rejected. Service completion is not independent hardware readback; after a
   partial failure, reread configuration and learn again before retrying.
@@ -324,9 +346,19 @@ live Home Assistant compatibility.
 ## Automatic history maintenance
 
 At startup and hourly, the integration normalizes history in Home Assistant's
-executor. Valid version-1 blocks become version 2 with unknown automatic labels
+executor. Valid version-1/2 blocks become version 3; version-1 observations retain unknown automatic labels
 and confidence; confidence is never invented for older observations. Recorded
 energies, timestamps, missing values, and human-label precedence are preserved.
+
+Version 3 uses lossless byte-column delta encoding before zlib compression. It keeps
+every recorded timestamp, energy value, missing-value marker, automatic label and
+confidence value. Existing history migrates during startup/hourly cleanup; newly
+recorded blocks use the same format. It does not downsample older history. Earlier
+integration versions cannot read version-3 blocks; retain a pre-upgrade storage
+backup if you need to downgrade.
+
+The file grows as the 30-day window fills, then retention bounds its history size.
+Compression reduces storage per sample; it does not impose a fixed megabyte cap.
 
 Expired samples and labels are removed after the 30-day retention window. Corrupt
 blocks and wholly unusable rows are removed; invalid individual gate readings

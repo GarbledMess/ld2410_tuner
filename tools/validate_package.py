@@ -44,6 +44,7 @@ RUNTIME_FILES = (
     "static/panel/constants.js",
     "static/panel/controls.js",
     "static/panel/history.js",
+    "static/panel/history_graph.js",
     "static/panel/learning.js",
     "static/panel/selection.js",
     "static/panel/timeline.js",

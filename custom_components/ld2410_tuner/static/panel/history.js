@@ -91,6 +91,7 @@ export const panelHistory = {
         <button type="button" data-action="history-next" aria-label="Next day">›</button>
         <button type="button" data-action="history-today">Today</button>
       </div>
+      <div class="history-graph"></div>
       ${this._historyRangeHtml(timeline, ui.day)}
       <div class="history-axis"><span>${this._esc(this._historyTime(bounds.start))}</span><span>${this._esc(this._historyTime(bounds.end))} (next day)</span></div>
       <div class="history-legend">${Object.entries(STATUS)
@@ -170,11 +171,14 @@ export const panelHistory = {
 
   _refreshHistorySection(card, id) {
     this._captureDrafts(this.shadowRoot.querySelector("#grid"));
+    const chart = card.querySelector('.subsection[data-section="chart"]');
+    card.querySelector(".chart-home").append(chart);
     card.querySelector('[data-section="history"] .subsection-body').innerHTML =
       this._historyHtml(id, this._data.devices[id]);
     this._wireHistory(card, id);
     this._restoreDraft(card, id);
     this._wireHistoryRange(card, id);
+    this._placeHistoryGraph(card, id);
   },
 
   _changeHistoryDay(card, id, day) {
@@ -182,6 +186,7 @@ export const panelHistory = {
     ui.day = day;
     ui.month = day.slice(0, 7);
     this._refreshHistorySection(card, id);
+    this._showHistoryWindow(card, id, this._historyDayBounds(day));
   },
 
   _selectHistoryPeriod(card, id, start, end) {
@@ -203,6 +208,7 @@ export const panelHistory = {
     ])
       card.querySelector(`[data-action="history-${name}"]`).value = value;
     this._paintHistoryRange(card, id);
+    this._focusHistoryPeriod(card, id, label);
   },
 
   _newHistoryPeriod(card, id) {

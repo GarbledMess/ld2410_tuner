@@ -37,6 +37,16 @@ export const panelControls = {
         const btn = head.querySelector(".sub-toggle");
         btn.textContent = willCollapse ? "▸" : "▾";
         btn.setAttribute("aria-expanded", String(!willCollapse));
+        if (key === "history") {
+          this._placeHistoryGraph(card, id);
+          if (!willCollapse)
+            this._showHistoryWindow(
+              card,
+              id,
+              this._historyDayBounds(this._historyStateFor(id).day),
+            );
+          else this._chartState.get(id).historyLinked = false;
+        }
         if (key === "chart" && !willCollapse) this._maybeFetchChart(id, d);
       };
     });
@@ -98,9 +108,10 @@ export const panelControls = {
   },
 
   async _applyRecommendation(id) {
+    const outcome = this._applyOutcome(this._data.devices[id]?.last_learning);
     if (
       !confirm(
-        "Apply these recommended thresholds? Inferred results are estimates; verify quiet presence and empty-room behaviour.",
+        `Apply these learned thresholds? ${outcome.label}. Review the device results and verify quiet presence and empty-room behaviour.`,
       )
     )
       return;
@@ -132,6 +143,14 @@ export const panelControls = {
   },
 
   _wireActions(card, id) {
+    card.querySelectorAll('[data-action="review-period"]').forEach((button) => {
+      button.onclick = () =>
+        this._reviewHistoryRange(
+          id,
+          Number(button.dataset.start),
+          Number(button.dataset.end),
+        );
+    });
     const actions = {
       learn: () => this._learnThresholds(id),
       apply: () => this._applyRecommendation(id),

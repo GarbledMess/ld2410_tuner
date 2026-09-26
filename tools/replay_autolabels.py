@@ -9,11 +9,9 @@ Stored six-second observations cannot reconstruct intervening live readings.
 from __future__ import annotations
 
 import argparse
-import base64
 import importlib.util
 import json
 import struct
-import zlib
 from bisect import bisect_right
 from collections import Counter
 from pathlib import Path
@@ -204,11 +202,9 @@ def _write_progress(args, reports, result, models):
 
 
 def _encoded_samples(device):
+    history = load_module(PACKAGE / "history" / "cleanup.py")
     for block in device.get("history", []):
-        stride = 20 if block.get("version", 1) == 1 else 22
-        raw = zlib.decompress(base64.b64decode(block["data"], validate=True))
-        if len(raw) != block["count"] * stride:
-            raise ValueError("Invalid history block length")
+        _, _, raw, stride = history._read_clean_block(block)
         for offset in range(0, len(raw), stride):
             timestamp = block["start"] + struct.unpack(">H", raw[offset : offset + 2])[0]
             values = {

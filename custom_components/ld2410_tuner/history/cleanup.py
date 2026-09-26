@@ -76,6 +76,33 @@ def _append_label(result, label):
         result.append(label)
 
 
+def encode_payload(raw, stride=22):
+    """Delta-code each byte column before zlib; values and timestamps are lossless."""
+    columns = bytearray()
+    for column in range(stride):
+        previous = 0
+        for value in raw[column::stride]:
+            columns.append((value - previous) % 256)
+            previous = value
+    return base64.b64encode(zlib.compress(bytes(columns), 6)).decode("ascii")
+
+
+def decode_payload(encoded, version, count):
+    raw = zlib.decompress(base64.b64decode(encoded, validate=True))
+    stride = 20 if version == 1 else 22
+    if version not in (1, 2, 3) or count < 0 or len(raw) != count * stride:
+        raise ValueError("Invalid history block length or version")
+    if version != 3:
+        return raw
+    restored = bytearray(len(raw))
+    for column in range(stride):
+        value = 0
+        for index in range(count):
+            value = (value + raw[column * count + index]) % 256
+            restored[index * stride + column] = value
+    return bytes(restored)
+
+
 def _encode(samples):
     blocks = []
     group = []
@@ -87,11 +114,11 @@ def _encode(samples):
         raw = b"".join(struct.pack(">H", round(ts - start)) + row for ts, row in group)
         blocks.append(
             {
-                "version": 2,
+                "version": 3,
                 "start": start,
                 "end": group[-1][0],
                 "count": len(group),
-                "data": base64.b64encode(zlib.compress(raw, 6)).decode("ascii"),
+                "data": encode_payload(raw),
             }
         )
 
@@ -158,7 +185,7 @@ def _clean_blocks(device, cutoff, now, stats, rows):
         except (KeyError, TypeError, ValueError, zlib.error):
             stats["invalid_blocks"] += 1
             continue
-        stats["migrated_blocks"] += version == 1
+        stats["migrated_blocks"] += version < 3
         for pos in range(0, len(raw), stride):
             timestamp = start + struct.unpack(">H", raw[pos : pos + 2])[0]
             _retain_row(timestamp, raw[pos + 2 : pos + stride], version, rows, stats, cutoff, now)
@@ -168,9 +195,14 @@ def _read_clean_block(block):
     if not isinstance(block, dict):
         raise ValueError("Invalid block")
     version, start, count = block.get("version", 1), float(block["start"]), block["count"]
-    if version not in (1, 2) or not math.isfinite(start) or not isinstance(count, int) or count < 0:
+    if (
+        version not in (1, 2, 3)
+        or not math.isfinite(start)
+        or not isinstance(count, int)
+        or count < 0
+    ):
         raise ValueError("Invalid block header")
-    raw = zlib.decompress(base64.b64decode(block["data"], validate=True))
+    raw = decode_payload(block["data"], version, count)
     stride = 20 if version == 1 else 22
     if len(raw) != count * stride:
         raise ValueError("Invalid block length")
@@ -188,11 +220,11 @@ def _retain_row(timestamp, original, version, rows, stats, cutoff, now):
     if all(value == 255 for value in row):
         stats["discarded_samples"] += 1
         return
-    automatic = original[18:20] if version == 2 else bytes(2)
+    automatic = original[18:20] if version >= 2 else bytes(2)
     if automatic[0] not in (1, 2) or not 1 <= automatic[1] <= 100:
         automatic = bytes(2)
     normalized = row + automatic
-    stats["repaired_samples"] += row != original[:18] or (version == 2 and normalized != original)
+    stats["repaired_samples"] += row != original[:18] or (version >= 2 and normalized != original)
     stats["duplicate_samples"] += timestamp in rows
     rows[timestamp] = normalized
 

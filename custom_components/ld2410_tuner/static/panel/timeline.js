@@ -53,6 +53,7 @@ export const panelTimeline = {
         this._historyInputValue(selection[boundary]);
     this._paintHistoryRange(card, id, selection);
     this._captureDrafts(this.shadowRoot.querySelector("#grid"));
+    this._syncHistorySelection(card, id);
   },
 
   _wireHistoryRange(card, id) {
@@ -61,8 +62,11 @@ export const panelTimeline = {
     for (const handle of bar.querySelectorAll(".history-range-handle"))
       handle.onkeydown = (event) => this._keyHistoryRange(event, card, id);
     for (const boundary of ["start", "end"])
-      card.querySelector(`[data-action="history-${boundary}"]`).oninput = () =>
-        this._paintHistoryRange(card, id);
+      card.querySelector(`[data-action="history-${boundary}"]`).oninput =
+        () => {
+          this._paintHistoryRange(card, id);
+          this._syncHistorySelection(card, id);
+        };
     this._paintHistoryRange(card, id);
   },
 

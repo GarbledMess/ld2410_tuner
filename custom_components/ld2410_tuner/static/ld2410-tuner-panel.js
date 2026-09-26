@@ -1,3 +1,4 @@
+import { panelHistoryGraph } from "./panel/history_graph.js";
 import { panelTimeline } from "./panel/timeline.js";
 import { panelActivity } from "./panel/activity.js";
 import { panelVisualization } from "./panel/visualization.js";
@@ -211,6 +212,7 @@ class LD2410TunerPanel extends HTMLElement {
 }
 Object.assign(
   LD2410TunerPanel.prototype,
+  panelHistoryGraph,
   panelTimeline,
   panelActivity,
   panelChart,

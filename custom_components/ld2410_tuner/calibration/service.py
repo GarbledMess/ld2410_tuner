@@ -175,12 +175,24 @@ async def _apply_validated(runtime, device_id: str) -> dict[str, Any]:
 
 
 def _validate_learning(device, learned):
-    if learned.get("method") != METHOD or learned.get("status") != "ok":
+    if learned.get("method") != METHOD:
         raise ValueError("Learn thresholds with the current model before applying")
+    _validate_proposals(learned)
     if learned.get("label_revision", device.get("label_revision", 0)) != device.get(
         "label_revision", 0
     ):
         raise ValueError("Training labels changed; learn again before applying")
+
+
+def _validate_proposals(learned):
+    entities = learned.get("entities") or {}
+    proposals = learned.get("proposals") or {}
+    if not entities or set(proposals) != set(entities):
+        raise ValueError("No complete learned thresholds to apply; learn again")
+    for proposal in proposals.values():
+        value = proposal.get("threshold") if isinstance(proposal, dict) else None
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 100:
+            raise ValueError("Invalid learned threshold; learn again")
 
 
 def _read_threshold_configuration(runtime, device_id, registry, entities, current, limits):

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import struct
 import time
 import zlib
@@ -22,7 +21,7 @@ from ..const import (
     HISTORY_RETENTION_SECONDS,
     HISTORY_SAMPLE_INTERVAL,
 )
-from .cleanup import clean_history
+from .cleanup import clean_history, decode_payload, encode_payload
 
 
 def _record_history_sample(runtime, device_id: str, values: dict[str, float], now: float) -> None:
@@ -73,11 +72,11 @@ def _flush_history_block(runtime, device_id: str) -> None:
             else bytes(2)
         )
     block = {
-        "version": 2,
+        "version": 3,
         "start": start,
         "count": len(samples),
         "end": float(samples[-1][0]),
-        "data": base64.b64encode(zlib.compress(bytes(raw), 6)).decode("ascii"),
+        "data": encode_payload(bytes(raw)),
     }
     device = runtime.data.get("devices", {}).get(device_id)
     if device is not None:
@@ -143,8 +142,8 @@ def _history_view(runtime, device_id):
 
 
 @lru_cache(maxsize=1024)
-def _decode_history_block(encoded):
-    return zlib.decompress(base64.b64decode(encoded))
+def _decode_history_block(encoded, version, count):
+    return decode_payload(encoded, version, count)
 
 
 def _record_manual_histogram(runtime, device, row, now):
@@ -172,11 +171,11 @@ def _block_samples(block, cutoff, include_auto):
     start = float(block["start"])
     if float(block.get("end", start + 65535)) < cutoff:
         return
-    raw = _decode_history_block(block["data"])
     count, version = int(block["count"]), block.get("version", 1)
-    if version not in (1, 2):
+    raw = _decode_history_block(block["data"], version, count)
+    if version not in (1, 2, 3):
         return
-    stride = 2 + len(HISTORY_KEYS) + (2 if version == 2 else 0)
+    stride = 2 + len(HISTORY_KEYS) + (2 if version >= 2 else 0)
     if len(raw) < count * stride:
         return
     for index in range(count):

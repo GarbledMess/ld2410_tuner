@@ -46,7 +46,7 @@ export const panelChart = {
         <span><i class="lineswatch learned"></i>Learned threshold</span>
         <span><i class="lineswatch noise"></i>Highest not-present sample</span>
       </div>
-      <div class="muted" style="margin-top:6px">All 9 gates of the selected kind are shown together, each in its own color (select a G0–G8 button to highlight its shaded band). Drag across the chart to select a time range — two handles appear so you can fine-tune each end — then use the toolbar below the chart to set its status.</div>`;
+      <div class="muted" style="margin-top:6px">All 9 gates of the selected kind are shown together, each in its own color (select a G0–G8 button to highlight its shaded band).</div>`;
   },
 
   _chartKeys(cs) {
@@ -96,9 +96,9 @@ export const panelChart = {
     const cs = this._chartState.get(id);
     if (!cs) return;
     if (refresh) {
-      cs.end = null;
+      if (!cs.historyLinked) cs.end = null;
       cs.cache?.clear();
-      cs.selection = null;
+      if (!cs.historyLinked) cs.selection = null;
       cs.panelOpen = false;
     }
     const { kind, hours } = cs;
@@ -188,6 +188,7 @@ export const panelChart = {
       cs.gate,
       cs.kind,
       cs.hours,
+      cs.historyLinked,
       cs.loadedKind,
       cs.loadedHours,
       cs.loading,
@@ -196,6 +197,8 @@ export const panelChart = {
       cs.panelOpen,
       d.current_thresholds?.[activeKey],
       d.last_learning?.proposals,
+      d.last_learning?.training,
+      d.last_learning?.status,
     ]);
     if (
       !force &&
@@ -206,7 +209,10 @@ export const panelChart = {
     el._renderedData = cs.data;
     el._renderedState = signature;
     const matches =
-      cs.data && cs.loadedKind === cs.kind && cs.loadedHours === cs.hours;
+      cs.data &&
+      cs.loadedKind === cs.kind &&
+      cs.loadedHours === cs.hours &&
+      (cs.end == null || cs.data.end === cs.end);
     const status = this.shadowRoot.querySelector(
       `[data-chart-status="${CSS.escape(id)}"]`,
     );
@@ -273,13 +279,24 @@ export const panelChart = {
       : "";
   },
 
-  _learnStatusHtml(proposal, cs) {
+  _learnStatusHtml(proposal, cs, learning) {
     const label = `Gate ${cs.gate} · ${cs.kind === "move" ? "Movement" : "Still"}`;
     if (!proposal)
       return `<div class="learn-status muted">${this._esc(label)}: click "Learn thresholds" to compute a recommendation.</div>`;
     const noiseNote = this._noiseNote(proposal);
     if (proposal.status === "provisional")
       return `<div class="learn-status warn">${this._esc(label)}: saved threshold ${Math.round(proposal.threshold)} was produced by the previous learner. Learn again with the current model before Apply.</div>`;
+    if (proposal.threshold === 100) {
+      const measured = learning?.training;
+      const coverage = measured?.present_samples
+        ? ` The combined gates detect ${measured.present_samples - measured.false_negatives} / ${measured.present_samples} human-labelled presence samples; ${measured.false_negatives} are missed by every gate.`
+        : " No human-labelled device presence measurement is available.";
+      const state =
+        learning?.status === "unsafe"
+          ? "Combined device targets not met; manual Apply is available."
+          : "Review the combined device results before Apply.";
+      return `<div class="learn-status ${learning?.status === "unsafe" ? "warn" : "muted"}">${this._esc(label)}: threshold 100 disables this gate; presence detection relies on the other enabled gates.${noiseNote}${this._esc(coverage)} ${state}<button type="button" data-action="review-results">Review device results</button></div>`;
+    }
     if (proposal.status === "ok")
       return this._acceptedStatusHtml(proposal, label, noiseNote);
     if (proposal.status === "unsafe") {
@@ -287,7 +304,7 @@ export const panelChart = {
         proposal.not_present_samples > 0 && proposal.false_positives != null
           ? ` This gate alone triggers on ${proposal.false_positives} / ${proposal.not_present_samples} human-labelled empty-room samples.`
           : " No human-labelled empty-room measurement is available for this gate.";
-      return `<div class="learn-status warn"><div>${this._esc(label)}: candidate threshold ${Math.round(proposal.threshold)}.${this._esc(gateResult)}${noiseNote}${this._esc(this._presenceDependencyText(proposal))}</div><div><b>Combined device recommendation unsafe</b> — ${this._esc(proposal.message || "The combined thresholds did not meet the learning targets")}. These failure counts cover all enabled gates, not just this gate.</div><button type="button" data-action="review-results">Review device results</button><div>Candidate shown as a red dashed line; the combined recommendation has not been applied.</div></div>`;
+      return `<div class="learn-status warn"><div>${this._esc(label)}: candidate threshold ${Math.round(proposal.threshold)}.${this._esc(gateResult)}${noiseNote}${this._esc(this._presenceDependencyText(proposal))}</div><div><b>Combined device recommendation unsafe</b> — ${this._esc(proposal.message || "The combined thresholds did not meet the learning targets")}. These failure counts cover all enabled gates, not just this gate.</div><button type="button" data-action="review-results">Review device results</button><div>Candidate shown as a red dashed line; manual Apply is available despite these results.</div></div>`;
     }
     return `<div class="learn-status warn">${this._esc(label)}: not enough data yet — ${this._esc(proposal.message || "need more present and not-present samples")}.</div>`;
   },
@@ -298,6 +315,18 @@ export const panelChart = {
       ["chart-range", cs.hours],
     ]) {
       const control = card.querySelector(`[data-action="${action}"]`);
+      if (control && action === "chart-range") {
+        for (const option of [...control.options])
+          if (option.dataset.customRange && option.value !== String(value))
+            option.remove();
+        if (
+          ![...control.options].some((option) => option.value === String(value))
+        ) {
+          const option = new Option("Selected period", String(value));
+          option.dataset.customRange = "true";
+          control.add(option);
+        }
+      }
       if (control && control.value !== String(value))
         control.value = String(value);
     }
@@ -311,7 +340,7 @@ export const panelChart = {
     }
     const loading = cs.loading ? "Loading history… " : "";
     if (!matches) return loading;
-    return `${loading}Window ends ${new Date(cs.data.end * 1000).toLocaleString()}. ${cs.data.bucket_seconds || "—"}s buckets: mean line, sampled min–max band. Refresh moves to latest.`;
+    return `${loading}Window ends ${new Date(cs.data.end * 1000).toLocaleString()}. ${cs.data.bucket_seconds || "—"}s buckets: mean line, sampled min–max band. ${cs.historyLinked ? "Refresh keeps this historical window." : "Refresh moves to latest."}`;
   },
 
   _noiseNote(proposal) {
@@ -330,8 +359,7 @@ export const panelChart = {
       return `<div class="learn-status muted">${this._esc(label)}: estimated threshold ${Math.round(proposal.threshold)} from confidence-weighted observations. No human-labelled accuracy measurement yet.${noiseNote}</div>`;
     if (proposal.role === "unchanged")
       return `<div class="learn-status muted">${this._esc(label)}: no usable observations for this gate; its current threshold is preserved.</div>`;
-    if (proposal.role === "suppressed")
-      return `<div class="learn-status muted">${this._esc(label)}: threshold 100 suppresses this gate; its observed background requires suppression; inspect the device-wide results.</div>`;
+
     return `<div class="learn-status ok">${this._esc(label)}: learned threshold ${Math.round(proposal.threshold)} — this gate detects ${Math.round((proposal.sensitivity || 0) * 100)}% of human-labelled training samples, ${proposal.false_positives || 0} exception(s) out of ${proposal.not_present_samples} not-present samples.${noiseNote}</div>`;
   },
 };

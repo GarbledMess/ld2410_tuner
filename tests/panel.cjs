@@ -9,6 +9,7 @@ const testHistoryEditor = require("./browser/history.cjs");
 const testApply = require("./browser/apply.cjs");
 const testActivity = require("./browser/activity.cjs");
 const testTimeline = require("./browser/timeline.cjs");
+const testHistoryGraph = require("./browser/history_graph.cjs");
 const { execFileSync } = require("node:child_process");
 (async () => {
   const registration = JSON.parse(
@@ -358,12 +359,12 @@ const { execFileSync } = require("node:child_process");
     );
     assert.match(
       report,
-      /same retained observations determine thresholds, accuracy, episodes, feasibility and Apply eligibility/,
+      /same retained observations determine thresholds, accuracy, episodes, feasibility and recommendation quality/,
     );
     assert.doesNotMatch(diagnostic, /Correct labels/);
     assert.equal(
       await cards.first().locator('[data-action="apply"]').isDisabled(),
-      true,
+      false,
     );
     // Updated conflict periods stay current even when chart data is unchanged.
     await page.evaluate(() => {
@@ -431,6 +432,12 @@ const { execFileSync } = require("node:child_process");
 
     // A real focused selector must render the response without needing blur.
     const range = cards.first().locator('[data-action="chart-range"]');
+    await range.selectOption("6");
+    await page.waitForFunction(
+      () =>
+        !panel._chartState.get("a").loading &&
+        panel._chartState.get("a").loadedHours === 6,
+    );
     const anchor = await page.evaluate(() => panel._chartState.get("a").end);
     await page.evaluate(() => {
       window.delay = 100;
@@ -658,11 +665,12 @@ const { execFileSync } = require("node:child_process");
     await page.evaluate(() => window.dispatchEvent(new Event("pointercancel")));
     assert.equal(await page.evaluate(() => panel._dragging), false);
 
-    await testApply(page);
+    await testApply(page, screenshotDir);
     await testActivity(page);
     await testTouchSelection(page);
     await testHistoryEditor(page);
     await testTimeline(page);
+    await testHistoryGraph(page);
     await page.setViewportSize({ width: 390, height: 844 });
     await cards
       .first()

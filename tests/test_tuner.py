@@ -240,7 +240,7 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(result["validation"]["sensitivity"], 1)
         self.assertTrue(all(p["sensitivity"] == 0.5 for p in result["proposals"].values()))
 
-    def test_held_out_background_drift_blocks_apply(self):
+    def test_held_out_background_drift_marks_candidate_unsafe(self):
         rows = row_samples({"g0_move": 30}, {"g0_move": 5})
         rows[-20:] = [(i, {"g0_move": 40}, "not_present") for i in range(180, 200)]
         result = fit(rows, ["g0_move"])
@@ -399,7 +399,7 @@ class HistoryCleanupTests(unittest.TestCase):
             rows = list(runtime._iter_history_samples(updated, include_auto=True))
         self.assertEqual([ts for ts, row in rows], [100.25, 106.25, 112.75])
         self.assertEqual([row[-2:] for ts, row in rows], [bytes(2), bytes(2), bytes([1, 80])])
-        self.assertEqual(stats["migrated_blocks"], 1)
+        self.assertEqual(stats["migrated_blocks"], 2)
         self.assertEqual(sum(updated["histograms"]["g0_move"]["present"]), 3)
         again, _ = clean_history(updated, [], 130, 1000)
         self.assertEqual(again, updated)
@@ -891,6 +891,35 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             "proposals": {key: {"threshold": 20} for key in entities},
         }
 
+    async def test_unsafe_recommendation_can_be_applied_explicitly(self):
+        self.configuration()
+        learned = self.device["last_learning"]
+        learned["status"] = "unsafe"
+        learned["feasibility"] = {"status": "conflict"}
+        learned["warnings"] = ["Combined thresholds miss the targets"]
+        for proposal in learned["proposals"].values():
+            proposal["status"] = "unsafe"
+        result = await self.runtime.apply("a")
+        self.assertEqual(result["applied"], dict.fromkeys(learned["entities"], 20))
+        self.assertEqual(result["skipped"], {})
+        self.assertEqual(self.hass.services.async_call.await_count, 6)
+        self.assertEqual(learned["status"], "unsafe")
+
+    async def test_apply_rejects_missing_or_invalid_proposals_before_writing(self):
+        for proposals in ({}, {"g0_move": {"threshold": 20}}):
+            with self.subTest(proposals=proposals):
+                self.configuration()
+                self.device["last_learning"]["proposals"] = proposals
+                with self.assertRaisesRegex(ValueError, "No complete learned thresholds"):
+                    await self.runtime.apply("a")
+        for value in (None, True, "20", float("nan"), float("inf"), -1, 101):
+            with self.subTest(value=value):
+                self.configuration()
+                self.device["last_learning"]["proposals"]["g0_move"]["threshold"] = value
+                with self.assertRaisesRegex(ValueError, "Invalid learned threshold"):
+                    await self.runtime.apply("a")
+        self.hass.services.async_call.assert_not_awaited()
+
     async def test_apply_stops_after_partial_failure(self):
         self.configuration()
 
@@ -1016,7 +1045,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         }
         self.runtime._record_history_sample("a", {"g0_move": 20}, self.now)
         self.runtime._flush_history_block("a")
-        self.assertEqual(self.device["history"][0]["version"], 2)
+        self.assertEqual(self.device["history"][0]["version"], 3)
         row = list(self.runtime._iter_history_samples(self.device, include_auto=True))[0][1]
         self.assertEqual(tuple(row[-2:]), (1, 73))
         self.assertEqual(len(list(self.runtime._iter_history_samples(self.device))[0][1]), 18)

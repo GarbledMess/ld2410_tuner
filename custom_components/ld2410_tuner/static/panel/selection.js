@@ -8,6 +8,9 @@ export const panelSelection = {
   },
 
   _selectionToolbarHtml(cs) {
+    if (cs.historyLinked) {
+      return '<div class="selection-toolbar muted">Drag to select or resize a period. Choose its status and save in the editor below.</div>';
+    }
     if (!cs.selection) {
       return `<div class="selection-toolbar muted">Drag across the chart to select a time range to label. Once selected, drag either end to fine-tune.</div>`;
     }
@@ -174,6 +177,7 @@ export const panelSelection = {
             syncPanelFields();
           };
           const onUp = () => {
+            if (cs.historyLinked) this._useGraphSelection(id, cs.selection);
             this._renderChartCanvas(id);
           };
           this._beginDrag(ev, onMove, onUp, restore);
@@ -213,6 +217,7 @@ export const panelSelection = {
           }
           cs.selection = { start: xToTime(x0), end: xToTime(x1) };
           cs.panelOpen = false;
+          if (cs.historyLinked) this._useGraphSelection(id, cs.selection);
           this._renderChartCanvas(id);
         };
         this._beginDrag(ev, onMove, onUp, restore);

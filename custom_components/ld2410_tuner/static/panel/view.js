@@ -29,6 +29,9 @@ export const panelView = {
         select,button { font:inherit; min-height:44px; padding:8px 12px; border-radius:9px; border:1px solid var(--divider-color); background:var(--card-background-color); color:var(--primary-text-color); box-sizing:border-box; }
         button { cursor:pointer; }
         button.primary { background:var(--primary-color); color:var(--text-primary-color,#fff); border:0; }
+        button.apply-bad { background:#b71c1c; color:#fff; border-color:#b71c1c; }
+        button.apply-caution { background:#fbc02d; color:#212121; border-color:#fbc02d; }
+        button.apply-good { background:#2e7d32; color:#fff; border-color:#2e7d32; }
         button:disabled { opacity:.5; cursor:default; }
         .training,.controls,.export { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
         .controls,.export { margin-bottom:8px; }
