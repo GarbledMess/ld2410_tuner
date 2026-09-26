@@ -16,7 +16,7 @@ from ..history import recording
 from ..presence import autolabelling
 from ..presentation import charts
 from ..presentation import snapshots as presentation
-from . import discovery
+from . import discovery, schedule
 
 
 class TunerRuntime:
@@ -30,6 +30,8 @@ class TunerRuntime:
         self.unsub_registry = None
         self.unsub_retention = None
         self.unsub_sampling = None
+        self.unsub_nightly = None
+        self._nightly_task = None
         self.data.setdefault("devices", {})
         self._save_task: asyncio.Task | None = None
         self._timeout_tasks: dict[str, asyncio.Task] = {}
@@ -50,6 +52,9 @@ class TunerRuntime:
     async def _delayed_save(self) -> None:
         await asyncio.sleep(STORE_DELAY)
         await self.store.async_save(self.data)
+
+    configure_learning_schedule = schedule.configure
+    nightly_tick = schedule.tick
 
     subscribe_state_changes = discovery.subscribe_state_changes
     handle_registry_update = discovery.handle_registry_update

@@ -3,7 +3,8 @@ export const panelControls = {
     this._wireCollapse(card, id, d);
     this._wireTraining(card, id, d);
     this._wireHistory(card, id);
-    this._wireActions(card, id);
+    this._wireActions(card, id, d);
+    this._wireSavedResults(card, id);
     this._wireChartControls(card, id);
     this._restoreDraft(card, id);
     this._wireHistoryRange(card, id);
@@ -103,19 +104,29 @@ export const panelControls = {
   },
   async _learnThresholds(id) {
     await this._call("learn", { device_id: id }, 120000);
+    this._learningSelection.set(id, "user");
     this._setSectionCollapsed(id, "details", false);
     await this._load(true);
   },
 
-  async _applyRecommendation(id) {
-    const outcome = this._applyOutcome(this._data.devices[id]?.last_learning);
+  async _applyRecommendation(id, device) {
+    const slot = device.learning_slot;
+    const selected = device.last_learning;
+    const outcome = this._applyOutcome(selected);
     if (
       !confirm(
         `Apply these learned thresholds? ${outcome.label}. Review the device results and verify quiet presence and empty-room behaviour.`,
       )
     )
       return;
-    const result = await this._call("apply", { device_id: id }, 240000);
+    const payload = { device_id: id };
+    if (selected?.id)
+      Object.assign(payload, {
+        slot,
+        result_id: selected.id,
+        expected: device.current_thresholds,
+      });
+    const result = await this._call("apply", payload, 240000);
     await this._load(true);
     if (Object.keys(result.skipped || {}).length)
       throw new Error(
@@ -139,10 +150,11 @@ export const panelControls = {
     this._chartState.delete(id);
     this._historyState.delete(id);
     this._drafts.delete(id);
+    this._learningSelection.delete(id);
     await this._load(true);
   },
 
-  _wireActions(card, id) {
+  _wireActions(card, id, d) {
     card.querySelectorAll('[data-action="review-period"]').forEach((button) => {
       button.onclick = () =>
         this._reviewHistoryRange(
@@ -153,7 +165,7 @@ export const panelControls = {
     });
     const actions = {
       learn: () => this._learnThresholds(id),
-      apply: () => this._applyRecommendation(id),
+      apply: () => this._applyRecommendation(id, d),
       clear: () => this._clearDevice(id),
       json: () => this._export(id, "json"),
       csv: () => this._export(id, "csv"),

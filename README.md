@@ -26,6 +26,41 @@ in HACS under **Custom repositories** using
 **LD2410 Tuner**, restart Home Assistant, and add the integration as above.
 Adding a custom repository does not require submitting it to the default catalogue.
 
+## Overnight learning and saved results
+
+Enable **Overnight learning** at the top of the existing panel, choose a time and
+save the schedule. It starts disabled with a suggested time of 03:00 and uses Home
+Assistant's configured timezone. Each enabled daily pass learns the devices one at
+a time; it never applies thresholds. If Home Assistant was offline at that time,
+the pass runs after startup. A persisted daily marker avoids duplicate runs after
+restarts or during the repeated autumn clock-change hour. A skipped springtime
+clock hour runs at the first check after the jump. Disabling the schedule lets an
+in-progress device finish and stops before the next device.
+
+Each device header shows its latest overnight outcome, including insufficient data,
+failed or interrupted runs. A failed device does not prevent other devices learning.
+The **Recommendations** selector reviews four bounded saved-result slots:
+
+- **User learnt:** latest manually requested Learn result.
+- **Autolearnt:** latest completed overnight Learn result; it does not replace User learnt.
+- **Current:** last fully applied result, checked against Home Assistant's reported states.
+- **Previous:** settings replaced by that successful Apply, available for rollback.
+  On the first Apply, the original device thresholds are captured without inventing
+  accuracy measurements. If settings were changed outside the tuner, those actual
+  pre-Apply values become Previous instead of an outdated saved result.
+
+Changing the selector updates the report, gate table, graph and Apply button together.
+Only a fully successful Apply rotates Current/Previous. Quality warnings remain
+advisory. Selecting a saved result explicitly allows restoring it after labels or
+thresholds changed; the earlier accuracy report is identified as stale when labels
+changed. Apply checks that the selected result and the currently displayed device
+configuration are still the ones reviewed. Old-model or incomplete results and
+incompatible/unavailable gate configurations still require a fresh Learn.
+
+The four slots are stored with the existing integration data and survive restarts;
+they contain thresholds and diagnostics, not duplicate energy recordings. Clear data
+also removes them. No extra tabs or automatic threshold application are introduced.
+
 ## Repository layout
 
 The installable package is `custom_components/ld2410_tuner`. Its entrypoint owns
@@ -93,8 +128,9 @@ measurements or backtest concerns, and green when measured results meet the targ
 Its text also states the outcome. It is disabled when no learned thresholds exist
 (and temporarily while an operation is running). The confirmation remains explicit;
 quality failures never trigger automatic writes or prevent a manual Apply. Invalid
-thresholds, stale labels/models and changed/unavailable device configuration still
-require a fresh Learn preview.
+thresholds, old models and incompatible/unavailable device configuration still
+require a fresh Learn preview. Explicitly selected saved results can be restored
+after label changes; their older measurements are identified in the panel.
 
 The Recommendations section contains Learn/Apply and one device-wide report;
 expand its gate table for individual thresholds and sample counts. The chart shows
@@ -165,7 +201,7 @@ human references; this is not solved by assigning a higher confidence score.
 The [autolabelling replay report](docs/autolabelling-validation.md) records gains,
 regressions, and limits on the supplied recordings. Version 1.9.3 changes automatic
 labels and code organization; Learn/Apply remain explicit and retain their fitting
-targets. Quality is advisory for explicit Apply. No software presence entity or automatic Apply is added.
+targets. Quality is advisory for explicit Apply. No software presence entity or automatic Apply is added; optional overnight runs only save recommendations.
 
 Each stored observation retains its automatic label and confidence alongside the
 gate energies. A guess starts with weight `0.20 × confidence`: 80%
@@ -282,8 +318,8 @@ occupancy entity.
   responses have bounded caches, and duplicate history/learning jobs are shared.
   Retrospective histogram rebuilding remains on the event loop and may be noticeable
   with a large 30-day history.
-- Apply requires a complete current-model recommendation and unchanged available
-  threshold configuration. Quality failures do not block a user-requested Apply.
+- Apply requires a complete current-model recommendation and available threshold
+  configuration matching the reviewed panel state for saved results. Quality failures do not block a user-requested Apply.
   Writes are serialized per device, raise thresholds
   before lowering others, and stop/report partial failure. Concurrent Apply calls
   are rejected. Service completion is not independent hardware readback; after a

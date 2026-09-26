@@ -13,7 +13,7 @@ from homeassistant.helpers import entity_registry as er
 
 from ..const import GATE_RE, HISTORY_KEYS
 from ..history.labels import _history_label_reader
-from . import device_io
+from . import device_io, results
 from .fitting import MAX_CLASS_SAMPLES, METHOD, MIN_AUTO_CONFIDENCE, fit_thresholds
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,10 +45,18 @@ async def set_gate_threshold(runtime, device_id: str, key: str, value: float) ->
         return await device_io.write_threshold(runtime, device_id, key, value, button)
 
 
-async def async_learn(runtime, device_id):
+async def async_learn(runtime, device_id, source="user"):
+    if source not in ("user", "automatic"):
+        raise ValueError("Unknown learning source")
     if device_id not in runtime._learning_jobs:
         runtime._learning_jobs[device_id] = asyncio.create_task(runtime._learn_once(device_id))
-    return await asyncio.shield(runtime._learning_jobs[device_id])
+    learned = await asyncio.shield(runtime._learning_jobs[device_id])
+    device = runtime.data["devices"][device_id]
+    if learned["label_revision"] != device.get("label_revision", 0):
+        raise ValueError("Training labels changed while learning; learn again")
+    result = results.remember_learning(device, learned, source)
+    runtime._schedule_save()
+    return result
 
 
 async def _learn_once(runtime, device_id):
@@ -63,8 +71,6 @@ async def _learn_once(runtime, device_id):
         if revision != device.get("label_revision", 0):
             raise ValueError("Training labels changed while learning; learn again")
         learned["label_revision"] = revision
-        device["last_learning"] = learned
-        runtime._schedule_save()
         return learned
     finally:
         runtime._learning_jobs.pop(device_id, None)
@@ -123,10 +129,12 @@ def _threshold_configuration(runtime, device_id):
     return entities, current
 
 
-async def apply(runtime, device_id: str) -> dict[str, Any]:
+async def apply(
+    runtime, device_id: str, slot=None, result_id=None, expected=None
+) -> dict[str, Any]:
     with device_io.device_operation(runtime, device_id):
         try:
-            result = await runtime._apply_validated(device_id)
+            result = await runtime._apply_validated(device_id, slot, result_id, expected)
         except ValueError as error:
             _LOGGER.warning("Apply rejected before threshold writes: %s", error)
             raise
@@ -144,18 +152,29 @@ async def apply(runtime, device_id: str) -> dict[str, Any]:
         return result
 
 
-async def _apply_validated(runtime, device_id: str) -> dict[str, Any]:
+async def _apply_validated(
+    runtime, device_id: str, slot=None, result_id=None, expected=None
+) -> dict[str, Any]:
     device = runtime.data["devices"].get(device_id)
     if not device:
         raise ValueError("Unknown device")
-    learned = device.get("last_learning") or {}
-    _validate_learning(device, learned)
+    learned = (
+        results.selected_result(device, slot, result_id)
+        if slot
+        else device.get("last_learning") or {}
+    )
+    _validate_learning(device, learned, check_revision=slot is None)
     button = await device_io.prepare_device(runtime, device_id, learned["entities"])
-    _validate_learning(device, learned)
+    _validate_learning(device, learned, check_revision=slot is None)
     entities, current = runtime._threshold_configuration(device_id)
     if (
         entities != learned.get("entities")
-        or current != learned.get("configuration")
+        or current
+        != (
+            {key: (expected or {}).get(key) for key in entities}
+            if slot
+            else learned.get("configuration")
+        )
         or set(current) != set(entities)
     ):
         raise ValueError(
@@ -163,7 +182,11 @@ async def _apply_validated(runtime, device_id: str) -> dict[str, Any]:
         )
     # A device receives serial configuration commands. Raise noisy thresholds
     # before lowering sensitive ones and stop on the first partial failure.
-    applied, skipped = await _apply_changes(runtime, device_id, entities, learned, current, button)
+    applied, skipped = await _apply_changes(
+        runtime, device_id, entities, learned, current, button, slot is None
+    )
+    if not skipped:
+        results.remember_applied(device, learned, entities, current)
     device["last_applied"] = applied
     runtime._schedule_save()
     return {
@@ -174,13 +197,13 @@ async def _apply_validated(runtime, device_id: str) -> dict[str, Any]:
     }
 
 
-def _validate_learning(device, learned):
+def _validate_learning(device, learned, check_revision=True):
     if learned.get("method") != METHOD:
         raise ValueError("Learn thresholds with the current model before applying")
     _validate_proposals(learned)
-    if learned.get("label_revision", device.get("label_revision", 0)) != device.get(
-        "label_revision", 0
-    ):
+    if check_revision and learned.get(
+        "label_revision", device.get("label_revision", 0)
+    ) != device.get("label_revision", 0):
         raise ValueError("Training labels changed; learn again before applying")
 
 
@@ -218,7 +241,9 @@ def _distance_limit(entity_id, value, limits):
     limits[kind] = int(value)
 
 
-async def _apply_changes(runtime, device_id, entities, learned, current, button):
+async def _apply_changes(
+    runtime, device_id, entities, learned, current, button, check_revision=True
+):
     changes = sorted(
         entities,
         key=lambda key: learned["proposals"][key]["threshold"] - current[key],
@@ -232,7 +257,7 @@ async def _apply_changes(runtime, device_id, entities, learned, current, button)
             skipped[key] = "Not attempted after an earlier write failed"
             continue
         try:
-            _validate_learning(runtime.data["devices"][device_id], learned)
+            _validate_learning(runtime.data["devices"][device_id], learned, check_revision)
             await device_io.write_threshold(runtime, device_id, key, value, button)
             device_io.check_reported(runtime, entities, applied)
             applied[key] = value

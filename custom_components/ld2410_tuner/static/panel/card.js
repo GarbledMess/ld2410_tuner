@@ -1,5 +1,6 @@
 export const panelCards = {
   _createCard(id, d, previousChart) {
+    d = this._learningView(id, d);
     if (!this._seenDevices.has(id)) {
       this._seenDevices.add(id);
       this._collapsed.add(id);
@@ -28,7 +29,7 @@ export const panelCards = {
     const confidence = canFeedback
       ? " · " + Math.round((al.confidence || 0) * 100) + "%"
       : "";
-    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span></div><div class="area">${this._esc(d.area_id || "No area")}</div></div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>`;
+    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}</div><div class="area">${this._esc(d.area_id || "No area")}</div></div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>`;
   },
 
   _cardBodyHtml(id, d, info) {
@@ -56,7 +57,7 @@ export const panelCards = {
         id,
         "details",
         "Recommendations",
-        this._recommendationsHtml(d),
+        this._recommendationsHtml(d, id),
       ),
       this._section(id, "actions", "Data & export", this._dataActionsHtml()),
     ].join("");

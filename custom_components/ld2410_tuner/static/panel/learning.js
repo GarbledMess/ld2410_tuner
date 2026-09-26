@@ -140,10 +140,10 @@ export const panelLearning = {
     }).some(([key, fallback]) => metrics[key] > (targets[key] ?? fallback));
   },
 
-  _recommendationsHtml(d) {
+  _recommendationsHtml(d, id) {
     const learning = d.last_learning;
     const outcome = this._applyOutcome(learning);
-    return `<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
+    return `${this._savedResultsHtml(id, d)}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
       <div class="muted">Learn creates a preview. Apply writes it to the device even when quality targets are missed. Red: targets not met; yellow: limited evidence or review concerns; green: measured targets met. Presence requires any enabled gate to trigger; any gate triggering in an empty room is a device false positive. A threshold of 100 disables that gate.</div>
       ${this._learningWarningHtml(learning)}${this._validationHtml(learning)}
       <details class="gate-results"><summary>Gate thresholds and sample counts</summary>${this._detailsHtml(d)}</details>`;

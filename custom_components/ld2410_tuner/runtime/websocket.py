@@ -28,7 +28,27 @@ def _websocket_routes():
             True,
         ),
         ("learn", device, "async_learn", ("device_id",), "invalid_device", False),
-        ("apply", device, "apply", ("device_id",), "invalid_device", False),
+        (
+            "apply",
+            {
+                **device,
+                vol.Optional("slot"): vol.In(["user", "previous", "current", "automatic"]),
+                vol.Optional("result_id"): str,
+                vol.Optional("expected"): dict,
+            },
+            "apply",
+            ("device_id", "slot", "result_id", "expected"),
+            "invalid_device",
+            False,
+        ),
+        (
+            "configure_learning_schedule",
+            {vol.Required("enabled"): bool, vol.Required("at"): str},
+            "configure_learning_schedule",
+            ("enabled", "at"),
+            "invalid_request",
+            False,
+        ),
         ("export", {vol.Optional("device_id"): str}, "export_data", ("device_id",), None, False),
         ("clear", device, "clear_samples", ("device_id",), None, True),
         (

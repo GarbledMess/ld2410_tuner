@@ -10,6 +10,7 @@ const testApply = require("./browser/apply.cjs");
 const testActivity = require("./browser/activity.cjs");
 const testTimeline = require("./browser/timeline.cjs");
 const testHistoryGraph = require("./browser/history_graph.cjs");
+const testSavedResults = require("./browser/saved_results.cjs");
 const { execFileSync } = require("node:child_process");
 (async () => {
   const registration = JSON.parse(
@@ -665,12 +666,20 @@ const { execFileSync } = require("node:child_process");
     await page.evaluate(() => window.dispatchEvent(new Event("pointercancel")));
     assert.equal(await page.evaluate(() => panel._dragging), false);
 
+    // Exercise refreshes explicitly below; pause the background timer so it cannot
+    // replace DOM nodes halfway through a visual capture. Reconnect restores it.
+    await page.evaluate(async () => {
+      clearInterval(panel._pollTimer);
+      panel._pollTimer = null;
+      await panel._loadPromise;
+    });
     await testApply(page, screenshotDir);
     await testActivity(page);
     await testTouchSelection(page);
     await testHistoryEditor(page);
     await testTimeline(page);
     await testHistoryGraph(page);
+    await testSavedResults(page, screenshotDir);
     await page.setViewportSize({ width: 390, height: 844 });
     await cards
       .first()

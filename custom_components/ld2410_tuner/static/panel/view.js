@@ -32,6 +32,11 @@ export const panelView = {
         button.apply-bad { background:#b71c1c; color:#fff; border-color:#b71c1c; }
         button.apply-caution { background:#fbc02d; color:#212121; border-color:#fbc02d; }
         button.apply-good { background:#2e7d32; color:#fff; border-color:#2e7d32; }
+        .learning-schedule { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:12px 0; }
+        .learning-schedule label { display:flex; align-items:center; gap:6px; }
+        .learning-schedule input[type="time"] { font:inherit; padding:8px; border:1px solid var(--divider-color); border-radius:9px; background:var(--card-background-color); color:var(--primary-text-color); }
+        .saved-result-picker { display:flex; flex-direction:column; gap:5px; margin-bottom:8px; }
+        .saved-result-picker select { width:100%; min-width:0; }
         button:disabled { opacity:.5; cursor:default; }
         .training,.controls,.export { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
         .controls,.export { margin-bottom:8px; }
@@ -188,6 +193,7 @@ export const panelView = {
         <div id="error" role="alert" class="notice warn" hidden></div>
         <h1>LD2410 Tuner <span class="panel-version" aria-label="Loaded panel version" title="Version requested when this panel loaded. Reload the page after updating.">${this._frontendVersion ? `v${this._esc(this._frontendVersion)}` : "Version unavailable"}</span></h1>
         <div class="subtitle">Automatic estimates learn from signal patterns over time and carry confidence scores. Add empty-room, moving and quiet-sitting examples to improve them. Learn prioritizes reliable presence across sessions; human labels always take priority over lower-confidence estimates. Inferred data proportions do not block Apply.</div>
+        <div id="learning-schedule" class="learning-schedule"></div>
         <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         <div class="grid" id="grid"></div>
       </div>`;
@@ -236,6 +242,7 @@ export const panelView = {
   },
 
   _draw() {
+    this._drawLearningSchedule();
     const grid = this.shadowRoot.querySelector("#grid");
     this._captureDrafts(grid);
     const charts = new Map(

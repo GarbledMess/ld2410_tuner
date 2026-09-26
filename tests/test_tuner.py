@@ -497,7 +497,7 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
         await self.commands[f"{mod.DOMAIN}/{name}"](self.hass, self.connection, {"id": 7, **fields})
 
     async def test_commands_remain_admin_only_and_lookup_live_runtime(self):
-        self.assertEqual(len(self.commands), 11)
+        self.assertEqual(len(self.commands), 12)
         self.assertTrue(all(command.admin_only for command in self.commands.values()))
         self.hass.data[mod.DOMAIN] = types.SimpleNamespace(snapshot=lambda: {"reloaded": True})
         await self.call("snapshot")
@@ -508,7 +508,7 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.async_learn.assert_awaited_once_with("a")
         self.runtime.apply.assert_not_awaited()
         await self.call("apply", device_id="a")
-        self.runtime.apply.assert_awaited_once_with("a")
+        self.runtime.apply.assert_awaited_once_with("a", None, None, None)
 
     async def test_missing_runtime_and_invalid_device_preserve_error_contract(self):
         self.runtime.async_learn.side_effect = ValueError("Unknown device")

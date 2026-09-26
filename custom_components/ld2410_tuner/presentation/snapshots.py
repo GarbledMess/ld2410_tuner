@@ -8,7 +8,9 @@ from typing import Any
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
+from ..calibration.results import saved_results
 from ..const import GATE_RE, HISTOGRAM_BINS, HISTORY_RETENTION_DAYS, MAX_HISTOGRAM_COUNT
+from ..runtime.schedule import settings
 
 
 def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
@@ -24,7 +26,7 @@ def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
 def snapshot(runtime) -> dict[str, Any]:
     registry = er.async_get(runtime.hass)
     runtime.refresh_devices(registry)
-    result = {"devices": {}}
+    result = {"devices": {}, "learning_schedule": settings(runtime)}
 
     _snapshot_devices(runtime, registry, result)
     return result
@@ -101,6 +103,8 @@ def _snapshot_device(runtime, device_id, device, registry):
         },
         "current_thresholds": current,
         "last_learning": device.get("last_learning"),
+        "learning_results": saved_results(device),
+        "nightly_learning": device.get("nightly_learning"),
         "last_applied": device.get("last_applied", {}),
         "auto_learning": runtime.auto_learning_summary(device),
         "history": {
@@ -145,6 +149,8 @@ def _export_device(runtime, did, devreg, registry):
         },
         "current_thresholds": current_thresholds,
         "last_learning": device.get("last_learning"),
+        "learning_results": saved_results(device),
+        "nightly_learning": device.get("nightly_learning"),
         "last_applied": device.get("last_applied", {}),
         "auto_learning": device.get("auto", {}),
         "history": {

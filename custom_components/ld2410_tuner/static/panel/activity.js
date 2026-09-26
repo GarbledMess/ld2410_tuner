@@ -47,7 +47,9 @@ export const panelActivity = {
     const disabled = fields.map((field) => [field, field.disabled]);
     for (const [field] of disabled) field.disabled = true;
     control.setAttribute("aria-busy", "true");
-    const status = card?.querySelector(".action-status");
+    const status =
+      card?.querySelector(".action-status") ||
+      this.shadowRoot.querySelector("#snapshot-status");
     if (status) {
       status.textContent = this._actionLabel(control.dataset.action);
       status.classList.add("is-busy");
@@ -59,6 +61,7 @@ export const panelActivity = {
     return (
       {
         learn: "Learning thresholds…",
+        "nightly-save": "Saving overnight schedule…",
         apply: "Applying thresholds and checking reported values…",
         clear: "Clearing device data…",
         json: "Preparing JSON export…",

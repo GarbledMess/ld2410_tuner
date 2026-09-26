@@ -1,3 +1,4 @@
+import { panelSavedResults } from "./panel/saved_results.js";
 import { panelHistoryGraph } from "./panel/history_graph.js";
 import { panelTimeline } from "./panel/timeline.js";
 import { panelActivity } from "./panel/activity.js";
@@ -39,6 +40,7 @@ class LD2410TunerPanel extends HTMLElement {
     this._dragging = false;
     this._drafts = new Map();
     this._historyState = new Map();
+    this._learningSelection = new Map();
     this._chartQueue = [];
     this._activeCharts = 0;
     this._activeActions = 0;
@@ -212,6 +214,7 @@ class LD2410TunerPanel extends HTMLElement {
 }
 Object.assign(
   LD2410TunerPanel.prototype,
+  panelSavedResults,
   panelHistoryGraph,
   panelTimeline,
   panelActivity,

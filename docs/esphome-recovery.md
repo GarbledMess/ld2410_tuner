@@ -172,13 +172,15 @@ engineering energy sensors and writable threshold entities still need to be
 exposed with the gate naming convention described in the main README. A package
 cannot make hidden entities available to the tuner without a firmware update.
 
-Apply still requires a current Learn preview, unchanged labels and matching
+Apply requires a complete current-model result and matching
 configuration. It refuses writes while either half of a required move/still gate
 pair, or an exposed distance limit, is missing. It can press an enabled,
 unambiguous Query Params button on the same device to recover missing values,
 with at most two attempts. It never automatically toggles Bluetooth or restarts
-the radar. A recovered configuration that differs from the preview needs Learn
-again.
+the radar. If recovered values differ from the configuration displayed when you
+clicked Apply, refresh and review them before trying the selected saved result again.
+The legacy Apply request without a saved-result selection still needs Learn again
+when its original configuration has changed.
 
 Writes are serialized per device, including manual threshold writes. Changed
 values are spaced by one second; an available Query Params button requests a

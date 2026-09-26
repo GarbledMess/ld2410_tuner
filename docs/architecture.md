@@ -28,7 +28,7 @@ custom_components/ld2410_tuner/
 | `runtime/` | `coordinator.py` owns state/tasks; `discovery.py` follows registry changes; `websocket.py` exposes administrator commands |
 | `presence/` | `autolabelling.py` records guesses/feedback; `inference.py` implements the pure temporal estimator |
 | `history/` | `recording.py` owns buffers/executor snapshots; `cleanup.py` normalizes stored blocks; `labels.py` owns human labels/timeouts |
-| `calibration/` | `service.py` owns explicit Learn/Apply and hardware guards; `fitting.py`, `search.py`, `metrics.py`, `constants.py` own the numerical learner |
+| `calibration/` | `service.py` owns Learn/Apply and hardware guards; `results.py` owns the four saved-result slots; `fitting.py`, `search.py`, `metrics.py`, `constants.py` own the numerical learner |
 | `presentation/` | `charts.py` aggregates history; `snapshots.py` builds dashboard/export data |
 | `static/panel/` | `view.js` owns the shell/draw lifecycle; `card.js`, `controls.js`, `learning.js` own card sections and interactions; `chart.js`, `visualization.js`, `selection.js` own history requests, SVG drawing, and range interaction; `constants.js` owns shared values |
 
@@ -36,14 +36,18 @@ Package initializers only document ownership; imports name concrete modules. The
 release allowlist includes each initializer and nested asset explicitly. Tests and
 replay tools use the same grouped module paths as the installed integration.
 
-## Contracts preserved by the refactor
+## Runtime contracts
 
 - Human labels and explicit UNKNOWN exclusions override automatic guesses. Guesses
   never enter the authoritative human reference histograms.
-- Learn and Apply are separate user commands. The estimator only records training
-  evidence; the physical radar still operates with static gate thresholds.
+- Learn and Apply are separate operations. `runtime/schedule.py` may run Learn on
+  the configured daily schedule; only an explicit Apply writes gate thresholds.
+  Saved results are bounded to manual, overnight, current and previous slots.
+  Applying a selected slot pins its result ID and reviewed live configuration;
+  partial writes do not rotate current/previous results.
 - The fitting search retains its iteration order and strict tie-breaking. The
-  refactor does not change acceptance targets, automatic weights, or Apply guards.
+  search keeps its quality targets and automatic weights. Quality failures are
+  advisory for manual Apply; entity identity and write guards still apply.
 - Missing energy is not zero. Old observations without confidence do not acquire
   invented automatic labels. Cleanup preserves valid timestamps and label priority.
 - Executor work uses detached views. Revision guards prevent stale work from

@@ -170,7 +170,7 @@ export const panelChart = {
       return;
     }
     const cs = this._chartState.get(id);
-    const d = this._data?.devices?.[id];
+    const d = this._learningView(id, this._data?.devices?.[id]);
     if (!cs || !d) {
       el.innerHTML = `<div class="muted">Unavailable</div>`;
       return;

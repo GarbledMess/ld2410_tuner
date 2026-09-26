@@ -23,6 +23,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
+from .runtime import schedule
 from .runtime.coordinator import TunerRuntime
 from .runtime.websocket import _register_websocket_commands
 
@@ -55,6 +56,7 @@ async def _start_runtime(hass):
     store = TunerStore(hass, STORAGE_VERSION, STORAGE_KEY)
     data = await store.async_load() or {"devices": {}, "training": {}}
     runtime = TunerRuntime(hass, store, data)
+    schedule.restore(runtime)
     if await runtime.async_clean_history(persist=False):
         await store.async_save(runtime.data)
     hass.data[DOMAIN] = runtime
@@ -64,6 +66,9 @@ async def _start_runtime(hass):
     runtime.subscribe_state_changes()
     runtime.unsub_sampling = async_track_time_interval(
         hass, runtime.sample_devices, timedelta(seconds=AUTO_SAMPLE_INTERVAL)
+    )
+    runtime.unsub_nightly = async_track_time_interval(
+        hass, runtime.nightly_tick, timedelta(minutes=1)
     )
     runtime.restore_timeouts()
     runtime.unsub_registry = hass.bus.async_listen(
@@ -114,6 +119,7 @@ async def _stop_runtime(runtime):
 
 
 async def _shutdown(runtime):
+    await schedule.stop(runtime)
     if runtime.unsub:
         runtime.unsub()
     if getattr(runtime, "unsub_registry", None):
