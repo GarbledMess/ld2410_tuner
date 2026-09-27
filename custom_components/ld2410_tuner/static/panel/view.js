@@ -15,6 +15,10 @@ export const panelView = {
         button[aria-busy="true"]::after { content:""; position:absolute; left:calc(50% - 8px); top:calc(50% - 8px); width:12px; height:12px; border:2px solid var(--divider-color,#ccc); border-top-color:var(--primary-text-color,#222); border-radius:50%; animation:busy-spin .8s linear infinite; }
         @keyframes busy-spin { to { transform:rotate(360deg); } }
         @media (prefers-reduced-motion:reduce) { .is-busy::before, button[aria-busy="true"]::after { animation:none; } }
+        .learning-job { margin:8px 0; overflow-wrap:anywhere; }
+        .learning-job progress { display:block; width:100%; height:8px; margin:10px 0; accent-color:var(--primary-color,#1976d2); }
+        .learning-job button { margin-top:8px; }
+        .job-error { margin-top:6px; }
         .gate-results { margin-top:12px; }
         .gate-results summary { padding:10px 0; cursor:pointer; font-weight:600; }
         .data-clear { border-top:1px solid var(--divider-color); padding-top:12px; margin-top:12px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }

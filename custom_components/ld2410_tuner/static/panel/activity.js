@@ -41,7 +41,7 @@ export const panelActivity = {
     ].filter(
       (field) =>
         !field.matches(
-          '.toggle, .sub-toggle, .subsection-head, [data-action="review-results"]',
+          '.toggle, .sub-toggle, .subsection-head, [data-action="review-results"], [data-action="review-learning-job"]',
         ),
     );
     const disabled = fields.map((field) => [field, field.disabled]);
@@ -136,6 +136,7 @@ export const panelActivity = {
     try {
       this._data = await this._call("snapshot");
       this._refreshRecoveryProgress();
+      this._refreshLearningProgress();
       this._showError(this._actionError);
       this._loaded = true;
       if (this._isEditing()) {

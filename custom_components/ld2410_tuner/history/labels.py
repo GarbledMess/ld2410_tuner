@@ -255,6 +255,8 @@ def clear_samples(runtime, device_id: str) -> None:
         runtime.data["devices"][device_id].pop("last_learning", None)
         runtime.data["devices"][device_id].pop("learning_results", None)
         runtime.data["devices"][device_id].pop("nightly_learning", None)
+        if device_id not in runtime._learning_jobs:
+            runtime.data["devices"][device_id].pop("learning_job", None)
         runtime.data["devices"][device_id]["label_revision"] = (
             runtime.data["devices"][device_id].get("label_revision", 0) + 1
         )

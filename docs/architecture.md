@@ -28,9 +28,9 @@ custom_components/ld2410_tuner/
 | `runtime/` | `coordinator.py` owns state/tasks; `discovery.py` follows registry changes; `websocket.py` exposes administrator commands |
 | `presence/` | `autolabelling.py` records guesses/feedback; `inference.py` implements the pure temporal estimator |
 | `history/` | `recording.py` owns buffers/executor snapshots; `cleanup.py` normalizes stored blocks; `labels.py` owns human labels/timeouts |
-| `calibration/` | `service.py` owns Learn/Apply and hardware guards; `results.py` owns the four saved-result slots; `fitting.py`, `search.py`, `metrics.py`, `constants.py` own the numerical learner; `duration.py` scores observed elapsed time; `influence.py` attributes errors to recorded chunks; `recovery.py` owns bounded pre-Learn recovery; `timing.py` and `timing_metrics.py` replay sampled device timing, while `timing_config.py` reads optional HA timing entities |
+| `calibration/` | `service.py` owns Learn/Apply and hardware guards; `jobs.py` owns task lifetime, result saving and job reports; `results.py` owns the four saved-result slots; `fitting.py`, `search.py`, `metrics.py`, `constants.py` own the numerical learner; `duration.py` scores observed elapsed time; `influence.py` attributes errors to recorded chunks; `recovery.py` owns bounded pre-Learn recovery; `timing.py` and `timing_metrics.py` replay sampled device timing, while `timing_config.py` reads optional HA timing entities |
 | `presentation/` | `charts.py` aggregates history; `snapshots.py` builds dashboard/export data |
-| `static/panel/` | `view.js` owns the shell/draw lifecycle; `card.js`, `controls.js`, `learning.js` own card sections and interactions; `chart.js`, `visualization.js`, `selection.js` own history requests, SVG drawing, and range interaction; `constants.js` owns shared values |
+| `static/panel/` | `view.js` owns the shell/draw lifecycle; `card.js`, `controls.js`, `learning.js` own card sections and interactions; `chart.js`, `visualization.js`, `selection.js` own history requests, SVG drawing, and range interaction; `jobs.js` renders server-owned learning progress; `constants.js` owns shared values |
 
 Package initializers only document ownership; imports name concrete modules. The
 release allowlist includes each initializer and nested asset explicitly. Tests and
@@ -45,6 +45,13 @@ replay tools use the same grouped module paths as the installed integration.
   Saved results are bounded to manual, overnight, current and previous slots.
   Applying a selected slot pins its result ID and reviewed live configuration;
   partial writes do not rotate current/previous results.
+- Learning job ownership is independent of websocket callers. `start_learning`
+  acknowledges acceptance immediately; the legacy awaited Learn command and nightly
+  scheduler join the same per-device task. That task saves each requested slot before
+  completion, even when every caller disconnects. Snapshots expose one bounded job
+  report per device. Errors and shutdown interruption are recorded; runtime startup
+  marks any persisted running report interrupted. Job status updates do not redraw
+  focused inputs. Stage progress is indeterminate, not a fabricated completion rate.
 - The fitting search retains its iteration order and strict tie-breaking. The
   search minimizes a finite time cost (5 times missed occupied-time rate plus
   false-active empty-time rate), then uses confidence-weighted automatic time.

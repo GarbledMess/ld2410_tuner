@@ -27,6 +27,7 @@ def _websocket_routes():
             "invalid_device",
             True,
         ),
+        ("start_learning", device, "start_learning", ("device_id",), "invalid_device", False),
         ("learn", device, "async_learn", ("device_id",), "invalid_device", False),
         (
             "apply",

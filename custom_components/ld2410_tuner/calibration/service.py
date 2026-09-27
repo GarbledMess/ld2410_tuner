@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 import time
@@ -13,7 +12,7 @@ from homeassistant.helpers import entity_registry as er
 
 from ..const import GATE_RE, HISTORY_KEYS
 from ..history.labels import _history_label_reader
-from . import device_io, recovery, results
+from . import device_io, jobs, recovery, results
 from .fitting import MAX_CLASS_SAMPLES, METHOD, MIN_AUTO_CONFIDENCE, fit_thresholds
 from .timing_config import read_timing, timing_values
 
@@ -50,40 +49,28 @@ async def set_gate_threshold(runtime, device_id: str, key: str, value: float) ->
         return await device_io.write_threshold(runtime, device_id, key, value, button)
 
 
-async def async_learn(runtime, device_id, source="user"):
-    if source not in ("user", "automatic"):
-        raise ValueError("Unknown learning source")
-    if device_id not in runtime._learning_jobs:
-        runtime._learning_jobs[device_id] = asyncio.create_task(runtime._learn_once(device_id))
-    learned = await asyncio.shield(runtime._learning_jobs[device_id])
-    device = runtime.data["devices"][device_id]
-    if learned["label_revision"] != device.get("label_revision", 0):
-        raise LearningEvidenceChanged("Training labels changed while learning; learn again")
-    result = results.remember_learning(device, learned, source)
-    runtime._schedule_save()
-    return result
+async_learn = jobs.async_learn
+start_learning = jobs.start_learning
 
 
 async def _learn_once(runtime, device_id):
-    try:
-        entities, current = await recovery.prepare_learning(runtime, device_id)
-        timing = read_timing(runtime, device_id)
-        view = runtime._history_view(device_id)
-        view._fit_timing = timing
-        device = runtime.data["devices"][device_id]
-        revision = device.get("label_revision", 0)
-        learned = await runtime.hass.async_add_executor_job(
-            view._fit_history, device_id, entities, current
-        )
-        if revision != device.get("label_revision", 0):
-            raise LearningEvidenceChanged("Training labels changed while learning; learn again")
-        if timing_values(read_timing(runtime, device_id)) != timing_values(timing):
-            raise ValueError("Device timing changed while learning; learn again")
-        learned["timing_configuration"] = timing
-        learned["label_revision"] = revision
-        return learned
-    finally:
-        runtime._learning_jobs.pop(device_id, None)
+    entities, current = await recovery.prepare_learning(runtime, device_id)
+    timing = read_timing(runtime, device_id)
+    view = runtime._history_view(device_id)
+    view._fit_timing = timing
+    device = runtime.data["devices"][device_id]
+    revision = device.get("label_revision", 0)
+    jobs.stage(runtime, device_id, "fitting")
+    learned = await runtime.hass.async_add_executor_job(
+        view._fit_history, device_id, entities, current
+    )
+    if revision != device.get("label_revision", 0):
+        raise LearningEvidenceChanged("Training labels changed while learning; learn again")
+    if timing_values(read_timing(runtime, device_id)) != timing_values(timing):
+        raise ValueError("Device timing changed while learning; learn again")
+    learned["timing_configuration"] = timing
+    learned["label_revision"] = revision
+    return learned
 
 
 def _fit_history(runtime, device_id, entities, current):

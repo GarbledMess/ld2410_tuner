@@ -13,6 +13,7 @@ export const panelCards = {
     card.innerHTML =
       this._cardHeaderHtml(d, info, isCollapsed) +
       `<div class="action-status muted" role="status" aria-live="polite"></div>` +
+      `<div class="learning-job-status" role="status" aria-live="polite">${this._learningJobHtml(d)}</div>` +
       `<div class="body${isCollapsed ? " collapsed" : ""}">${this._cardBodyHtml(id, d, info)}</div>`;
     if (previousChart)
       card.querySelector('[data-section="chart"]').replaceWith(previousChart);

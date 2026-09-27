@@ -90,6 +90,7 @@ class TunerRuntime:
     clear_samples = manual_training.clear_samples
     _history_view = recording._history_view
     async_history_series = charts.async_history_series
+    start_learning = calibration.start_learning
     async_learn = calibration.async_learn
     _learn_once = calibration._learn_once
     _fit_history = calibration._fit_history

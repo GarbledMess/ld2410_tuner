@@ -26,6 +26,24 @@ in HACS under **Custom repositories** using
 **LD2410 Tuner**, restart Home Assistant, and add the integration as above.
 Adding a custom repository does not require submitting it to the default catalogue.
 
+## Learning in the background
+
+**Learn thresholds** starts a server-owned job. You can switch pages, close the tab,
+or reconnect without losing the calculation or its result. Each device shows its
+latest job above the collapsible sections: checking settings, fitting/validating,
+then completion or the reason it could not finish. The progress bar is
+indeterminate; elapsed time is shown without claiming a percentage complete.
+
+Returning to the panel retrieves the job status. **Review result** opens the saved
+recommendation; learning never applies it automatically. Repeated requests for one
+device share a calculation. Manual and overnight callers use the same job lifecycle,
+with their results saved in their respective slots. The latest job report is bounded
+to one per device; it does not duplicate recordings or result diagnostics.
+
+Home Assistant shutdown/restart interrupts an active calculation. The report marks
+that interruption so you can retry with Learn; unfinished calculations are not
+resumed automatically. Previously completed results remain saved.
+
 ## Overnight learning and saved results
 
 Enable **Overnight learning** at the top of the existing panel, choose a time and

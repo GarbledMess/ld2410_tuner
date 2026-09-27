@@ -16,6 +16,7 @@ export const panelControls = {
     this._wireHistory(card, id);
     this._wireActions(card, id, d);
     this._wireSavedResults(card, id);
+    this._wireLearningJob(card, id, d);
     this._wireChartControls(card, id);
     this._restoreDraft(card, id);
     this._wireHistoryRange(card, id);
@@ -114,7 +115,8 @@ export const panelControls = {
     timeoutMinutes.onchange = (e) => this._action(e.currentTarget, saveTimeout);
   },
   async _learnThresholds(id) {
-    await this._call("learn", { device_id: id }, 120000);
+    if (this._data?.devices?.[id]?.learning_job?.status === "running") return;
+    await this._call("start_learning", { device_id: id });
     this._learningSelection.set(id, "user");
     this._setSectionCollapsed(id, "details", false);
     await this._load(true);

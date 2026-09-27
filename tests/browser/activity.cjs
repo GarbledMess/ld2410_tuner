@@ -21,7 +21,7 @@ module.exports = async function testActivity(page) {
     };
   });
   for (const [action, endpoint, label] of [
-    ["learn", "learn", "Learning thresholds"],
+    ["learn", "start_learning", "Learning thresholds"],
     ["json", "export", "Preparing JSON"],
     ["csv", "export", "Preparing CSV"],
     ["auto-feedback", "auto_feedback", "Saving feedback"],

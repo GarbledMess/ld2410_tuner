@@ -9,6 +9,7 @@ const testHistoryEditor = require("./browser/history.cjs");
 const testApply = require("./browser/apply.cjs");
 const testTiming = require("./browser/timing.cjs");
 const testActivity = require("./browser/activity.cjs");
+const testJobs = require("./browser/jobs.cjs");
 const testTimeline = require("./browser/timeline.cjs");
 const testHistoryGraph = require("./browser/history_graph.cjs");
 const testSavedResults = require("./browser/saved_results.cjs");
@@ -691,6 +692,7 @@ const { execFileSync } = require("node:child_process");
     await testTimeline(page);
     await testHistoryGraph(page, screenshotDir);
     await testSavedResults(page, screenshotDir);
+    await testJobs(page, screenshotDir);
     await page.setViewportSize({ width: 390, height: 844 });
     await cards
       .first()
@@ -723,7 +725,7 @@ const { execFileSync } = require("node:child_process");
     assert.deepEqual(errors, []);
     console.log("Screenshots:", screenshotDir);
     console.log(
-      "PASS: action spinners, duplicate-action prevention, export failures/timeouts, initial/slow refresh progress, touch timeline selection/resizing, short periods, repeated-hour timestamps, real touch chart selection and resizing, canceled gestures, day navigation, saved-period editing/removal, stale saves, DST, focused range changes, stable window endpoints, cached range switching, stable refresh geometry, retained graph on refresh/error, chart controls across polling, cards, races, drafts, selection, mobile layout, reconnect; no browser errors",
+      "PASS: server-backed learning jobs across panel recreation/reconnect, mobile progress, persistent outcomes, action spinners, duplicate-action prevention, export failures/timeouts, initial/slow refresh progress, touch timeline selection/resizing, short periods, repeated-hour timestamps, real touch chart selection and resizing, canceled gestures, day navigation, saved-period editing/removal, stale saves, DST, focused range changes, stable window endpoints, cached range switching, stable refresh geometry, retained graph on refresh/error, chart controls across polling, cards, races, drafts, selection, mobile layout, reconnect; no browser errors",
     );
   } finally {
     await browser.close();

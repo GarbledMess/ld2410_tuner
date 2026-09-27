@@ -96,9 +96,14 @@ def restore(runtime):
         recovery = device.get("configuration_recovery", {})
         if recovery.get("status") == "running":
             recovery.update(status="interrupted", error="Home Assistant restarted during recovery")
-        attempt = device.get("nightly_learning", {})
-        if attempt.get("status") == "running":
-            attempt.update(status="interrupted", error="Home Assistant restarted during learning")
+        for key in ("nightly_learning", "learning_job"):
+            attempt = device.get(key, {})
+            if attempt.get("status") == "running":
+                attempt.update(
+                    status="interrupted",
+                    error="Home Assistant restarted during learning",
+                    finished_at=datetime.now(UTC).timestamp(),
+                )
 
 
 async def _learn_fresh(runtime, device_id, attempt):

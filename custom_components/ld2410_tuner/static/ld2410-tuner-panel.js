@@ -1,3 +1,4 @@
+import { panelJobs } from "./panel/jobs.js";
 import { panelSavedResults } from "./panel/saved_results.js";
 import { panelHistoryGraph } from "./panel/history_graph.js";
 import { panelTimeline } from "./panel/timeline.js";
@@ -67,7 +68,10 @@ class LD2410TunerPanel extends HTMLElement {
   }
 
   connectedCallback() {
-    if (this._hass) this.hass = this._hass;
+    if (this._hass) {
+      this.hass = this._hass;
+      this._load(true);
+    }
   }
 
   disconnectedCallback() {
@@ -218,6 +222,7 @@ class LD2410TunerPanel extends HTMLElement {
 }
 Object.assign(
   LD2410TunerPanel.prototype,
+  panelJobs,
   panelSavedResults,
   panelHistoryGraph,
   panelTimeline,

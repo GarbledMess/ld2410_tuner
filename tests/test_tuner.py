@@ -488,6 +488,7 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = types.SimpleNamespace(
             snapshot=lambda: {"devices": {"new": {}}},
             async_learn=AsyncMock(return_value={"status": "ok"}),
+            start_learning=unittest.mock.Mock(return_value={"status": "running", "id": "job"}),
             set_training_state=unittest.mock.Mock(),
             apply=AsyncMock(return_value={"applied": {}}),
         )
@@ -501,11 +502,18 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
         await self.commands[f"{mod.DOMAIN}/{name}"](self.hass, self.connection, {"id": 7, **fields})
 
     async def test_commands_remain_admin_only_and_lookup_live_runtime(self):
-        self.assertEqual(len(self.commands), 12)
+        self.assertEqual(len(self.commands), 13)
         self.assertTrue(all(command.admin_only for command in self.commands.values()))
         self.hass.data[mod.DOMAIN] = types.SimpleNamespace(snapshot=lambda: {"reloaded": True})
         await self.call("snapshot")
         self.connection.send_result.assert_called_once_with(7, {"reloaded": True})
+
+    async def test_start_learning_acknowledges_without_waiting_or_applying(self):
+        await self.call("start_learning", device_id="a")
+        self.runtime.start_learning.assert_called_once_with("a")
+        self.connection.send_result.assert_called_once_with(7, {"status": "running", "id": "job"})
+        self.runtime.async_learn.assert_not_awaited()
+        self.runtime.apply.assert_not_awaited()
 
     async def test_learning_and_applying_require_separate_explicit_commands(self):
         await self.call("learn", device_id="a")
