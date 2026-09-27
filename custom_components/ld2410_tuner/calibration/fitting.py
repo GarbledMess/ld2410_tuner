@@ -14,9 +14,10 @@ from .constants import METHOD as METHOD
 from .constants import MIN_AUTO_CONFIDENCE as MIN_AUTO_CONFIDENCE
 from .constants import MIN_CLASS_SAMPLES as MIN_CLASS_SAMPLES
 from .constants import MIN_RECALL as MIN_RECALL
+from .constants import MISSED_TIME_COST
 from .constants import SAMPLE_SECONDS as SAMPLE_SECONDS
 from .diagnostics import review_evidence
-from .feasibility import assess_feasibility, exclusive_presence
+from .feasibility import exclusive_presence
 from .metrics import _episode_masks as _episode_masks
 from .metrics import _human_ranker as _human_ranker
 from .metrics import _masks as _masks
@@ -31,30 +32,34 @@ from .timing_metrics import evaluate, timing_summary
 
 
 def _human_failures(measured):
-    present, absent = measured["present_samples"], measured["not_present_samples"]
-    checks = [
-        (
-            present and measured["sensitivity"] < MIN_RECALL,
-            f"{measured['false_negatives']} human-labelled presence samples missed",
-        ),
-        (
-            present and measured["missed_presence_episodes"],
-            f"{measured['missed_presence_episodes']} human-labelled presence episodes missed",
-        ),
-        (
-            present and measured["longest_missed_run_samples"] > MAX_MISSED_RUN,
-            f"{measured['longest_missed_run_samples']} consecutive human-labelled samples missed",
-        ),
-        (
-            absent and measured["false_positive_rate"] > MAX_FPR,
-            f"{measured['false_positives']} false triggers in {measured['not_present_samples']} human-labelled empty-room samples",
-        ),
-        (
-            absent and measured["false_trigger_bursts_per_hour"] > MAX_FALSE_BURSTS_PER_HOUR,
-            f"{measured['false_trigger_bursts_per_hour']:.1f} false-trigger bursts per observed empty-room hour",
-        ),
-    ]
-    return [message for failed, message in checks if failed]
+    duration = measured.get("duration")
+    if duration is None:
+        return _sample_failures(measured)
+    failures = []
+    recall = duration["presence_recall"]
+    if recall is not None and recall < MIN_RECALL - 1e-12:
+        failures.append(f"Estimated presence-time recall {recall:.3%}; target {MIN_RECALL:.1%}")
+    if duration["missed_presence_episodes"]:
+        failures.append(
+            f"{duration['missed_presence_episodes']} occupied periods have no detection"
+        )
+    return failures
+
+
+def _sample_failures(measured):
+    # Legacy raw diagnostics and stored results retain their original meaning.
+    failures = []
+    if measured["present_samples"] and measured["sensitivity"] < MIN_RECALL:
+        failures.append("Raw presence-sample recall target not met")
+    for key in ("missed_presence_episodes", "longest_missed_run_samples"):
+        limit = MAX_MISSED_RUN if key == "longest_missed_run_samples" else 0
+        if measured.get(key, 0) > limit:
+            failures.append(key)
+    if measured["not_present_samples"] and measured["false_positive_rate"] > MAX_FPR:
+        failures.append("Raw false-positive sample limit exceeded")
+    if measured.get("false_trigger_bursts_per_hour", 0) > MAX_FALSE_BURSTS_PER_HOUR:
+        failures.append("Raw false-trigger burst limit exceeded")
+    return failures
 
 
 def fit_thresholds(rows, keys, current=None, automatic=(), timing=None):
@@ -126,9 +131,17 @@ def fit_thresholds(rows, keys, current=None, automatic=(), timing=None):
     )
     estimated = evaluate(auto_groups, thresholds, timing)
     failures = _candidate_failures(training, recent, counts, estimated)
-    status = _outcome_status(failures, timing, training, estimated)
+    status = _outcome_status(failures, training, estimated)
     basis = _evidence_basis(all_rows, evidence["used"])
     warnings = _learning_warnings(failures, basis, held_out)
+    if status == "uncertain":
+        warnings.append(
+            "Some observations have unresolved timing or no measurable duration. The presence-time target is not fully confirmed."
+        )
+    if status == "tradeoff":
+        warnings.append(
+            "Presence-time target met; false-positive time is reported as a penalty, not a failed learning job."
+        )
     if status == "insufficient":
         warnings.append(
             "Too few observations remain after timing warm-up; record longer occupied and empty sessions."
@@ -145,11 +158,9 @@ def fit_thresholds(rows, keys, current=None, automatic=(), timing=None):
         "review": review_evidence(groups, thresholds, timing),
         "feasibility": {
             "status": "not_assessed",
-            "reason": "Timing replay replaces the raw-crossing feasibility proof",
+            "reason": "Sample-count feasibility does not establish duration-based feasibility",
             "windows": [],
-        }
-        if timing and timing.get("timeout") is not None
-        else assess_feasibility(groups["present"], groups["not_present"], keys),
+        },
         "status": status,
         "evidence_basis": basis,
         "proposals": proposals,
@@ -165,10 +176,10 @@ def fit_thresholds(rows, keys, current=None, automatic=(), timing=None):
         "automatic_evidence": evidence,
         "targets": {
             "sensitivity": MIN_RECALL,
-            "false_positive_rate": MAX_FPR,
+            "scoring": "weighted_post_timing_error",
+            "missed_time_cost": MISSED_TIME_COST,
             "missed_presence_episodes": 0,
-            "longest_missed_run_samples": MAX_MISSED_RUN,
-            "false_trigger_bursts_per_hour": MAX_FALSE_BURSTS_PER_HOUR,
+            "false_positive_score": "negative_percent_of_observed_empty_time",
         },
     }
     _current_validation(result, held_out, current, keys, validation, timing)
@@ -250,14 +261,14 @@ def _learning_warnings(failures, basis, held_out):
 
 
 def _automatic_failures(counts, estimated, failures):
-    if not counts["present"] and estimated["present_samples"] and estimated["sensitivity"] == 0:
-        failures.append("No estimated presence observations are detected by this candidate")
-    if (
-        not counts["not_present"]
-        and estimated["not_present_samples"]
-        and estimated["false_positive_rate"] == 1
-    ):
-        failures.append("This candidate triggers on every estimated empty-room observation")
+    duration = estimated["duration"]
+    recall = duration["presence_recall"]
+    if not counts["present"] and recall is not None and recall < MIN_RECALL - 1e-12:
+        failures.append(
+            f"Estimated presence-time recall from automatic labels is {recall:.3%}; target {MIN_RECALL:.1%}"
+        )
+    if not counts["not_present"] and (duration["false_positive_percent"] or 0) >= 100 - 1e-9:
+        failures.append("This candidate is active throughout automatically labelled empty time")
 
 
 def _enough_samples(keys, counts, automatic):
@@ -268,6 +279,8 @@ def _enough_samples(keys, counts, automatic):
 
 def _candidate_failures(training, recent, counts, estimated):
     failures = _human_failures(training)
+    if (training["duration"]["false_positive_percent"] or 0) >= 100 - 1e-9:
+        failures.append("This candidate is active throughout the observed empty-room time")
     if recent:
         failures.extend("Recent human labels: " + failure for failure in _human_failures(recent))
     _automatic_failures(counts, estimated, failures)
@@ -324,13 +337,27 @@ def _gate_role(observed, threshold):
     return "suppressed" if threshold == 100 else "detection"
 
 
-def _outcome_status(failures, timing, training, estimated):
-    if timing and timing.get("timeout") is not None:
-        if (
-            min(
-                training[key] + estimated[key] for key in ("present_samples", "not_present_samples")
-            )
-            < MIN_CLASS_SAMPLES
-        ):
-            return "insufficient"
-    return "unsafe" if failures else "ok"
+def _outcome_status(failures, training, estimated):
+    if (
+        min(training[key] + estimated[key] for key in ("present_samples", "not_present_samples"))
+        < MIN_CLASS_SAMPLES
+    ):
+        return "insufficient"
+    duration = training["duration"]
+    auto = estimated["duration"]
+    if not all(duration[key] + auto[key] > 0 for key in ("present_seconds", "empty_seconds")):
+        return "insufficient"
+    if failures:
+        return "unsafe"
+    if _time_uncertain(duration) or _time_uncertain(auto):
+        return "uncertain"
+    if any((m["false_positive_percent"] or 0) > 0 for m in (duration, auto)):
+        return "tradeoff"
+    return "ok"
+
+
+def _time_uncertain(duration):
+    recall, lower = duration["presence_recall"], duration["presence_recall_lower"]
+    return bool(
+        duration.get("unscored_presence_samples") or duration.get("unscored_empty_samples")
+    ) or (recall is not None and lower is not None and recall - lower > 1e-9)

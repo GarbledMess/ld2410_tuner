@@ -83,7 +83,14 @@ Recordings are snapshots, normally about six seconds apart. Consecutive high
 observations are treated as a sampled run; hold starts from its last observed hit.
 For empty-room errors, possible activity between neighboring observations is also
 included, so a lone reading is not assumed to be a harmless sub-second spike.
-Replay restarts at label changes and gaps over twelve seconds. Initial observations
+An on-delay transition can start anywhere between the preceding low snapshot and
+first high snapshot. The missed-presence range shows both onset assumptions, rather
+than treating the recovered high reading as another definite miss. The finite error
+cost uses the conservative end of that range; uncertainty is not an absolute
+requirement to lower thresholds. Unresolved timing remains visible and marks
+otherwise-passing results yellow rather than confirming field accuracy.
+This range covers onset uncertainty within the sampled replay, not all unrecorded
+activity. Replay restarts at label changes and gaps over twelve seconds. Initial observations
 up to the larger of Timeout + off delay and on delay are left unscored because the
 preceding state is unknown; their count is shown and the raw evidence is retained.
 Too little remaining evidence cannot produce a passing result. Recent validation
@@ -142,7 +149,7 @@ The learner evaluates all enabled gates together: presence succeeds when any gat
 triggers; an empty-room trigger from any gate is a device false positive. Per-gate
 misses are not device misses. A threshold of 100 disables a noisy or redundant
 gate and can be valid when other gates cover presence. If retained empty and
-presence signals overlap so that no threshold combination meets both targets,
+presence signals overlap so that no threshold combination cleanly separates them,
 the result is marked red and the conflicting periods are available for graph review.
 You can still apply those learned thresholds explicitly.
 
@@ -239,16 +246,15 @@ labels and code organization; Learn/Apply remain explicit and retain their fitti
 targets. Quality is advisory for explicit Apply. No software presence entity or automatic Apply is added; optional overnight runs only save recommendations.
 
 Each stored observation retains its automatic label and confidence alongside the
-gate energies. A guess starts with weight `0.20 × confidence`: 80%
-confidence gives weight 0.16. Where human examples exist, total inferred weight in
-each class is capped at 25% of human weight (20% of the combined evidence), so
-volume cannot overturn human-priority ranking. These are internal sample weights,
-not a calibrated statement of influence: class-normalized automatic scores may
-cancel a uniform weight scale. Scores below 55% are not used. Previously
-stored history without per-sample confidence remains readable but is not assigned
-invented confidence retroactively. Human corrections and explicit UNKNOWN ranges
-always override the stored guesses. Feedback buttons adjust the estimator's bias;
-use the chart/training labels to supply authoritative occupancy examples.
+gate energies. Confidence weights the observed time represented by each estimate;
+extra readings within a brief fluctuation do not multiply its influence. Automatic
+scores refine candidates after human-labelled performance and supported separation.
+Human priority is enforced by ranking, not by the relative volume of estimates.
+The sample-weight totals shown in calculation details remain legacy diagnostics,
+not the time-based objective. Scores below 55% are not used. Old history without
+confidence is readable but gains no invented estimates. Human corrections and
+explicit UNKNOWN ranges override stored guesses. Feedback buttons adjust estimator
+bias; use chart/training labels to supply known occupancy examples.
 
 Before fitting, a detector identifies rare low-energy clusters separated from the
 normal presence distribution. A candidate cluster must overlap recorded noise and
@@ -260,17 +266,39 @@ removes a complete presence episode, sustained quiet presence, or empty-room spi
 The 1% upper bound limits exclusions; it does not trim a fixed percentage of data.
 
 The same retained observations feed fitting, sample counts, accuracy, episode/run
-checks, feasibility diagnostics and recommendation quality. Human and automatic outlier
+checks and recommendation quality. Human and automatic outlier
 counts are shown separately. Original recordings and labels remain unchanged; raw
 measurements are available separately in the exported `raw_audit` result and do not
 participate in acceptance. The detector does not use candidate thresholds or errors
 to decide what to exclude.
 
-The search first satisfies human-labelled presence, missed-episode, consecutive-miss,
-false-positive and burst-rate limits on the retained full and recent observations.
-It then minimizes missed presence and device-wide false positives within those
-limits. Each gate's own false-trigger count is also ranked, so another noisy gate
-cannot hide an unnecessarily sensitive setting.
+The quality target remains **99.9% of observed occupied time**, but search uses a
+continuous, finite error cost rather than treating that target as a free allowance
+for missed presence or requiring perfect recall at any noise cost:
+
+`error cost = 5 × missed occupied-time percentage + false-active empty-time percentage`
+
+Lower is better. The 5× factor is an explicit preference for avoiding missed
+presence, not a measured physical property. Each percentage uses its own observed
+class duration, so recording much more empty than occupied time does not drown out
+presence. Missed time uses the conservative end of the reported onset range.
+Automatic evidence uses the same cost with confidence-weighted time, after the
+human evidence. Episode coverage, recent-time cost and event counts break ties.
+
+The separate displayed false-positive score is still **0 at best; −1 means 1% of
+empty time falsely active**. There is no hard false-positive percentage or
+frequency rejection limit. The 99.9% target remains visible in quality assessment;
+a cheaper compromise that misses it is marked red, never presented as meeting it.
+Gates are combined before timeout and known on/off filters are replayed. A gap
+covered by those settings does not incur a missed-presence penalty; an on-delay
+only rejects an activation if it remains too short after radar hold.
+
+Only time within continuous recorded sessions counts; gaps and isolated readings
+do not invent minutes of evidence. Isolated human observations still take priority
+over automatic guesses, but have no measurable duration. Unknown timing uses
+midpoint estimates between snapshots and is marked unknown. These snapshots cannot
+prove sub-second pulse lengths. Existing outlier exclusions and human labels are
+unchanged; no additional observations are removed to improve a score.
 
 When both human-labelled classes establish separation, the preferred threshold
 is halfway between the highest
@@ -281,8 +309,7 @@ fixed minimum threshold. Useful overlapping gates remain enabled; suppression at
 100 is still possible when a gate's observed background requires it.
 
 The search also tries per-gate false-positive bounds and a quiet starting point
-when there are target failures or, with both human classes available, remaining
-false triggers. A bounded pair search
+when the current candidate has a nonzero human error cost. A bounded pair search
 can raise a noisy gate and lower a supporting gate together. Confidence-weighted
 inferred observations refine the result after human performance and separation.
 Without examples of both human-labelled states, the existing background-anchored
@@ -300,18 +327,12 @@ then refit using **all retained** eligible observations, including newer estimat
 training results and the earlier-data backtest are reported separately. A failed
 backtest does not veto a final candidate that learned the newly observed pattern.
 
-The final candidate is checked against retained human-labelled observations, both
-overall and in the recent labelled slice, targeting:
-
-- At least **99.9% presence recall**.
-- No completely missed presence episodes and no run longer than one missed sample.
-- At most 0.5% false-positive samples and one false-trigger burst per observed hour.
-
-Conflicts in the retained human-labelled observations mark the recommendation red and report the measured reasons; they do not block explicit Apply.
-Automatic-only recommendations can be applied, are explicitly described as estimates,
-and do not claim human-validated accuracy. Degenerate candidates that miss every
-estimated presence observation or trigger on every estimated empty-room observation
-are marked red when no human examples of that class are available.
+Recommendations are red when the occupied-time target is missed, an entire
+measurable occupied session is missed, or the candidate remains active throughout
+observed empty time. Otherwise false-active time is a scored tradeoff, not a failed
+learning job. Timing uncertainty and insufficient evidence are shown separately.
+All quality states remain advisory for explicit Apply. Automatic-only results are
+labelled estimates and do not claim human-validated accuracy.
 
 These are observed metrics, **not proof of near-perfect field accuracy**. Adjacent
 samples are correlated; a backtest from the same session is not an independent room
@@ -328,10 +349,29 @@ Per-gate energies require [engineering mode](https://esphome.io/components/senso
 Automatic analysis is a confidence-scored training source, not a replacement HA
 occupancy entity.
 
+Saved results retain the measurements and model used when they were learned; they
+are not silently rescored. Older models are labelled explicitly and require a new
+Learn before Apply. The chart line, chart summary, Apply button and confirmation
+use the same quality assessment and current timing: red indicates poor results,
+amber indicates concerns or uncertainty. Sample-based legacy diagnostics are
+labelled as historical, not presented as current time-based limits. Automatic
+recorded-time summaries are unweighted diagnostics; search additionally weights
+automatic time by confidence after the human evidence.
+
+The report also keeps snapshot outcomes visible: presence hits, missed presence,
+correctly empty readings and false presence. Timing-aware counts use the modeled
+hold/delays and show ranges when transitions are unresolved; raw counts remain
+identified as such. These diagnostics help judge a recording but do not replace
+the time-based optimization cost or turn a completed learning run into a job error.
+
 ## Reviewing conflicting labels
 
-The recommendation report measures the combined device, with separate counts for
-missed presence, empty-room triggers and false-trigger events per hour. Expand
+The recommendation report measures the combined device using occupied-time recall
+and an empty-time penalty. **Periods driving this result** highlights the recorded
+chunks contributing most error time, with their share and a Review on graph button.
+For an empty period it also shows the score without that period **at the same
+thresholds**; this is not a refit or proof that its label is wrong. No suggested
+period is automatically removed. Expand
 **Review periods that disagree with their labels** to inspect precise error ranges
 and the triggering gates. The list reserves space for quiet-presence failures as
 well as empty-room bursts; it is bounded to 24 ranges and 24 session summaries.
@@ -347,10 +387,8 @@ again. Reviewing a suggestion never changes labels or removes recordings.
 A brief empty-room burst is not automatically an invalid reading. A person, pet or
 other real activity may produce it. Keep known dog-only periods labelled empty
 when training for human presence. If legitimate empty-room signals overlap quiet
-human presence, static gate thresholds may be unable to meet both targets. The
-raw-crossing feasibility report can flag provable conflicts when timing is unknown;
-that proof does not include radar hold or firmware delays. With timing enabled it
-is not used to claim impossibility. Deleting valid difficult examples would hide
+human presence, static gate thresholds may be unable to detect people without some false activity. The old sample-count feasibility proof does not establish feasibility for this
+elapsed-time objective, so new results do not use it to claim impossibility. Deleting valid difficult examples would hide
 false positives. The history graph's mean line is aggregated in wider
 windows; zoom into a review period to inspect its short-lived readings.
 

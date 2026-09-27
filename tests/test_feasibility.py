@@ -90,5 +90,5 @@ class FeasibilityTests(unittest.TestCase):
         rows = harness.row_samples({"g0_move": 5}, {"g0_move": 5})
         result = harness.fit(rows, ["g0_move"])
         self.assertEqual(result["status"], "unsafe")
-        self.assertEqual(result["feasibility"]["status"], "conflict")
+        self.assertEqual(result["feasibility"]["status"], "not_assessed")
         self.assertEqual(result["proposals"]["g0_move"]["exclusive_presence_samples"], 100)

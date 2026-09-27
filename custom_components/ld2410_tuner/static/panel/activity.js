@@ -135,6 +135,7 @@ export const panelActivity = {
     const timer = setTimeout(show, this._loaded ? 400 : 0);
     try {
       this._data = await this._call("snapshot");
+      this._refreshRecoveryProgress();
       this._showError(this._actionError);
       this._loaded = true;
       if (this._isEditing()) {

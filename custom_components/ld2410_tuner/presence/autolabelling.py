@@ -186,6 +186,8 @@ def record_auto_feedback(runtime, device_id: str, correct: bool) -> dict[str, An
 
 def _sample_devices(runtime):
     for device_id, device in runtime.data["devices"].items():
+        if device.get("configuration_recovery", {}).get("status") == "running":
+            continue
         values = _read_energies(runtime, device)
         runtime._live[device_id] = values  # Drop unavailable readings, never carry them forward.
         if not values:

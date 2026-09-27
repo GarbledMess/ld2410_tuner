@@ -199,6 +199,9 @@ export const panelChart = {
       d.last_learning?.proposals,
       d.last_learning?.training,
       d.last_learning?.status,
+      d.last_learning?.method,
+      d.last_learning?.timing,
+      d.timing_configuration,
     ]);
     if (
       !force &&
@@ -255,7 +258,7 @@ export const panelChart = {
   },
 
   _falsePositiveSourcesHtml(learning) {
-    if (learning?.status !== "unsafe") return "";
+    if (!learning) return "";
     const sources = Object.entries(learning.proposals || {})
       .filter(
         ([key, proposal]) =>
@@ -272,7 +275,7 @@ export const panelChart = {
       : "";
   },
 
-  _learnStatusHtml(proposal, cs, learning) {
+  _learnStatusHtml(proposal, cs, learning, currentTiming) {
     const label = `Gate ${cs.gate} · ${cs.kind === "move" ? "Movement" : "Still"}`;
     if (!proposal)
       return `<div class="learn-status muted">${this._esc(label)}: click "Learn thresholds" to compute a recommendation.</div>`;
@@ -285,7 +288,7 @@ export const panelChart = {
       proposal.noise_ceiling == null
         ? ""
         : ` Empty-labelled peak: ${Math.round(proposal.noise_ceiling)}; 99th percentile: ${Math.round(proposal.noise_floor_p99)}.`;
-    const status = this._applyOutcome(learning).label;
+    const status = this._applyOutcome(learning, currentTiming).label;
     return `<div class="learn-status muted">${this._esc(label)}: ${description}${noise}
       <button type="button" data-action="review-results">${this._esc(status)} · Review device results</button></div>`;
   },

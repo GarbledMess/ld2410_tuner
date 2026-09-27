@@ -95,10 +95,11 @@ class LearningTests(unittest.TestCase):
         ]
         rows += [(30000 + i * 6, {keys[0]: 9, keys[1]: 4}, "not_present") for i in range(5000)]
         result = fit(rows, keys)
-        self.assertEqual(result["status"], "unsafe")
-        self.assertEqual(result["recent_training"]["false_negatives"], 0)
+        self.assertEqual(result["status"], "ok")
+        self.assertGreaterEqual(result["recent_training"]["duration"]["presence_recall"], 0.999)
+        self.assertEqual(result["training"]["false_positives"], 0)
 
-    def test_small_miss_budget_does_not_allow_consecutive_misses(self):
+    def test_brief_consecutive_misses_use_time_budget(self):
         keys = ["g1_move", "g3_still"]
         rows = [
             (
@@ -110,8 +111,10 @@ class LearningTests(unittest.TestCase):
         ]
         rows += [(40000 + i * 6, {keys[0]: 9, keys[1]: 4}, "not_present") for i in range(5000)]
         result = fit(rows, keys)
-        self.assertEqual(result["status"], "unsafe")
-        self.assertLessEqual(result["training"]["longest_missed_run_samples"], 1)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["training"]["duration"]["missed_seconds"], 9)
+        self.assertGreaterEqual(result["training"]["duration"]["presence_recall"], 0.999)
+        self.assertEqual(result["training"]["false_positives"], 0)
 
     def test_overlapping_noisy_gates_do_not_trap_coordinate_search(self):
         keys = ["g0_move", "g1_move", "g2_still"]
@@ -187,7 +190,7 @@ class LearningTests(unittest.TestCase):
             for i in range(10000)
         ]
         result = fit(rows, ["g0_still"], automatic=guesses)
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "insufficient")
         self.assertEqual(result["training"]["sensitivity"], 1)
         self.assertEqual(result["training"]["false_positive_rate"], 0)
         self.assertTrue(result["automatic_evidence"]["used"])
@@ -240,13 +243,13 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(result["validation"]["sensitivity"], 1)
         self.assertTrue(all(p["sensitivity"] == 0.5 for p in result["proposals"].values()))
 
-    def test_held_out_background_drift_marks_candidate_unsafe(self):
+    def test_held_out_background_drift_reports_a_time_penalty(self):
         rows = row_samples({"g0_move": 30}, {"g0_move": 5})
         rows[-20:] = [(i, {"g0_move": 40}, "not_present") for i in range(180, 200)]
         result = fit(rows, ["g0_move"])
         self.assertEqual(result["training"]["false_positive_rate"], 0.2)
         self.assertEqual(result["validation"]["false_positive_rate"], 1)
-        self.assertEqual(result["status"], "unsafe")
+        self.assertEqual(result["status"], "tradeoff")
 
     def test_missing_gates_not_imputed_as_zero(self):
         result = fit(
@@ -258,7 +261,7 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(result["proposals"]["g1_move"]["threshold"], 42)
         self.assertEqual(result["proposals"]["g1_move"]["role"], "unchanged")
 
-    def test_false_positive_budget_is_for_whole_device(self):
+    def test_false_positive_penalty_is_for_whole_device(self):
         # Each gate's noise spikes occur at different times; pooling per-gate
         # allowances would exceed the whole-device budget.
         keys = ["g0_move", "g1_move"]
@@ -273,12 +276,13 @@ class LearningTests(unittest.TestCase):
             negatives[i][1][keys[1]] = 40
         result = fit(rows + negatives, keys)
         self.assertEqual(result["training"]["false_positive_rate"], 0.008)
-        self.assertEqual(result["status"], "unsafe")
+        self.assertEqual(result["status"], "tradeoff")
         self.assertEqual(result["training"]["false_positives"], 8)
         for proposal in result["proposals"].values():
             self.assertEqual(proposal["false_positives"], 4)
             self.assertEqual(proposal["not_present_samples"], 1000)
-            self.assertIn("8 false triggers in 1000", proposal["message"])
+            self.assertEqual(proposal["message"], "")
+        self.assertAlmostEqual(result["training"]["duration"]["false_positive_score"], -750 / 999)
 
     def test_guesses_cover_additional_location_at_lower_weight(self):
         keys = ["g0_move", "g1_still"]
@@ -355,9 +359,9 @@ class LearningTests(unittest.TestCase):
         result = fit(rows, ["g0_move"])
         self.assertEqual(result["validation"]["sensitivity"], 0.999)
         self.assertEqual(result["validation"]["missed_presence_episodes"], 1)
-        self.assertEqual(result["status"], "unsafe")
+        self.assertEqual(result["status"], "uncertain")
 
-    def test_low_false_positive_percentage_cannot_hide_frequent_bursts(self):
+    def test_frequent_bursts_remain_visible_without_failing_the_job(self):
         rows = [(i * 6, {"g0_move": 30}, "present") for i in range(5000)]
         rows += [
             (40000 + i * 6, {"g0_move": 40 if i in (4100, 4400, 4800) else 5}, "not_present")
@@ -366,7 +370,7 @@ class LearningTests(unittest.TestCase):
         result = fit(rows, ["g0_move"])
         self.assertLessEqual(result["validation"]["false_positive_rate"], 0.005)
         self.assertGreater(result["validation"]["false_trigger_bursts_per_hour"], 1)
-        self.assertEqual(result["status"], "unsafe")
+        self.assertEqual(result["status"], "tradeoff")
 
 
 class HistoryCleanupTests(unittest.TestCase):
@@ -884,7 +888,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.states[entity_id] = types.SimpleNamespace(state=str(limit))
         entities, current = self.runtime._threshold_configuration("a")
         self.device["last_learning"] = {
-            "method": "human_priority_v7",
+            "method": "human_priority_v10",
             "status": "ok",
             "entities": entities,
             "configuration": current,

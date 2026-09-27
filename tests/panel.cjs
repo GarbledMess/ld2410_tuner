@@ -88,7 +88,7 @@ const { execFileSync } = require("node:child_process");
               sample_counts: { g0_move: { present: 100, not_present: 100 } },
               current_thresholds: { g0_move: 20 },
               last_learning: {
-                method: "human_priority_v7",
+                method: "human_priority_v10",
                 timing: {
                   active: true,
                   scope: "reported_presence",
@@ -248,7 +248,7 @@ const { execFileSync } = require("node:child_process");
       .click();
     assert.match(
       await cards.first().locator(".auto-head").innerText(),
-      /20% × confidence/,
+      /Confidence-weighted time/,
     );
     assert.match(
       await cards.first().locator(".auto-details").innerText(),
@@ -267,7 +267,7 @@ const { execFileSync } = require("node:child_process");
         .first()
         .locator('[data-section="details"] .subsection-body')
         .innerText(),
-      /Weighted automatic observations: 1.5 \/ 3.4/,
+      /Legacy weighted sample totals \(diagnostics only\): 1.5 \/ 3.4/,
     );
     await page.evaluate(() => {
       fixture.devices.b.last_learning.status = "ok";
@@ -352,7 +352,7 @@ const { execFileSync } = require("node:child_process");
     assert.match(report, /counts must not be added/);
     assert.match(
       report,
-      /No combination of gate thresholds can meet both raw-crossing targets/,
+      /Under the earlier model’s sample limits, no gate combination met both raw-crossing targets/,
     );
     assert.match(
       report,
@@ -370,7 +370,7 @@ const { execFileSync } = require("node:child_process");
     );
     assert.match(
       report,
-      /same retained observations determine thresholds, accuracy, episodes, feasibility and recommendation quality/,
+      /same retained observations determine thresholds, time-based accuracy and recommendation quality/,
     );
     assert.doesNotMatch(diagnostic, /Correct labels/);
     assert.equal(

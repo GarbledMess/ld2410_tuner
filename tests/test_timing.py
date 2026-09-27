@@ -121,21 +121,21 @@ def test_timed_rank_matches_public_validation_including_recent_and_gaps():
             groups[label].append((time, {"g0_still": rng.randrange(30)}, label))
         threshold = rng.randrange(30)
         settings = config(rng.choice([0, 5, 15]), 0.5, 1)
-        replay = timing_module.TimingReplay(groups["present"], groups["not_present"], settings)
-        masks = [metrics_module._masks(groups[label], "g0_still")[threshold] for label in groups]
-        rank = metrics_module._human_ranker(groups["present"], groups["not_present"], replay)(
-            *masks
+        replay = sys.modules["tuner_under_test.calibration.duration"].DurationReplay(
+            groups["present"], groups["not_present"], settings
         )
+        masks = [metrics_module._masks(groups[label], "g0_still")[threshold] for label in groups]
+        rank = replay.rank(*masks)
         all_metrics = measure_module.evaluate(groups, {"g0_still": threshold}, settings)
         recent = measure_module.evaluate(groups, {"g0_still": threshold}, settings, recent=True)
-        failures = fitting_module._human_failures(all_metrics) + fitting_module._human_failures(
-            recent
-        )
-        assert bool(any(rank[:5])) == bool(failures)
-        assert rank[5:] == (
-            all_metrics["false_negatives"],
-            all_metrics["false_positives"],
-            all_metrics["false_trigger_bursts"],
+        duration = all_metrics["duration"]
+        assert rank[:6] == (
+            round(duration["error_cost"], 10),
+            duration["missed_presence_episodes"] + recent["duration"]["missed_presence_episodes"],
+            round(recent["duration"]["error_cost"], 10),
+            round(duration["missed_seconds_upper"], 6),
+            round(duration["false_positive_percent"] or 0, 9),
+            duration["false_trigger_events"],
         )
 
 
@@ -183,6 +183,66 @@ def test_pair_repair_preserves_presence_supported_by_alternating_gates():
         search._pair_candidates(keys[0], keys[1], thresholds, selected, search._distinct_options())
     )
     assert candidates, "Neither gate alone passes delayed_on, but their combined run does"
+
+
+def test_recovered_high_snapshot_is_uncertain_not_a_second_proven_miss():
+    present = rows([70, 70, 5, 70, 70], step=6)
+    result = measure_module.evaluate(
+        {"present": present, "not_present": []}, {"g0_still": 20}, config(1, 0.5, 1)
+    )
+    assert result["present_samples"] == 4
+    assert result["false_negatives"] == 1
+    assert result["longest_missed_run_samples"] == 1
+    assert result["onset_uncertainty"] == {
+        "samples": 1,
+        "misses_if_earliest_onset": 1,
+        "misses_if_latest_onset": 2,
+    }
+    recent = measure_module.evaluate(
+        {"present": present, "not_present": []}, {"g0_still": 20}, config(1, 0.5, 1), recent=True
+    )
+    assert recent["onset_uncertainty"]["samples"] == 0
+
+
+def test_late_onset_is_always_within_reported_uncertainty():
+    rng = random.Random(612)
+    for _ in range(60):
+        present = rows([rng.choice([0, 20]) for _ in range(30)], step=rng.choice([0.2, 1, 6]))
+        replay = timing_module.TimingReplay(
+            present, [], config(rng.choice([0, 1, 5]), rng.choice([0.5, 2, 10]), 1)
+        )
+        mask = sum(1 << i for i, row in enumerate(present) if row[1]["g0_still"])
+        assert not replay.latest_onset.project(mask) & ~replay.positive.project(mask)
+
+
+def test_unresolved_short_delay_does_not_lower_gates_to_fix_a_sampling_assumption():
+    # Four quiet readings have unresolved recovery times between six-second
+    # snapshots. Their finite missed-time cost must not force continuous noise
+    # simply to eliminate every possible miss.
+    present = rows([14 if i in (100, 1100, 2100, 3100) else 70 for i in range(5000)], step=6)
+    absent = rows([15] * 100, "not_present", step=6, start=40000)
+    # This checks timing, independently of the separate outlier detector.
+    with (
+        patch.object(
+            fitting_module, "prepare_evidence", side_effect=lambda p, a, k: (p, a, {}, {})
+        ),
+        patch.object(fitting_module, "_backtest", return_value=(None, [], None)),
+    ):
+        result = fit(present + absent, ["g0_still"], timing=config(1, 0.5, 1))
+    assert result["training"]["false_positives"] == 0
+    assert result["training"]["false_negatives"] == 4
+    assert result["training"]["onset_uncertainty"]["samples"] == 4
+    assert result["status"] == "uncertain"
+    assert result["proposals"]["g0_still"]["threshold"] >= 15
+
+
+def test_long_on_delay_still_counts_misses_that_cannot_have_elapsed():
+    present = rows([0, 0, 70, 70, 70, 70, 70, 70], step=1)
+    replay = timing_module.TimingReplay(present, [], config(1, 3, 0))
+    detected = replay.positive.project(sum(1 << i for i in range(2, 8)))
+    assert not detected & (1 << 3)
+    assert not detected & (1 << 4)
+    assert detected & (1 << 5)
 
 
 def entity(entity_id, name=None, device="a"):

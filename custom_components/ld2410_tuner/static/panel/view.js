@@ -99,10 +99,10 @@ export const panelView = {
         .learning-report.outcome-good { border-left-color:#2e7d32; }
         .learning-report p,.nightly-report p { margin:8px 0; line-height:1.5; }
         .learning-report summary,.nightly-report summary { cursor:pointer; padding:10px 0; font-weight:600; }
-        .learning-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(135px,1fr)); gap:8px; margin-top:10px; }
-        .learning-metrics div { padding:8px; background:var(--secondary-background-color); border-radius:6px; }
-        .learning-metrics span,.learning-metrics small,.learning-metrics b { display:block; }
-        .learning-metrics b { font-size:18px; margin:6px 0; }
+        .learning-metrics,.sample-outcomes { display:grid; grid-template-columns:repeat(auto-fit,minmax(135px,1fr)); gap:8px; margin-top:10px; }
+        .learning-metrics div,.sample-outcomes div { padding:8px; background:var(--secondary-background-color); border-radius:6px; }
+        .learning-metrics span,.learning-metrics small,.learning-metrics b,.sample-outcomes span,.sample-outcomes b { display:block; }
+        .learning-metrics b,.sample-outcomes b { font-size:18px; margin:6px 0; }
         .learning-metrics small { color:var(--secondary-text-color); }
         .review-periods { padding:0; list-style:none; }
         .review-periods li { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--divider-color); }
@@ -175,6 +175,8 @@ export const panelView = {
         .learn-status.ok { color:var(--state-active-color,#2e7d32); }
         .learn-status.warn { color:var(--error-color,#c62828); }
         .learn-status.muted { color:var(--secondary-text-color); }
+        .threshold-line.learned-caution { stroke:#b06c00; stroke-width:1.6; stroke-dasharray:2,3; }
+        .axis-label.learned-caution { fill:#b06c00; font-weight:600; }
         .threshold-line.learned-unsafe { stroke:#c62828; stroke-width:1.6; stroke-dasharray:2,3; }
         .axis-label.learned-unsafe { fill:#c62828; font-weight:600; }
         .threshold-line.noise-ceiling { stroke:var(--secondary-text-color); stroke-width:1; stroke-dasharray:1,3; opacity:.7; }

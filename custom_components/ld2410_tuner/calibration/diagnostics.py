@@ -1,6 +1,7 @@
 """Reviewable signal conflicts without inventing occupancy truth or deleting samples."""
 
 from .constants import SAMPLE_SECONDS
+from .influence import period_influence
 from .timing_metrics import observations
 
 
@@ -17,6 +18,7 @@ def review_evidence(groups, thresholds, timing=None):
         "sessions": sorted(sessions, key=lambda s: (-s["errors"], s["start"]))[:24],
         "periods": _review_periods(periods),
         "period_count": len(periods),
+        "influence": period_influence(groups, thresholds, timing),
         "excluded_automatically": False,
     }
 

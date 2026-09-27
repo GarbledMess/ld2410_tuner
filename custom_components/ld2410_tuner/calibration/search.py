@@ -5,7 +5,8 @@ from __future__ import annotations
 from math import floor
 
 from .constants import MAX_FPR, MIN_CLASS_SAMPLES
-from .metrics import _human_ranker, _masks, _weight, _weighted_masks
+from .duration import DurationReplay
+from .metrics import _masks, _weight, _weighted_masks
 from .separation import gate_preference
 from .timing import TimingReplay
 
@@ -33,7 +34,9 @@ class _ThresholdSearch:
         self.auto_timing = TimingReplay(self.ap, self.an, timing)
         self.pmass = _weight(self.auto_timing.positive.eligible, self.pw)
         self.nmass = _weight(self.auto_timing.negative.eligible, self.nw)
-        self.human_rank = _human_ranker(positives, negatives, self.human_timing)
+        self.human_duration = DurationReplay(positives, negatives, timing)
+        self.auto_duration = DurationReplay(self.ap, self.an, timing)
+        self.human_rank = self.human_duration.rank
         self.tables, self.preferred, self.quiet = {}, {}, {}
         self.human_gaps = set()
         for key in keys:
@@ -59,16 +62,12 @@ class _ThresholdSearch:
 
     def rank(self, bits, gate_false=0, distance=(0, 0)):
         detected, false, auto_detected, auto_false = bits
-        auto_detected, auto_false = self.auto_timing.project(auto_detected, auto_false)
-        auto_detected &= self.auto_timing.positive.eligible
-        auto_false &= self.auto_timing.negative.eligible
-        loss = 20 * (1 - _weight(auto_detected, self.pw) / self.pmass) if self.pmass else 0
-        loss += _weight(auto_false, self.nw) / self.nmass if self.nmass else 0
+        automatic = self.auto_duration.automatic_rank(auto_detected, auto_false)
         return (
             *self.human_rank(detected, false),
             gate_false if self.human_calibration else 0,
             distance[0],
-            round(loss, 10),
+            *automatic,
             distance[1],
         )
 
@@ -228,7 +227,7 @@ class _ThresholdSearch:
     def _needs_refinement(self, score):
         # With no human presence reference, preserve the established inferred
         # fitting balance rather than pursuing ever quieter settings.
-        return any(score[:5]) or (self.human_calibration and bool(score[6]))
+        return bool(score[0])
 
     def run(self):
         thresholds, score = self.optimize(self.preferred)

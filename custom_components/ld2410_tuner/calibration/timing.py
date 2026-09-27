@@ -87,8 +87,24 @@ class _Window:
         hardware = _merge(intervals)
         return _merge([(a + self.on, b + self.off) for a, b in hardware if b - a >= self.on])
 
-    def project(self, bits, upper):
-        intervals = self._upper(bits) if upper else self._lower(bits)
+    def _possible_onset(self, bits):
+        # A transition happened sometime after the preceding low observation,
+        # not necessarily at the next high snapshot. Keep the same observed
+        # tail: this uncertainty must not invent longer quiet-presence support.
+        intervals = [
+            (
+                self.times[max(0, first - 1)] + (1e-6 if first else 0),
+                self.times[last] + self.hold + (1e-6 if self.hold == 0 else 0),
+            )
+            for first, last in bit_runs(bits)
+        ]
+        hardware = _merge(intervals)
+        return _merge([(a + self.on, b + self.off) for a, b in hardware if b - a >= self.on])
+
+    def project(self, bits, upper, earlier_onset=False):
+        intervals = (
+            self._presence_intervals(bits, earlier_onset) if not upper else self._upper(bits)
+        )
         result = 0
         for start, end in intervals:
             first = bisect_left(self.times, start)
@@ -97,10 +113,16 @@ class _Window:
             result |= ((1 << (last - first)) - 1) << first
         return result
 
+    def _presence_intervals(self, bits, earlier_onset):
+        if earlier_onset and self.on > 0:
+            return self._possible_onset(bits)
+        return self._lower(bits)
+
 
 class GroupTiming:
-    def __init__(self, rows, config, *, upper=False, barriers=()):
+    def __init__(self, rows, config, *, upper=False, barriers=(), earlier_onset=False):
         self.upper = upper
+        self.earlier_onset = earlier_onset
         hold = config.get("timeout")
         self.active = hold is not None
         self.windows = []
@@ -121,14 +143,19 @@ class GroupTiming:
         if not self.active:
             return bits
         return sum(
-            window.project((bits >> offset) & window.mask, self.upper) << offset
+            window.project((bits >> offset) & window.mask, self.upper, self.earlier_onset) << offset
             for offset, window in self.windows
         )
 
 
 class TimingReplay:
     def __init__(self, positives, negatives, config=None):
-        self.positive = GroupTiming(positives, config or {}, barriers=[row[0] for row in negatives])
+        self.positive = GroupTiming(
+            positives, config or {}, barriers=[row[0] for row in negatives], earlier_onset=True
+        )
+        self.latest_onset = GroupTiming(
+            positives, config or {}, barriers=[row[0] for row in negatives]
+        )
         self.negative = GroupTiming(
             negatives, config or {}, upper=True, barriers=[row[0] for row in positives]
         )

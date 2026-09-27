@@ -1,4 +1,4 @@
-"""One local-time overnight learning pass, without device writes."""
+"""One local-time overnight learning pass, without applying learned thresholds."""
 
 import asyncio
 import logging
@@ -93,6 +93,9 @@ async def stop(runtime):
 
 def restore(runtime):
     for device in runtime.data["devices"].values():
+        recovery = device.get("configuration_recovery", {})
+        if recovery.get("status") == "running":
+            recovery.update(status="interrupted", error="Home Assistant restarted during recovery")
         attempt = device.get("nightly_learning", {})
         if attempt.get("status") == "running":
             attempt.update(status="interrupted", error="Home Assistant restarted during learning")

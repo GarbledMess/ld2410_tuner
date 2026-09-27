@@ -2,9 +2,12 @@
 
 MIN_CLASS_SAMPLES = 50
 MIN_RECALL = 0.999
+MISSED_TIME_COST = (
+    5.0  # Finite cost per missed occupied-time fraction versus false-active empty time.
+)
 MAX_FPR = 0.005
 MAX_CLASS_SAMPLES = 5000
-METHOD = "human_priority_v7"
+METHOD = "human_priority_v10"
 AUTO_WEIGHT = 0.20
 AUTO_CLASS_CAP = 0.25  # At most 20% of combined class evidence when manual data exists.
 MIN_AUTO_CONFIDENCE = 0.55

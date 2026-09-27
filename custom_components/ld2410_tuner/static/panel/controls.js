@@ -123,7 +123,7 @@ export const panelControls = {
   async _applyRecommendation(id, device) {
     const slot = device.learning_slot;
     const selected = device.last_learning;
-    const outcome = this._applyOutcome(selected);
+    const outcome = this._applyOutcome(selected, device.timing_configuration);
     if (
       !confirm(
         `Apply these learned thresholds? ${outcome.label}. Review the device results and verify quiet presence and empty-room behaviour.`,

@@ -257,7 +257,7 @@ configuration; omit these diagnostics if they do not describe your setup. Numeri
 sensor/number entities named Presence On Delay and Presence Off Delay also work
 when they expose a duration unit (`ms`, `s`, `min`, or `h`). With only Timeout
 available, learning evaluates radar hold and clearly marks the filters unknown.
-With no Timeout it retains raw-crossing validation. Learn and Apply remain usable.
+With no Timeout it estimates raw-crossing durations between snapshots. Learn and Apply remain usable.
 
 ## Timing and reporting options: behavior changes to consider
 
@@ -286,3 +286,29 @@ with ESPHome 2026.9.0 for both default and overridden delays (2s on / 10s off).
 Generated code was checked to use the same values for the actual filters and both
 diagnostics, while preserving different local UART pins. This is configuration
 and code-generation validation, not a firmware build or hardware test.
+
+## Recovery before manual or overnight learning
+
+Version 1.12.0 checks exposed active-gate thresholds and distance limits before
+fitting. Healthy devices are left alone. Missing states trigger up to two Query
+Params attempts, then an exposed Radar Restart, then a Bluetooth cycle if needed
+and available. Each restart is followed by parameter queries. These are optional
+standard ESPHome entities; no package or particular internal firmware ID is required.
+Ambiguous, disabled or other-device controls are not used. A generic ESP restart
+button is never pressed. Missing threshold entities require enabling them rather
+than a recovery attempt.
+
+**Behaviour change:** Learn may briefly interrupt radar reports when recovering
+missing settings. Bluetooth is restored to its original known on/off state, and
+Engineering Mode is re-enabled if it was on. Unknown Bluetooth state is not guessed.
+Recordings pause during recovery so those transitions do not become training data.
+Recovery is bounded per Learn and has a one-minute cooldown, not a once-per-boot
+limit. It does not run continuously and never automatically applies thresholds.
+Apply retains its existing query-only recovery and explicit confirmation.
+
+The device report shows progress, attempts and any failure. Pending Bluetooth
+restoration is saved before toggling; the next Learn retries it first if a restart
+or interruption prevented confirmation. Overnight calculation quality is separate
+from job failure: a completed recommendation can have a false-active penalty.
+Service calls and reported-state restoration are covered by synthetic tests;
+physical radar recovery and the intermittent firmware cause remain unproven.

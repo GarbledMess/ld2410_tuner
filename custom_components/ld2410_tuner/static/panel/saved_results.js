@@ -54,14 +54,43 @@ export const panelSavedResults = {
       ${stale ? '<div class="notice">Labels have changed since this result was learned. Its accuracy report describes the earlier labels; you can still apply these saved values.</div>' : ""}`;
   },
 
+  _refreshRecoveryProgress() {
+    for (const card of this.shadowRoot.querySelectorAll("[data-device-id]")) {
+      const target = card.querySelector(".recovery-progress");
+      const device = this._data?.devices?.[card.dataset.deviceId];
+      if (target && device) target.innerHTML = this._recoveryHtml(device);
+    }
+  },
+
+  _recoveryHtml(d) {
+    const report = d.configuration_recovery;
+    if (!report) return "";
+    const stages = {
+      query_parameters: "Reading radar parameters",
+      radar_restart: "Restarting the radar",
+      bluetooth_cycle: "Cycling Bluetooth and restoring its original state",
+    };
+    const outcomes = {
+      running: stages[report.stage] || "Checking radar settings",
+      recovered: "Radar settings recovered; learning can continue",
+      failed: "Radar recovery failed",
+      interrupted: "Radar recovery was interrupted",
+    };
+    return `<div class="notice recovery-report ${report.status === "running" ? "is-busy" : ""}" role="status"><b>${this._esc(outcomes[report.status] || report.status)}</b><p>${this._esc((report.steps || []).map((step) => stages[step] || step).join(" → "))}</p>${report.error ? `<p>${this._esc(report.error)}</p>` : ""}${report.restore_bluetooth ? "<p>Original Bluetooth state still needs restoration. The next Learn retries restoration first.</p>" : ""}</div>`;
+  },
+
   _nightlyReportHtml(d) {
     const run = d.nightly_learning;
     if (!run) return "";
     const messages = {
       running: "Learning is running. You can keep using the panel.",
-      ok: "Completed: the overnight result meets the measured targets.",
+      ok: "Completed. Select Autolearnt to review the saved result’s accuracy, timing and learning model.",
+      tradeoff:
+        "Completed and scored: the presence-time target is met, with some false-active time. Select Autolearnt to review the score and the periods driving it.",
       unsafe:
-        "Completed, but the overnight result misses one or more targets. Select Autolearnt to review it.",
+        "Completed with presence gaps or continuous false activity in its recorded assessment. Select Autolearnt to review it.",
+      uncertain:
+        "Completed, but timing between recordings or very short sessions remains uncertain. Select Autolearnt to review the uncertainty; presence accuracy is not confirmed.",
       insufficient:
         "Completed, but there are too few usable examples. Record both occupied and empty periods, then learn again.",
       interrupted:
@@ -97,9 +126,11 @@ export const panelSavedResults = {
       return '<span class="pill nightly-marker">Overnight: not run</span>';
     const labels = {
       running: "Learning…",
-      ok: "Targets met",
+      ok: "Completed · review result",
+      tradeoff: "Scored · review penalty",
       unsafe: "Targets not met",
       insufficient: "Not enough data",
+      uncertain: "Timing uncertain",
       error: "Failed",
       interrupted: "Interrupted",
     };

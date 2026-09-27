@@ -28,7 +28,7 @@ custom_components/ld2410_tuner/
 | `runtime/` | `coordinator.py` owns state/tasks; `discovery.py` follows registry changes; `websocket.py` exposes administrator commands |
 | `presence/` | `autolabelling.py` records guesses/feedback; `inference.py` implements the pure temporal estimator |
 | `history/` | `recording.py` owns buffers/executor snapshots; `cleanup.py` normalizes stored blocks; `labels.py` owns human labels/timeouts |
-| `calibration/` | `service.py` owns Learn/Apply and hardware guards; `results.py` owns the four saved-result slots; `fitting.py`, `search.py`, `metrics.py`, `constants.py` own the numerical learner; `timing.py` and `timing_metrics.py` replay sampled device timing, while `timing_config.py` reads optional HA timing entities |
+| `calibration/` | `service.py` owns Learn/Apply and hardware guards; `results.py` owns the four saved-result slots; `fitting.py`, `search.py`, `metrics.py`, `constants.py` own the numerical learner; `duration.py` scores observed elapsed time; `influence.py` attributes errors to recorded chunks; `recovery.py` owns bounded pre-Learn recovery; `timing.py` and `timing_metrics.py` replay sampled device timing, while `timing_config.py` reads optional HA timing entities |
 | `presentation/` | `charts.py` aggregates history; `snapshots.py` builds dashboard/export data |
 | `static/panel/` | `view.js` owns the shell/draw lifecycle; `card.js`, `controls.js`, `learning.js` own card sections and interactions; `chart.js`, `visualization.js`, `selection.js` own history requests, SVG drawing, and range interaction; `constants.js` owns shared values |
 
@@ -46,13 +46,18 @@ replay tools use the same grouped module paths as the installed integration.
   Applying a selected slot pins its result ID and reviewed live configuration;
   partial writes do not rotate current/previous results.
 - The fitting search retains its iteration order and strict tie-breaking. The
-  search keeps its quality targets and automatic weights. Quality failures are
+  search minimizes a finite time cost (5 times missed occupied-time rate plus
+  false-active empty-time rate), then uses confidence-weighted automatic time.
+  The 99.9% recall target assesses quality rather than granting a free miss budget. Quality failures are
   advisory for manual Apply; entity identity and write guards still apply.
 - Timing replay is an offline calibration input, never a replacement presence
   entity. It combines gates before the radar hold and any known on/off filters.
   Search, recent validation and review periods use the same replay; raw metrics
   remain separate. Unknown timing never acquires guessed defaults, and Apply
   never writes timing controls. Timing changes during Learn discard that result.
+- Learn recovery shares the device-operation guard with Apply. It may query or
+  restart a radar with missing configuration, but never applies thresholds.
+  Bluetooth restoration is persisted, and recordings pause during recovery.
 - Missing energy is not zero. Old observations without confidence do not acquire
   invented automatic labels. Cleanup preserves valid timestamps and label priority.
 - Executor work uses detached views. Revision guards prevent stale work from

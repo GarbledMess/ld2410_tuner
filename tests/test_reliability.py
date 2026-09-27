@@ -49,8 +49,8 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(measurement["not_present_samples"], 1000)
             self.assertEqual(measurement["longest_missed_run_samples"], 0)
         self.assertEqual(result["counts"]["present"], 995)
-        self.assertEqual(result["feasibility"]["windows"][0]["present_samples"], 995)
-        self.assertEqual(result["feasibility"]["status"], "not_ruled_out")
+        self.assertEqual(result["training"]["duration"]["missed_seconds"], 0)
+        self.assertEqual(result["feasibility"]["status"], "not_assessed")
         self.assertEqual(result["raw_audit"]["false_negatives"], 5)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(groups, original)
@@ -62,8 +62,12 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(retained, groups)
             self.assertEqual(report["excluded"]["present"], 0)
             result = fit(groups)
-            self.assertEqual(result["training"]["false_negatives"], 0)
-            self.assertEqual(result["status"], "unsafe")
+            # Retained does not mean every conflict forces noisier thresholds.
+            # The finite error cost may leave misses, which must stay visible.
+            expected_misses = len(dip) if len(dip) < 1000 else 0
+            self.assertEqual(result["training"]["false_negatives"], expected_misses)
+            self.assertEqual(result["counts"]["present"], 1000)
+            self.assertEqual(result["status"], "unsafe" if expected_misses else "tradeoff")
 
     def test_low_but_distinct_quiet_signal_stays(self):
         groups = observations()

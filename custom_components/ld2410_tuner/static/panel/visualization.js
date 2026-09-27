@@ -13,13 +13,14 @@ export const panelVisualization = {
     const activeKey = `g${cs.gate}_${cs.kind}`;
     const currentThreshold = d.current_thresholds?.[activeKey];
     const learnedProposal = d.last_learning?.proposals?.[activeKey];
-    // A proposal marked "unsafe" still carries a computed threshold - it was
-    // previously hidden outright whenever status wasn't "ok", which meant a
-    // device with overlapping present/not-present data (exactly the sort of
-    // device someone would be using this chart to investigate) would never
-    // show a learned line at all, no matter how much data you gave it.
     const learnedThreshold = learnedProposal?.threshold ?? null;
-    const learnedUnsafe = learnedProposal && learnedProposal.status !== "ok";
+    const outcome = this._applyOutcome(d.last_learning, d.timing_configuration);
+    const learnedStyle =
+      { bad: "learned-unsafe", caution: "learned-caution" }[outcome.level] ||
+      "learned";
+    const learnedLabel =
+      { bad: "Learned (unsafe)", caution: "Learned (review)" }[outcome.level] ||
+      "Learned";
     // The single highest NOT_PRESENT sample ever seen for this gate - shown
     // so an isolated spike dominating the learned threshold is visible at a
     // glance, rather than being an invisible number behind the math.
@@ -90,7 +91,7 @@ export const panelVisualization = {
 
     const toolbarHtml = this._selectionToolbarHtml(cs);
 
-    return `${this._learnStatusHtml(learnedProposal, cs, d.last_learning)}<svg viewBox="0 0 ${CHART_W} ${CHART_H}" preserveAspectRatio="xMidYMid meet">
+    return `${this._learnStatusHtml(learnedProposal, cs, d.last_learning, d.timing_configuration)}<svg viewBox="0 0 ${CHART_W} ${CHART_H}" preserveAspectRatio="xMidYMid meet">
       <rect x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${CHART_PLOT_W}" height="${CHART_PLOT_H}" class="plot-bg"></rect>
       ${bands}
       ${yTicks}
@@ -98,7 +99,7 @@ export const panelVisualization = {
       ${otherLines}
       ${activeBandSvg}
       ${activeLineSvg}
-      ${thresholdLine(learnedThreshold, learnedUnsafe ? "learned-unsafe" : "learned", learnedUnsafe ? "Learned (unsafe)" : "Learned")}
+      ${thresholdLine(learnedThreshold, learnedStyle, learnedLabel)}
       ${thresholdLine(currentThreshold, "current", "Current")}
       ${thresholdLine(noiseCeiling, "noise-ceiling", "Noise max")}
       <rect data-role="selection-hit" class="selection-hit" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${CHART_PLOT_W}" height="${CHART_PLOT_H}"></rect>

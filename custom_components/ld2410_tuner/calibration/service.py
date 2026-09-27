@@ -13,7 +13,7 @@ from homeassistant.helpers import entity_registry as er
 
 from ..const import GATE_RE, HISTORY_KEYS
 from ..history.labels import _history_label_reader
-from . import device_io, results
+from . import device_io, recovery, results
 from .fitting import MAX_CLASS_SAMPLES, METHOD, MIN_AUTO_CONFIDENCE, fit_thresholds
 from .timing_config import read_timing, timing_values
 
@@ -66,7 +66,7 @@ async def async_learn(runtime, device_id, source="user"):
 
 async def _learn_once(runtime, device_id):
     try:
-        entities, current = runtime._threshold_configuration(device_id)
+        entities, current = await recovery.prepare_learning(runtime, device_id)
         timing = read_timing(runtime, device_id)
         view = runtime._history_view(device_id)
         view._fit_timing = timing
