@@ -14,6 +14,7 @@ from .constants import (
     MIN_RECALL,
     SAMPLE_SECONDS,
 )
+from .timing import TimingReplay
 
 
 def metrics(rows, thresholds):
@@ -143,7 +144,7 @@ def _weight(mask, groups):
     return sum(weight * (mask & bucket).bit_count() for weight, bucket in groups.items())
 
 
-def _human_ranker(positives, negatives):
+def _human_ranker(positives, negatives, timing=None):
     """Rank target violations before refinements, for full and recent evidence.
 
     Search and public validation receive the same prefiltered observations.
@@ -151,6 +152,8 @@ def _human_ranker(positives, negatives):
     gaps/label changes. A budgeted isolated miss is never a licence to lose an
     entire presence episode or a run of quiet presence.
     """
+    replay = timing or TimingReplay(positives, negatives)
+    eligible_present, eligible_absent = replay.eligible
     windows = []
     starts = [(0, 0)]
     if min(len(positives), len(negatives)) >= MIN_CLASS_SAMPLES:
@@ -159,11 +162,13 @@ def _human_ranker(positives, negatives):
         present, absent = positives[pstart:], negatives[nstart:]
         episodes = [mask << pstart for mask, _ in _episode_masks(present, absent)]
         empty_episodes = [mask << nstart for mask, _ in _episode_masks(absent, present)]
-        presence_mask = ((1 << len(present)) - 1) << pstart
-        absent_mask = ((1 << len(absent)) - 1) << nstart
+        presence_mask = (((1 << len(present)) - 1) << pstart) & eligible_present
+        absent_mask = (((1 << len(absent)) - 1) << nstart) & eligible_absent
+        episodes = [mask & presence_mask for mask in episodes if mask & presence_mask]
+        empty_episodes = [mask & absent_mask for mask in empty_episodes if mask & absent_mask]
         presence_links = presence_mask ^ sum(mask & -mask for mask in episodes)
         absent_links = absent_mask ^ sum(mask & -mask for mask in empty_episodes)
-        seconds = _temporal_metrics(present + absent, {})["observed_absent_seconds"]
+        seconds = _observed_absent_seconds(negatives, absent_mask)
         windows.append(
             (
                 presence_mask,
@@ -171,43 +176,49 @@ def _human_ranker(positives, negatives):
                 episodes,
                 presence_links,
                 absent_links,
-                floor(len(present) * (1 - MIN_RECALL) + 1e-9),
-                floor(len(absent) * MAX_FPR + 1e-9),
+                floor(presence_mask.bit_count() * (1 - MIN_RECALL) + 1e-9),
+                floor(absent_mask.bit_count() * MAX_FPR + 1e-9),
                 floor(seconds * MAX_FALSE_BURSTS_PER_HOUR / 3600 + 1e-9),
             )
         )
 
-    def rank(detected, false):
-        violations = [0] * 5
-        refinements = None
-        for (
-            pmask,
-            nmask,
-            episodes,
-            plinks,
-            nlinks,
-            miss_budget,
-            false_budget,
-            burst_budget,
-        ) in windows:
-            missed = pmask & ~detected
-            false_here = nmask & false
-            missed_count, false_count = missed.bit_count(), false_here.bit_count()
-            bursts = (false_here & ~((false_here << 1) & nlinks)).bit_count()
-            # Count runs exceeding the allowed length without scanning samples.
-            too_long = missed
-            for _ in range(MAX_MISSED_RUN):
-                too_long = missed & (too_long << 1) & plinks
-            failures = (
-                sum(not (detected & mask) for mask in episodes),
-                max(0, missed_count - miss_budget),
-                too_long.bit_count(),
-                max(0, false_count - false_budget),
-                max(0, bursts - burst_budget),
-            )
-            violations = [a + b for a, b in zip(violations, failures, strict=False)]
-            if refinements is None:
-                refinements = (missed_count, false_count, bursts)
-        return (*violations, *refinements)
+    return lambda detected, false: _rank_windows(windows, *replay.project(detected, false))
 
-    return rank
+
+def _rank_windows(windows, detected, false):
+    violations = [0] * 5
+    refinements = None
+    for (
+        pmask,
+        nmask,
+        episodes,
+        plinks,
+        nlinks,
+        miss_budget,
+        false_budget,
+        burst_budget,
+    ) in windows:
+        missed = pmask & ~detected
+        false_here = nmask & false
+        missed_count, false_count = missed.bit_count(), false_here.bit_count()
+        bursts = (false_here & ~((false_here << 1) & nlinks)).bit_count()
+        # Count runs exceeding the allowed length without scanning samples.
+        too_long = missed
+        for _ in range(MAX_MISSED_RUN):
+            too_long = missed & (too_long << 1) & plinks
+        failures = (
+            sum(not (detected & mask) for mask in episodes),
+            max(0, missed_count - miss_budget),
+            too_long.bit_count(),
+            max(0, false_count - false_budget),
+            max(0, bursts - burst_budget),
+        )
+        violations = [a + b for a, b in zip(violations, failures, strict=False)]
+        if refinements is None:
+            refinements = (missed_count, false_count, bursts)
+    return (*violations, *refinements)
+
+
+def _observed_absent_seconds(rows, mask):
+    observed = [row for i, row in enumerate(rows) if mask & (1 << i)]
+    return _temporal_metrics(observed, {})["observed_absent_seconds"]

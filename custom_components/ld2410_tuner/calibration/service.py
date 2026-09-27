@@ -15,6 +15,7 @@ from ..const import GATE_RE, HISTORY_KEYS
 from ..history.labels import _history_label_reader
 from . import device_io, results
 from .fitting import MAX_CLASS_SAMPLES, METHOD, MIN_AUTO_CONFIDENCE, fit_thresholds
+from .timing_config import read_timing, timing_values
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,7 +67,9 @@ async def async_learn(runtime, device_id, source="user"):
 async def _learn_once(runtime, device_id):
     try:
         entities, current = runtime._threshold_configuration(device_id)
+        timing = read_timing(runtime, device_id)
         view = runtime._history_view(device_id)
+        view._fit_timing = timing
         device = runtime.data["devices"][device_id]
         revision = device.get("label_revision", 0)
         learned = await runtime.hass.async_add_executor_job(
@@ -74,6 +77,9 @@ async def _learn_once(runtime, device_id):
         )
         if revision != device.get("label_revision", 0):
             raise LearningEvidenceChanged("Training labels changed while learning; learn again")
+        if timing_values(read_timing(runtime, device_id)) != timing_values(timing):
+            raise ValueError("Device timing changed while learning; learn again")
+        learned["timing_configuration"] = timing
         learned["label_revision"] = revision
         return learned
     finally:
@@ -104,7 +110,9 @@ def _fit_history(runtime, device_id, entities, current):
         for group in automatic.values()
         for ts, row, label, confidence in group
     ]
-    learned = fit_thresholds(rows, list(entities), current, guesses)
+    learned = fit_thresholds(
+        rows, list(entities), current, guesses, getattr(runtime, "_fit_timing", None)
+    )
     learned["configuration"] = current
     learned["entities"] = entities
     learned["created_at"] = time.time()

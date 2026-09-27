@@ -884,7 +884,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.states[entity_id] = types.SimpleNamespace(state=str(limit))
         entities, current = self.runtime._threshold_configuration("a")
         self.device["last_learning"] = {
-            "method": "human_priority_v6",
+            "method": "human_priority_v7",
             "status": "ok",
             "entities": entities,
             "configuration": current,

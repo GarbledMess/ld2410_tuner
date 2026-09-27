@@ -65,6 +65,37 @@ The four slots are stored with the existing integration data and survive restart
 they contain thresholds and diagnostics, not duplicate energy recordings. Clear data
 also removes them. No extra tabs or automatic threshold application are introduced.
 
+## Device timing in learning
+
+Learn reads the radar's exposed **Timeout**. It evaluates the combined gates first,
+then estimates how the existing hold would affect missed presence and false triggers.
+If both ESPHome presence delays are exposed, it also evaluates `delayed_on` followed
+by `delayed_off`. The optional package publishes these as read-only diagnostics;
+[standalone configurations are supported too](docs/esphome-recovery.md#exposing-timing-for-calibration).
+Apply still writes only gate thresholds, and stays manual.
+
+Recommendations show the timing used, unknown settings, original raw counts and
+sampled timing estimates. A saved result warns when current timing differs. Old
+model results need a fresh Learn. Unknown timing is a caution, not a requirement
+to install the package or a quality-based Apply block.
+
+Recordings are snapshots, normally about six seconds apart. Consecutive high
+observations are treated as a sampled run; hold starts from its last observed hit.
+For empty-room errors, possible activity between neighboring observations is also
+included, so a lone reading is not assumed to be a harmless sub-second spike.
+Replay restarts at label changes and gaps over twelve seconds. Initial observations
+up to the larger of Timeout + off delay and on delay are left unscored because the
+preceding state is unknown; their count is shown and the raw evidence is retained.
+Too little remaining evidence cannot produce a passing result. Recent validation
+keeps earlier timing context; the chronological backtest starts independently.
+
+These estimates help choose gate thresholds; they do not reconstruct unrecorded
+pulses, establish exact durations, or guarantee real-world accuracy. Review links
+use the same timing assessment and show the span between observations separately
+from actual duration. Longer timeouts cover quiet gaps but also extend false
+presence. Delay/reporting options and their behavior changes are listed in the
+[package guide](docs/esphome-recovery.md#timing-and-reporting-options-behavior-changes-to-consider).
+
 ## Repository layout
 
 The installable package is `custom_components/ld2410_tuner`. Its entrypoint owns
@@ -127,7 +158,7 @@ six seconds), independently of whether values change. Existing gate histograms c
 include legacy data without timestamps; the learning result reports the timed
 human and inferred observations actually used, separately from gate histogram counts.
 
-The Apply button is red when combined targets fail, yellow for limited human
+The Apply button is red when combined targets fail, yellow for unknown timing, limited human
 measurements or backtest concerns, and green when measured results meet the targets.
 Its text also states the outcome. It is disabled when no learned thresholds exist
 (and temporarily while an operation is running). The confirmation remains explicit;
@@ -317,8 +348,10 @@ A brief empty-room burst is not automatically an invalid reading. A person, pet 
 other real activity may produce it. Keep known dog-only periods labelled empty
 when training for human presence. If legitimate empty-room signals overlap quiet
 human presence, static gate thresholds may be unable to meet both targets. The
-feasibility report flags provable conflicts; deleting valid difficult examples
-would hide false positives. The history graph's mean line is aggregated in wider
+raw-crossing feasibility report can flag provable conflicts when timing is unknown;
+that proof does not include radar hold or firmware delays. With timing enabled it
+is not used to claim impossibility. Deleting valid difficult examples would hide
+false positives. The history graph's mean line is aggregated in wider
 windows; zoom into a review period to inspect its short-lived readings.
 
 ## Bugs addressed

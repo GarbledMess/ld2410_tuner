@@ -40,7 +40,9 @@ export const panelSavedResults = {
         const stamp = value?.created_at
           ? ` · ${new Date(value.created_at * 1000).toLocaleString()}`
           : "";
-        const outcome = value ? this._applyOutcome(value).label : "No result";
+        const outcome = value
+          ? this._applyOutcome(value, d.timing_configuration).label
+          : "No result";
         return `<option value="${key}" ${key === slot ? "selected" : ""} ${value ? "" : "disabled"}>${this._esc(`${label} · ${outcome}${stamp}`)}</option>`;
       })
       .join("");
@@ -82,6 +84,7 @@ export const panelSavedResults = {
       return "Presence labels changed during calculation, so this result was discarded. Finish editing the labels, then learn again.";
     if (
       error.includes("configuration changed") ||
+      error.includes("Device timing changed") ||
       error.includes("configuration is unavailable")
     )
       return "Radar settings changed or became unavailable during learning. Check the device settings, then learn again.";

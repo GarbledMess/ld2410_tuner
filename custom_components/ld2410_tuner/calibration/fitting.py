@@ -27,6 +27,7 @@ from .metrics import metrics as metrics
 from .reliability import filter_groups, prepare_evidence
 from .search import _search
 from .separation import gate_preference
+from .timing_metrics import evaluate, timing_summary
 
 
 def _human_failures(measured):
@@ -56,7 +57,7 @@ def _human_failures(measured):
     return [message for failed, message in checks if failed]
 
 
-def fit_thresholds(rows, keys, current=None, automatic=()):
+def fit_thresholds(rows, keys, current=None, automatic=(), timing=None):
     """Fit all usable evidence; supported human observations take priority.
 
     Source proportions never block Apply. A chronological human backtest is
@@ -101,6 +102,7 @@ def fit_thresholds(rows, keys, current=None, automatic=()):
             "automatic_evidence": evidence,
             "outlier_filter": exclusions,
             "method": METHOD,
+            "timing": timing_summary(timing, groups),
             "warnings": [
                 f"Need {MIN_CLASS_SAMPLES} usable observations of each state, from human labels or confident estimates. Human: {counts}; automatic: {auto_counts}."
             ],
@@ -109,22 +111,28 @@ def fit_thresholds(rows, keys, current=None, automatic=()):
     # Backtest only earlier observations. Later estimates may have seen the
     # human holdout, so they must not enter this evaluation's fitting step.
     held_out, validation, validation_exclusions = _backtest(
-        raw_counts, raw_groups, raw_auto, keys, current
+        raw_counts, raw_groups, raw_auto, keys, current, timing
     )
-    thresholds, mass = _search(groups["present"], groups["not_present"], auto_groups, keys, current)
+    thresholds, mass = _search(
+        groups["present"], groups["not_present"], auto_groups, keys, current, timing
+    )
     evidence["effective_weight"] = mass
     all_rows = groups["present"] + groups["not_present"]
-    training = metrics(all_rows, thresholds)
+    training = evaluate(groups, thresholds, timing)
     recent = (
-        metrics(_recent_rows(groups), thresholds)
+        evaluate(groups, thresholds, timing, recent=True)
         if min(counts.values()) >= MIN_CLASS_SAMPLES
         else None
     )
-    estimated = metrics([row[:3] for group in auto_groups.values() for row in group], thresholds)
+    estimated = evaluate(auto_groups, thresholds, timing)
     failures = _candidate_failures(training, recent, counts, estimated)
-    status = "unsafe" if failures else "ok"
+    status = _outcome_status(failures, timing, training, estimated)
     basis = _evidence_basis(all_rows, evidence["used"])
     warnings = _learning_warnings(failures, basis, held_out)
+    if status == "insufficient":
+        warnings.append(
+            "Too few observations remain after timing warm-up; record longer occupied and empty sessions."
+        )
     proposals = _build_proposals(
         thresholds, all_rows, groups, auto_groups, status, failures, basis, evidence
     )
@@ -132,8 +140,16 @@ def fit_thresholds(rows, keys, current=None, automatic=()):
         "method": METHOD,
         "outlier_filter": exclusions,
         "raw_audit": metrics(raw_groups["present"] + raw_groups["not_present"], thresholds),
-        "review": review_evidence(groups, thresholds),
-        "feasibility": assess_feasibility(groups["present"], groups["not_present"], keys),
+        "raw_training": metrics(all_rows, thresholds),
+        "timing": timing_summary(timing, groups),
+        "review": review_evidence(groups, thresholds, timing),
+        "feasibility": {
+            "status": "not_assessed",
+            "reason": "Timing replay replaces the raw-crossing feasibility proof",
+            "windows": [],
+        }
+        if timing and timing.get("timeout") is not None
+        else assess_feasibility(groups["present"], groups["not_present"], keys),
         "status": status,
         "evidence_basis": basis,
         "proposals": proposals,
@@ -155,7 +171,7 @@ def fit_thresholds(rows, keys, current=None, automatic=()):
             "false_trigger_bursts_per_hour": MAX_FALSE_BURSTS_PER_HOUR,
         },
     }
-    _current_validation(result, held_out, current, keys, validation)
+    _current_validation(result, held_out, current, keys, validation, timing)
     return result
 
 
@@ -186,7 +202,7 @@ def _recent_rows(groups):
     return [row for group in groups.values() for row in group[int(len(group) * 0.8) :]]
 
 
-def _backtest(counts, groups, auto_groups, keys, current):
+def _backtest(counts, groups, auto_groups, keys, current, timing=None):
     if min(counts.values()) < MIN_CLASS_SAMPLES:
         return None, [], None
     earlier = {label: group[: int(len(group) * 0.8)] for label, group in groups.items()}
@@ -200,8 +216,10 @@ def _backtest(counts, groups, auto_groups, keys, current):
     # outlier cutoffs or alter the fitted threshold configuration.
     retained, excluded = filter_groups(later, models["human"])
     validation = retained["present"] + retained["not_present"]
-    backtest, _ = _search(training["present"], training["not_present"], inferred, keys, current)
-    return metrics(validation, backtest), validation, excluded
+    backtest, _ = _search(
+        training["present"], training["not_present"], inferred, keys, current, timing
+    )
+    return evaluate(retained, backtest, timing), validation, excluded
 
 
 def _build_proposals(thresholds, all_rows, groups, auto_groups, status, failures, basis, evidence):
@@ -256,9 +274,13 @@ def _candidate_failures(training, recent, counts, estimated):
     return failures
 
 
-def _current_validation(result, held_out, current, keys, validation):
+def _current_validation(result, held_out, current, keys, validation, timing=None):
     if held_out and current and all(key in current for key in keys):
-        result["current_validation"] = metrics(validation, {key: current[key] for key in keys})
+        groups = {
+            label: [row for row in validation if row[2] == label]
+            for label in ("present", "not_present")
+        }
+        result["current_validation"] = evaluate(groups, {key: current[key] for key in keys}, timing)
 
 
 def _gate_proposal(
@@ -300,3 +322,15 @@ def _gate_role(observed, threshold):
     if not observed:
         return "unchanged"
     return "suppressed" if threshold == 100 else "detection"
+
+
+def _outcome_status(failures, timing, training, estimated):
+    if timing and timing.get("timeout") is not None:
+        if (
+            min(
+                training[key] + estimated[key] for key in ("present_samples", "not_present_samples")
+            )
+            < MIN_CLASS_SAMPLES
+        ):
+            return "insufficient"
+    return "unsafe" if failures else "ok"

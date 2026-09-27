@@ -274,6 +274,20 @@ switch:
       name: Bluetooth
 
 text_sensor:
+  # Read-only metadata: these use the exact substitutions wired to the existing
+  # filters above. Exposing them does not alter presence or add a new handler.
+  - platform: template
+    name: LD2410 Presence On Delay
+    id: ld2410_presence_on_delay_info
+    entity_category: diagnostic
+    lambda: return {"${ld2410_presence_on_delay}"};
+    update_interval: 60s
+  - platform: template
+    name: LD2410 Presence Off Delay
+    id: ld2410_presence_off_delay_info
+    entity_category: diagnostic
+    lambda: return {"${ld2410_presence_off_delay}"};
+    update_interval: 60s
   - platform: ld2410
     ld2410_id: ld2410_radar
     version:

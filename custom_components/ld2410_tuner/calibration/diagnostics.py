@@ -1,12 +1,15 @@
 """Reviewable signal conflicts without inventing occupancy truth or deleting samples."""
 
 from .constants import SAMPLE_SECONDS
+from .timing_metrics import observations
 
 
-def review_evidence(groups, thresholds):
+def review_evidence(groups, thresholds, timing=None):
     sessions, periods = [], []
-    for label, rows in groups.items():
-        errors = [_is_error(row, thresholds) for row in rows]
+    selected = observations(groups, thresholds, timing)
+    for label in groups:
+        rows = [row for row, _hit in selected if row[2] == label]
+        errors = [hit != (label == "present") for row, hit in selected if row[2] == label]
         sessions.extend(_sessions(rows, errors, label))
         periods.extend(_periods(rows, errors, label, thresholds))
     periods.sort(key=lambda p: (-p["samples"], p["start"]))
@@ -16,11 +19,6 @@ def review_evidence(groups, thresholds):
         "period_count": len(periods),
         "excluded_automatically": False,
     }
-
-
-def _is_error(row, thresholds):
-    hit = any(row[1].get(key, -1) > value for key, value in thresholds.items())
-    return hit != (row[2] == "present")
 
 
 def _sessions(rows, errors, label):
@@ -65,6 +63,8 @@ def _describe(rows, errors, run, label, thresholds):
         "end": rows[last][0] + SAMPLE_SECONDS,
         "state": label,
         "samples": len(run),
+        "observed_span_seconds": rows[last][0] - rows[first][0],
+        "duration_known": False,
         "short_burst": bool(isolated),
         "gates": gates,
     }

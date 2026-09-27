@@ -268,7 +268,7 @@ export const panelChart = {
         return `Gate ${gate} ${kind === "move" ? "Movement" : "Still"} at ${Math.round(proposal.threshold)}: ${proposal.false_positives} / ${proposal.not_present_samples} empty-room samples.${this._presenceDependencyText(proposal)}`;
       });
     return sources.length
-      ? `<div class="false-positive-sources">Largest per-gate false-positive counts: ${this._esc(sources.join("; "))}. Gates can trigger on the same samples; these counts must not be added.</div>`
+      ? `<div class="false-positive-sources">Largest per-gate raw false-positive counts: ${this._esc(sources.join("; "))}. Gates can trigger on the same samples; these counts must not be added. Per-gate counts exclude device hold and filters.</div>`
       : "";
   },
 

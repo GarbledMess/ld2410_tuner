@@ -9,7 +9,7 @@ export const panelLearning = {
     if (count == null) return "";
     if (!count)
       return " No labelled presence sample depends on this gate alone.";
-    return ` ${count} labelled presence samples depend on this gate alone; weakest energy ${proposal.weakest_exclusive_presence_energy}.`;
+    return ` ${count} labelled raw presence samples depend on this gate alone before hold; weakest energy ${proposal.weakest_exclusive_presence_energy}.`;
   },
 
   _outlierFilterHtml(learning) {
@@ -43,7 +43,7 @@ export const panelLearning = {
       return `<button type="button" data-action="review-period" data-start="${Number(period.start)}" data-end="${Number(period.end)}">${this._esc(`${from} – ${to} (${period.samples} samples)`)}</button>`;
     });
     return `<div class="evidence-conflict"><b>Occupied and empty readings overlap.</b>
-      <p>No combination of gate thresholds can meet both targets for these labels. ${this._esc(explanation)}</p>
+      <p>No combination of gate thresholds can meet both raw-crossing targets for these labels. Device hold and filters are not included in this proof. ${this._esc(explanation)}</p>
       <p>Review the highlighted periods. Correct a label only if you know it is wrong; choose Unknown / exclude when occupancy is uncertain. If the empty label is correct (including dog-only activity), keep it: excluding it would hide false triggers.</p>
       <div class="review-periods">${periods.join(" ")}</div></div>`;
   },
@@ -95,7 +95,7 @@ export const panelLearning = {
     const state =
       period.state === "not_present"
         ? "Activity while labelled empty"
-        : "Presence below all thresholds";
+        : "Presence missed by the recommendation";
     const from = new Date(period.start * 1000).toLocaleString();
     const to = new Date(period.end * 1000).toLocaleTimeString();
     const focus =
@@ -106,7 +106,7 @@ export const panelLearning = {
         ([key, peak]) => `${key.replace("g", "G").replace("_", " ")}: ${peak}`,
       )
       .join(" · ");
-    return `<li><div><b>${state}</b><span>${this._esc(from)} – ${this._esc(to)} · ${period.samples} samples${period.short_burst ? " · brief burst" : ""}</span>${gates ? `<span>Peak energies: ${this._esc(gates)}</span>` : ""}</div><button type="button" data-action="review-period" data-start="${Number(period.start)}" data-end="${Number(period.end)}" data-state="${this._esc(period.state)}" data-gate-key="${this._esc(focus)}">Review on graph</button></li>`;
+    return `<li><div><b>${state}</b><span>${this._esc(from)} – ${this._esc(to)} · ${period.samples} samples${period.observed_span_seconds != null ? ` · observations span ${period.observed_span_seconds}s; actual duration unknown` : ""}</span>${gates ? `<span>Peak energies: ${this._esc(gates)}</span>` : ""}</div><button type="button" data-action="review-period" data-start="${Number(period.start)}" data-end="${Number(period.end)}" data-state="${this._esc(period.state)}" data-gate-key="${this._esc(focus)}">Review on graph</button></li>`;
   },
 
   _reviewEvidenceHtml(learning) {
@@ -126,9 +126,9 @@ export const panelLearning = {
       <details data-detail="review-sessions"><summary>By recording session</summary><ul>${sessions.map((text) => `<li>${this._esc(text)}</li>`).join("")}</ul></details></details>`;
   },
 
-  _validationHtml(learning) {
+  _validationHtml(learning, currentTiming) {
     if (!learning) return "";
-    const outcome = this._applyOutcome(learning);
+    const outcome = this._applyOutcome(learning, currentTiming);
     const backtest = learning.validation;
     const backtestHtml = backtest
       ? `<p>Earlier-data backtest: ${backtest.false_negatives ?? 0} missed presence samples; ${backtest.false_positives ?? 0} false triggers. The final recommendation uses all retained observations.</p>`
@@ -139,7 +139,7 @@ export const panelLearning = {
       ${this._outlierFilterHtml(learning)}${backtestHtml}${this._falsePositiveSourcesHtml(learning)}${this._inferenceHtml(learning.automatic_evidence)}${this._learningWarningHtml(learning)}</details></section>`;
   },
 
-  _applyOutcome(learning) {
+  _applyOutcome(learning, currentTiming) {
     if (!Object.keys(learning?.proposals || {}).length)
       return { level: "none", label: "No learned results", enabled: false };
     if (
@@ -151,7 +151,9 @@ export const panelLearning = {
       metrics?.present_samples > 0 && metrics?.not_present_samples > 0;
     if (
       learning.status !== "ok" ||
-      learning.method !== "human_priority_v6" ||
+      learning.method !== "human_priority_v7" ||
+      learning.timing?.scope !== "reported_presence" ||
+      this._timingChanged(learning, currentTiming) ||
       !measured(learning.training) ||
       !measured(learning.validation) ||
       this._backtestHasIssues(learning)
@@ -172,12 +174,51 @@ export const panelLearning = {
     }).some(([key, fallback]) => metrics[key] > (targets[key] ?? fallback));
   },
 
+  _timingChanged(learning, current) {
+    const captured = learning?.timing?.configuration;
+    return Boolean(
+      captured &&
+      current &&
+      ["timeout", "on_delay", "off_delay"].some(
+        (key) => (captured[key] ?? null) !== (current[key] ?? null),
+      ),
+    );
+  },
+
+  _timingHtml(learning, current) {
+    const timing = learning?.timing;
+    if (learning && !timing)
+      return '<div class="notice timing-report">This saved result has no timing assessment. Learn again to use the current model and device settings.</div>';
+    const settings = timing?.configuration || current || {};
+    const duration = (value) =>
+      value == null ? "unknown" : `${Number(value)}s`;
+    const source = timing
+      ? "Timing used for this result"
+      : "Available device timing";
+    const values = `Radar timeout: ${duration(settings.timeout)} · On delay: ${duration(settings.on_delay)} · Off delay: ${duration(settings.off_delay)}`;
+    const scope =
+      settings.timeout == null
+        ? "Timeout is unavailable: results count raw threshold crossings. Your existing firmware remains supported."
+        : settings.on_delay == null || settings.off_delay == null
+          ? "Learning accounts for radar hold only. ESPHome filters are unknown; expose both delays to include them. The package is optional."
+          : "Learning accounts for radar hold, then delayed on and delayed off. These are read-only inputs; Apply changes gate thresholds only.";
+    const interval = timing?.sample_interval_seconds;
+    const raw = learning?.raw_training;
+    const changed = this._timingChanged(learning, current)
+      ? "<p><b>Device timing has changed. Learn again to assess the current settings; the saved result still uses the values shown here.</b></p>"
+      : "";
+    return `<div class="notice timing-report"><b>${source}</b><div>${values}</div><p>${scope}</p>${changed}<details data-detail="timing-assumptions"><summary>Sampling and timing assumptions</summary>
+      ${timing?.active ? `<p>Sampled estimate: consecutive high readings are treated as one run; empty-room spikes allow for activity between observations. Gaps and label changes restart the replay. ${learning.training?.timing_warmup_samples || 0} initial observations were left unscored because the preceding device state is unknown.</p>` : ""}
+      ${interval != null ? `<p>Typical recorded interval: ${Number(interval)}s. These snapshots cannot establish sub-second spike lengths or exact detection times.</p>` : ""}
+      ${raw && timing?.active ? `<p>Before hold and filters: ${raw.false_negatives} missed / ${raw.present_samples} presence observations; ${raw.false_positives} crossings / ${raw.not_present_samples} empty observations. The quality measurements below use the timing estimate.</p>` : ""}</details></div>`;
+  },
+
   _recommendationsHtml(d, id) {
     const learning = d.last_learning;
-    const outcome = this._applyOutcome(learning);
+    const outcome = this._applyOutcome(learning, d.timing_configuration);
     return `${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
       <div class="muted">Learn creates a preview; Apply writes the selected values to the radar. You can apply a result even when its targets are not met.</div>
-      ${this._validationHtml(learning)}
+      ${this._timingHtml(learning, d.timing_configuration)}${this._validationHtml(learning, d.timing_configuration)}
       <details class="gate-results"><summary>Gate thresholds and sample counts</summary>${this._detailsHtml(d)}</details>`;
   },
 

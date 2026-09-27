@@ -7,6 +7,7 @@ from math import floor
 from .constants import MAX_FPR, MIN_CLASS_SAMPLES
 from .metrics import _human_ranker, _masks, _weight, _weighted_masks
 from .separation import gate_preference
+from .timing import TimingReplay
 
 
 def _union_masks(selected, excluded=()):
@@ -22,13 +23,17 @@ def _union_masks(selected, excluded=()):
 class _ThresholdSearch:
     """One deterministic search; keeps bit tables and ranking context together."""
 
-    def __init__(self, positives, negatives, automatic, keys, current):
+    def __init__(self, positives, negatives, automatic, keys, current, timing=None):
         self.positives, self.negatives, self.keys = positives, negatives, keys
         self.human_calibration = bool(positives and negatives)
         self.ap, self.an = automatic["present"], automatic["not_present"]
         self.pw, self.pmass = _weighted_masks(self.ap, len(positives))
         self.nw, self.nmass = _weighted_masks(self.an, len(negatives))
-        self.human_rank = _human_ranker(positives, negatives)
+        self.human_timing = TimingReplay(positives, negatives, timing)
+        self.auto_timing = TimingReplay(self.ap, self.an, timing)
+        self.pmass = _weight(self.auto_timing.positive.eligible, self.pw)
+        self.nmass = _weight(self.auto_timing.negative.eligible, self.nw)
+        self.human_rank = _human_ranker(positives, negatives, self.human_timing)
         self.tables, self.preferred, self.quiet = {}, {}, {}
         self.human_gaps = set()
         for key in keys:
@@ -54,6 +59,9 @@ class _ThresholdSearch:
 
     def rank(self, bits, gate_false=0, distance=(0, 0)):
         detected, false, auto_detected, auto_false = bits
+        auto_detected, auto_false = self.auto_timing.project(auto_detected, auto_false)
+        auto_detected &= self.auto_timing.positive.eligible
+        auto_false &= self.auto_timing.negative.eligible
         loss = 20 * (1 - _weight(auto_detected, self.pw) / self.pmass) if self.pmass else 0
         loss += _weight(auto_false, self.nw) / self.nmass if self.nmass else 0
         return (
@@ -125,12 +133,11 @@ class _ThresholdSearch:
             options[key] = [(threshold, bits) for bits, threshold in unique.items()]
         return options
 
-    @staticmethod
-    def _supported_lowerings(partial, lost, lowers):
+    def _supported_lowerings(self, partial, lost, lowers):
         for lowered, bits in lowers:
-            if not bits[0] & lost:
-                continue
             candidate = tuple(a | b for a, b in zip(partial, bits, strict=False))
+            if not self.human_timing.positive.project(candidate[0]) & lost:
+                continue
             yield lowered, candidate, bits[1].bit_count()
 
     def _pair_candidates(self, noisy, support, thresholds, selected, options):
@@ -153,7 +160,10 @@ class _ThresholdSearch:
         )
         for raised, bits in raises:
             partial = tuple(a | b for a, b in zip(other, bits, strict=False))
-            lost = selected[noisy][0] & ~(partial[0] | selected[support][0])
+            project = self.human_timing.positive.project
+            before = project(partial[0] | selected[noisy][0] | selected[support][0])
+            after = project(partial[0] | selected[support][0])
+            lost = before & ~after & self.human_timing.positive.eligible
             for lowered, candidate, support_false in self._supported_lowerings(
                 partial, lost, lowers
             ):
@@ -234,5 +244,5 @@ class _ThresholdSearch:
         return thresholds, {"present": self.pmass, "not_present": self.nmass}
 
 
-def _search(positives, negatives, auto_groups, keys, current=None):
-    return _ThresholdSearch(positives, negatives, auto_groups, keys, current).run()
+def _search(positives, negatives, auto_groups, keys, current=None, timing=None):
+    return _ThresholdSearch(positives, negatives, auto_groups, keys, current, timing).run()

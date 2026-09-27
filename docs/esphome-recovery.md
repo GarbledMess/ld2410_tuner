@@ -98,7 +98,7 @@ substitutions:
 ```
 
 Optional settings are `ld2410_presence_name` (Presence), `ld2410_presence_on_delay`
-(500ms), `ld2410_presence_off_delay` (5s), `ld2410_sensor_throttle` (1s), and
+(500ms), `ld2410_presence_off_delay` (1s), `ld2410_sensor_throttle` (1s), and
 `ld2410_gate_throttle` (2s). No substitutions are needed when using the defaults.
 Other custom radar names or logic need a tailored configuration; an existing
 standalone ESPHome setup remains supported by the tuner without adopting this file.
@@ -216,3 +216,73 @@ C++ source generation also passed for the default configuration.
 Package-independent tuner regressions also passed, including Learn/Apply on a
 configuration without Query Params or the package's internal IDs. These checks do
 not constitute a completed firmware build, flash, or proof of physical recovery.
+
+## Exposing timing for calibration
+
+The package now exposes **LD2410 Presence On Delay** and **LD2410 Presence Off
+Delay** as read-only diagnostic entities. Their values use the same substitutions
+as the existing presence filters, so overrides remain consistent. Defaults remain
+500ms on and 1s off; the old text in this guide incorrectly described the off delay
+as 5s. Neither filter was changed by adding these diagnostics. They refresh every minute; Learn reads the currently available Home Assistant
+states.
+
+The tuner discovers the radar's standard **Timeout** number without this package.
+Entity IDs ending in `_timeout`, or an original entity name of Timeout, are
+supported, including renamed HA entities. Label-expiry timeouts are excluded.
+Missing, invalid or ambiguous matches remain unknown. It never substitutes a
+made-up timeout or changes a timing control when applying thresholds.
+
+For standalone firmware, the two optional diagnostics can be added to the existing
+`text_sensor:` list without importing the package:
+
+```yaml
+text_sensor:
+  - platform: template
+    name: LD2410 Presence On Delay
+    entity_category: diagnostic
+    lambda: return {"500ms"};
+    update_interval: 60s
+  - platform: template
+    name: LD2410 Presence Off Delay
+    entity_category: diagnostic
+    lambda: return {"1s"};
+    update_interval: 60s
+```
+
+**Use your actual filter values**, ideally shared substitutions, rather than
+copying these example numbers blindly. The replay assumes `delayed_on` followed
+by `delayed_off` on `has_target`. Other filters, dynamic lambdas, inverted outputs,
+multiple radars on one HA device, or a different filter order require a matching
+configuration; omit these diagnostics if they do not describe your setup. Numeric
+sensor/number entities named Presence On Delay and Presence Off Delay also work
+when they expose a duration unit (`ms`, `s`, `min`, or `h`). With only Timeout
+available, learning evaluates radar hold and clearly marks the filters unknown.
+With no Timeout it retains raw-crossing validation. Learn and Apply remain usable.
+
+## Timing and reporting options: behavior changes to consider
+
+No option below was changed automatically:
+
+| Option | Effect | Tradeoff |
+| --- | --- | --- |
+| Radar Timeout | Holds detection through quiet gaps | Increasing it delays vacancy and prolongs false triggers. It does not reject positive spikes. |
+| `ld2410_presence_on_delay` | Requires the radar's already-held output to remain on | Increasing it delays arrival detection. A short energy spike can still pass if radar Timeout holds it long enough. |
+| `ld2410_presence_off_delay` | Adds a delay after the radar clears | Increasing it delays vacancy further and extends false presence. |
+| `ld2410_gate_throttle` | Limits per-gate reports sent to HA | Faster reporting increases traffic and may improve freshness, but the tuner's approximately six-second recording cadence still cannot resolve sub-second events. It does not change radar sensitivity. |
+| `ld2410_sensor_throttle` | Limits aggregate energy/distance reports | Faster reporting affects telemetry traffic, not the radar's gate decision or its timeout. |
+| Maximum distance / distance resolution | Changes the physical area covered by active gates | Can exclude pets or clutter, but also people at those locations. Changing these requires a new assessment; it is not a general pet filter. |
+
+Keep raw per-gate energies for calibration. Adding averaging, median filters or
+clipping to them would make the learner fit a different signal from the radar's
+own threshold input. Engineering Mode is needed for per-gate reporting; it is
+already exposed by the package. No additional firmware filtering or custom
+presence handler is introduced.
+
+Timing semantics: [LD2410 configuration](https://esphome.io/components/sensor/ld2410/)
+and [ESPHome binary sensor filters](https://esphome.io/components/binary_sensor/#binary-sensor-filters).
+
+The timing metadata addition was also validated and passed C++ source generation
+with ESPHome 2026.9.0 for both default and overridden delays (2s on / 10s off).
+Generated code was checked to use the same values for the actual filters and both
+diagnostics, while preserving different local UART pins. This is configuration
+and code-generation validation, not a firmware build or hardware test.

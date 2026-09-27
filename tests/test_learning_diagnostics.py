@@ -28,6 +28,8 @@ def test_bursts_count_device_samples_once_and_keep_original_evidence():
         "end": 18,
         "state": "not_present",
         "samples": 2,
+        "observed_span_seconds": 6,
+        "duration_known": False,
         "short_burst": True,
         "gates": {"g2_still": 80, "g3_still": 80},
     }

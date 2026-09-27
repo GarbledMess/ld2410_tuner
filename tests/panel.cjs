@@ -7,6 +7,7 @@ const os = require("node:os");
 const testTouchSelection = require("./browser/touch.cjs");
 const testHistoryEditor = require("./browser/history.cjs");
 const testApply = require("./browser/apply.cjs");
+const testTiming = require("./browser/timing.cjs");
 const testActivity = require("./browser/activity.cjs");
 const testTimeline = require("./browser/timeline.cjs");
 const testHistoryGraph = require("./browser/history_graph.cjs");
@@ -87,7 +88,13 @@ const { execFileSync } = require("node:child_process");
               sample_counts: { g0_move: { present: 100, not_present: 100 } },
               current_thresholds: { g0_move: 20 },
               last_learning: {
-                method: "human_priority_v6",
+                method: "human_priority_v7",
+                timing: {
+                  active: true,
+                  scope: "reported_presence",
+                  configuration: { timeout: 5, on_delay: 0.5, off_delay: 1 },
+                  sample_interval_seconds: 6,
+                },
                 status: "ok",
                 automatic_evidence: {
                   samples: { present: 10, not_present: 20 },
@@ -345,7 +352,7 @@ const { execFileSync } = require("node:child_process");
     assert.match(report, /counts must not be added/);
     assert.match(
       report,
-      /No combination of gate thresholds can meet both targets/,
+      /No combination of gate thresholds can meet both raw-crossing targets/,
     );
     assert.match(
       report,
@@ -353,7 +360,7 @@ const { execFileSync } = require("node:child_process");
     );
     assert.match(
       report,
-      /4 labelled presence samples depend on this gate alone; weakest energy 5/,
+      /4 labelled raw presence samples depend on this gate alone before hold; weakest energy 5/,
     );
     assert.match(report, /Correct a label only if you know it is wrong/);
     assert.match(report, /4317 \/ 5000/);
@@ -676,6 +683,7 @@ const { execFileSync } = require("node:child_process");
       panel._pollTimer = null;
       await panel._loadPromise;
     });
+    await testTiming(page, screenshotDir);
     await testApply(page, screenshotDir);
     await testActivity(page);
     await testTouchSelection(page);

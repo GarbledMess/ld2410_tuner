@@ -93,7 +93,7 @@ async function testOutcomes(page, screenshotDir) {
     await page.evaluate(({ name }) => {
       const learning = structuredClone(window.beforeApplyOutcomes);
       learning.status = "ok";
-      learning.method = "human_priority_v6";
+      learning.method = "human_priority_v7";
       learning.feasibility = { status: "not_ruled_out" };
       learning.training = { present_samples: 100, not_present_samples: 100 };
       learning.validation = {

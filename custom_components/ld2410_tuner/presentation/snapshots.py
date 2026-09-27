@@ -9,6 +9,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from ..calibration.results import saved_results
+from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, HISTORY_RETENTION_DAYS, MAX_HISTOGRAM_COUNT
 from ..runtime.schedule import settings
 
@@ -102,6 +103,7 @@ def _snapshot_device(runtime, device_id, device, registry):
             "bins": HISTOGRAM_BINS,
         },
         "current_thresholds": current,
+        "timing_configuration": read_timing(runtime, device_id),
         "last_learning": device.get("last_learning"),
         "learning_results": saved_results(device),
         "nightly_learning": device.get("nightly_learning"),
@@ -148,6 +150,7 @@ def _export_device(runtime, did, devreg, registry):
             for k, v in histograms.items()
         },
         "current_thresholds": current_thresholds,
+        "timing_configuration": read_timing(runtime, did),
         "last_learning": device.get("last_learning"),
         "learning_results": saved_results(device),
         "nightly_learning": device.get("nightly_learning"),
