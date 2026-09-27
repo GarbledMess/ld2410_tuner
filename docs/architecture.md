@@ -27,7 +27,7 @@ custom_components/ld2410_tuner/
 | --- | --- |
 | `runtime/` | `coordinator.py` owns state/tasks; `discovery.py` follows registry changes; `websocket.py` exposes administrator commands |
 | `presence/` | `autolabelling.py` records guesses/feedback; `inference.py` implements the pure temporal estimator |
-| `history/` | `recording.py` owns buffers/executor snapshots; `cleanup.py` normalizes stored blocks; `labels.py` owns human labels/timeouts |
+| `history/` | `recording.py` owns buffers/executor snapshots; `cleanup.py` normalizes stored blocks; `policy.py` owns global retention settings; `budget.py` plans age/size pruning; `storage.py` owns guarded persistence and recording controls; `labels.py` owns human labels/timeouts |
 | `calibration/` | `service.py` owns Learn/Apply and hardware guards; `jobs.py` owns task lifetime, result saving and job reports; `results.py` owns the four saved-result slots; `fitting.py`, `search.py`, `metrics.py`, `constants.py` own the numerical learner; `duration.py` scores observed elapsed time; `influence.py` attributes errors to recorded chunks; `recovery.py` owns bounded pre-Learn recovery; `timing.py` and `timing_metrics.py` replay sampled device timing, while `timing_config.py` reads optional HA timing entities |
 | `presentation/` | `charts.py` aggregates history; `snapshots.py` builds dashboard/export data |
 | `static/panel/` | `view.js` owns the shell/draw lifecycle; `card.js`, `controls.js`, `learning.js` own card sections and interactions; `chart.js`, `visualization.js`, `selection.js` own history requests, SVG drawing, and range interaction; `jobs.js` renders server-owned learning progress; `constants.js` owns shared values |
@@ -65,6 +65,21 @@ replay tools use the same grouped module paths as the installed integration.
 - Learn recovery shares the device-operation guard with Apply. It may query or
   restart a radar with missing configuration, but never applies thresholds.
   Bluetooth restoration is persisted, and recordings pause during recovery.
+- Recording opt-in is per device; retention and size settings are global. Discovery
+  defaults new devices to paused. The sampler updates live readings but must not
+  change training evidence while paused. Disabling closes the live label.
+- All runtime writes go through `async_save`, which serializes an isolated snapshot,
+  enforces the total file ceiling, then delegates to HA Store. TunerStore selects
+  the standard JSON encoder so byte accounting uses the same indented envelope.
+  Storage migration also applies the budget before HA's migration write.
+  [HA's Store envelope](https://github.com/home-assistant/core/blob/dev/homeassistant/helpers/storage.py)
+  and [JSON serialization](https://github.com/home-assistant/core/blob/dev/homeassistant/helpers/json.py)
+  define that boundary. Pending buffers are not counted as persisted bytes.
+- Budget planning is pure and tested without modifying real recordings. Human labels
+  take precedence over automatic confidence; size eviction splits mixed chunks,
+  drops automatic chunks globally first, then oldest human chunks. Settings and
+  saved recommendations are protected. Revision/pending-data guards reject stale
+  cleanup. A write that cannot fit is refused, not silently allowed over the cap.
 - Missing energy is not zero. Old observations without confidence do not acquire
   invented automatic labels. Cleanup preserves valid timestamps and label priority.
 - Executor work uses detached views. Revision guards prevent stale work from

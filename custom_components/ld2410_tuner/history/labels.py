@@ -189,6 +189,8 @@ def set_training_state(
     device = runtime.data["devices"].get(device_id)
     if not device:
         raise ValueError("Unknown device")
+    if state != "unknown" and not device.get("recording_enabled", True):
+        raise ValueError("Enable recording before setting the current presence label")
     old_task = runtime._timeout_tasks.pop(device_id, None)
     if old_task:
         old_task.cancel()
@@ -265,6 +267,7 @@ def clear_samples(runtime, device_id: str) -> None:
         runtime.data["devices"][device_id].pop("history", None)
         runtime.data["devices"][device_id].pop("history_labels", None)
         runtime.data["devices"][device_id].pop("history_legacy_histograms", None)
+        runtime.data["devices"][device_id].pop("history_legacy_since", None)
         runtime._live.pop(device_id, None)
         runtime._auto_runtime.pop(device_id, None)
         runtime._history_runtime.pop(device_id, None)

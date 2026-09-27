@@ -134,7 +134,7 @@ def _encode(samples):
     return blocks
 
 
-def clean_history(device, pending, now, retention_seconds):
+def clean_history(device, pending, now, retention_seconds, policy=None):
     """Return normalized data without altering the caller's live objects.
 
     Later duplicate rows win; missing energies remain missing. Version 1 did
@@ -163,19 +163,27 @@ def clean_history(device, pending, now, retention_seconds):
             + [{"start": active_start, "end": active_end, "state": device["training_state"]}],
             cutoff,
         )
+    if policy is not None:
+        retained = _retain_by_confidence(samples, histogram_labels, now, policy)
+        stats["discarded_samples"] += len(samples) - len(retained)
+        samples = retained
     # Keep untimed evidence if this is a legacy histogram-only device.
     legacy = device.get(
         "history_legacy_histograms",
         {} if device.get("history") or pending else device.get("histograms", {}),
     )
+    legacy, legacy_since = _age_legacy(device, legacy, now, cutoff, policy, stats)
     histograms = _legacy_histograms(legacy)
     _accumulate_histograms(histograms, samples, pending, cutoff, histogram_labels)
-    return {
+    result = {
         "history": _encode(samples),
         "history_labels": labels,
         "histograms": histograms,
         "history_legacy_histograms": deepcopy(legacy),
-    }, stats
+    }
+    if policy is not None:
+        result["history_legacy_since"] = legacy_since
+    return result, stats
 
 
 def _clean_blocks(device, cutoff, now, stats, rows):
@@ -271,3 +279,54 @@ def _advance_label(labels, index, timestamp):
     while index < len(labels) and labels[index]["end"] <= timestamp:
         index += 1
     return index
+
+
+def _retain_by_confidence(samples, labels, now, policy):
+    from .policy import keep_automatic
+
+    retained, index = [], 0
+    for timestamp, row in samples:
+        index = _advance_label(labels, index, timestamp)
+        human = (
+            index < len(labels)
+            and labels[index]["start"] <= timestamp
+            and labels[index]["state"] in {"present", "not_present"}
+        )
+        if human or keep_automatic(timestamp, row, now, policy):
+            retained.append((timestamp, row))
+    return retained
+
+
+def accept_cleanup(device, updated, stats, revision):
+    from ..calibration.constants import METHOD
+
+    device.update(updated)
+    device["history_cleanup"] = stats
+    if any(
+        stats.get(key, 0)
+        for key in (
+            "invalid_blocks",
+            "expired_samples",
+            "duplicate_samples",
+            "repaired_samples",
+            "discarded_samples",
+            "trimmed_samples",
+            "expired_legacy",
+        )
+    ):
+        device["label_revision"] = revision + 1
+        device.pop("last_learning", None)
+    elif (device.get("last_learning") or {}).get("method") not in (None, METHOD):
+        device.pop("last_learning", None)
+
+
+def _age_legacy(device, legacy, now, cutoff, policy, stats):
+    if policy is None or not legacy:
+        return legacy, device.get("history_legacy_since")
+    # No sample times exist. Start one retention period on first processing;
+    # never pretend this timestamp is the age of the original observations.
+    since = device.get("history_legacy_since") or now
+    if since < cutoff:
+        stats["expired_legacy"] = 1
+        return {}, since
+    return legacy, since

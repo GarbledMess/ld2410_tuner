@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -23,6 +25,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
+from .history.budget import prepare
 from .runtime import schedule
 from .runtime.coordinator import TunerRuntime
 from .runtime.websocket import _register_websocket_commands
@@ -38,12 +41,15 @@ class TunerStore(Store):
     NotImplementedError from _async_migrate_func() by default whenever
     the stored file's version doesn't match STORAGE_VERSION, even if
     the caller never intended Store itself to do the migration. This
-    override just hands the old data back unchanged so async_load()
-    succeeds; TunerRuntime takes it from there.
+    override also enforces the file ceiling before Home Assistant writes
+    migrated data. Runtime cleanup handles the remaining normalization.
     """
 
     async def _async_migrate_func(self, old_major_version, old_minor_version, old_data):
-        return old_data
+        prepared, _changes, _report = await self.hass.async_add_executor_job(
+            prepare, old_data, {}, time.time()
+        )
+        return prepared
 
 
 async def async_setup_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
@@ -53,12 +59,15 @@ async def async_setup_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
 
 
 async def _start_runtime(hass):
-    store = TunerStore(hass, STORAGE_VERSION, STORAGE_KEY)
+    store = TunerStore(hass, STORAGE_VERSION, STORAGE_KEY, encoder=json.JSONEncoder)
     data = await store.async_load() or {"devices": {}, "training": {}}
     runtime = TunerRuntime(hass, store, data)
     schedule.restore(runtime)
-    if await runtime.async_clean_history(persist=False):
-        await store.async_save(runtime.data)
+    await runtime.async_clean_history(persist=False)
+    try:
+        await runtime.async_save()
+    except ValueError:
+        pass  # Keep the panel available to correct an impossible storage limit.
     hass.data[DOMAIN] = runtime
 
     _register_websocket_commands(hass)
@@ -139,4 +148,4 @@ async def _shutdown(runtime):
         await asyncio.gather(runtime._save_task, return_exceptions=True)
     for device_id in runtime._history_runtime:
         runtime._flush_history_block(device_id)
-    await runtime.store.async_save(runtime.data)
+    await runtime.async_save()

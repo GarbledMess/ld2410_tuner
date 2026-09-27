@@ -120,7 +120,7 @@ def auto_learning_summary(device: dict[str, Any]) -> dict[str, Any]:
                 "total": len(entries),
             }
     return {
-        "enabled": True,
+        "enabled": device.get("recording_enabled", True),
         "observations": observation_counts,
         "observations_by_state": dict(auto.get("observations", {})),
         "segments": len(segments),
@@ -193,6 +193,8 @@ def _sample_devices(runtime):
         if not values:
             runtime._auto_runtime.pop(device_id, None)
             device.get("auto", {}).pop("last_classification", None)
+            continue
+        if not device.get("recording_enabled", True) or runtime._storage_status.get("blocked"):
             continue
         now = time.time()
         runtime._migrate_device_samples(device)

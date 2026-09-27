@@ -15,6 +15,14 @@ export const panelView = {
         button[aria-busy="true"]::after { content:""; position:absolute; left:calc(50% - 8px); top:calc(50% - 8px); width:12px; height:12px; border:2px solid var(--divider-color,#ccc); border-top-color:var(--primary-text-color,#222); border-radius:50%; animation:busy-spin .8s linear infinite; }
         @keyframes busy-spin { to { transform:rotate(360deg); } }
         @media (prefers-reduced-motion:reduce) { .is-busy::before, button[aria-busy="true"]::after { animation:none; } }
+        .recording-control { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:8px 0; }
+        .recording-control label { display:flex; align-items:center; gap:8px; min-height:44px; }
+        #storage-controls { margin:12px 0; }
+        #storage-controls summary { cursor:pointer; font-weight:600; padding:8px 0; }
+        .storage-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin:12px 0; }
+        .storage-fields label, .storage-trim label { display:flex; flex-direction:column; gap:5px; }
+        .storage-fields input, .storage-trim input { font:inherit; min-width:0; min-height:44px; padding:8px; box-sizing:border-box; border:1px solid var(--divider-color); border-radius:9px; color:var(--primary-text-color); background:var(--card-background-color); }
+        .storage-trim { display:flex; flex-wrap:wrap; align-items:end; gap:10px; margin-top:12px; }
         .learning-job { margin:8px 0; overflow-wrap:anywhere; }
         .learning-job progress { display:block; width:100%; height:8px; margin:10px 0; accent-color:var(--primary-color,#1976d2); }
         .learning-job button { margin-top:8px; }
@@ -221,6 +229,7 @@ export const panelView = {
         <h1>LD2410 Tuner <span class="panel-version" aria-label="Loaded panel version" title="Version requested when this panel loaded. Reload the page after updating.">${this._frontendVersion ? `v${this._esc(this._frontendVersion)}` : "Version unavailable"}</span></h1>
         <div class="subtitle">Automatic estimates learn from signal patterns over time and carry confidence scores. Add empty-room, moving and quiet-sitting examples to improve them. Learn prioritizes reliable presence across sessions; human labels always take priority over lower-confidence estimates. Inferred data proportions do not block Apply.</div>
         <div id="learning-schedule" class="learning-schedule"></div>
+        <div id="storage-controls"></div>
         <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         <div class="grid" id="grid"></div>
       </div>`;
@@ -275,6 +284,7 @@ export const panelView = {
 
   _draw() {
     this._drawLearningSchedule();
+    this._drawStorage();
     const grid = this.shadowRoot.querySelector("#grid");
     this._captureDrafts(grid);
     const charts = new Map(

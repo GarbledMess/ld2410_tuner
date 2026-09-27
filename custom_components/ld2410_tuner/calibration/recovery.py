@@ -82,7 +82,7 @@ async def _cycle_bluetooth(runtime, entity_id, report):
     if original is None:
         raise SettingsUnavailable("Bluetooth state is unknown; recovery cannot safely cycle it")
     report["restore_bluetooth"] = {"entity_id": entity_id, "state": original}
-    await runtime.store.async_save(runtime.data)
+    await runtime.async_save()
     try:
         await _switch(runtime, entity_id, "off" if original == "on" else "on")
     finally:
@@ -162,7 +162,7 @@ async def prepare_learning(runtime, device_id):
         }
         device["configuration_recovery"] = report
         try:
-            await runtime.store.async_save(runtime.data)
+            await runtime.async_save()
             button = device_io.query_button(runtime, device_id)
             result = await _queries(runtime, device_id, report, button)
             result = result or await _restart_steps(runtime, device_id, report, button)

@@ -46,7 +46,7 @@ def refresh_devices(runtime, registry: er.EntityRegistry) -> None:
         if existing_id not in devices:
             existing["entities"] = {}
     for device_id, info in devices.items():
-        runtime.data["devices"].setdefault(device_id, {})
+        runtime.data["devices"].setdefault(device_id, {"recording_enabled": False})
         runtime.data["devices"][device_id]["entities"] = info["entities"]
         runtime.data["devices"][device_id].setdefault("training_state", "unknown")
 

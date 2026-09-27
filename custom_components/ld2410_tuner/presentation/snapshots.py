@@ -10,7 +10,8 @@ from homeassistant.helpers import entity_registry as er
 
 from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
-from ..const import GATE_RE, HISTOGRAM_BINS, HISTORY_RETENTION_DAYS, MAX_HISTOGRAM_COUNT
+from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
+from ..history import policy, storage
 from ..runtime.schedule import settings
 
 
@@ -27,7 +28,11 @@ def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
 def snapshot(runtime) -> dict[str, Any]:
     registry = er.async_get(runtime.hass)
     runtime.refresh_devices(registry)
-    result = {"devices": {}, "learning_schedule": settings(runtime)}
+    result = {
+        "devices": {},
+        "learning_schedule": settings(runtime),
+        "storage": storage.summary(runtime),
+    }
 
     _snapshot_devices(runtime, registry, result)
     return result
@@ -91,6 +96,7 @@ def _snapshot_device(runtime, device_id, device, registry):
     return {
         "name": name,
         "area_id": area_id,
+        "recording_enabled": device.get("recording_enabled", True),
         "training_state": device.get("training_state", "unknown"),
         "training_expires_at": device.get("training_expires_at"),
         "training_timeout_seconds": device.get("training_timeout_seconds", 0),
@@ -112,7 +118,7 @@ def _snapshot_device(runtime, device_id, device, registry):
         "last_applied": device.get("last_applied", {}),
         "auto_learning": runtime.auto_learning_summary(device),
         "history": {
-            "retention_days": HISTORY_RETENTION_DAYS,
+            "retention_days": policy.settings(runtime.data)["human_days"],
             "revision": device.get("label_revision", 0),
             "blocks": len(device.get("history", [])),
             "samples": sum(int(b.get("count", 0)) for b in device.get("history", [])),
@@ -138,6 +144,7 @@ def _export_device(runtime, did, devreg, registry):
     return {
         "name": (dev.name_by_user or dev.name or did) if dev else did,
         "area_id": dev.area_id if dev else None,
+        "recording_enabled": device.get("recording_enabled", True),
         "training_state": device.get("training_state", "unknown"),
         "sample_counts": {
             k: {"present": sum(v.get("present", [])), "not_present": sum(v.get("not_present", []))}
@@ -161,7 +168,7 @@ def _export_device(runtime, did, devreg, registry):
         "last_applied": device.get("last_applied", {}),
         "auto_learning": device.get("auto", {}),
         "history": {
-            "retention_days": HISTORY_RETENTION_DAYS,
+            "retention_days": policy.settings(runtime.data)["human_days"],
             "revision": device.get("label_revision", 0),
             "labels": device.get("history_labels", []),
             "blocks": len(device.get("history", [])),

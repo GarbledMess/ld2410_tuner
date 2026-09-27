@@ -14,6 +14,30 @@ def _websocket_routes():
     return [
         ("snapshot", {}, "snapshot", (), None, False),
         (
+            "set_recording",
+            {**device, vol.Required("enabled"): bool},
+            "set_recording",
+            ("device_id", "enabled"),
+            "invalid_request",
+            False,
+        ),
+        (
+            "configure_storage",
+            {vol.Required("settings"): dict},
+            "configure_storage",
+            ("settings",),
+            "invalid_request",
+            False,
+        ),
+        (
+            "trim_storage",
+            {vol.Optional("target_mib"): vol.Coerce(float)},
+            "trim_storage",
+            ("target_mib",),
+            "invalid_request",
+            False,
+        ),
+        (
             "set_training_state",
             {
                 **device,

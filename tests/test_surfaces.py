@@ -167,7 +167,11 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             await mod.async_unload_entry(self.hass, None)
             remove.assert_called_once()
         original = {"devices": {}}
-        self.assertIs(await mod.TunerStore()._async_migrate_func(1, 0, original), original)
+        store = mod.TunerStore()
+        store.hass = types.SimpleNamespace(
+            async_add_executor_job=AsyncMock(side_effect=lambda fn, *args: fn(*args))
+        )
+        self.assertEqual(await store._async_migrate_func(1, 0, original), original)
 
     async def test_config_flow_single_instance_and_explicit_creation(self):
         class Flow:

@@ -49,6 +49,9 @@ export const panelActivity = {
     control.setAttribute("aria-busy", "true");
     const status =
       card?.querySelector(".action-status") ||
+      control
+        .closest("#storage-controls")
+        ?.querySelector(".storage-action-status") ||
       this.shadowRoot.querySelector("#snapshot-status");
     if (status) {
       status.textContent = this._actionLabel(control.dataset.action);
@@ -61,6 +64,9 @@ export const panelActivity = {
     return (
       {
         learn: "Learning thresholds…",
+        recording: "Saving recording setting…",
+        "storage-save": "Saving global policy and cleaning history…",
+        "storage-trim": "Trimming recorded data…",
         "nightly-save": "Saving overnight schedule…",
         apply: "Applying thresholds and checking reported values…",
         clear: "Clearing device data…",

@@ -7,7 +7,8 @@ import math
 import time
 from typing import Any
 
-from ..const import HISTORY_KEYS, HISTORY_RETENTION_DAYS
+from ..const import HISTORY_KEYS
+from ..history.policy import settings
 
 
 def history_series_multi(
@@ -37,7 +38,7 @@ def history_series_multi(
     indices = {k: HISTORY_KEYS.index(k) for k in keys}
     if not math.isfinite(float(hours)):
         raise ValueError("Hours must be finite")
-    hours = max(0.1, min(HISTORY_RETENTION_DAYS * 24, float(hours)))
+    hours = max(0.1, min(settings(runtime.data)["human_days"] * 24, float(hours)))
     max_points = max(50, min(1000, int(max_points)))
     if end is not None and not math.isfinite(float(end)):
         raise ValueError("End time must be finite")

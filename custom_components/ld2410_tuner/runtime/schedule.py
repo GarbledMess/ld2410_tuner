@@ -49,13 +49,13 @@ async def tick(runtime, now):
 
 async def _run(runtime, day):
     # Persist the claim before starting: restarts and repeated DST hours do not rerun it.
-    await runtime.store.async_save(runtime.data)
+    await runtime.async_save()
     for device_id, device in list(runtime.data["devices"].items()):
         if not settings(runtime)["enabled"]:
             break
-        if device.get("entities"):
+        if device.get("entities") and device.get("recording_enabled", True):
             await _learn_device(runtime, device_id, device, day)
-    await runtime.store.async_save(runtime.data)
+    await runtime.async_save()
 
 
 async def _learn_device(runtime, device_id, device, day):

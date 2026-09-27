@@ -1,3 +1,4 @@
+import { panelStorage } from "./panel/storage.js";
 import { panelJobs } from "./panel/jobs.js";
 import { panelSavedResults } from "./panel/saved_results.js";
 import { panelHistoryGraph } from "./panel/history_graph.js";
@@ -94,7 +95,11 @@ class LD2410TunerPanel extends HTMLElement {
   _isEditing() {
     if (this._dragging || this._activeActions) return true;
     const active = this.shadowRoot?.activeElement;
-    if (!active) return false;
+    if (
+      !active ||
+      active.matches('input[type="checkbox"], input[type="radio"]')
+    )
+      return false;
     return ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName);
   }
 
@@ -222,6 +227,7 @@ class LD2410TunerPanel extends HTMLElement {
 }
 Object.assign(
   LD2410TunerPanel.prototype,
+  panelStorage,
   panelJobs,
   panelSavedResults,
   panelHistoryGraph,

@@ -12,7 +12,7 @@ from homeassistant.helpers.storage import Store
 from ..calibration import service as calibration
 from ..const import STORE_DELAY
 from ..history import labels as manual_training
-from ..history import recording
+from ..history import recording, storage
 from ..presence import autolabelling
 from ..presentation import charts
 from ..presentation import snapshots as presentation
@@ -43,16 +43,29 @@ class TunerRuntime:
         self._history_jobs = {}
         self._learning_jobs = {}
         self._cleanup_task = None
+        self._storage_lock = asyncio.Lock()
+        self._storage_status = {}
+        self._save_dirty = False
 
     def _schedule_save(self) -> None:
+        self._save_dirty = True
         if self._save_task and not self._save_task.done():
             return
         self._save_task = self.hass.async_create_task(self._delayed_save())
 
     async def _delayed_save(self) -> None:
-        await asyncio.sleep(STORE_DELAY)
-        await self.store.async_save(self.data)
+        while self._save_dirty:
+            self._save_dirty = False
+            await asyncio.sleep(STORE_DELAY)
+            try:
+                await self.async_save()
+            except ValueError:
+                return  # Reported in the panel; a settings change can retry.
 
+    async_save = storage.async_save
+    configure_storage = storage.configure
+    trim_storage = storage.trim
+    set_recording = storage.set_recording
     configure_learning_schedule = schedule.configure
     nightly_tick = schedule.tick
 

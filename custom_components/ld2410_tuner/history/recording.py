@@ -12,16 +12,16 @@ from typing import Any
 
 from homeassistant.core import callback
 
-from ..calibration.fitting import METHOD
 from ..const import (
     AUTO_SAMPLE_INTERVAL,
     HISTOGRAM_BINS,
     HISTORY_BLOCK_SAMPLES,
     HISTORY_KEYS,
-    HISTORY_RETENTION_SECONDS,
     HISTORY_SAMPLE_INTERVAL,
 )
+from .cleanup import accept_cleanup as _accept_cleanup
 from .cleanup import clean_history, decode_payload, encode_payload
+from .policy import retention_seconds, settings
 
 
 def _record_history_sample(runtime, device_id: str, values: dict[str, float], now: float) -> None:
@@ -30,7 +30,7 @@ def _record_history_sample(runtime, device_id: str, values: dict[str, float], no
         device_id, {"last_sample": 0.0, "samples": [], "start": None}
     )
     device = runtime.data.get("devices", {}).get(device_id)
-    if device is None:
+    if device is None or not device.get("recording_enabled", True):
         return
     if "history_legacy_histograms" not in device:
         device["history_legacy_histograms"] = deepcopy(device.get("histograms", {}))
@@ -82,7 +82,7 @@ def _flush_history_block(runtime, device_id: str) -> None:
     if device is not None:
         history = device.setdefault("history", [])
         history.append(block)
-        cutoff = time.time() - HISTORY_RETENTION_SECONDS
+        cutoff = time.time() - retention_seconds(runtime.data)
         device["history"] = [
             b for b in history if float(b.get("end", float(b.get("start", 0)) + 65535)) >= cutoff
         ]
@@ -116,7 +116,7 @@ async def flush_history(runtime) -> None:
 
 
 def _iter_history_samples(runtime, device: dict[str, Any], since=0, include_auto=False):
-    cutoff = max(since, time.time() - HISTORY_RETENTION_SECONDS)
+    cutoff = max(since, time.time() - retention_seconds(runtime.data))
     yield from _stored_history_samples(device, cutoff, include_auto)
 
     yield from _pending_history_samples(runtime, device, cutoff, include_auto)
@@ -134,7 +134,9 @@ def _history_view(runtime, device_id):
     }
     snapshot["history"] = list(device.get("history", []))
     snapshot["history_labels"] = deepcopy(device.get("history_labels", []))
-    view = TunerRuntime(None, None, {"devices": {device_id: snapshot}})
+    view = TunerRuntime(
+        None, None, {"devices": {device_id: snapshot}, "storage_settings": settings(runtime.data)}
+    )
     view._history_runtime[device_id] = {
         "samples": list(runtime._history_runtime.get(device_id, {}).get("samples", []))
     }
@@ -207,6 +209,7 @@ async def _clean_devices(runtime, changed):
                 "history_labels",
                 "histograms",
                 "history_legacy_histograms",
+                "history_legacy_since",
                 "training_state",
                 "training_label_start",
                 "training_expires_at",
@@ -215,13 +218,15 @@ async def _clean_devices(runtime, changed):
         }
         pending = list(runtime._history_runtime.get(device_id, {}).get("samples", []))
         revision = device.get("label_revision", 0)
+        policy = settings(runtime.data)
         updated, stats = await runtime.hass.async_add_executor_job(
-            clean_history, snapshot, pending, time.time(), HISTORY_RETENTION_SECONDS
+            clean_history, snapshot, pending, time.time(), retention_seconds(runtime.data), policy
         )
         # Sampling, Clear or a human correction may have run in the meantime.
         # Leave their new data intact; the next maintenance pass retries.
         if (
-            runtime.data.get("devices", {}).get(device_id) is not device
+            settings(runtime.data) != policy
+            or runtime.data.get("devices", {}).get(device_id) is not device
             or device.get("label_revision", 0) != revision
             or any(device.get(key) != snapshot.get(key) for key in snapshot)
             or runtime._history_runtime.get(device_id, {}).get("samples", []) != pending
@@ -243,22 +248,3 @@ def _stored_estimate(device, now):
     code = {"present": 1, "not_present": 2}.get(inferred, 0)
     confidence = max(0, min(100, round(last.get("confidence", 0) * 100))) if code else 0
     return inferred, code, confidence
-
-
-def _accept_cleanup(device, updated, stats, revision):
-    device.update(updated)
-    device["history_cleanup"] = stats
-    if any(
-        stats[key]
-        for key in (
-            "invalid_blocks",
-            "expired_samples",
-            "duplicate_samples",
-            "repaired_samples",
-            "discarded_samples",
-        )
-    ):
-        device["label_revision"] = revision + 1
-        device.pop("last_learning", None)
-    elif (device.get("last_learning") or {}).get("method") not in (None, METHOD):
-        device.pop("last_learning", None)

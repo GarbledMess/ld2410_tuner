@@ -510,17 +510,54 @@ recorded blocks use the same format. It does not downsample older history. Earli
 integration versions cannot read version-3 blocks; retain a pre-upgrade storage
 backup if you need to downgrade.
 
-The file grows as the 30-day window fills, then retention bounds its history size.
-Compression reduces storage per sample; it does not impose a fixed megabyte cap.
+Recording is controlled per device with **Record data**, including on collapsed
+cards. Newly discovered devices start disabled. Existing devices keep recording
+unless you pause them. Pausing stops history, histogram updates and automatic
+training evidence, closes the current live label, and skips that device in the
+overnight learning pass. Existing recordings remain available; Clear data can
+remove recordings from an old placement. Re-enabling starts with an Unknown label.
 
-Expired samples and labels are removed after the 30-day retention window. Corrupt
-blocks and wholly unusable rows are removed; invalid individual gate readings
-become missing. Duplicate timestamps keep the later stored record. Histograms are
-rebuilt from retained labels plus the separate untimed legacy baseline. Untimed
-legacy evidence is retained because its age cannot be inferred. A second cleanup
-of unchanged data is idempotent. Concurrent sampling or corrections defer that
-device's cleanup to the next pass. Removing or repairing observations invalidates
-old recommendations; format-only normalization preserves current-model results.
+**Recording storage** contains global settings shared by every device:
+
+- Start thinning after **7 days**, initially removing confidence **below 50%**.
+- Raise the minimum confidence linearly with age: **75% at 18.5 days** by default.
+- At **30 days**, remove all automatic/unlabelled readings, including 100% guesses.
+- Remove human-labelled readings older than **30 days** by default. This expiry
+  can be later than automatic expiry, but never earlier.
+- A **100 MiB total file ceiling**, configurable independently of retention ages.
+
+Human labels override stored automatic guesses when deciding which policy applies.
+The age policy deletes individual readings without changing those retained. Under
+size pressure, the tuner removes compressed automatic/unlabelled chunks across all
+devices, lower mean confidence first and oldest first within a confidence level.
+Mixed chunks are split so their human-labelled readings remain protected. Only
+after automatic chunks are exhausted does size trimming remove human chunks,
+oldest first. Size pressure may remove data before its normal age expiry.
+
+**Save settings and clean now** applies the global policy immediately. **Trim now**
+uses the saved policy and can target a smaller file size without changing the
+ongoing ceiling. Both actions ask for confirmation and report removed automatic
+and human reading counts. Removed history cannot be restored without an export or
+backup. Saved recommendations and device settings are preserved; their earlier
+accuracy reports may become stale when evidence is removed.
+
+Every integration save uses the same budget check, including recovery, overnight
+jobs, shutdown and storage migration. The size includes the JSON storage envelope,
+labels, summaries, settings and saved results, not just compressed history. The
+panel reports the last saved file size; unfinished sample buffers are not yet part
+of that file. Exports, Home Assistant backups and temporary filesystem copies are
+outside this ceiling. If protected metadata alone exceeds a requested limit, the
+change is rejected. If an existing limit becomes impossible, recording pauses and
+the panel explains how to raise the limit or clear unused device data; no oversized
+replacement is written.
+
+Startup and hourly cleanup also remove malformed blocks and wholly unusable rows;
+invalid individual gate readings become missing. Duplicate timestamps retain the
+later record. Histograms are rebuilt from retained evidence. Untimed legacy human
+summaries have no trustworthy original age: their retention clock starts on first
+processing by this version, and they expire after one configured human-retention
+period. That timestamp is not treated as an original observation time. Concurrent
+sampling or label edits defer or retry cleanup instead of overwriting new evidence.
 
 ## Versioned releases and HACS updates
 

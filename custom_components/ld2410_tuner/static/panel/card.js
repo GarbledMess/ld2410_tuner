@@ -12,6 +12,7 @@ export const panelCards = {
     const isCollapsed = this._collapsed.has(id);
     card.innerHTML =
       this._cardHeaderHtml(d, info, isCollapsed) +
+      this._recordingHtml(d) +
       `<div class="action-status muted" role="status" aria-live="polite"></div>` +
       `<div class="learning-job-status" role="status" aria-live="polite">${this._learningJobHtml(d)}</div>` +
       `<div class="body${isCollapsed ? " collapsed" : ""}">${this._cardBodyHtml(id, d, info)}</div>`;
