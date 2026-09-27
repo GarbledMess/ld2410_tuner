@@ -170,6 +170,32 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.async_learn.await_count, 2)
         self.hass.services.async_call.assert_not_awaited()
 
+    async def test_label_race_retries_fresh_once_without_writes(self):
+        self.configure()
+        self.runtime.async_learn.side_effect = [
+            schedule.LearningEvidenceChanged("Training labels changed while learning; learn again"),
+            {"status": "ok", "id": "fresh"},
+        ]
+        await self.tick("2026-09-26T02:00:00+00:00")
+        attempt = self.device["nightly_learning"]
+        self.assertEqual(attempt["status"], "ok")
+        self.assertEqual(attempt["result_id"], "fresh")
+        self.assertEqual(attempt["attempts"], 2)
+        self.assertIn("updated labels", attempt["retry_reason"])
+        self.hass.services.async_call.assert_not_awaited()
+
+    async def test_repeated_label_race_is_recorded_and_logged(self):
+        self.configure()
+        self.runtime.async_learn.side_effect = schedule.LearningEvidenceChanged("Labels changed")
+        with self.assertLogs(schedule.__name__, level="WARNING") as logs:
+            await self.tick("2026-09-26T02:00:00+00:00")
+        attempt = self.device["nightly_learning"]
+        self.assertEqual(self.runtime.async_learn.await_count, 2)
+        self.assertEqual(attempt["status"], "error")
+        self.assertEqual(attempt["error"], "Labels changed")
+        self.assertIn("Labels changed", logs.output[0])
+        self.hass.services.async_call.assert_not_awaited()
+
     async def test_overlapping_ticks_and_shutdown(self):
         self.configure()
         started = asyncio.Event()

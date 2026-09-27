@@ -254,6 +254,7 @@ const { execFileSync } = require("node:child_process");
         .innerText(),
       /99.9%/,
     );
+    await cards.first().locator(".learning-diagnostics > summary").click();
     assert.match(
       await cards
         .first()
@@ -272,7 +273,7 @@ const { execFileSync } = require("node:child_process");
     });
     assert.match(
       await cards.nth(1).locator(".learn-status").innerText(),
-      /estimated threshold/,
+      /Review concerns/,
     );
     assert.equal(
       await cards.nth(1).locator('[data-action="apply"]').isDisabled(),
@@ -331,8 +332,9 @@ const { execFileSync } = require("node:child_process");
       return panel._load();
     });
     let diagnostic = await cards.first().locator(".learn-status").innerText();
-    assert.match(diagnostic, /This gate alone triggers on 0 \/ 5000/);
-    assert.match(diagnostic, /Combined device recommendation unsafe.*4317/s);
+    assert.match(diagnostic, /candidate threshold 16/);
+    assert.doesNotMatch(diagnostic, /4317/);
+    assert.match(diagnostic, /Targets not met/);
     const results = cards
       .first()
       .locator('.subsection[data-section="details"]');
@@ -343,7 +345,7 @@ const { execFileSync } = require("node:child_process");
     assert.match(report, /counts must not be added/);
     assert.match(
       report,
-      /the retained observations cannot meet both targets with any gate-threshold combination/,
+      /No combination of gate thresholds can meet both targets/,
     );
     assert.match(
       report,
@@ -353,7 +355,8 @@ const { execFileSync } = require("node:child_process");
       report,
       /4 labelled presence samples depend on this gate alone; weakest energy 5/,
     );
-    assert.match(report, /Recorded conflicts around/);
+    assert.match(report, /Correct a label only if you know it is wrong/);
+    assert.match(report, /4317 \/ 5000/);
     assert.match(
       report,
       /Excluded outliers: 7 human-labelled \/ 2 estimated presence samples/,
@@ -413,7 +416,7 @@ const { execFileSync } = require("node:child_process");
     );
     assert.match(
       await cards.first().locator(".learn-status").innerText(),
-      /presence reference.*84.*preferred threshold.*53/s,
+      /candidate threshold 53.*Empty-labelled peak: 22/s,
     );
     await page.evaluate(() => {
       fixture.devices.a.last_learning.outlier_filter.human.excluded.present = 8;
@@ -678,7 +681,7 @@ const { execFileSync } = require("node:child_process");
     await testTouchSelection(page);
     await testHistoryEditor(page);
     await testTimeline(page);
-    await testHistoryGraph(page);
+    await testHistoryGraph(page, screenshotDir);
     await testSavedResults(page, screenshotDir);
     await page.setViewportSize({ width: 390, height: 844 });
     await cards

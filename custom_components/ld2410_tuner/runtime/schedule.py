@@ -1,9 +1,14 @@
 """One local-time overnight learning pass, without device writes."""
 
 import asyncio
+import logging
 import re
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
+
+from ..calibration.service import LearningEvidenceChanged
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def settings(runtime):
@@ -62,13 +67,14 @@ async def _learn_device(runtime, device_id, device, day):
     device["nightly_learning"] = attempt
     runtime._schedule_save()
     try:
-        learned = await runtime.async_learn(device_id, source="automatic")
+        learned = await _learn_fresh(runtime, device_id, attempt)
         attempt.update(status=learned["status"], result_id=learned["id"])
     except asyncio.CancelledError:
         attempt.update(status="interrupted", error="Learning interrupted by integration shutdown")
         raise
     except Exception as error:
         attempt.update(status="error", error=str(error))
+        _LOGGER.warning("Scheduled learning failed for device %s: %s", device_id, error)
     finally:
         attempt["finished_at"] = datetime.now(UTC).timestamp()
         runtime._schedule_save()
@@ -90,3 +96,15 @@ def restore(runtime):
         attempt = device.get("nightly_learning", {})
         if attempt.get("status") == "running":
             attempt.update(status="interrupted", error="Home Assistant restarted during learning")
+
+
+async def _learn_fresh(runtime, device_id, attempt):
+    for number in (1, 2):
+        attempt["attempts"] = number
+        try:
+            return await runtime.async_learn(device_id, source="automatic")
+        except LearningEvidenceChanged:
+            if number == 2:
+                raise
+            attempt["retry_reason"] = "Labels changed; retrying with the updated labels"
+            runtime._schedule_save()

@@ -1,5 +1,12 @@
 // The timeline uses the graph's pointer capture and cancellation lifecycle.
 export const panelTimeline = {
+  _historyRangeBounds(id) {
+    const cs = this._chartState.get(id);
+    if (cs?.historyLinked && cs.end)
+      return { start: cs.end - cs.hours * 3600, end: cs.end };
+    return this._historyDayBounds(this._historyStateFor(id).day);
+  },
+
   _historyRangeHtml(timeline, day) {
     return `<div class="history-range" role="group" aria-label="Select a period on ${day}">
       <div class="history-timeline" role="img" aria-label="Manual label coverage for ${day}">${timeline}</div>
@@ -20,7 +27,7 @@ export const panelTimeline = {
 
   _paintHistoryRange(card, id, selection = this._historyRangeValue(card, id)) {
     const bar = card.querySelector(".history-range");
-    const bounds = this._historyDayBounds(this._historyStateFor(id).day);
+    const bounds = this._historyRangeBounds(id);
     const visible =
       selection && selection.end > bounds.start && selection.start < bounds.end;
     const overlay = bar.querySelector(".history-range-selection");
@@ -77,7 +84,8 @@ export const panelTimeline = {
     const previous = this._historyRangeValue(card, id);
     if (boundary && !previous) return;
     event.preventDefault();
-    const bounds = this._historyDayBounds(this._historyStateFor(id).day);
+    const bounds = this._historyRangeBounds(id);
+    const step = bounds.end - bounds.start <= 3600 ? 1 : 60;
     const rect = bar.getBoundingClientRect();
     const timeAt = (x) =>
       Math.max(
@@ -87,8 +95,8 @@ export const panelTimeline = {
           Math.round(
             (bounds.start +
               ((x - rect.left) / rect.width) * (bounds.end - bounds.start)) /
-              60,
-          ) * 60,
+              step,
+          ) * step,
         ),
       );
     const anchor = timeAt(event.clientX);
@@ -130,7 +138,7 @@ export const panelTimeline = {
     if (!selection) return;
     event.preventDefault();
     const boundary = event.currentTarget.dataset.boundary;
-    const bounds = this._historyDayBounds(this._historyStateFor(id).day);
+    const bounds = this._historyRangeBounds(id);
     const minimum = boundary === "start" ? bounds.start : selection.start + 1;
     const maximum = boundary === "end" ? bounds.end : selection.end - 1;
     selection[boundary] = Math.max(

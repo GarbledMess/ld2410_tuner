@@ -38,7 +38,11 @@ clock hour runs at the first check after the jump. Disabling the schedule lets a
 in-progress device finish and stops before the next device.
 
 Each device header shows its latest overnight outcome, including insufficient data,
-failed or interrupted runs. A failed device does not prevent other devices learning.
+failed or interrupted runs. Tap the outcome to open its dated report in
+**Recommendations**, with the failure reason and a next step. Technical details
+remain available without needing to hover. A failed device does not prevent other
+devices learning. If labels change during a scheduled calculation, the job retries
+once using a fresh snapshot; a second change is reported, not silently accepted.
 The **Recommendations** selector reviews four bounded saved-result slots:
 
 - **User learnt:** latest manually requested Learn result.
@@ -292,6 +296,30 @@ to cover gates 0–8, so expose those settings when using a reduced detection ra
 Per-gate energies require [engineering mode](https://esphome.io/components/sensor/ld2410/#switch).
 Automatic analysis is a confidence-scored training source, not a replacement HA
 occupancy entity.
+
+## Reviewing conflicting labels
+
+The recommendation report measures the combined device, with separate counts for
+missed presence, empty-room triggers and false-trigger events per hour. Expand
+**Review periods that disagree with their labels** to inspect precise error ranges
+and the triggering gates. The list reserves space for quiet-presence failures as
+well as empty-room bursts; it is bounded to 24 ranges and 24 session summaries.
+Existing saved results gain these diagnostics after a new Learn run.
+
+**Review on graph** opens the original labelled status and exact time range in
+**Past presence labels**. The graph and draggable label bar share both their time
+window and horizontal plotting edges, including after selecting a saved period,
+zooming or resizing the panel. Correct the status if you know the label was wrong,
+or choose **Unknown / exclude** when occupancy is uncertain, then save and learn
+again. Reviewing a suggestion never changes labels or removes recordings.
+
+A brief empty-room burst is not automatically an invalid reading. A person, pet or
+other real activity may produce it. Keep known dog-only periods labelled empty
+when training for human presence. If legitimate empty-room signals overlap quiet
+human presence, static gate thresholds may be unable to meet both targets. The
+feasibility report flags provable conflicts; deleting valid difficult examples
+would hide false positives. The history graph's mean line is aggregated in wider
+windows; zoom into a review period to inspect its short-lived readings.
 
 ## Bugs addressed
 

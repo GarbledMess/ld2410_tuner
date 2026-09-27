@@ -3,6 +3,11 @@ const assert = require("node:assert/strict");
 module.exports = async function testTimeline(page) {
   await page.setViewportSize({ width: 390, height: 844 });
   const card = page.locator('[data-device-id="a"]');
+  await page.evaluate(() => {
+    const card = panel.shadowRoot.querySelector('[data-device-id="a"]');
+    panel._changeHistoryDay(card, "a", "2026-09-23");
+  });
+  await page.waitForFunction(() => !panel._chartState.get("a").loading);
   await card.locator('[data-action="history-new"]').click();
   const bar = card.locator(".history-range");
   await bar.scrollIntoViewIfNeeded();
@@ -77,16 +82,14 @@ module.exports = async function testTimeline(page) {
   );
   assert.equal(request.start, Date.parse("2026-09-23T08:00:00+01:00") / 1000);
   assert.equal(request.state, "present");
-  // Crossing midnight is shown clipped, without altering the saved period.
+  // Selecting a saved period zooms BOTH the graph and the bar, including midnight.
   await card.locator('[data-action="history-edit"]').first().click();
-  assert.equal(
-    await card.locator('[data-boundary="start"]').isVisible(),
-    false,
-  );
+  await page.waitForFunction(() => !panel._chartState.get("a").loading);
+  assert.equal(await card.locator('[data-boundary="start"]').isVisible(), true);
   assert.equal(await card.locator('[data-boundary="end"]').isVisible(), true);
   await page.evaluate(() => {
     const card = panel.shadowRoot.querySelector('[data-device-id="a"]');
-    const bounds = panel._historyDayBounds(panel._historyStateFor("a").day);
+    const bounds = panel._chartState.get("a").data;
     panel._setHistoryRange(
       card,
       "a",

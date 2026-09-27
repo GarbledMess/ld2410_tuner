@@ -52,6 +52,42 @@ export const panelSavedResults = {
       ${stale ? '<div class="notice">Labels have changed since this result was learned. Its accuracy report describes the earlier labels; you can still apply these saved values.</div>' : ""}`;
   },
 
+  _nightlyReportHtml(d) {
+    const run = d.nightly_learning;
+    if (!run) return "";
+    const messages = {
+      running: "Learning is running. You can keep using the panel.",
+      ok: "Completed: the overnight result meets the measured targets.",
+      unsafe:
+        "Completed, but the overnight result misses one or more targets. Select Autolearnt to review it.",
+      insufficient:
+        "Completed, but there are too few usable examples. Record both occupied and empty periods, then learn again.",
+      interrupted:
+        "Learning stopped when the integration restarted. Learn again, or wait for the next scheduled run.",
+      error: this._nightlyErrorText(run.error),
+    };
+    const date = new Date(
+      (run.finished_at || run.started_at) * 1000,
+    ).toLocaleString();
+    return `<div class="notice nightly-report" role="status"><b>Last overnight run · ${this._esc(date)}</b>
+      <p>${this._esc(messages[run.status] || run.status)}</p>
+      ${run.attempts > 1 ? "<p>Retried once using the updated labels.</p>" : ""}
+      ${run.error ? `<details data-detail="nightly-reason"><summary>Technical reason</summary><p>${this._esc(run.error)}</p></details>` : ""}</div>`;
+  },
+
+  _nightlyErrorText(error = "") {
+    if (error.includes("Maximum distance gate"))
+      return "Could not read valid maximum-distance settings from the radar. Check that its configuration entities show values in Home Assistant, then learn again.";
+    if (error.includes("Training labels changed"))
+      return "Presence labels changed during calculation, so this result was discarded. Finish editing the labels, then learn again.";
+    if (
+      error.includes("configuration changed") ||
+      error.includes("configuration is unavailable")
+    )
+      return "Radar settings changed or became unavailable during learning. Check the device settings, then learn again.";
+    return "Learning could not finish. Check the technical reason below, then retry with Learn thresholds.";
+  },
+
   _nightlyMarker(d) {
     const run = d.nightly_learning;
     if (!run)
@@ -73,10 +109,16 @@ export const panelSavedResults = {
     const date = new Date(
       (run.finished_at || run.started_at) * 1000,
     ).toLocaleString();
-    return `<span class="pill nightly-marker ${style}" title="${this._esc(`${date}${run.error ? ` · ${run.error}` : ""}`)}">Overnight: ${this._esc(labels[run.status] || run.status)}</span>`;
+    return `<button type="button" data-action="review-nightly" class="pill nightly-marker ${style}" aria-label="Review last overnight run" title="${this._esc(`${date}${run.error ? ` · ${run.error}` : ""}`)}">Overnight: ${this._esc(labels[run.status] || run.status)}</button>`;
   },
 
   _wireSavedResults(card, id) {
+    const marker = card.querySelector('[data-action="review-nightly"]');
+    if (marker)
+      marker.onclick = (event) => {
+        event.stopPropagation();
+        this._openRecommendations(card, id);
+      };
     const select = card.querySelector('[data-action="learning-result"]');
     select.onchange = () => {
       this._learningSelection.set(id, select.value);

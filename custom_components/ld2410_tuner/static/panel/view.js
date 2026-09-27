@@ -94,6 +94,25 @@ export const panelView = {
         .learned { font-weight:700; }
         .ok { color:var(--state-active-color,#2e7d32); }
         .warn { color:var(--error-color,#c62828); }
+        .learning-report { border:1px solid var(--divider-color); border-left:4px solid #fbc02d; padding:12px; border-radius:8px; margin-top:12px; font-size:13px; }
+        .learning-report.outcome-bad { border-left-color:#c62828; }
+        .learning-report.outcome-good { border-left-color:#2e7d32; }
+        .learning-report p,.nightly-report p { margin:8px 0; line-height:1.5; }
+        .learning-report summary,.nightly-report summary { cursor:pointer; padding:10px 0; font-weight:600; }
+        .learning-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(135px,1fr)); gap:8px; margin-top:10px; }
+        .learning-metrics div { padding:8px; background:var(--secondary-background-color); border-radius:6px; }
+        .learning-metrics span,.learning-metrics small,.learning-metrics b { display:block; }
+        .learning-metrics b { font-size:18px; margin:6px 0; }
+        .learning-metrics small { color:var(--secondary-text-color); }
+        .review-periods { padding:0; list-style:none; }
+        .review-periods li { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--divider-color); }
+        .review-periods li span { display:block; margin-top:4px; }
+        .learning-notes { padding-left:20px; }
+        .learning-notes li { margin:8px 0; }
+        .learning-diagnostics { border-top:1px solid var(--divider-color); margin-top:10px; }
+        .learn-status { padding:8px; }
+        .learn-status button { display:block; font-size:12px; margin-top:6px; }
+        .history-range .history-timeline { border:0; outline:1px solid var(--divider-color); }
         .notice { padding:10px; background:var(--secondary-background-color); border-radius:8px; margin-top:10px; font-size:13px; }
         .auto-head { display:flex; justify-content:space-between; gap:8px; align-items:center; }
         .pill { padding:4px 8px; border-radius:999px; background:var(--secondary-background-color); font-size:12px; font-weight:600; }
@@ -130,7 +149,9 @@ export const panelView = {
         .value-line { fill:none; stroke-width:1.6; }
         .value-line.active { stroke-width:2.6; }
         .chart-canvas { width:100%; border:1px solid var(--divider-color); border-radius:9px; overflow:hidden; background:var(--card-background-color); min-height:320px; position:relative; }
-        .chart-canvas > .muted { padding:30px 10px; text-align:center; }
+        .chart-canvas > .muted:not(.learn-status) { padding:30px 10px; text-align:center; }
+        .history-graph .chart-canvas { min-height:0; }
+        .history-graph .selection-toolbar { display:none; }
         .chart-canvas svg { display:block; width:100%; height:auto; touch-action:none; user-select:none; -webkit-user-select:none; }
         .plot-bg { fill:var(--secondary-background-color); opacity:.35; }
         .grid-line { stroke:var(--divider-color); stroke-width:1; }
@@ -204,6 +225,11 @@ export const panelView = {
       "toggle",
       (event) => {
         const card = event.target.closest?.("[data-device-id]");
+        if (card && event.target.dataset.detail)
+          this._sectionState.set(
+            `${card.dataset.deviceId}:detail-${event.target.dataset.detail}`,
+            event.target.open,
+          );
         if (card && event.target.matches(".gate-results"))
           this._sectionState.set(
             `${card.dataset.deviceId}:gate-table`,
@@ -267,6 +293,11 @@ export const panelView = {
 
   _captureDrafts(grid) {
     for (const card of grid.querySelectorAll("[data-device-id]")) {
+      for (const detail of card.querySelectorAll("details[data-detail]"))
+        this._sectionState.set(
+          `${card.dataset.deviceId}:detail-${detail.dataset.detail}`,
+          detail.open,
+        );
       const draft = {};
       card
         .querySelectorAll(

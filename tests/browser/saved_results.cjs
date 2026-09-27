@@ -51,6 +51,13 @@ module.exports = async function testSavedResults(page, screenshotDir) {
     await card.locator(".nightly-marker").innerText(),
     /Targets not met/,
   );
+  await card.locator('[data-action="toggle"]').click();
+  await card.locator('[data-action="review-nightly"]').click();
+  assert.equal(
+    await card.locator(".nightly-report").isVisible(),
+    true,
+    "Overnight marker opens its report, including from a collapsed card",
+  );
   assert.equal(await picker.locator("option").count(), 4);
   await page.evaluate(() => {
     fixture.devices.a.nightly_learning.status = "running";
@@ -64,6 +71,44 @@ module.exports = async function testSavedResults(page, screenshotDir) {
     delete fixture.learning_schedule.running;
     return panel._load();
   });
+  for (const [error, readable] of [
+    [
+      "Maximum distance gate is unavailable or outside 2–8",
+      /maximum-distance settings/,
+    ],
+    [
+      "Training labels changed while learning; learn again",
+      /Presence labels changed during calculation/,
+    ],
+    ["Unexpected executor error <test>", /Learning could not finish/],
+  ]) {
+    await page.evaluate((error) => {
+      fixture.devices.a.nightly_learning = {
+        status: "error",
+        error,
+        started_at: Date.now() / 1000,
+        attempts: 2,
+      };
+      return panel._load();
+    }, error);
+    const report = card.locator(".nightly-report");
+    assert.match(
+      await report.innerText(),
+      readable,
+      "Failure reason must be visible without hover",
+    );
+    assert.match(await report.innerText(), /Retried once/);
+    const technical = report.locator("details");
+    if (!(await technical.evaluate((node) => node.open)))
+      await technical.locator("summary").click();
+    assert.ok((await report.innerText()).includes(error));
+    await page.evaluate(() => panel._load());
+    assert.equal(
+      await technical.evaluate((node) => node.open),
+      true,
+      "Failure details remain open across polling",
+    );
+  }
   for (const slot of ["automatic", "previous", "current", "user"]) {
     await picker.selectOption(slot);
     const index = ["user", "previous", "current", "automatic"].indexOf(slot);

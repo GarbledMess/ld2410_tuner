@@ -68,15 +68,7 @@ export const panelHistory = {
     const ui = this._historyStateFor(id);
     const bounds = this._historyDayBounds(ui.day);
     const periods = this._historyPeriods(d, bounds);
-    const segments = this._historyDaySegments(periods, bounds);
-    const timeline = segments
-      .map((segment) => {
-        const width =
-          ((segment.end - segment.start) / (bounds.end - bounds.start)) * 100;
-        const title = `${this._historyTime(segment.start)} – ${this._historyTime(segment.end)}: ${STATUS[segment.state]}`;
-        return `<span class="history-segment ${segment.state}" style="width:${width}%" title="${this._esc(title)}"></span>`;
-      })
-      .join("");
+    const timeline = this._historySegmentsHtml(periods, bounds);
     const rows = periods
       .sort((a, b) => a.start - b.start)
       .map((label) => this._historyPeriodHtml(label));
@@ -92,8 +84,8 @@ export const panelHistory = {
         <button type="button" data-action="history-today">Today</button>
       </div>
       <div class="history-graph"></div>
-      ${this._historyRangeHtml(timeline, ui.day)}
-      <div class="history-axis"><span>${this._esc(this._historyTime(bounds.start))}</span><span>${this._esc(this._historyTime(bounds.end))} (next day)</span></div>
+      <div class="history-timeline-editor">${this._historyRangeHtml(timeline, ui.day)}
+      <div class="history-axis"><span>${this._esc(this._historyTime(bounds.start))}</span><span>${this._esc(this._historyTime(bounds.end))} (next day)</span></div></div>
       <div class="history-legend">${Object.entries(STATUS)
         .map(
           ([state, name]) =>
@@ -114,6 +106,17 @@ export const panelHistory = {
         <button type="button" data-action="history-new">New period</button>
       </div>
       <p class="muted">Saving replaces labels in the chosen range. Unknown excludes that range from learning. Removing a label lets any stored automatic estimates be used again.</p>`;
+  },
+
+  _historySegmentsHtml(periods, bounds) {
+    return this._historyDaySegments(periods, bounds)
+      .map((segment) => {
+        const width =
+          ((segment.end - segment.start) / (bounds.end - bounds.start)) * 100;
+        const title = `${this._historyTime(segment.start)} – ${this._historyTime(segment.end)}: ${STATUS[segment.state]}`;
+        return `<span class="history-segment ${segment.state}" style="width:${width}%" title="${this._esc(title)}"></span>`;
+      })
+      .join("");
   },
 
   _historyPeriodHtml(label) {
@@ -175,6 +178,7 @@ export const panelHistory = {
     card.querySelector(".chart-home").append(chart);
     card.querySelector('[data-section="history"] .subsection-body').innerHTML =
       this._historyHtml(id, this._data.devices[id]);
+    this._placeHistoryGraph(card, id);
     this._wireHistory(card, id);
     this._restoreDraft(card, id);
     this._wireHistoryRange(card, id);

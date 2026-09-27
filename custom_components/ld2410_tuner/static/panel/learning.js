@@ -1,8 +1,7 @@
 export const panelLearning = {
   _learningWarningHtml(learning) {
     if (!learning?.warnings?.length) return "";
-    const style = learning.status === "unsafe" ? "warn" : "";
-    return `<div class="notice ${style}">${learning.warnings.map(this._esc).join("<br>")}</div>`;
+    return `<ul class="learning-notes">${learning.warnings.map((note) => `<li>${this._esc(note)}</li>`).join("")}</ul>`;
   },
 
   _presenceDependencyText(proposal) {
@@ -33,8 +32,6 @@ export const panelLearning = {
     if (learning?.feasibility?.status !== "conflict") return "";
     const window = learning.feasibility.windows?.find((item) => item.conflict);
     if (!window) return "";
-    const scope =
-      window.scope === "recent_human" ? "Recent human labels" : "Human labels";
     const minimum = window.minimum_false_samples_for_recall;
     const explanation =
       minimum == null
@@ -45,11 +42,10 @@ export const panelLearning = {
       const to = new Date(period.end * 1000).toLocaleTimeString();
       return `<button type="button" data-action="review-period" data-start="${Number(period.start)}" data-end="${Number(period.end)}">${this._esc(`${from} – ${to} (${period.samples} samples)`)}</button>`;
     });
-    return `<div class="notice evidence-conflict"><b>${scope}: the retained observations cannot meet both targets with any gate-threshold combination.</b>
-      <div>${this._esc(explanation)}</div>
-      <div>Within the false-trigger budget, at least ${window.unavoidable_missed_samples} presence samples are missed (allowed ${window.allowed_missed_samples}); the longest unavoidable run is ${window.unavoidable_longest_missed_run} samples.</div>
-      <div>Recorded conflicts around: ${periods.join(" ")}.</div>
-      <div>Review these periods in Past presence labels. This does not establish that the labels are wrong; the recorded signals may overlap. Labels and thresholds have not been changed.</div></div>`;
+    return `<div class="evidence-conflict"><b>Occupied and empty readings overlap.</b>
+      <p>No combination of gate thresholds can meet both targets for these labels. ${this._esc(explanation)}</p>
+      <p>Review the highlighted periods. Correct a label only if you know it is wrong; choose Unknown / exclude when occupancy is uncertain. If the empty label is correct (including dog-only activity), keep it: excluding it would hide false triggers.</p>
+      <div class="review-periods">${periods.join(" ")}</div></div>`;
   },
 
   _confidenceText(value) {
@@ -71,40 +67,76 @@ export const panelLearning = {
   },
 
   _humanValidationHtml(learning) {
-    const validation = learning?.training;
-    if (
-      !validation ||
-      !(validation.present_samples || validation.not_present_samples)
-    ) {
-      if (!Object.keys(learning?.proposals || {}).length) return "";
-      return '<div class="notice">No human-labelled measurement is available. This recommendation uses confidence-weighted estimates; test it in the room.</div>';
-    }
-    const sensitivity = validation.present_samples
-      ? (validation.sensitivity * 100).toFixed(2) + "%"
-      : "not measured";
-    const falseRate = validation.not_present_samples
-      ? (validation.false_positive_rate * 100).toFixed(2) + "% of empty samples"
-      : "no human-labelled empty samples";
-    const recommendation =
-      learning.status === "ok"
-        ? "Recommendation available."
-        : "The combined thresholds did not meet the targets.";
-    return `<div class="notice">Retained human-labelled observations: <b>${validation.false_negatives ?? "—"} missed / ${validation.present_samples} presence samples</b> (${sensitivity}; target 99.9%). Missed episodes: ${validation.missed_presence_episodes ?? "—"}; longest missed run: ${validation.longest_missed_run_samples ?? "—"} samples. False-trigger bursts: ${validation.false_trigger_bursts ?? "—"} (${falseRate}). ${recommendation}</div>`;
+    const m = learning?.training;
+    if (!m || !(m.present_samples || m.not_present_samples))
+      return "<p>No human-labelled accuracy measurement yet. Record known occupied and empty periods to check this estimate.</p>";
+    const items = [
+      [
+        "Missed presence",
+        `${m.false_negatives ?? "—"} / ${m.present_samples}`,
+        "Target: detect at least 99.9%",
+      ],
+      [
+        "Triggered while labelled empty",
+        `${m.false_positives ?? "—"} / ${m.not_present_samples}`,
+        "Target: at most 0.5%",
+      ],
+      [
+        "False-trigger events per hour",
+        m.false_trigger_bursts_per_hour?.toFixed(2) ?? "—",
+        "Target: at most 1",
+      ],
+    ];
+    return `<div class="learning-metrics">${items.map(([label, value, target]) => `<div><span>${label}</span><b>${value}</b><small>${target}</small></div>`).join("")}</div>
+      <p class="muted">These counts cover the combined device: any enabled gate can detect presence, and any gate can cause a false trigger. They measure the retained training data, not guaranteed future accuracy.</p>`;
+  },
+
+  _reviewPeriodHtml(period) {
+    const state =
+      period.state === "not_present"
+        ? "Activity while labelled empty"
+        : "Presence below all thresholds";
+    const from = new Date(period.start * 1000).toLocaleString();
+    const to = new Date(period.end * 1000).toLocaleTimeString();
+    const focus =
+      Object.entries(period.gates || {}).sort((a, b) => b[1] - a[1])[0]?.[0] ||
+      "";
+    const gates = Object.entries(period.gates || {})
+      .map(
+        ([key, peak]) => `${key.replace("g", "G").replace("_", " ")}: ${peak}`,
+      )
+      .join(" · ");
+    return `<li><div><b>${state}</b><span>${this._esc(from)} – ${this._esc(to)} · ${period.samples} samples${period.short_burst ? " · brief burst" : ""}</span>${gates ? `<span>Peak energies: ${this._esc(gates)}</span>` : ""}</div><button type="button" data-action="review-period" data-start="${Number(period.start)}" data-end="${Number(period.end)}" data-state="${this._esc(period.state)}" data-gate-key="${this._esc(focus)}">Review on graph</button></li>`;
+  },
+
+  _reviewEvidenceHtml(learning) {
+    const review = learning?.review;
+    if (!review?.periods?.length) return "";
+    const sessions = (review.sessions || [])
+      .filter((item) => item.errors)
+      .map(
+        (item) =>
+          `${new Date(item.start * 1000).toLocaleString()}: ${item.errors} / ${item.samples} ${item.state === "not_present" ? "empty" : "presence"} samples disagree`,
+      );
+    return `<details class="evidence-review" data-detail="evidence-review"><summary>Review ${review.period_count} ${review.period_count === 1 ? "period that disagrees with its label" : "periods that disagree with their labels"}</summary>
+      <p>These are review suggestions, not proof of incorrect labels. Brief activity could be a person, a pet or noise; energy readings alone cannot tell which. No period below was automatically excluded.</p>
+      <p>Open a period on the graph, check its times, then correct its status or choose Unknown / exclude. Learn again after saving.</p>
+      <ul class="review-periods">${review.periods.map((period) => this._reviewPeriodHtml(period)).join("")}</ul>
+      ${review.period_count > review.periods.length ? `<p>Showing the ${review.periods.length} largest periods, with space reserved for both label states.</p>` : ""}
+      <details data-detail="review-sessions"><summary>By recording session</summary><ul>${sessions.map((text) => `<li>${this._esc(text)}</li>`).join("")}</ul></details></details>`;
   },
 
   _validationHtml(learning) {
-    const backtest = learning?.validation;
+    if (!learning) return "";
+    const outcome = this._applyOutcome(learning);
+    const backtest = learning.validation;
     const backtestHtml = backtest
-      ? `<div class="notice">Earlier-data backtest: ${backtest.false_negatives ?? 0} missed presence samples; ${backtest.false_positives ?? 0} false triggers. The final recommendation uses all retained observations.</div>`
+      ? `<p>Earlier-data backtest: ${backtest.false_negatives ?? 0} missed presence samples; ${backtest.false_positives ?? 0} false triggers. The final recommendation uses all retained observations.</p>`
       : "";
-    return (
-      this._humanValidationHtml(learning) +
-      this._outlierFilterHtml(learning) +
-      this._feasibilityHtml(learning) +
-      backtestHtml +
-      this._falsePositiveSourcesHtml(learning) +
-      this._inferenceHtml(learning?.automatic_evidence)
-    );
+    return `<section class="learning-report outcome-${outcome.level}" aria-label="Recommendation quality"><b>${outcome.label}</b>
+      ${this._humanValidationHtml(learning)}${this._feasibilityHtml(learning)}${this._reviewEvidenceHtml(learning)}
+      <details class="learning-diagnostics" data-detail="learning-diagnostics"><summary>Calculation details</summary>
+      ${this._outlierFilterHtml(learning)}${backtestHtml}${this._falsePositiveSourcesHtml(learning)}${this._inferenceHtml(learning.automatic_evidence)}${this._learningWarningHtml(learning)}</details></section>`;
   },
 
   _applyOutcome(learning) {
@@ -143,9 +175,9 @@ export const panelLearning = {
   _recommendationsHtml(d, id) {
     const learning = d.last_learning;
     const outcome = this._applyOutcome(learning);
-    return `${this._savedResultsHtml(id, d)}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
-      <div class="muted">Learn creates a preview. Apply writes it to the device even when quality targets are missed. Red: targets not met; yellow: limited evidence or review concerns; green: measured targets met. Presence requires any enabled gate to trigger; any gate triggering in an empty room is a device false positive. A threshold of 100 disables that gate.</div>
-      ${this._learningWarningHtml(learning)}${this._validationHtml(learning)}
+    return `${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
+      <div class="muted">Learn creates a preview; Apply writes the selected values to the radar. You can apply a result even when its targets are not met.</div>
+      ${this._validationHtml(learning)}
       <details class="gate-results"><summary>Gate thresholds and sample counts</summary>${this._detailsHtml(d)}</details>`;
   },
 

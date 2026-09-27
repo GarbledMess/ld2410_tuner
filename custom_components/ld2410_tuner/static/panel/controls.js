@@ -1,4 +1,15 @@
 export const panelControls = {
+  _openRecommendations(card, id) {
+    if (this._collapsed.has(id))
+      card.querySelector('[data-action="toggle"]').click();
+    this._setSectionCollapsed(id, "details", false);
+    const section = card.querySelector('.subsection[data-section="details"]');
+    section.classList.remove("collapsed");
+    section.querySelector(".sub-toggle").textContent = "▾";
+    section.querySelector(".sub-toggle").setAttribute("aria-expanded", "true");
+    section.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  },
+
   _wireCard(card, id, d) {
     this._wireCollapse(card, id, d);
     this._wireTraining(card, id, d);
@@ -161,6 +172,8 @@ export const panelControls = {
           id,
           Number(button.dataset.start),
           Number(button.dataset.end),
+          button.dataset.state || "present",
+          button.dataset.gateKey,
         );
     });
     const actions = {

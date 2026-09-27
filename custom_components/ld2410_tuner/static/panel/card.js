@@ -19,8 +19,12 @@ export const panelCards = {
     card.querySelector(".gate-results").open = !!this._sectionState.get(
       `${id}:gate-table`,
     );
-    this._wireCard(card, id, d);
+    for (const detail of card.querySelectorAll("details[data-detail]"))
+      detail.open = !!this._sectionState.get(
+        `${id}:detail-${detail.dataset.detail}`,
+      );
     this._placeHistoryGraph(card, id);
+    this._wireCard(card, id, d);
     return card;
   },
 

@@ -13,6 +13,7 @@ RUNTIME_FILES = (
     "calibration/device_io.py",
     "calibration/feasibility.py",
     "calibration/fitting.py",
+    "calibration/diagnostics.py",
     "calibration/metrics.py",
     "calibration/reliability.py",
     "calibration/search.py",

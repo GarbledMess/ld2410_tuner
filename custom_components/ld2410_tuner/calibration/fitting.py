@@ -15,6 +15,7 @@ from .constants import MIN_AUTO_CONFIDENCE as MIN_AUTO_CONFIDENCE
 from .constants import MIN_CLASS_SAMPLES as MIN_CLASS_SAMPLES
 from .constants import MIN_RECALL as MIN_RECALL
 from .constants import SAMPLE_SECONDS as SAMPLE_SECONDS
+from .diagnostics import review_evidence
 from .feasibility import assess_feasibility, exclusive_presence
 from .metrics import _episode_masks as _episode_masks
 from .metrics import _human_ranker as _human_ranker
@@ -131,6 +132,7 @@ def fit_thresholds(rows, keys, current=None, automatic=()):
         "method": METHOD,
         "outlier_filter": exclusions,
         "raw_audit": metrics(raw_groups["present"] + raw_groups["not_present"], thresholds),
+        "review": review_evidence(groups, thresholds),
         "feasibility": assess_feasibility(groups["present"], groups["not_present"], keys),
         "status": status,
         "evidence_basis": basis,

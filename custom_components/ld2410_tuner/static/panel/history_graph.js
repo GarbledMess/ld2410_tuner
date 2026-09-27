@@ -6,7 +6,67 @@ export const panelHistoryGraph = {
       linked ? ".history-graph" : ".chart-home",
     );
     if (chart && target && chart.parentElement !== target) target.append(chart);
+    this._placeHistoryTimeline(card, chart, linked);
     card.querySelector(".chart-home").hidden = linked;
+    requestAnimationFrame(() => this._syncHistoryTimeline(card, id));
+  },
+
+  _placeHistoryTimeline(card, chart, linked) {
+    const editor = card.querySelector(
+      '.subsection[data-section="history"] > .subsection-body',
+    );
+    const fresh = editor.querySelector(":scope > .history-timeline-editor");
+    const existing = chart.querySelector(".history-timeline-editor");
+    if (fresh && existing) existing.remove();
+    const timeline = fresh || existing;
+    if (!timeline) return;
+    if (linked) chart.querySelector(".chart-legend").before(timeline);
+    else editor.querySelector(".history-graph").after(timeline);
+  },
+
+  _syncHistoryTimeline(card, id) {
+    if (!card.isConnected || this._sectionCollapsed(id, "history")) return;
+    const bounds = this._historyRangeBounds(id);
+    const periods = this._historyPeriods(this._data.devices[id], bounds);
+    const bar = card.querySelector(".history-range");
+    bar.querySelector(".history-timeline").innerHTML =
+      this._historySegmentsHtml(periods, bounds);
+    const axis = card.querySelector(".history-axis");
+    axis.innerHTML = [bounds.start, bounds.end]
+      .map(
+        (time) =>
+          `<span>${this._esc(new Date(time * 1000).toLocaleString())}</span>`,
+      )
+      .join("");
+    this._alignHistoryTimeline(card, bar, axis);
+    this._paintHistoryRange(card, id);
+  },
+
+  _alignHistoryTimeline(card, bar, axis) {
+    const plot = card.querySelector('[data-role="selection-hit"]');
+    if (!plot) return;
+    const rect = plot.getBoundingClientRect();
+    const parent = bar.parentElement.getBoundingClientRect();
+    const style = getComputedStyle(bar.parentElement);
+    const left = parent.left + parseFloat(style.paddingLeft);
+    const right = parent.right - parseFloat(style.paddingRight);
+    if (!rect.width) return;
+    for (const element of [bar, axis]) {
+      element.style.marginLeft = `${rect.left - left}px`;
+      element.style.marginRight = `${right - rect.right}px`;
+    }
+  },
+
+  _observeHistoryPlot(id, canvas) {
+    const cs = this._chartState.get(id);
+    cs.plotObserver?.disconnect();
+    // Resolve the card each time: polling moves this canvas into a new card.
+    cs.plotObserver = new ResizeObserver(() => {
+      const card = canvas.closest("[data-device-id]");
+      if (card) this._syncHistoryTimeline(card, id);
+    });
+    cs.plotObserver.observe(canvas);
+    this._syncHistoryTimeline(canvas.closest("[data-device-id]"), id);
   },
 
   _showHistoryWindow(card, id, bounds, selection = null) {
@@ -36,7 +96,7 @@ export const panelHistoryGraph = {
     this._fetchChartData(id);
   },
 
-  _reviewHistoryRange(id, start, end) {
+  _reviewHistoryRange(id, start, end, state = "present", gateKey = "") {
     const card = this.shadowRoot.querySelector(
       `[data-device-id="${CSS.escape(id)}"]`,
     );
@@ -55,6 +115,14 @@ export const panelHistoryGraph = {
     this._historyStateFor(id).day = this._toLocalInputValue(start).slice(0, 10);
     this._historyStateFor(id).month = this._historyStateFor(id).day.slice(0, 7);
     this._setHistoryRange(card, id, { start, end }, true);
+    card.querySelector('[data-action="history-state"]').value = state;
+    this._captureDrafts(this.shadowRoot.querySelector("#grid"));
+    const focus = /^g([0-8])_(move|still)$/.exec(gateKey);
+    if (focus)
+      Object.assign(this._chartState.get(id), {
+        gate: Number(focus[1]),
+        kind: focus[2],
+      });
     this._focusHistoryPeriod(card, id, { start, end });
     card
       .querySelector(".history-graph")

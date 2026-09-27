@@ -71,6 +71,10 @@ class LD2410TunerPanel extends HTMLElement {
   }
 
   disconnectedCallback() {
+    for (const cs of this._chartState.values()) {
+      cs.plotObserver?.disconnect();
+      cs.plotObserver = null;
+    }
     this._endDrag?.();
     if (this._pollTimer) clearInterval(this._pollTimer);
     this._pollTimer = null;

@@ -19,6 +19,10 @@ from .fitting import MAX_CLASS_SAMPLES, METHOD, MIN_AUTO_CONFIDENCE, fit_thresho
 _LOGGER = logging.getLogger(__name__)
 
 
+class LearningEvidenceChanged(ValueError):
+    """A fit raced a label edit; a fresh snapshot can be tried."""
+
+
 def _find_threshold_entity(runtime, device_id: str, key: str) -> str:
     registry = er.async_get(runtime.hass)
     for entity in registry.entities.values():
@@ -53,7 +57,7 @@ async def async_learn(runtime, device_id, source="user"):
     learned = await asyncio.shield(runtime._learning_jobs[device_id])
     device = runtime.data["devices"][device_id]
     if learned["label_revision"] != device.get("label_revision", 0):
-        raise ValueError("Training labels changed while learning; learn again")
+        raise LearningEvidenceChanged("Training labels changed while learning; learn again")
     result = results.remember_learning(device, learned, source)
     runtime._schedule_save()
     return result
@@ -69,7 +73,7 @@ async def _learn_once(runtime, device_id):
             view._fit_history, device_id, entities, current
         )
         if revision != device.get("label_revision", 0):
-            raise ValueError("Training labels changed while learning; learn again")
+            raise LearningEvidenceChanged("Training labels changed while learning; learn again")
         learned["label_revision"] = revision
         return learned
     finally:
