@@ -12,6 +12,7 @@ from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
 from ..history import policy, storage
+from ..presence import sources
 from ..runtime.schedule import settings
 
 
@@ -97,6 +98,7 @@ def _snapshot_device(runtime, device_id, device, registry):
         "name": name,
         "area_id": area_id,
         "recording_enabled": device.get("recording_enabled", True),
+        "presence_sources": sources.summary(runtime, device),
         "training_state": device.get("training_state", "unknown"),
         "training_expires_at": device.get("training_expires_at"),
         "training_timeout_seconds": device.get("training_timeout_seconds", 0),
@@ -145,6 +147,7 @@ def _export_device(runtime, did, devreg, registry):
         "name": (dev.name_by_user or dev.name or did) if dev else did,
         "area_id": dev.area_id if dev else None,
         "recording_enabled": device.get("recording_enabled", True),
+        "presence_sources": sources.summary(runtime, device),
         "training_state": device.get("training_state", "unknown"),
         "sample_counts": {
             k: {"present": sum(v.get("present", [])), "not_present": sum(v.get("not_present", []))}

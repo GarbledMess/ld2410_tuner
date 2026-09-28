@@ -40,6 +40,10 @@ binary_sensor:
   - platform: template
     id: ld2410_configuration_ready
     internal: true
+    on_press:
+      - globals.set:
+          id: ld2410_recovery_paused
+          value: 'false'
     lambda: |-
       // These settings share the radar's parameter-query response. Checking
       // several fields also avoids trusting a lone optimistic threshold echo.
@@ -274,6 +278,15 @@ switch:
       name: Bluetooth
 
 text_sensor:
+  - platform: template
+    name: LD2410 Recovery Status
+    entity_category: diagnostic
+    update_interval: 1s
+    lambda: |-
+      if (id(ld2410_configuration_ready).state) return {"Settings available"};
+      if (id(ld2410_recovery_paused)) return {"Paused after failed recovery; use Retry Radar Recovery"};
+      if (id(ld2410_recover_parameters).is_running()) return {"Recovering missing settings"};
+      return {"Waiting for settings"};
   # Read-only metadata: these use the exact substitutions wired to the existing
   # filters above. Exposing them does not alter presence or add a new handler.
   - platform: template
@@ -298,6 +311,19 @@ text_sensor:
       name: Mac Address
 
 button:
+  - platform: template
+    name: Retry Radar Recovery
+    entity_category: config
+    on_press:
+      - if:
+          condition:
+            not:
+              script.is_running: ld2410_recover_parameters
+          then:
+            - globals.set:
+                id: ld2410_recovery_paused
+                value: 'false'
+            - script.execute: ld2410_recover_parameters
   - platform: ld2410
     ld2410_id: ld2410_radar
     query_params:
@@ -308,6 +334,10 @@ button:
       name: Radar Restart
 
 globals:
+  - id: ld2410_recovery_paused
+    type: bool
+    restore_value: false
+    initial_value: 'false'
   - id: ld2410_recovery_restarted
     type: bool
     restore_value: false
@@ -325,6 +355,11 @@ script:
   - id: ld2410_recover_parameters
     mode: single
     then:
+      - if:
+          condition:
+            lambda: return id(ld2410_recovery_paused);
+          then:
+            - script.stop: ld2410_recover_parameters
       - delay: 5s
       - repeat: &ld2410_parameter_retries
           count: 3
@@ -372,9 +407,12 @@ script:
           condition:
             binary_sensor.is_off: ld2410_configuration_ready
           then:
+            - globals.set:
+                id: ld2410_recovery_paused
+                value: 'true'
             - logger.log:
                 level: WARN
-                format: "LD2410 settings still missing; recovery will retry with a restart cooldown"
+                format: "LD2410 recovery failed; automatic commands paused until settings return or Retry Radar Recovery is pressed"
 
 esphome:
   on_boot:
@@ -387,6 +425,8 @@ interval:
     then:
       - if:
           condition:
-            binary_sensor.is_off: ld2410_configuration_ready
+            and:
+              - binary_sensor.is_off: ld2410_configuration_ready
+              - lambda: return !id(ld2410_recovery_paused);
           then:
             - script.execute: ld2410_recover_parameters

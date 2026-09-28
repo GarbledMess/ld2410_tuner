@@ -31,10 +31,11 @@ export const panelCards = {
   },
 
   _cardHeaderHtml(d, info, isCollapsed) {
-    const { autoState, autoPill, canFeedback, al } = info;
-    const confidence = canFeedback
-      ? " · " + Math.round((al.confidence || 0) * 100) + "%"
-      : "";
+    const { autoState, autoPill, al } = info;
+    const confidence =
+      autoState !== "unknown"
+        ? " · " + Math.round((al.confidence || 0) * 100) + "%"
+        : "";
     return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}</div><div class="area">${this._esc(d.area_id || "No area")}</div></div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>`;
   },
 
@@ -44,7 +45,7 @@ export const panelCards = {
         id,
         "training",
         "Current presence label",
-        this._trainingHtml(d),
+        this._trainingHtml(d) + this._sourcesHtml(id, d),
       ),
       `<div class="chart-home">${this._section(id, "chart", "Gate visualization", this._chartHtml(id, d))}</div>`,
       this._section(
@@ -83,7 +84,11 @@ export const panelCards = {
     let autoPill = "AUTO NOT PRESENT";
     if (autoState === "unknown") autoPill = "UNKNOWN";
     else if (autoState === "present") autoPill = "AUTO PRESENT";
-    const canFeedback = autoState === "present" || autoState === "not_present";
+    if (al?.basis === "external" && autoState !== "unknown")
+      autoPill = `SOURCE ${autoState === "present" ? "PRESENT" : "NOT PRESENT"}`;
+    const canFeedback =
+      al?.basis !== "external" &&
+      (autoState === "present" || autoState === "not_present");
     return { al, autoState, autoPill, canFeedback };
   },
 
@@ -114,10 +119,13 @@ export const panelCards = {
       al?.top_gates
         ?.slice(0, 3)
         .map((gate) => `${this._esc(gate.key)} ${this._fmt(gate.energy)}`)
-        .join(" · ") || "No confident classification yet";
+        .join(" · ") ||
+      (al?.basis === "external"
+        ? (al.sources || []).join(" · ")
+        : "No confident classification yet");
     const confidence = al ? Math.round((al.confidence || 0) * 100) + "%" : "—";
     const calibNote = this._calibrationNote(auto.calibration);
-    return `<div class="auto-head"><span class="pill ${autoState}">${autoPill}</span><span class="muted">Confidence-weighted time; human labels take priority</span></div><div class="auto-details"><div><span>Estimated confidence</span>${confidence}</div><div><span>Evidence source</span>${al?.basis === "human-guided" ? "Labelled examples" : "Background estimate"}</div><div><span>Segments</span>${auto.segments || 0}</div></div><div class="muted" style="margin-top:7px">${this._esc(top)}</div><div class="muted">${auto.observations || 0} estimates stored. Confidence is an estimate, not measured accuracy.</div><div class="feedback-row"><span class="muted">Was this reading right?</span><button class="fb-btn correct" data-action="auto-feedback" data-correct="true" ${canFeedback ? "" : "disabled"}>✓ Correct</button><button class="fb-btn incorrect" data-action="auto-feedback" data-correct="false" ${canFeedback ? "" : "disabled"}>✗ Incorrect</button></div><div class="muted" style="margin-top:5px">Feedback accuracy — present: ${this._feedbackText(auto.feedback, "present")}, not present: ${this._feedbackText(auto.feedback, "not_present")}${calibNote}</div>`;
+    return `<div class="auto-head"><span class="pill ${autoState}">${autoPill}</span><span class="muted">Confidence-weighted time; human labels take priority</span></div><div class="auto-details"><div><span>Estimated confidence</span>${confidence}</div><div><span>Evidence source</span>${al?.basis === "external" ? "External entities (configured confidence)" : al?.basis === "human-guided" ? "Labelled examples" : "Background estimate"}</div><div><span>Segments</span>${auto.segments || 0}</div></div><div class="muted" style="margin-top:7px">${this._esc(top)}</div><div class="muted">${auto.observations || 0} estimates stored. Confidence is an estimate, not measured accuracy.</div><div class="feedback-row"><span class="muted">Was this reading right?</span><button class="fb-btn correct" data-action="auto-feedback" data-correct="true" ${canFeedback ? "" : "disabled"}>✓ Correct</button><button class="fb-btn incorrect" data-action="auto-feedback" data-correct="false" ${canFeedback ? "" : "disabled"}>✗ Incorrect</button></div><div class="muted" style="margin-top:5px">Feedback accuracy — present: ${this._feedbackText(auto.feedback, "present")}, not present: ${this._feedbackText(auto.feedback, "not_present")}${calibNote}</div>`;
   },
 
   _gateTables(d) {

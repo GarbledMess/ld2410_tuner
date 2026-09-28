@@ -65,6 +65,7 @@ export const panelActivity = {
       {
         learn: "Learning thresholds…",
         recording: "Saving recording setting…",
+        "sources-save": "Saving presence sources…",
         "storage-save": "Saving global policy and cleaning history…",
         "storage-trim": "Trimming recorded data…",
         "nightly-save": "Saving overnight schedule…",

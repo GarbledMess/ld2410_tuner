@@ -21,6 +21,7 @@ from ..const import (
     PRESENT_BIAS_MAX,
     PRESENT_BIAS_MIN,
 )
+from . import sources
 from .inference import MODEL, confirm_estimate, estimate_presence
 
 
@@ -61,7 +62,7 @@ def _update_auto_state(
     result: dict[str, Any],
     now: float,
 ) -> None:
-    state = runtime._auto_runtime.setdefault(device_id, {})
+    old, label = _confirmed_label(runtime, device_id, result, now)
     auto = device.setdefault("auto", {})
     auto["last_classification"] = {
         "state": "unknown",
@@ -71,11 +72,10 @@ def _update_auto_state(
         "top_gates": result["top_gates"],
         "timestamp": now,
         "basis": result.get("basis"),
+        "sources": result.get("sources", []),
         "model": result.get("model"),
         "presence_probability": result.get("presence_probability"),
     }
-    old = state.get("state", "unknown")
-    label = confirm_estimate(result, state, now)
     if label == "unknown":
         auto["last_classification"].update(state="unknown", confidence=0.0)
         segments = auto.get("segments", [])
@@ -94,10 +94,24 @@ def _update_auto_state(
                 "state": label,
                 "confidence": result["confidence"],
                 "score": result["score"],
+                "basis": result.get("basis"),
+                "sources": result.get("sources", []),
             }
         )
     if len(segments) > 500:
         del segments[:-500]
+
+
+def _confirmed_label(runtime, device_id, result, now):
+    state = runtime._auto_runtime.setdefault(device_id, {})
+    old = state.get("state", "unknown")
+    if result.get("basis") == "external":
+        if state.get("model") != result["model"]:
+            state.clear()
+            old = "unknown"
+        state.update(state=result["state"], model=result["model"], timestamp=now)
+        return old, result["state"]
+    return old, confirm_estimate(result, state, now)
 
 
 def auto_learning_summary(device: dict[str, Any]) -> dict[str, Any]:
@@ -150,13 +164,7 @@ def record_auto_feedback(runtime, device_id: str, correct: bool) -> dict[str, An
     if not device:
         raise ValueError("Unknown device")
     auto = device.setdefault("auto", {})
-    last = auto.get("last_classification")
-    if (
-        not last
-        or time.time() - last.get("timestamp", 0) > 15
-        or last.get("state") not in ("present", "not_present")
-    ):
-        raise ValueError("No confident automatic classification to give feedback on yet")
+    last = _feedback_reading(auto)
     label = last["state"]
     calibration = auto.setdefault("calibration", {"present_bias": 0.0, "absent_bias": 0.0})
     if label == "present":
@@ -184,6 +192,19 @@ def record_auto_feedback(runtime, device_id: str, correct: bool) -> dict[str, An
     return {"ok": True, "label": label, "calibration": dict(calibration)}
 
 
+def _feedback_reading(auto):
+    last = auto.get("last_classification")
+    if (
+        not last
+        or time.time() - last.get("timestamp", 0) > 15
+        or last.get("state") not in ("present", "not_present")
+    ):
+        raise ValueError("No confident automatic classification to give feedback on yet")
+    if last.get("basis") == "external":
+        raise ValueError("Correct external labels in Past presence labels or adjust the source")
+    return last
+
+
 def _sample_devices(runtime):
     for device_id, device in runtime.data["devices"].items():
         if device.get("configuration_recovery", {}).get("status") == "running":
@@ -198,7 +219,7 @@ def _sample_devices(runtime):
             continue
         now = time.time()
         runtime._migrate_device_samples(device)
-        result = runtime._classify_auto(device, values)
+        result = sources.estimate(runtime, device) or runtime._classify_auto(device, values)
         runtime._update_auto_state(device_id, device, result, now)
         runtime._record_history_sample(device_id, values, now)
         runtime._schedule_save()

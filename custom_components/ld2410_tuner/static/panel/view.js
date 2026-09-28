@@ -19,6 +19,11 @@ export const panelView = {
         .recording-control label { display:flex; align-items:center; gap:8px; min-height:44px; }
         #storage-controls { margin:12px 0; }
         #storage-controls summary { cursor:pointer; font-weight:600; padding:8px 0; }
+        .source-row { min-width:0; margin:8px 0; border:1px solid var(--divider-color,#ddd); border-radius:8px; }
+        .presence-sources { margin-top:12px; }
+        .source-row input, .source-row select { min-width:0; width:100%; box-sizing:border-box; }
+        .presence-sources .source-negative { flex-direction:row; align-items:center; }
+        .source-negative input { width:22px; height:22px; min-height:22px; flex:none; }
         .storage-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin:12px 0; }
         .storage-fields label, .storage-trim label { display:flex; flex-direction:column; gap:5px; }
         .storage-fields input, .storage-trim input { font:inherit; min-width:0; min-height:44px; padding:8px; box-sizing:border-box; border:1px solid var(--divider-color); border-radius:9px; color:var(--primary-text-color); background:var(--card-background-color); }

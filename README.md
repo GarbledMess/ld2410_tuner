@@ -559,6 +559,50 @@ processing by this version, and they expire after one configured human-retention
 period. That timestamp is not treated as an original observation time. Concurrent
 sampling or label edits defer or retry cleanup instead of overwriting new evidence.
 
+## Automatic labels from cameras, boolean entities and Bermuda
+
+In each device's **Current presence label** section, expand **Automatic labels
+from other entities**. Add one or more independent sources:
+
+- **Boolean entity**: select a camera's human-detection binary sensor, an
+  `input_boolean`, a template binary sensor, or another entity reporting `on/off`
+  or `true/false`. Camera video is not processed by the tuner. Build more elaborate
+  logic in Home Assistant and expose its result as a boolean entity.
+- **Bermuda area**: select a person's current **Area** sensor and enter the target
+  Home Assistant area ID or name. Use current Area, not Area Last Seen, Distance,
+  or a home/away tracker. Area IDs keep working when the room name changes.
+  Add each person's tracked device separately; choose human-carried devices, not
+  pets or permanently placed beacons.
+
+Any positive source provides a Present label. **Mark “Not Present” defaults to
+OFF**: an off boolean or a person leaving the Bermuda area supplies no negative
+label. If you enable it, every selected source must explicitly report absence.
+Missing, unavailable, unknown or non-boolean states do not count as absence.
+Only enable negative labelling when the selected sources cover everyone in the
+room. Bermuda tracks a device, which may be left behind or not carried; cameras
+may have blind spots. See [Bermuda's Area sensor documentation](https://github.com/agittins/bermuda/wiki).
+
+Source confidence defaults to **90%** and is configurable. This is a chosen
+training confidence, not a measured accuracy claim. Below 55%, readings are
+recorded but excluded from learning, like other low-confidence automatic evidence.
+Sources take precedence over
+radar guesses when they supply a label; otherwise the normal estimator continues.
+Labels use the existing automatic evidence/retention path, including confidence
+weighting and human priority. They never become human-labelled validation data.
+Live manual labels and retrospective corrections still override them; mark an
+incorrect recorded period Unknown to exclude it, or assign the correct status.
+
+The panel shows the current external label and each source's availability. The
+latest automatic reading identifies external sources; its radar-calibration
+feedback buttons are disabled because they cannot fix another integration.
+Recorded samples retain the automatic label and confidence, while the bounded
+recent segment log also records external source entity IDs. There is no camera
+video access, historical import, new presence entity, or automatic Apply. The
+existing two-second sampling/six-second recording cadence applies; very short
+source pulses between samples may not be captured. Paused recording also pauses
+source-derived training. Remove all source rows and save to return to radar-only
+labelling.
+
 ## Versioned releases and HACS updates
 
 Change only `custom_components/ld2410_tuner/manifest.json` to increase the version;

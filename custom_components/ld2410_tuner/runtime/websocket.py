@@ -14,6 +14,14 @@ def _websocket_routes():
     return [
         ("snapshot", {}, "snapshot", (), None, False),
         (
+            "configure_presence_sources",
+            {**device, vol.Required("settings"): dict},
+            "configure_presence_sources",
+            ("device_id", "settings"),
+            "invalid_request",
+            False,
+        ),
+        (
             "set_recording",
             {**device, vol.Required("enabled"): bool},
             "set_recording",

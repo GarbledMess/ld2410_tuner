@@ -13,7 +13,7 @@ from ..calibration import service as calibration
 from ..const import STORE_DELAY
 from ..history import labels as manual_training
 from ..history import recording, storage
-from ..presence import autolabelling
+from ..presence import autolabelling, sources
 from ..presentation import charts
 from ..presentation import snapshots as presentation
 from . import discovery, schedule
@@ -66,6 +66,7 @@ class TunerRuntime:
     configure_storage = storage.configure
     trim_storage = storage.trim
     set_recording = storage.set_recording
+    configure_presence_sources = sources.configure
     configure_learning_schedule = schedule.configure
     nightly_tick = schedule.tick
 

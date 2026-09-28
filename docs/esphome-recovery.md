@@ -22,6 +22,14 @@ LD2410 Query Params button first, then Radar Restart if necessary. The existing
 ESPHome `platform: restart` button restarts the ESP; the LD2410 restart button
 restarts the radar. Neither action is a factory reset.
 
+A supplied recovery log shows live energy/distance updates continuing between
+failed parameter reads, a radar restart attempt, and the old message scheduling
+another cycle. This confirms unsuccessful recovery while streaming remains
+active; it does not establish that the restart was acknowledged or that recovery
+caused the initial blank settings. The repeated 250 ms operation warnings match
+`read_all_info()` sending five queries with a blocking 50 ms delay each. The
+following Baud Rate update is locally derived, not a successful parameter reply.
+
 Source: [ESPHome 2026.9.0 LD2410 driver](https://github.com/esphome/esphome/blob/2026.9.0/esphome/components/ld2410/ld2410.cpp).
 
 ## Complete LD2410C package (recommended)
@@ -79,7 +87,7 @@ inline, remove its matching helper/script/buttons too, so it is not installed
 twice. The new package defines all recovery IDs internally.
 
 The package retains the supplied example's radar names, presence delays (500 ms
-on / 5 s off), one-second main sensor throttles and two-second gate throttles. It
+on / 1 s off), one-second main sensor throttles and two-second gate throttles. It
 includes all G0–G8 energies and thresholds, distance/energy sensors, presence
 states, selects, switches and radar metadata. Query Params and Radar Restart are
 included in the same file. It does not reset saved thresholds or change Bluetooth.
@@ -136,13 +144,29 @@ reported on immediately before the restart, then retries parameter reads up to
 three times. A one-minute cooldown starts before sending the restart command,
 including when communication fails. The ESP itself is never automatically restarted.
 
-A once-per-minute check runs recovery whenever settings are missing. It can
-restart the radar again once the cooldown has elapsed, so recurring faults do not
-require an ESP reboot to regain recovery. A persistent fault can trigger repeated
-recovery cycles, but automatic radar restarts cannot occur more than once per
-minute. Recovery stops when the readiness fields have values. Saved thresholds and Bluetooth are not rewritten. Restoring Engineering
-Mode is a best-effort command, not an acknowledgement; an unknown pre-restart
-mode cannot be reconstructed. A radar restart briefly interrupts presence reports.
+A once-per-minute check starts recovery when settings are missing, unless the
+previous cycle failed. **A failed cycle pauses all package recovery commands**,
+including queries and radar restarts. The previous implementation retried
+indefinitely with a one-minute restart cooldown; it could repeatedly interrupt
+a radar whose configuration never loaded. The cooldown limited frequency, not
+the number of failed attempts. The new pause prevents that repeated-command loop;
+it does not establish the cause of the initial missing settings.
+
+**LD2410 Recovery Status** shows whether settings are available, recovery is
+running, or recovery paused. **Retry Radar Recovery** explicitly starts another
+cycle after a failure; presses during an active cycle are ignored. The one-minute
+restart cooldown still applies to manual retries. A successful settings-readiness
+transition automatically re-arms recovery for a later fault, including recovery
+through the Bluetooth app. This is not a once-per-boot restart limit. Restarting
+the ESP starts a fresh cycle because recovery state is not persisted.
+
+Saved thresholds and Bluetooth are not rewritten. Restoring Engineering Mode is
+a best-effort command, not an acknowledgement; an unknown pre-restart mode cannot
+be reconstructed. A radar restart briefly interrupts presence reports. Readiness
+uses ESPHome's reported values, which can also be populated by optimistic manual
+writes; it is not proof of a radar acknowledgement. The pause governs this
+package only: manual controls and the tuner's separately initiated Learn recovery
+can still send commands.
 
 This is fault recovery, not a confirmed root-cause fix. The radar restart uses
 the same `restart_and_read_all_info()` method invoked after a Bluetooth change
@@ -216,6 +240,19 @@ C++ source generation also passed for the default configuration.
 Package-independent tuner regressions also passed, including Learn/Apply on a
 configuration without Query Params or the package's internal IDs. These checks do
 not constitute a completed firmware build, flash, or proof of physical recovery.
+
+The failed-cycle pause is covered by five regression tests that replay the actual
+package YAML actions: persistent failure over two hours, settings returning and a
+later fault, explicit retry with the restart cooldown, successful first-query
+recovery, and retry during an active cycle. This replay models automation control
+flow, not serial traffic or radar responses. The updated package also passed
+ESPHome 2026.9.0 configuration validation and C++ source generation with a
+synthetic ESP32-C3 node using GPIO9/GPIO10 and the supplied I2C peripherals. No
+firmware compilation, flash or hardware recovery was performed for this change.
+
+If the temporary `!extend ld2410_recover_parameters` override from troubleshooting
+is present in a node, remove it when installing this revision to enable the
+bounded recovery routine. Leaving it present continues to disable recovery.
 
 ## Exposing timing for calibration
 

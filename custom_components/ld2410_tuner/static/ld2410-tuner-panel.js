@@ -1,3 +1,4 @@
+import { panelSources } from "./panel/sources.js";
 import { panelStorage } from "./panel/storage.js";
 import { panelJobs } from "./panel/jobs.js";
 import { panelSavedResults } from "./panel/saved_results.js";
@@ -228,6 +229,7 @@ class LD2410TunerPanel extends HTMLElement {
 Object.assign(
   LD2410TunerPanel.prototype,
   panelStorage,
+  panelSources,
   panelJobs,
   panelSavedResults,
   panelHistoryGraph,
