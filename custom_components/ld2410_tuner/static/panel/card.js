@@ -1,11 +1,11 @@
 export const panelCards = {
-  _createCard(id, d, previousChart) {
+  _createCard(id, d, previousCard) {
     d = this._learningView(id, d);
     if (!this._seenDevices.has(id)) {
       this._seenDevices.add(id);
       this._collapsed.add(id);
     }
-    const card = document.createElement("div");
+    let card = document.createElement("div");
     card.className = "card";
     card.dataset.deviceId = id;
     const info = this._autoInfo(d.auto_learning || {});
@@ -16,8 +16,6 @@ export const panelCards = {
       `<div class="action-status muted" role="status" aria-live="polite"></div>` +
       `<div class="learning-job-status" role="status" aria-live="polite">${this._learningJobHtml(d)}</div>` +
       `<div class="body${isCollapsed ? " collapsed" : ""}">${this._cardBodyHtml(id, d, info)}</div>`;
-    if (previousChart)
-      card.querySelector('[data-section="chart"]').replaceWith(previousChart);
     card.querySelector(".gate-results").open = !!this._sectionState.get(
       `${id}:gate-table`,
     );
@@ -26,7 +24,12 @@ export const panelCards = {
         `${id}:detail-${detail.dataset.detail}`,
       );
     this._placeHistoryGraph(card, id);
+    if (previousCard) {
+      this._patchElement(previousCard, card);
+      card = previousCard;
+    }
     this._wireCard(card, id, d);
+    requestAnimationFrame(() => this._syncHistoryTimeline(card, id));
     return card;
   },
 

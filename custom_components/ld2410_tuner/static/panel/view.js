@@ -40,6 +40,8 @@ export const panelView = {
         .card,.panel-card { min-width:0; align-self:start; background:var(--ha-card-background,var(--card-background-color,#fff)); border-radius:12px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 2px 8px rgba(0,0,0,.12)); }
         .panel-card { margin-bottom:14px; }
         .panel-intro .subtitle { margin:0; line-height:1.5; }
+        .global-settings-card > summary { cursor:pointer; min-height:44px; align-content:center; }
+        .global-settings-card > summary h2 { display:inline; }
         .global-settings-card h2 { margin:0 0 6px; font-size:20px; }
         .global-settings-card h3 { margin:0; font-size:15px; }
         .settings-section { border-top:1px solid var(--divider-color); padding-top:12px; margin-top:12px; }
@@ -262,8 +264,8 @@ export const panelView = {
         <h1>LD2410 Tuner <span class="panel-version" aria-label="Loaded panel version" title="Version requested when this panel loaded. Reload the page after updating.">${this._frontendVersion ? `v${this._esc(this._frontendVersion)}` : "Version unavailable"}</span></h1>
         <div class="subtitle">Automatic estimates learn from signal patterns over time and carry confidence scores. Add empty-room, moving and quiet-sitting examples to improve them. Learn prioritizes reliable presence across sessions; human labels always take priority over lower-confidence estimates. Inferred data proportions do not block Apply.</div>
         </header>
-        <section class="panel-card global-settings-card" aria-labelledby="global-settings-title">
-          <h2 id="global-settings-title">Global settings</h2>
+        <details class="panel-card global-settings-card">
+          <summary><h2 id="global-settings-title">Global settings</h2></summary>
           <div class="muted">Learning and recording settings for all devices.</div>
           <section class="settings-section" aria-labelledby="overnight-settings-title">
             <h3 id="overnight-settings-title">Overnight learning</h3>
@@ -271,7 +273,7 @@ export const panelView = {
           </section>
           <div class="settings-section"><div id="timing-controls" class="global-settings"></div></div>
           <div class="settings-section"><div id="storage-controls" class="global-settings"></div></div>
-        </section>
+        </details>
         <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         <div class="grid" id="grid"></div>
       </div>`;
@@ -330,22 +332,28 @@ export const panelView = {
     this._drawTimingSettings();
     const grid = this.shadowRoot.querySelector("#grid");
     this._captureDrafts(grid);
-    const charts = new Map(
+    const cards = new Map(
       [...grid.querySelectorAll("[data-device-id]")].map((card) => [
         card.dataset.deviceId,
-        card.querySelector('[data-section="chart"]'),
+        card,
       ]),
     );
     const devices = this._data?.devices || {};
     if (!Object.keys(devices).length) {
-      grid.innerHTML = `<div class="card">No LD2410 gate energy entities were discovered.</div>`;
+      this._updateHtml(
+        grid,
+        '<div class="card">No LD2410 gate energy entities were discovered.</div>',
+      );
       return;
     }
-    const fragment = document.createDocumentFragment();
-    for (const [id, device] of Object.entries(devices)) {
-      fragment.appendChild(this._createCard(id, device, charts.get(id)));
+    for (const child of [...grid.children]) {
+      if (!(child.dataset.deviceId in devices)) child.remove();
     }
-    grid.replaceChildren(fragment);
+    for (const [index, [id, device]] of Object.entries(devices).entries()) {
+      const card = this._createCard(id, device, cards.get(id));
+      if (grid.children[index] !== card)
+        grid.insertBefore(card, grid.children[index] || null);
+    }
     for (const [id, device] of Object.entries(devices))
       this._maybeFetchChart(id, device);
   },

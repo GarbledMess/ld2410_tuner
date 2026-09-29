@@ -97,17 +97,15 @@ module.exports = async function testActivity(page) {
     window.finishActivity({});
   });
 
-  // Background refresh has a delayed indicator and keeps the cards in place.
+  // Routine polling stays quiet while keeping the current cards visible.
   await page.evaluate(() => {
     window.pendingAction = "snapshot";
     window.finishActivity = null;
     panel._load();
   });
-  await page.locator("#snapshot-status.is-busy").waitFor();
-  assert.match(
-    await page.locator("#snapshot-status").innerText(),
-    /Refreshing device readings/,
-  );
+  await page.waitForTimeout(500);
+  assert.equal(await page.locator("#snapshot-status.is-busy").count(), 0);
+  assert.equal(await page.locator("#snapshot-status").innerText(), "");
   assert.equal(await page.locator(".card").count(), 3);
   await page.evaluate(() => window.finishActivity(structuredClone(fixture)));
   await page.waitForFunction(() => !panel._loading);

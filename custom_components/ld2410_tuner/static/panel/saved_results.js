@@ -58,7 +58,8 @@ export const panelSavedResults = {
     for (const card of this.shadowRoot.querySelectorAll("[data-device-id]")) {
       const target = card.querySelector(".recovery-progress");
       const device = this._data?.devices?.[card.dataset.deviceId];
-      if (target && device) target.innerHTML = this._recoveryHtml(device);
+      if (target && device)
+        this._updateHtml(target, this._recoveryHtml(device));
     }
   },
 
@@ -214,10 +215,13 @@ export const panelSavedResults = {
       timezone: "Home Assistant timezone",
     };
     const form = this._scheduleDraft || config;
-    container.innerHTML = `<label><input data-action="nightly-enabled" type="checkbox" ${form.enabled ? "checked" : ""}> Overnight learning</label>
+    this._updateHtml(
+      container,
+      `<label><input data-action="nightly-enabled" type="checkbox" ${form.enabled ? "checked" : ""}> Overnight learning</label>
       <label>Time <input data-action="nightly-time" type="time" value="${this._esc(form.time)}" required></label>
       <button data-action="nightly-save">Save schedule</button>
-      <span class="muted ${config.running ? "is-busy" : ""}" role="status">${this._esc(config.timezone)} · ${config.running ? "Learning devices…" : "Saves results only; Apply stays manual."}</span>`;
+      <span class="muted ${config.running ? "is-busy" : ""}" role="status">${this._esc(config.timezone)} · ${config.running ? "Learning devices…" : "Saves results only; Apply stays manual."}</span>`,
+    );
     container.oninput = () => {
       this._scheduleDraft = {
         enabled: container.querySelector('[data-action="nightly-enabled"]')

@@ -20,6 +20,8 @@ module.exports = async function testComparison(page, screenshotDir) {
     };
     window.comparisonReport = {
       state: "ready",
+      scorer_version: 1,
+      mixed_evidence: true,
       evaluated_at: Date.now() / 1000,
       best_slots: ["automatic"],
       timing: { mode: "disabled" },
@@ -30,6 +32,8 @@ module.exports = async function testComparison(page, screenshotDir) {
             {
               result_id: slot === "live" ? null : slot,
               score: 95 + index,
+              scorer_version: 1,
+              evaluated_at: Date.now() / 1000 - index * 3600,
               applicable: slot !== "live",
               basis: "human",
               presence_recall: 0.998,
@@ -65,7 +69,7 @@ module.exports = async function testComparison(page, screenshotDir) {
   await header.click();
   assert.match(
     await card.locator(".pattern-comparison").innerText(),
-    /Comparing against shared recordings/,
+    /Calculating missing scores/,
   );
   await page.evaluate(() => finishComparison());
   await page.waitForFunction(
@@ -73,6 +77,14 @@ module.exports = async function testComparison(page, screenshotDir) {
   );
   assert.match(await header.innerText(), /Current 95.00\/100.*Best 99.00\/100/);
   assert.equal(await card.locator("[data-pattern]").count(), 5);
+  assert.match(
+    await card.locator(".pattern-comparison").innerText(),
+    /Stored scores.*Scorer v1.*Different evaluation dates/,
+  );
+  assert.match(
+    await card.locator('[data-pattern="automatic"]').innerText(),
+    /Scorer v1/,
+  );
   assert.match(
     await card.locator('[data-pattern="current"]').innerText(),
     /98.00\/100/,

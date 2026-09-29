@@ -34,6 +34,7 @@ module.exports = async function testTimingSettings(page, screenshotDir) {
     await page.locator(".global-settings-card #storage-controls").count(),
     1,
   );
+  await page.locator(".global-settings-card > summary").click();
   const form = page.locator("#timing-controls");
   const mode = form.locator('[data-action="timing-mode"]');
   const on = form.locator('[data-timing="on_delay"]');

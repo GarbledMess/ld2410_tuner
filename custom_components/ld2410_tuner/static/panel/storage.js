@@ -50,7 +50,9 @@ export const panelStorage = {
   _drawStorage() {
     const container = this.shadowRoot.querySelector("#storage-controls");
     const values = this._storageDraft || this._data?.storage?.settings || {};
-    container.innerHTML = `<details ${this._storageOpen ? "open" : ""}><summary>Recording storage${this._data?.storage?.error ? " · needs attention" : ""}</summary>
+    this._updateHtml(
+      container,
+      `<details ${this._storageOpen ? "open" : ""}><summary>Recording storage${this._data?.storage?.error ? " · needs attention" : ""}</summary>
       <div class="storage-status" role="status">${this._storageStatusHtml()}</div>
       <p>After the thinning age, the confidence cutoff rises from the starting percentage to 100% at automatic expiry. Human labels take priority and expire at their own age. These settings cover every device.</p>
       <div class="storage-fields">${STORAGE_FIELDS.map(([key, label, min, max, fallback]) => `<label>${label}<input type="number" data-storage="${key}" min="${min}" max="${max}" step="any" required value="${this._esc(values[key] ?? fallback)}"></label>`).join("")}</div>
@@ -58,7 +60,8 @@ export const panelStorage = {
       <div class="storage-trim"><label>Trim to (MiB, optional)<input type="number" data-action="trim-target" min="1" step="any" value="${this._esc(this._trimTarget || "")}" placeholder="Current ceiling"></label><button data-action="storage-trim">Trim now</button></div>
       <p class="muted">The ceiling covers the tuner file across all devices. Size trimming removes automatic/unlabelled chunks first, lower confidence before higher confidence, then the oldest human-labelled chunks. Age and size trimming permanently remove history. Saved recommendations and settings are retained. Export important recordings before trimming.</p>
       <div class="storage-action-status muted" role="status"></div>
-    </details>`;
+    </details>`,
+    );
     container.querySelector("details").ontoggle = (event) => {
       this._storageOpen = event.target.open;
     };

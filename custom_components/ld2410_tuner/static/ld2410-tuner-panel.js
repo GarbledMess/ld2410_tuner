@@ -1,3 +1,4 @@
+import { panelRendering } from "./panel/rendering.js";
 import { panelComparison } from "./panel/comparison.js";
 import { panelSources } from "./panel/sources.js";
 import { panelTimingSettings } from "./panel/timing_settings.js";
@@ -232,6 +233,7 @@ class LD2410TunerPanel extends HTMLElement {
 }
 Object.assign(
   LD2410TunerPanel.prototype,
+  panelRendering,
   panelComparison,
   panelTimingSettings,
   panelStorage,

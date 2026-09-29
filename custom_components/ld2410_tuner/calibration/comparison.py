@@ -9,6 +9,8 @@ from .reliability import prepare_evidence
 from .timing_metrics import _hit_mask, evaluate
 
 SCORE_MODEL = "weighted_time_v1"
+# Increment whenever scoring, evidence selection, outlier or timing semantics change.
+SCORER_VERSION = 1
 
 
 def score_from_cost(cost):
@@ -39,16 +41,10 @@ def calculate(view, device_id, context):
         name: _measure_pattern(pattern, keys, human, automatic, timing)
         for name, pattern in context["patterns"].items()
     }
-    eligible = {
-        name: item
-        for name, item in patterns.items()
-        if name != "live" and item.get("applicable") and item.get("score") is not None
-    }
-    best = min((_rank(item) for item in eligible.values()), default=None)
     return {
         "model": SCORE_MODEL,
         "patterns": patterns,
-        "best_slots": [name for name, item in eligible.items() if _rank(item) == best],
+        "best_slots": best_slots(patterns),
         "timing": timing,
         "counts": {
             "human": {k: len(v) for k, v in human.items()},
@@ -60,6 +56,16 @@ def calculate(view, device_id, context):
     }
 
 
+def best_slots(patterns):
+    eligible = {
+        name: item
+        for name, item in patterns.items()
+        if name != "live" and item.get("applicable") and item.get("score") is not None
+    }
+    best = min((_rank(item) for item in eligible.values()), default=None)
+    return [name for name, item in eligible.items() if _rank(item) == best]
+
+
 def _rank(item):
     # Match the learner: automatic evidence only breaks ties in supported human evidence.
     return tuple(item["ranking"])
@@ -68,15 +74,20 @@ def _rank(item):
 def _measure_pattern(pattern, keys, human, automatic, timing):
     if pattern is None:
         return {"score": None, "reason": "No saved result", "applicable": False}
-    result = {"result_id": pattern.get("id"), "applicable": pattern["applicable"]}
+    result = {
+        "result_id": pattern.get("id"),
+        "applicable": pattern["applicable"],
+        "thresholds_complete": False,
+    }
     values = pattern["thresholds"]
-    if set(values) != set(keys) or not all(_valid_threshold(value) for value in values.values()):
+    if not complete_thresholds(values, keys):
         return {
             **result,
             "score": None,
             "reason": "A complete threshold set for the active gates is unavailable",
             "applicable": False,
         }
+    result["thresholds_complete"] = True
     measured = evaluate(human, values, timing)
     estimated = evaluate(automatic, values, timing)
     replay = DurationReplay(automatic["present"], automatic["not_present"], timing)
@@ -128,6 +139,10 @@ def _source(label, human, automatic):
         if measured["duration"][seconds] > 0:
             return name
     return None
+
+
+def complete_thresholds(values, keys):
+    return set(values) == set(keys) and all(_valid_threshold(value) for value in values.values())
 
 
 def _valid_threshold(value):

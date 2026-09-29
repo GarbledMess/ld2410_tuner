@@ -1,15 +1,13 @@
-"""Deduplicated read-only comparison jobs and per-device in-memory result cache."""
+"""Deduplicated score jobs; completed versioned assessments live in device storage."""
 
 import asyncio
 import time
 from copy import deepcopy
 
 from ..history import policy
-from . import comparison, results
+from . import comparison, comparison_cache, results
 from .constants import METHOD
 from .timing_config import read_timing, timing_signature
-
-REFRESH_SECONDS = 60
 
 
 def _pattern(result, entities):
@@ -35,8 +33,9 @@ def _context(runtime, device_id):
     timing = read_timing(runtime, device_id)
     patterns = {slot: _pattern(saved.get(slot), entities) for slot in results.SLOTS}
     patterns["live"] = {"id": None, "thresholds": current, "applicable": False}
-    context = {"keys": list(entities), "patterns": patterns, "timing": timing}
+    context = {"keys": list(entities), "entities": entities, "patterns": patterns, "timing": timing}
     signature = {
+        "scorer_version": comparison.SCORER_VERSION,
         "entities": entities,
         "patterns": patterns,
         "timing": timing_signature(timing),
@@ -50,56 +49,42 @@ def _context(runtime, device_id):
     return context, signature
 
 
-def _history_token(runtime, device_id):
-    history = runtime.data["devices"][device_id].get("history", [])
-    pending = runtime._history_runtime.get(device_id, {}).get("samples", [])
-    return (
-        len(history),
-        sum(block.get("count", 0) for block in history),
-        history[0].get("start") if history else None,
-        history[-1].get("start") if history else None,
-        len(pending),
-        pending[-1][0] if pending else None,
-        int(time.time() // 300),
-    )
-
-
 def summary(runtime, device_id):
     try:
-        _context_data, signature = _context(runtime, device_id)
+        context, signature = _context(runtime, device_id)
     except ValueError as error:
         return {"state": "unavailable", "reason": str(error)}
-    cached = runtime._comparison_cache.get(device_id)
-    running = device_id in runtime._comparison_jobs
-    if cached is None or cached["signature"] != signature:
-        return {"state": "running" if running else "pending"}
-    old = time.time() - cached["finished_at"] >= REFRESH_SECONDS
-    changed = cached["history"] != _history_token(runtime, device_id)
-    state = "running" if running else "pending" if old and changed else cached["state"]
-    return {**cached["report"], "state": state, "stale": old and changed}
+    report = comparison_cache.report(runtime.data["devices"][device_id], context)
+    if device_id in runtime._comparison_jobs:
+        return {**report, "state": "running"}
+    failed = runtime._comparison_cache.get(device_id)
+    if failed and failed["signature"] == signature:
+        return {**report, **failed["report"]}
+    return report
 
 
 async def compare_results(runtime, device_id, force=False):
     context, signature = _context(runtime, device_id)
     task = runtime._comparison_jobs.get(device_id)
     if task is None:
+        device = runtime.data["devices"][device_id]
+        wanted = comparison_cache.missing(device, context, retry_unscored=bool(force))
         report = summary(runtime, device_id)
-        if not force and report["state"] not in ("pending", "running"):
+        if not wanted or (not force and report["state"] == "error"):
             return report
-        task = asyncio.create_task(_run(runtime, device_id, context, signature))
+        task = asyncio.create_task(_run(runtime, device_id, context, signature, wanted))
         runtime._comparison_jobs[device_id] = task
         task.add_done_callback(lambda done: _finished(runtime, device_id, done))
     return await asyncio.shield(task)
 
 
-async def _run(runtime, device_id, context, signature):
+async def _run(runtime, device_id, context, signature, wanted):
     async with runtime._comparison_semaphore:
-        history = _history_token(runtime, device_id)
         started = time.time()
         try:
             view = runtime._history_view(device_id)
             report = await runtime.hass.async_add_executor_job(
-                comparison.calculate, view, device_id, context
+                comparison.calculate, view, device_id, {**context, "patterns": wanted}
             )
             report.update(state="ready", evaluated_at=started)
         except asyncio.CancelledError:
@@ -112,14 +97,17 @@ async def _run(runtime, device_id, context, signature):
             return {"state": "pending"}
         if current != signature:
             return {"state": "pending"}
-        runtime._comparison_cache[device_id] = {
-            "signature": deepcopy(signature),
-            "history": history,
-            "finished_at": time.time(),
-            "state": report["state"],
-            "report": report,
-        }
-        return report
+        if report["state"] == "error":
+            runtime._comparison_cache[device_id] = {
+                "signature": deepcopy(signature),
+                "report": report,
+            }
+            return report
+        device = runtime.data["devices"][device_id]
+        comparison_cache.remember(device, context, report)
+        runtime._comparison_cache.pop(device_id, None)
+        runtime._schedule_save()
+        return comparison_cache.report(device, context)
 
 
 def _finished(runtime, device_id, task):

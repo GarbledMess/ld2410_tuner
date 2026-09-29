@@ -24,7 +24,7 @@ export const panelActivity = {
   _showError(message) {
     const el = this.shadowRoot?.querySelector("#error");
     if (el) {
-      el.textContent = message;
+      if (el.textContent !== message) el.textContent = message;
       el.hidden = !message;
     }
   },
@@ -142,8 +142,8 @@ export const panelActivity = {
         : "Loading devices…";
       status.classList.add("is-busy");
     };
-    // Avoid a flashing spinner for quick background polls.
-    const timer = setTimeout(show, this._loaded ? 400 : 0);
+    // Routine polls stay quiet; initial loading and explicit actions have indicators.
+    const timer = this._loaded ? null : setTimeout(show, 0);
     try {
       this._data = await this._call("snapshot");
       this._ensureComparisons();

@@ -14,14 +14,17 @@ export const panelTimingSettings = {
     const container = this.shadowRoot.querySelector("#timing-controls");
     const values = this._timingDraft ||
       this._data?.timing_settings || { mode: "device" };
-    container.innerHTML = `<details ${this._timingOpen ? "open" : ""}><summary>Learning timing</summary>
+    this._updateHtml(
+      container,
+      `<details ${this._timingOpen ? "open" : ""}><summary>Learning timing</summary>
       <div class="storage-fields"><label>Timing model<select data-action="timing-mode">${TIMING_MODES.map(([value, label]) => `<option value="${value}" ${values.mode === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
       <p>Applies to manual and overnight learning on every device. Device values take priority; defaults fill only missing or unreadable values and are reported as assumptions.</p>
       <div class="storage-fields">${TIMING_FIELDS.map(([key, label, fallback]) => `<label>${label}<input type="number" data-timing="${key}" min="0" max="65535" step="any" required value="${this._esc(values[key] ?? fallback)}" ${values.mode === "fallback" ? "" : "disabled"}></label>`).join("")}</div>
       <p class="muted">Disabling timing scores raw threshold activity without radar timeout or on/off delays. These settings change the learning model only; they never change the device. Saved results keep their original timing: learn again after changing this policy.</p>
       <button data-action="timing-save">Save timing settings</button>
       <div class="settings-action-status muted" role="status"></div>
-    </details>`;
+    </details>`,
+    );
     container.querySelector("details").ontoggle = (event) => {
       this._timingOpen = event.target.open;
     };

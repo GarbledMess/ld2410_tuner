@@ -29,15 +29,20 @@ export const panelHistoryGraph = {
     const bounds = this._historyRangeBounds(id);
     const periods = this._historyPeriods(this._data.devices[id], bounds);
     const bar = card.querySelector(".history-range");
-    bar.querySelector(".history-timeline").innerHTML =
-      this._historySegmentsHtml(periods, bounds);
+    this._updateHtml(
+      bar.querySelector(".history-timeline"),
+      this._historySegmentsHtml(periods, bounds),
+    );
     const axis = card.querySelector(".history-axis");
-    axis.innerHTML = [bounds.start, bounds.end]
-      .map(
-        (time) =>
-          `<span>${this._esc(new Date(time * 1000).toLocaleString())}</span>`,
-      )
-      .join("");
+    this._updateHtml(
+      axis,
+      [bounds.start, bounds.end]
+        .map(
+          (time) =>
+            `<span>${this._esc(new Date(time * 1000).toLocaleString())}</span>`,
+        )
+        .join(""),
+    );
     this._alignHistoryTimeline(card, bar, axis);
     this._paintHistoryRange(card, id);
   },

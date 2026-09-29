@@ -40,7 +40,7 @@ export const panelJobs = {
       const device = this._data?.devices?.[id];
       if (!device) continue;
       const target = card.querySelector(".learning-job-status");
-      if (target) target.innerHTML = this._learningJobHtml(device);
+      if (target) this._updateHtml(target, this._learningJobHtml(device));
       this._wireLearningJob(card, id, device);
     }
   },
