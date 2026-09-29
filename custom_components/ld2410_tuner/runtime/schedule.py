@@ -68,7 +68,12 @@ async def _learn_device(runtime, device_id, device, day):
     runtime._schedule_save()
     try:
         learned = await _learn_fresh(runtime, device_id, attempt)
-        attempt.update(status=learned["status"], result_id=learned["id"])
+        attempt.update(
+            status=learned["status"],
+            result_id=learned["id"],
+            timing=learned.get("timing"),
+            assessment=_assessment(learned),
+        )
     except asyncio.CancelledError:
         attempt.update(status="interrupted", error="Learning interrupted by integration shutdown")
         raise
@@ -83,7 +88,7 @@ async def _learn_device(runtime, device_id, device, day):
 async def stop(runtime):
     if runtime.unsub_nightly:
         runtime.unsub_nightly()
-    tasks = list(runtime._learning_jobs.values())
+    tasks = list(runtime._learning_jobs.values()) + list(runtime._comparison_jobs.values())
     if runtime._nightly_task:
         tasks.append(runtime._nightly_task)
     for task in tasks:
@@ -116,3 +121,14 @@ async def _learn_fresh(runtime, device_id, attempt):
                 raise
             attempt["retry_reason"] = "Labels changed; retrying with the updated labels"
             runtime._schedule_save()
+
+
+def _assessment(learned):
+    """Keep the overnight headline tied to that run, including automatic-only fits."""
+    human = learned.get("training", {}).get("duration", {})
+    automatic = learned.get("estimated_training", {}).get("duration", {})
+    fields = ("presence_recall", "presence_recall_lower", "false_positive_percent")
+    return {
+        field: human.get(field) if human.get(field) is not None else automatic.get(field)
+        for field in fields
+    }

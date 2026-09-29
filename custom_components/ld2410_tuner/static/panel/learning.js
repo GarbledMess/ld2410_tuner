@@ -144,7 +144,9 @@ export const panelLearning = {
   _recallText(duration) {
     if (duration?.presence_recall == null) return "—";
     const high = (100 * duration.presence_recall).toFixed(3);
-    const low = (100 * duration.presence_recall_lower).toFixed(3);
+    const low = (
+      100 * (duration.presence_recall_lower ?? duration.presence_recall)
+    ).toFixed(3);
     return low === high ? `${high}%` : `${low}–${high}%`;
   },
 
@@ -256,7 +258,7 @@ export const panelLearning = {
     if (this._timingChanged(learning, currentTiming))
       return {
         level: "caution",
-        label: "Device timing changed · learn again",
+        label: "Device timing changed or policy updated · learn again",
         enabled: true,
       };
     if (learning.training?.duration)
@@ -271,7 +273,7 @@ export const panelLearning = {
     if (
       learning.status !== "ok" ||
       learning.method !== "human_priority_v10" ||
-      learning.timing?.scope !== "reported_presence" ||
+      this._timingNeedsReview(learning) ||
       this._timingChanged(learning, currentTiming) ||
       !measured(learning.training) ||
       !measured(learning.validation) ||
@@ -301,7 +303,7 @@ export const panelLearning = {
     const concerns =
       learning.status !== "ok" ||
       learning.method !== "human_priority_v10" ||
-      learning.timing?.scope !== "reported_presence" ||
+      this._timingNeedsReview(learning) ||
       !measured(learning.training) ||
       !measured(learning.validation) ||
       this._backtestHasIssues(learning) ||
@@ -336,14 +338,28 @@ export const panelLearning = {
     }).some(([key, fallback]) => metrics[key] > (targets[key] ?? fallback));
   },
 
+  _timingNeedsReview(learning) {
+    const timing = learning.timing;
+    if (timing?.configuration?.mode === "disabled") return false;
+    return (
+      timing?.scope !== "reported_presence" ||
+      Object.values(timing?.configuration?.sources || {}).includes("fallback")
+    );
+  },
+
   _timingChanged(learning, current) {
     const captured = learning?.timing?.configuration;
     return Boolean(
       captured &&
       current &&
-      ["timeout", "on_delay", "off_delay"].some(
-        (key) => (captured[key] ?? null) !== (current[key] ?? null),
-      ),
+      ((captured.mode || "device") !== (current.mode || "device") ||
+        ["timeout", "on_delay", "off_delay"].some(
+          (key) =>
+            (captured[key] ?? null) !== (current[key] ?? null) ||
+            (captured.sources &&
+              (captured.sources[key] || null) !==
+                (current.sources?.[key] || null)),
+        )),
     );
   },
 
@@ -359,11 +375,13 @@ export const panelLearning = {
       : "Available device timing";
     const values = `Radar timeout: ${duration(settings.timeout)} · On delay: ${duration(settings.on_delay)} · Off delay: ${duration(settings.off_delay)}`;
     const scope =
-      settings.timeout == null
-        ? "Timeout is unavailable: time scores estimate raw threshold activity between snapshots. Your existing firmware remains supported."
-        : settings.on_delay == null || settings.off_delay == null
-          ? "Learning accounts for radar hold only. ESPHome filters are unknown; expose both delays to include them. The package is optional."
-          : "Learning accounts for radar hold, then delayed on and delayed off. These are read-only inputs; Apply changes gate thresholds only.";
+      settings.mode === "disabled"
+        ? "Timing adjustments are disabled. Scores use raw threshold activity without timeout or on/off delays. Apply still changes gate thresholds only."
+        : settings.timeout == null
+          ? "Timeout is unavailable: time scores estimate raw threshold activity between snapshots. Your existing firmware remains supported."
+          : settings.on_delay == null || settings.off_delay == null
+            ? "Learning accounts for radar hold only. ESPHome filters are unknown; expose both delays or configure global fallback values to include them. The package is optional."
+            : "Learning accounts for radar hold, then delayed on and delayed off. These are read-only inputs; Apply changes gate thresholds only.";
     const uncertainty = learning?.training?.onset_uncertainty;
     const uncertaintyHtml = uncertainty?.samples
       ? `<p><b>${Number(uncertainty.samples)} presence observations have unresolved transition timing.</b> The signal recovered between snapshots, so the actual transition and any on delay may precede the high snapshot. The missed-presence range shows both possible onset times. These observations are retained. Their conservative missed-time estimate contributes to the finite error cost; uncertainty does not impose an absolute threshold requirement.</p>`
@@ -371,9 +389,9 @@ export const panelLearning = {
     const interval = timing?.sample_interval_seconds;
     const raw = learning?.raw_training;
     const changed = this._timingChanged(learning, current)
-      ? "<p><b>Device timing has changed. Learn again to assess the current settings; the saved result still uses the values shown here.</b></p>"
+      ? "<p><b>Device timing has changed or the global timing policy was updated. Learn again to assess the current settings; the saved result still uses the values shown here.</b></p>"
       : "";
-    return `<div class="notice timing-report"><b>${source}</b><div>${values}</div><p>${scope}</p>${changed}${uncertaintyHtml}<details data-detail="timing-assumptions"><summary>Sampling and timing assumptions</summary>
+    return `<div class="notice timing-report"><b>${source}</b><div>${values}</div><p>${scope}</p>${this._timingPolicyNote(timing) ? `<p>${this._esc(this._timingPolicyNote(timing))}</p>` : ""}${changed}${uncertaintyHtml}<details data-detail="timing-assumptions"><summary>Sampling and timing assumptions</summary>
       ${timing?.active ? `<p>Sampled estimate: consecutive high readings are treated as one run; empty-room spikes allow for activity between observations. Gaps and label changes restart the replay. ${learning.training?.timing_warmup_samples || 0} initial observations were left unscored because the preceding device state is unknown.</p>` : ""}
       ${interval != null ? `<p>Typical recorded interval: ${Number(interval)}s. These snapshots cannot establish sub-second spike lengths or exact detection times.</p>` : ""}
       ${raw && timing?.active ? `<p>Before hold and filters: ${raw.false_negatives} missed / ${raw.present_samples} presence observations; ${raw.false_positives} crossings / ${raw.not_present_samples} empty observations. The quality measurements below use the timing estimate.</p>` : ""}</details></div>`;
@@ -382,7 +400,7 @@ export const panelLearning = {
   _recommendationsHtml(d, id) {
     const learning = d.last_learning;
     const outcome = this._applyOutcome(learning, d.timing_configuration);
-    return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
+    return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}${this._comparisonHtml(id, d)}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
       <div class="muted">Learn creates a preview; Apply writes the selected values to the radar. You can apply a result even when its targets are not met.</div>
       ${this._timingHtml(learning, d.timing_configuration)}${this._validationHtml(learning, d.timing_configuration)}
       <details class="gate-results"><summary>Gate thresholds and sample counts</summary>${this._detailsHtml(d)}</details>`;

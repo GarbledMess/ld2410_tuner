@@ -6,6 +6,40 @@ import re
 from homeassistant.helpers import entity_registry as er
 
 FIELDS = ("timeout", "on_delay", "off_delay")
+DEFAULTS = {"mode": "device", "timeout": 1.0, "on_delay": 0.5, "off_delay": 1.0}
+
+
+def settings(runtime):
+    """Global policy; fallback values are inactive until explicitly selected."""
+    return {**DEFAULTS, **getattr(runtime, "data", {}).get("timing_settings", {})}
+
+
+def configure(runtime, values):
+    if not isinstance(values, dict) or set(values) != set(DEFAULTS):
+        raise ValueError("Choose a timing mode and all three fallback durations")
+    if values["mode"] not in ("device", "fallback", "disabled"):
+        raise ValueError("Choose device timing, fallback timing, or disabled timing")
+    for field in FIELDS:
+        value = values[field]
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 65535:
+            raise ValueError("Timing durations must be finite seconds between 0 and 65535")
+    runtime.data["timing_settings"] = dict(values)
+    runtime._schedule_save()
+    return settings(runtime)
+
+
+def _resolve(values, policy):
+    mode = policy["mode"]
+    if mode == "disabled":
+        return dict.fromkeys(FIELDS), dict.fromkeys(FIELDS, "disabled")
+    sources = {
+        field: "device" if value is not None else "unknown" for field, value in values.items()
+    }
+    if mode == "fallback":
+        for field in FIELDS:
+            if values[field] is None:
+                values[field], sources[field] = policy[field], "fallback"
+    return values, sources
 
 
 def _names(entity):
@@ -65,7 +99,17 @@ def read_timing(runtime, device_id):
         values[field] = (
             _seconds(runtime.hass.states.get(found[0]), field) if len(found) == 1 else None
         )
-    return {**values, "entities": entities, "scope": _scope(values)}
+    reported = dict(values)
+    policy = settings(runtime)
+    values, sources = _resolve(values, policy)
+    return {
+        **values,
+        "entities": entities,
+        "reported": reported,
+        "sources": sources,
+        "mode": policy["mode"],
+        "scope": _scope(values),
+    }
 
 
 def timing_values(config):
@@ -76,3 +120,12 @@ def _scope(values):
     if all(value is not None for value in values.values()):
         return "reported_presence"
     return "radar" if values["timeout"] is not None else "raw"
+
+
+def timing_signature(config):
+    """Include modeling policy and provenance when checking an in-flight fit."""
+    return {
+        **timing_values(config),
+        "mode": (config or {}).get("mode", "device"),
+        "sources": (config or {}).get("sources", {}),
+    }

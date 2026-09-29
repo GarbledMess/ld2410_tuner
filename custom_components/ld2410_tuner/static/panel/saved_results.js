@@ -1,4 +1,4 @@
-const SLOT_LABELS = {
+export const SLOT_LABELS = {
   user: "User learnt",
   previous: "Previous",
   current: "Current",
@@ -79,6 +79,12 @@ export const panelSavedResults = {
     return `<div class="notice recovery-report ${report.status === "running" ? "is-busy" : ""}" role="status"><b>${this._esc(outcomes[report.status] || report.status)}</b><p>${this._esc((report.steps || []).map((step) => stages[step] || step).join(" → "))}</p>${report.error ? `<p>${this._esc(report.error)}</p>` : ""}${report.restore_bluetooth ? "<p>Original Bluetooth state still needs restoration. The next Learn retries restoration first.</p>" : ""}</div>`;
   },
 
+  _nightlyTiming(d) {
+    const run = d.nightly_learning;
+    const saved = this._savedResults(d).automatic;
+    return run?.timing || (saved?.id === run?.result_id ? saved?.timing : null);
+  },
+
   _nightlyReportHtml(d) {
     const run = d.nightly_learning;
     if (!run) return "";
@@ -102,6 +108,7 @@ export const panelSavedResults = {
     ).toLocaleString();
     return `<div class="notice nightly-report" role="status"><b>Last overnight run · ${this._esc(date)}</b>
       <p>${this._esc(messages[run.status] || run.status)}</p>
+      ${run.finished_at && !run.error && this._timingPolicyNote(this._nightlyTiming(d)) ? `<p>${this._esc(this._timingPolicyNote(this._nightlyTiming(d)))}</p>` : ""}
       ${run.attempts > 1 ? "<p>Retried once using the updated labels.</p>" : ""}
       ${run.error ? `<details data-detail="nightly-reason"><summary>Technical reason</summary><p>${this._esc(run.error)}</p></details>` : ""}</div>`;
   },
@@ -130,20 +137,57 @@ export const panelSavedResults = {
       tradeoff: "Scored · review penalty",
       unsafe: "Targets not met",
       insufficient: "Not enough data",
-      uncertain: "Timing uncertain",
+      uncertain: "Completed · review result",
       error: "Failed",
       interrupted: "Interrupted",
     };
+    const timing = this._nightlyTiming(d);
+    const note = this._timingPolicyNote(timing);
+    const completed = [
+      "ok",
+      "tradeoff",
+      "unsafe",
+      "uncertain",
+      "insufficient",
+    ].includes(run.status);
+    const metrics = this._nightlyMetrics(d);
+    const label =
+      completed && metrics ? metrics : labels[run.status] || run.status;
+    const caveat =
+      run.status === "uncertain"
+        ? "Timing uncertain; see the result for the estimated range."
+        : note;
     const style =
       run.status === "running"
         ? "is-busy"
-        : run.status === "ok"
-          ? "ok"
-          : "warn";
+        : ["error", "unsafe"].includes(run.status)
+          ? "warn"
+          : run.status === "ok" &&
+              (!note || timing?.configuration?.mode === "disabled")
+            ? "ok"
+            : "caution";
     const date = new Date(
       (run.finished_at || run.started_at) * 1000,
     ).toLocaleString();
-    return `<button type="button" data-action="review-nightly" class="pill nightly-marker ${style}" aria-label="Review last overnight run" title="${this._esc(`${date}${run.error ? ` · ${run.error}` : ""}`)}">Overnight: ${this._esc(labels[run.status] || run.status)}</button>`;
+    return `<button type="button" data-action="review-nightly" class="pill nightly-marker ${style}" aria-label="Review last overnight run" title="${this._esc(`${date} · ${labels[run.status] || run.status}${run.error ? ` · ${run.error}` : ""}${caveat ? ` · ${caveat}` : ""}`)}">Overnight: ${this._esc(label)}</button>`;
+  },
+
+  _nightlyMetrics(d) {
+    const run = d.nightly_learning;
+    const saved = this._savedResults(d).automatic;
+    const matching = saved?.id === run.result_id ? saved : null;
+    const m =
+      run.assessment ||
+      matching?.training?.duration ||
+      matching?.estimated_training?.duration;
+    if (!m) return "";
+    const parts = [];
+    if (m.presence_recall != null) parts.push(`Recall ${this._recallText(m)}`);
+    if (m.false_positive_percent != null)
+      parts.push(
+        `false-active ${Number(m.false_positive_percent).toFixed(2)}%`,
+      );
+    return parts.length ? `Completed · ${parts.join(" · ")}` : "";
   },
 
   _wireSavedResults(card, id) {

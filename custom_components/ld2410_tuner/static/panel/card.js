@@ -36,7 +36,7 @@ export const panelCards = {
       autoState !== "unknown"
         ? " · " + Math.round((al.confidence || 0) * 100) + "%"
         : "";
-    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}</div><div class="area">${this._esc(d.area_id || "No area")}</div></div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>`;
+    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}</div><div class="area">${this._esc(d.area_id || "No area")}</div>${this._comparisonHeaderHtml(d)}</div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>`;
   },
 
   _cardBodyHtml(id, d, info) {

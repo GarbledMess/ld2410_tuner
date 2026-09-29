@@ -17,8 +17,8 @@ export const panelView = {
         @media (prefers-reduced-motion:reduce) { .is-busy::before, button[aria-busy="true"]::after { animation:none; } }
         .recording-control { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:8px 0; }
         .recording-control label { display:flex; align-items:center; gap:8px; min-height:44px; }
-        #storage-controls { margin:12px 0; }
-        #storage-controls summary { cursor:pointer; font-weight:600; padding:8px 0; }
+        .global-settings { margin:12px 0; }
+        .global-settings summary { cursor:pointer; font-weight:600; padding:8px 0; }
         .source-row { min-width:0; margin:8px 0; border:1px solid var(--divider-color,#ddd); border-radius:8px; }
         .presence-sources { margin-top:12px; }
         .source-row input, .source-row select { min-width:0; width:100%; box-sizing:border-box; }
@@ -37,7 +37,14 @@ export const panelView = {
         .data-clear { border-top:1px solid var(--divider-color); padding-top:12px; margin-top:12px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
         .subtitle { color:var(--secondary-text-color); font-size:14px; margin-bottom:14px; }
         .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(500px,1fr)); gap:14px; }
-        .card { min-width:0; align-self:start; background:var(--ha-card-background,var(--card-background-color,#fff)); border-radius:12px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 2px 8px rgba(0,0,0,.12)); }
+        .card,.panel-card { min-width:0; align-self:start; background:var(--ha-card-background,var(--card-background-color,#fff)); border-radius:12px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 2px 8px rgba(0,0,0,.12)); }
+        .panel-card { margin-bottom:14px; }
+        .panel-intro .subtitle { margin:0; line-height:1.5; }
+        .global-settings-card h2 { margin:0 0 6px; font-size:20px; }
+        .global-settings-card h3 { margin:0; font-size:15px; }
+        .settings-section { border-top:1px solid var(--divider-color); padding-top:12px; margin-top:12px; }
+        .settings-section .global-settings { margin:0; }
+        .global-settings summary { min-height:44px; box-sizing:border-box; display:list-item; }
         .top { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; cursor:pointer; user-select:none; }
         .toggle { min-height:32px; padding:4px 10px; font-size:16px; line-height:1; flex-shrink:0; }
         .body.collapsed { display:none; }
@@ -110,6 +117,8 @@ export const panelView = {
         th:first-child,td:first-child { text-align:left; }
         .learned { font-weight:700; }
         .ok { color:var(--state-active-color,#2e7d32); }
+        .nightly-marker.caution { color:var(--warning-color,#a66b00); }
+        .nightly-marker { max-width:100%; white-space:normal; text-align:left; }
         .warn { color:var(--error-color,#c62828); }
         .learning-report { border:1px solid var(--divider-color); border-left:4px solid #fbc02d; padding:12px; border-radius:8px; margin-top:12px; font-size:13px; }
         .learning-report.outcome-bad { border-left-color:#c62828; }
@@ -228,13 +237,41 @@ export const panelView = {
           .mobile-gates { display:block; }
           .chart-controls select { flex:1 1 45%; min-width:0; }
         }
+              .comparison-header { margin-top:8px; font-size:12px; text-align:left; white-space:normal; }
+        .comparison-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+        .pattern-comparison { margin:14px 0; padding:12px; border:1px solid var(--divider-color,#444); border-radius:10px; }
+        .comparison-table { width:100%; min-width:0; font-size:12px; }
+        .comparison-table th,.comparison-table td { white-space:normal; vertical-align:top; text-align:left; overflow-wrap:normal; }
+        .comparison-table th { min-width:74px; }
+        .comparison-table button { white-space:nowrap; }
+        .comparison-table .comparison-score { font-weight:700; white-space:nowrap; }
+        .pattern-comparison details { margin-top:8px; }
+        .pattern-comparison p { line-height:1.5; }
+        @media (max-width:700px) {
+          .pattern-comparison .table-scroll { display:block; }
+          .comparison-table,.comparison-table tbody { display:block; }
+          .comparison-table thead { display:none; }
+          .comparison-table tr { display:grid; grid-template-columns:minmax(0,1fr) auto; padding:10px 0; border-bottom:1px solid var(--divider-color); }
+          .comparison-table th,.comparison-table td { display:block; border:0; padding:4px; }
+          .comparison-table td:nth-child(n+3) { grid-column:1 / -1; }
+        }
       </style>
       <div class="wrap">
         <div id="error" role="alert" class="notice warn" hidden></div>
+        <header class="panel-card panel-intro">
         <h1>LD2410 Tuner <span class="panel-version" aria-label="Loaded panel version" title="Version requested when this panel loaded. Reload the page after updating.">${this._frontendVersion ? `v${this._esc(this._frontendVersion)}` : "Version unavailable"}</span></h1>
         <div class="subtitle">Automatic estimates learn from signal patterns over time and carry confidence scores. Add empty-room, moving and quiet-sitting examples to improve them. Learn prioritizes reliable presence across sessions; human labels always take priority over lower-confidence estimates. Inferred data proportions do not block Apply.</div>
-        <div id="learning-schedule" class="learning-schedule"></div>
-        <div id="storage-controls"></div>
+        </header>
+        <section class="panel-card global-settings-card" aria-labelledby="global-settings-title">
+          <h2 id="global-settings-title">Global settings</h2>
+          <div class="muted">Learning and recording settings for all devices.</div>
+          <section class="settings-section" aria-labelledby="overnight-settings-title">
+            <h3 id="overnight-settings-title">Overnight learning</h3>
+            <div id="learning-schedule" class="learning-schedule"></div>
+          </section>
+          <div class="settings-section"><div id="timing-controls" class="global-settings"></div></div>
+          <div class="settings-section"><div id="storage-controls" class="global-settings"></div></div>
+        </section>
         <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         <div class="grid" id="grid"></div>
       </div>`;
@@ -290,6 +327,7 @@ export const panelView = {
   _draw() {
     this._drawLearningSchedule();
     this._drawStorage();
+    this._drawTimingSettings();
     const grid = this.shadowRoot.querySelector("#grid");
     this._captureDrafts(grid);
     const charts = new Map(

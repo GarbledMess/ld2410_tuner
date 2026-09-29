@@ -5,16 +5,15 @@ from __future__ import annotations
 import logging
 import math
 import time
-from collections import deque
 from typing import Any
 
 from homeassistant.helpers import entity_registry as er
 
 from ..const import GATE_RE, HISTORY_KEYS
-from ..history.labels import _history_label_reader
 from . import device_io, jobs, recovery, results
-from .fitting import MAX_CLASS_SAMPLES, METHOD, MIN_AUTO_CONFIDENCE, fit_thresholds
-from .timing_config import read_timing, timing_values
+from .evidence import collect_samples
+from .fitting import METHOD, fit_thresholds
+from .timing_config import read_timing, timing_signature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,7 +65,7 @@ async def _learn_once(runtime, device_id):
     )
     if revision != device.get("label_revision", 0):
         raise LearningEvidenceChanged("Training labels changed while learning; learn again")
-    if timing_values(read_timing(runtime, device_id)) != timing_values(timing):
+    if timing_signature(read_timing(runtime, device_id)) != timing_signature(timing):
         raise ValueError("Device timing changed while learning; learn again")
     learned["timing_configuration"] = timing
     learned["label_revision"] = revision
@@ -74,29 +73,7 @@ async def _learn_once(runtime, device_id):
 
 
 def _fit_history(runtime, device_id, entities, current):
-    device = runtime.data["devices"][device_id]
-    groups = {label: deque(maxlen=MAX_CLASS_SAMPLES) for label in ("present", "not_present")}
-    automatic = {label: deque(maxlen=MAX_CLASS_SAMPLES) for label in groups}
-    indices = [HISTORY_KEYS.index(key) for key in entities]
-    label_at = _history_label_reader(device)
-    for ts, row in runtime._iter_history_samples(device, include_auto=True):
-        if not any(row[index] <= 100 for index in indices):
-            continue
-        label = label_at(ts)
-        if label in groups:
-            groups[label].append((ts, row, label))
-        elif label is None and len(row) >= len(HISTORY_KEYS) + 2:
-            _append_auto_sample(automatic, ts, row)
-
-    def values(row):
-        return {key: row[i] for i, key in enumerate(HISTORY_KEYS) if row[i] <= 100}
-
-    rows = [(ts, values(row), label) for group in groups.values() for ts, row, label in group]
-    guesses = [
-        (ts, values(row), label, confidence)
-        for group in automatic.values()
-        for ts, row, label, confidence in group
-    ]
+    rows, guesses = collect_samples(runtime, device_id, entities)
     learned = fit_thresholds(
         rows, list(entities), current, guesses, getattr(runtime, "_fit_timing", None)
     )
@@ -271,10 +248,3 @@ async def _apply_changes(
             applied.pop(key)
             skipped[key] = str(error)
     return applied, skipped
-
-
-def _append_auto_sample(automatic, ts, row):
-    inferred = {1: "present", 2: "not_present"}.get(row[len(HISTORY_KEYS)])
-    confidence = row[len(HISTORY_KEYS) + 1] / 100
-    if inferred and confidence >= MIN_AUTO_CONFIDENCE:
-        automatic[inferred].append((ts, row, inferred, confidence))

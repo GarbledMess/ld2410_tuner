@@ -266,8 +266,10 @@ states.
 The tuner discovers the radar's standard **Timeout** number without this package.
 Entity IDs ending in `_timeout`, or an original entity name of Timeout, are
 supported, including renamed HA entities. Label-expiry timeouts are excluded.
-Missing, invalid or ambiguous matches remain unknown. It never substitutes a
-made-up timeout or changes a timing control when applying thresholds.
+Missing, invalid or ambiguous matches remain unknown. By default, missing values stay unknown. The optional global fallback policy
+uses explicitly configured values for missing timing and marks them as assumptions.
+The global disabled mode ignores all timing adjustments. Neither mode changes a
+timing control when applying thresholds.
 
 For standalone firmware, the two optional diagnostics can be added to the existing
 `text_sensor:` list without importing the package:

@@ -50,7 +50,7 @@ export const panelStorage = {
   _drawStorage() {
     const container = this.shadowRoot.querySelector("#storage-controls");
     const values = this._storageDraft || this._data?.storage?.settings || {};
-    container.innerHTML = `<details ${this._storageOpen ? "open" : ""}><summary>Recording storage · global settings${this._data?.storage?.error ? " · needs attention" : ""}</summary>
+    container.innerHTML = `<details ${this._storageOpen ? "open" : ""}><summary>Recording storage${this._data?.storage?.error ? " · needs attention" : ""}</summary>
       <div class="storage-status" role="status">${this._storageStatusHtml()}</div>
       <p>After the thinning age, the confidence cutoff rises from the starting percentage to 100% at automatic expiry. Human labels take priority and expire at their own age. These settings cover every device.</p>
       <div class="storage-fields">${STORAGE_FIELDS.map(([key, label, min, max, fallback]) => `<label>${label}<input type="number" data-storage="${key}" min="${min}" max="${max}" step="any" required value="${this._esc(values[key] ?? fallback)}"></label>`).join("")}</div>

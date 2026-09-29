@@ -1,4 +1,6 @@
+import { panelComparison } from "./panel/comparison.js";
 import { panelSources } from "./panel/sources.js";
+import { panelTimingSettings } from "./panel/timing_settings.js";
 import { panelStorage } from "./panel/storage.js";
 import { panelJobs } from "./panel/jobs.js";
 import { panelSavedResults } from "./panel/saved_results.js";
@@ -44,6 +46,8 @@ class LD2410TunerPanel extends HTMLElement {
     this._drafts = new Map();
     this._historyState = new Map();
     this._learningSelection = new Map();
+    this._comparisonRequests = new Set();
+    this._comparisonErrors = new Map();
     this._chartQueue = [];
     this._activeCharts = 0;
     this._activeActions = 0;
@@ -228,6 +232,8 @@ class LD2410TunerPanel extends HTMLElement {
 }
 Object.assign(
   LD2410TunerPanel.prototype,
+  panelComparison,
+  panelTimingSettings,
   panelStorage,
   panelSources,
   panelJobs,

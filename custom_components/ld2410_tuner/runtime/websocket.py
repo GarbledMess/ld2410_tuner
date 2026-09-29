@@ -14,6 +14,22 @@ def _websocket_routes():
     return [
         ("snapshot", {}, "snapshot", (), None, False),
         (
+            "compare_results",
+            {**device, vol.Optional("force", default=False): bool},
+            "compare_results",
+            ("device_id", "force"),
+            "invalid_device",
+            False,
+        ),
+        (
+            "configure_timing",
+            {vol.Required("settings"): dict},
+            "configure_timing",
+            ("settings",),
+            "invalid_request",
+            False,
+        ),
+        (
             "configure_presence_sources",
             {**device, vol.Required("settings"): dict},
             "configure_presence_sources",

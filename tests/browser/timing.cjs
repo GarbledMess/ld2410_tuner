@@ -92,7 +92,7 @@ module.exports = async function testTiming(page, screenshotDir) {
   assert.equal(await card.locator('[data-action="apply"]').isDisabled(), false);
   assert.match(
     await card.locator(".nightly-marker").innerText(),
-    /Timing uncertain/,
+    /Completed · review result/,
   );
   assert.match(
     await card.locator(".nightly-report").innerText(),

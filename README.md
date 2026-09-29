@@ -136,6 +136,28 @@ Only the integration directory is installed by HACS. Repository metadata, tests
 and CI stay outside it. The layout follows the
 [HACS integration requirements](https://www.hacs.dev/docs/publish/integration/).
 
+## Global learning timing
+
+Open **Learning timing** in the **Global settings** card, alongside the overnight
+schedule and recording storage controls. The
+same policy applies to manual and overnight learning on every device:
+
+- **Use available device timing** (default): missing durations stay unknown.
+- **Use defaults where device timing is missing**: fill each missing/unreadable
+  duration independently. Valid device values, including zero, always win.
+  The editable defaults start at 1 second radar timeout, 0.5 second on delay,
+  and 1 second off delay; they are unused until this mode is selected. Set them
+  to match your firmware. Results identify fallback values as assumptions.
+- **Disable timing adjustments**: score raw gate-threshold activity without
+  timeout or on/off delays. This changes the learning model, not the device.
+
+Saved results retain the timing used when fitted. Learn again after changing the
+policy; Apply still writes only gate thresholds. Missing timing is not a job
+failure. A completed overnight pill shows recorded recall and false-active time
+when available; amber means caveats or uncertainty, while red identifies a job
+error or poor measured results. Open the report for timing assumptions, estimated
+ranges, and the distinction between human and automatically labelled evidence.
+
 ## ESPHome recovery
 
 For missing settings after boot, Query Params / Radar Restart buttons, and Apply
@@ -636,3 +658,13 @@ Home Assistant's `update.install` action and your own restart policy. See the
 [update entity documentation](https://www.hacs.dev/docs/use/entities/update/).
 Publishing a GitHub release does not add this integration to the HACS catalogue.
 The license remains undecided.
+
+### Comparing saved thresholds
+
+Each device header shows **Current** (the actual live gate settings) and **Best** (the best compatible saved pattern). Open **Recommendations → Compare saved patterns** to compare User learnt, Previous, Current and Autolearnt on the same recordings. The saved Current slot is the last applied result; it can differ from live settings after another tool changes the radar. Review selects a saved pattern; Apply remains a separate manual action.
+
+The 0–100 comparison score is `max(0, 100 − 5 × missed occupied-time percentage − false-active empty-time percentage)`. It uses the existing learner’s time penalty, with the conservative occupied-time estimate where onset is uncertain. 100 requires no measured errors; zero includes all costs at or above 100. This is a comparison score, **not measured deployment accuracy or a confidence percentage**. A high score can still miss the 99.9% presence target, which is shown separately. Sample hits, misses, false triggers, correct empty readings and observed/error durations remain available in each row.
+
+Comparisons share the current timing policy, active gates, retained recordings and threshold-independent outlier filtering. They use up to the latest 5,000 observations per state and source; incomplete gate vectors are excluded for every pattern. Human evidence takes priority, with confidence-weighted automatic evidence filling unsupported states and breaking ties. Results relying on automatic labels are identified as estimates. Insufficient evidence is **not scored**, rather than assigned zero. Best uses unrounded error cost and the learner’s duration tie-breaks, so rounded scores may tie. Older incompatible results may be inspected but are excluded from Best.
+
+Read-only comparisons run in the background and survive leaving the page. Scores are cached in memory, invalidated by relevant settings or label changes, and refreshed at most once a minute as recordings accumulate. Refresh scores evaluates the latest evidence immediately. Evaluated time, timing assumptions and exclusions are visible in the comparison; no comparison writes thresholds or initiates recovery. The original learning assessment is retained separately from this fresh comparison.

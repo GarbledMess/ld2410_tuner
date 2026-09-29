@@ -16,6 +16,7 @@ export const panelControls = {
     this._wireHistory(card, id);
     this._wireActions(card, id, d);
     this._wireSavedResults(card, id);
+    this._wireComparison(card, id);
     this._wireLearningJob(card, id, d);
     this._wireRecording(card, id, d);
     this._wireSources(card, id, d);

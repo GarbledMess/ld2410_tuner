@@ -9,6 +9,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
+from ..calibration import comparison_jobs, timing_config
 from ..calibration import service as calibration
 from ..const import STORE_DELAY
 from ..history import labels as manual_training
@@ -42,6 +43,9 @@ class TunerRuntime:
         self._history_cache = OrderedDict()
         self._history_jobs = {}
         self._learning_jobs = {}
+        self._comparison_jobs = {}
+        self._comparison_cache = {}
+        self._comparison_semaphore = asyncio.Semaphore(2)
         self._cleanup_task = None
         self._storage_lock = asyncio.Lock()
         self._storage_status = {}
@@ -63,6 +67,8 @@ class TunerRuntime:
                 return  # Reported in the panel; a settings change can retry.
 
     async_save = storage.async_save
+    compare_results = comparison_jobs.compare_results
+    configure_timing = timing_config.configure
     configure_storage = storage.configure
     trim_storage = storage.trim
     set_recording = storage.set_recording

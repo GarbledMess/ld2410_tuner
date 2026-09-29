@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
+from ..calibration import comparison_jobs, timing_config
 from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
@@ -21,6 +22,7 @@ def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
     runtime.refresh_devices(registry)
     devices = [device_id] if device_id else list(runtime.data.get("devices", {}))
     exported = {"format": "ld2410_tuner_export_v2", "generated_at": time.time(), "devices": {}}
+    exported["timing_settings"] = timing_config.settings(runtime)
     devreg = dr.async_get(runtime.hass)
     _export_devices(runtime, devices, devreg, registry, exported)
     return exported
@@ -32,6 +34,7 @@ def snapshot(runtime) -> dict[str, Any]:
     result = {
         "devices": {},
         "learning_schedule": settings(runtime),
+        "timing_settings": timing_config.settings(runtime),
         "storage": storage.summary(runtime),
     }
 
@@ -112,6 +115,7 @@ def _snapshot_device(runtime, device_id, device, registry):
         },
         "current_thresholds": current,
         "timing_configuration": read_timing(runtime, device_id),
+        "comparison": comparison_jobs.summary(runtime, device_id),
         "last_learning": device.get("last_learning"),
         "learning_results": saved_results(device),
         "nightly_learning": device.get("nightly_learning"),
@@ -163,6 +167,7 @@ def _export_device(runtime, did, devreg, registry):
         },
         "current_thresholds": current_thresholds,
         "timing_configuration": read_timing(runtime, did),
+        "comparison": comparison_jobs.summary(runtime, did),
         "last_learning": device.get("last_learning"),
         "learning_results": saved_results(device),
         "nightly_learning": device.get("nightly_learning"),

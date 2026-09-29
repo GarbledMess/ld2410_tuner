@@ -52,6 +52,9 @@ export const panelActivity = {
       control
         .closest("#storage-controls")
         ?.querySelector(".storage-action-status") ||
+      control
+        .closest("#timing-controls")
+        ?.querySelector(".settings-action-status") ||
       this.shadowRoot.querySelector("#snapshot-status");
     if (status) {
       status.textContent = this._actionLabel(control.dataset.action);
@@ -68,6 +71,7 @@ export const panelActivity = {
         "sources-save": "Saving presence sources…",
         "storage-save": "Saving global policy and cleaning history…",
         "storage-trim": "Trimming recorded data…",
+        "timing-save": "Saving global timing settings…",
         "nightly-save": "Saving overnight schedule…",
         apply: "Applying thresholds and checking reported values…",
         clear: "Clearing device data…",
@@ -142,6 +146,7 @@ export const panelActivity = {
     const timer = setTimeout(show, this._loaded ? 400 : 0);
     try {
       this._data = await this._call("snapshot");
+      this._ensureComparisons();
       this._refreshRecoveryProgress();
       this._refreshLearningProgress();
       this._showError(this._actionError);
