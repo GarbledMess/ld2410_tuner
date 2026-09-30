@@ -129,7 +129,7 @@ async def apply(
 
 
 async def _apply_validated(
-    runtime, device_id: str, slot=None, result_id=None, expected=None
+    runtime, device_id: str, slot=None, result_id=None, expected=None, guard=None
 ) -> dict[str, Any]:
     device = runtime.data["devices"].get(device_id)
     if not device:
@@ -142,6 +142,8 @@ async def _apply_validated(
     _validate_learning(device, learned, check_revision=slot is None)
     button = await device_io.prepare_device(runtime, device_id, learned["entities"])
     _validate_learning(device, learned, check_revision=slot is None)
+    if guard:
+        guard({})
     entities, current = runtime._threshold_configuration(device_id)
     if (
         entities != learned.get("entities")
@@ -159,8 +161,9 @@ async def _apply_validated(
     # A device receives serial configuration commands. Raise noisy thresholds
     # before lowering sensitive ones and stop on the first partial failure.
     applied, skipped = await _apply_changes(
-        runtime, device_id, entities, learned, current, button, slot is None
+        runtime, device_id, entities, learned, current, button, slot is None, guard
     )
+    _check_completion(guard, applied, skipped)
     if not skipped:
         results.remember_applied(device, learned, entities, current)
     device["last_applied"] = applied
@@ -171,6 +174,14 @@ async def _apply_validated(
         "verification": "reported_state",
         "note": device_io.READBACK_NOTE,
     }
+
+
+def _check_completion(guard, applied, skipped):
+    if guard and not skipped:
+        try:
+            guard(applied)
+        except ValueError as error:
+            skipped["configuration"] = str(error)
 
 
 def _validate_learning(device, learned, check_revision=True):
@@ -218,7 +229,7 @@ def _distance_limit(entity_id, value, limits):
 
 
 async def _apply_changes(
-    runtime, device_id, entities, learned, current, button, check_revision=True
+    runtime, device_id, entities, learned, current, button, check_revision=True, guard=None
 ):
     changes = sorted(
         entities,
@@ -233,6 +244,8 @@ async def _apply_changes(
             skipped[key] = "Not attempted after an earlier write failed"
             continue
         try:
+            if guard:
+                guard(applied)
             _validate_learning(runtime.data["devices"][device_id], learned, check_revision)
             await device_io.write_threshold(runtime, device_id, key, value, button)
             device_io.check_reported(runtime, entities, applied)

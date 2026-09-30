@@ -30,6 +30,7 @@ module.exports = async function testSavedResults(page, screenshotDir) {
         fixture.learning_schedule = {
           ...fixture.learning_schedule,
           enabled: message.enabled,
+          auto_apply: message.auto_apply,
           time: message.at,
         };
         return fixture.learning_schedule;
@@ -152,6 +153,11 @@ module.exports = async function testSavedResults(page, screenshotDir) {
   );
 
   await page.locator('[data-action="nightly-enabled"]').check();
+  assert.equal(
+    await page.locator('[data-action="nightly-auto-apply"]').isChecked(),
+    true,
+  );
+  await page.locator('[data-action="nightly-auto-apply"]').uncheck();
   await page.locator('[data-action="nightly-time"]').fill("04:15");
   await page.locator('[data-action="nightly-time"]').blur();
   await page.evaluate(() => panel._load());
@@ -164,9 +170,56 @@ module.exports = async function testSavedResults(page, screenshotDir) {
   await page.waitForFunction(() => panel._activeActions === 0);
   assert.deepEqual(await page.evaluate(() => fixture.learning_schedule), {
     enabled: true,
+    auto_apply: false,
     time: "04:15",
     timezone: "Europe/London",
   });
+  await page.evaluate(() => {
+    fixture.devices.a.nightly_learning = {
+      status: "uncertain",
+      started_at: Date.now() / 1000,
+      automatic_apply: {
+        status: "applied",
+        reason: "Lower weighted error on common evidence.",
+        assessment: {
+          patterns: {
+            live: { score: 92 },
+            automatic: { score: 98, basis: "estimated" },
+          },
+        },
+      },
+    };
+    return panel._load();
+  });
+  assert.match(
+    await card.locator(".nightly-marker").innerText(),
+    /Applied improvement/,
+  );
+  assert.match(
+    await card.locator(".automatic-apply-report").innerText(),
+    /live 92 → learned 98/,
+  );
+  assert.match(
+    await card.locator(".automatic-apply-report").innerText(),
+    /includes automatic estimates/,
+  );
+  await page.evaluate(() => {
+    fixture.devices.a.nightly_learning.automatic_apply.status = "partial";
+    fixture.devices.a.nightly_learning.automatic_apply.writes = {
+      skipped: { g0_still: "offline <test>" },
+      note: "Reported values are not hardware acknowledgements",
+    };
+    return panel._load();
+  });
+  assert.match(
+    await card.locator(".nightly-marker.warn").innerText(),
+    /Apply incomplete/,
+  );
+  await card.locator(".automatic-apply-report summary").click();
+  assert.match(
+    await card.locator(".automatic-apply-report").innerText(),
+    /offline <test>/,
+  );
   await page.setViewportSize({ width: 1400, height: 1000 });
   await page
     .locator("#learning-schedule")

@@ -21,8 +21,8 @@ from ..const import (
     PRESENT_BIAS_MAX,
     PRESENT_BIAS_MIN,
 )
-from . import sources
-from .inference import MODEL, confirm_estimate, estimate_presence
+from . import references, sources
+from .inference import HUMAN_REFERENCE, MODEL, confirm_estimate, estimate_presence
 
 
 @callback
@@ -36,15 +36,18 @@ def _classify_auto(runtime, device: dict[str, Any], values: dict[str, float]) ->
         auto.update(model=MODEL, all_histograms={}, filter={}, calibration={})
     hist = auto.setdefault("all_histograms", {})
     expected = [f"g{info['gate']}_{info['kind']}" for info in device.get("entities", {}).values()]
+    profile = device.get("reference_profile", {})
+    reference, cap = references.distributions(profile, time.time())
     result = estimate_presence(
         values,
-        device.get("histograms", {}),
+        reference if profile else device.get("histograms", {}),
         hist,
         auto.setdefault("filter", {}),
         time.time(),
         expected,
         auto.get("calibration", {}),
     )
+    _reference_confidence(result, profile, reference, values, cap)
     # Warm up from observations, then freeze the unlabelled baseline during
     # likely occupancy so a stationary person does not become background.
     for key, value in values.items():
@@ -53,6 +56,21 @@ def _classify_auto(runtime, device: dict[str, Any], values: dict[str, float]) ->
             h[int(round(value))] += 1
             runtime._compress_histogram(h)
     return result
+
+
+def _reference_confidence(result, profile, reference, values, cap):
+    if not profile.get("periods"):
+        return
+    novel = references.unfamiliar(profile, values)
+    result["unfamiliar_gates"] = novel
+    result["confidence"] = min(result["confidence"], 0.65 if novel else cap)
+    if not reference:
+        return
+    result["basis"] = "adaptive-guided"
+    result["manual_guidance"] = any(p["source"] == "human" for p in profile["periods"])
+    for detail in result["top_gates"]:
+        if detail["source"] == HUMAN_REFERENCE:
+            detail["source"] = "age-weighted room references"
 
 
 def _update_auto_state(
@@ -75,6 +93,7 @@ def _update_auto_state(
         "buffered": result.get("buffered", False),
         "sources": result.get("sources", []),
         "model": result.get("model"),
+        "unfamiliar_gates": result.get("unfamiliar_gates", []),
         "presence_probability": result.get("presence_probability"),
     }
     if label == "unknown":
@@ -136,6 +155,7 @@ def auto_learning_summary(device: dict[str, Any]) -> dict[str, Any]:
             }
     return {
         "enabled": device.get("recording_enabled", True),
+        "profile": references.summary(device.get("reference_profile", {}), time.time()),
         "observations": observation_counts,
         "observations_by_state": dict(auto.get("observations", {})),
         "segments": len(segments),

@@ -19,6 +19,7 @@ from ..const import (
     HISTORY_KEYS,
     HISTORY_SAMPLE_INTERVAL,
 )
+from ..presence import reference_training
 from .cleanup import accept_cleanup as _accept_cleanup
 from .cleanup import clean_history, decode_payload, encode_payload
 from .policy import retention_seconds, settings
@@ -46,7 +47,12 @@ def _record_history_sample(runtime, device_id: str, values: dict[str, float], no
     if state["samples"] and now - state["samples"][0][0] > 65535:
         runtime._flush_history_block(device_id)
     inferred, code, confidence = _stored_estimate(device, now)
-    state["samples"].append((now, row + bytes((code, confidence))))
+    recorded = row + bytes((code, confidence))
+    state["samples"].append((now, recorded))
+    last = device.get("auto", {}).get("last_classification", {})
+    reference_training.observe(
+        runtime, device, now, recorded, external=last.get("basis") == "external"
+    )
     if code:
         observations = device.setdefault("auto", {}).setdefault("observations", {})
         observations[inferred] = observations.get(inferred, 0) + 1

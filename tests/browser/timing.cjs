@@ -295,6 +295,14 @@ module.exports = async function testTiming(page, screenshotDir) {
     panel._setSectionCollapsed("a", "details", false);
     return panel._load();
   });
+  assert.doesNotMatch(
+    await card.locator('[data-action="apply"]').innerText(),
+    /Timing uncertain/,
+  );
+  assert.match(
+    await card.locator(".timing-report").innerText(),
+    /Sampling uncertainty/,
+  );
   const outcomes = card.locator(".sample-outcomes");
   assert.match(
     await outcomes.innerText(),
@@ -310,7 +318,7 @@ module.exports = async function testTiming(page, screenshotDir) {
   assert.equal(await card.locator(".threshold-line.learned-unsafe").count(), 0);
   assert.match(
     await card.locator(".learn-status").innerText(),
-    /Timing uncertain/,
+    /Estimated · Recall/,
   );
   await card
     .locator('.subsection[data-section="details"]')

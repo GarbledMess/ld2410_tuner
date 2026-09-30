@@ -110,8 +110,36 @@ export const panelSavedResults = {
     return `<div class="notice nightly-report" role="status"><b>Last overnight run · ${this._esc(date)}</b>
       <p>${this._esc(messages[run.status] || run.status)}</p>
       ${run.finished_at && !run.error && this._timingPolicyNote(this._nightlyTiming(d)) ? `<p>${this._esc(this._timingPolicyNote(this._nightlyTiming(d)))}</p>` : ""}
+      ${this._automaticApplyHtml(run.automatic_apply)}
       ${run.attempts > 1 ? "<p>Retried once using the updated labels.</p>" : ""}
       ${run.error ? `<details data-detail="nightly-reason"><summary>Technical reason</summary><p>${this._esc(run.error)}</p></details>` : ""}</div>`;
+  },
+
+  _automaticApplyHtml(application) {
+    if (!application) return "";
+    const labels = {
+      applied: "Automatically applied",
+      skipped: "Automatic Apply skipped",
+      partial: "Automatic Apply incomplete",
+      error: "Automatic Apply failed",
+      interrupted: "Automatic Apply interrupted",
+      comparing: "Comparing against live settings…",
+      applying: "Applying improved thresholds…",
+    };
+    const patterns = application.assessment?.patterns;
+    const scores = patterns
+      ? `<p>Fresh comparison: live ${patterns.live.score ?? "unscored"} → learned ${patterns.automatic.score ?? "unscored"} / 100. Both use the same recordings and timing settings${patterns.automatic.basis === "estimated" ? "; includes automatic estimates" : ""}.</p>`
+      : "";
+    const writes = application.writes;
+    return `<div class="automatic-apply-report" role="status"><b>${this._esc(labels[application.status] || "Automatic Apply")}</b>${scores}<p>${this._esc(application.reason || "")}</p>${writes?.note ? `<p>${this._esc(writes.note)}</p>` : ""}${
+      writes?.skipped && Object.keys(writes.skipped).length
+        ? `<details><summary>Write details</summary><p>${this._esc(
+            Object.entries(writes.skipped)
+              .map(([key, reason]) => `${key}: ${reason}`)
+              .join("; "),
+          )}</p></details>`
+        : ""
+    }</div>`;
   },
 
   _nightlyErrorText(error = "") {
@@ -152,16 +180,26 @@ export const panelSavedResults = {
       "insufficient",
     ].includes(run.status);
     const metrics = this._nightlyMetrics(d);
+    const application = run.automatic_apply;
+    const action = {
+      applied: "Applied improvement",
+      partial: "Apply incomplete",
+      error: "Apply failed",
+      applying: "Applying improvement…",
+      comparing: "Comparing live settings…",
+    }[application?.status];
     const label =
-      completed && metrics ? metrics : labels[run.status] || run.status;
+      action ||
+      (completed && metrics ? metrics : labels[run.status] || run.status);
     const caveat =
       run.status === "uncertain"
-        ? "Timing uncertain; see the result for the estimated range."
+        ? "Sampling uncertainty; see the result for the estimated range."
         : note;
     const style =
       run.status === "running"
         ? "is-busy"
-        : ["error", "unsafe"].includes(run.status)
+        : ["error", "unsafe"].includes(run.status) ||
+            ["partial", "error"].includes(application?.status)
           ? "warn"
           : run.status === "ok" &&
               (!note || timing?.configuration?.mode === "disabled")
@@ -211,6 +249,7 @@ export const panelSavedResults = {
     const container = this.shadowRoot.querySelector("#learning-schedule");
     const config = this._data?.learning_schedule || {
       enabled: false,
+      auto_apply: true,
       time: "03:00",
       timezone: "Home Assistant timezone",
     };
@@ -219,14 +258,18 @@ export const panelSavedResults = {
       container,
       `<label><input data-action="nightly-enabled" type="checkbox" ${form.enabled ? "checked" : ""}> Overnight learning</label>
       <label>Time <input data-action="nightly-time" type="time" value="${this._esc(form.time)}" required></label>
+      <label><input data-action="nightly-auto-apply" type="checkbox" ${(form.auto_apply ?? true) ? "checked" : ""}> Automatically apply better overnight results</label>
       <button data-action="nightly-save">Save schedule</button>
-      <span class="muted ${config.running ? "is-busy" : ""}" role="status">${this._esc(config.timezone)} · ${config.running ? "Learning devices…" : "Saves results only; Apply stays manual."}</span>`,
+      <span class="muted ${config.running ? "is-busy" : ""}" role="status">${this._esc(config.timezone)} · ${config.running ? "Learning devices…" : config.auto_apply !== false ? "Overnight: apply only a lower weighted error on fresh common evidence. Manual Learn remains a preview." : "Saves results only; Apply stays manual."}</span>`,
     );
     container.oninput = () => {
       this._scheduleDraft = {
         enabled: container.querySelector('[data-action="nightly-enabled"]')
           .checked,
         time: container.querySelector('[data-action="nightly-time"]').value,
+        auto_apply: container.querySelector(
+          '[data-action="nightly-auto-apply"]',
+        ).checked,
       };
     };
     const save = container.querySelector('[data-action="nightly-save"]');
@@ -238,6 +281,9 @@ export const panelSavedResults = {
           enabled: container.querySelector('[data-action="nightly-enabled"]')
             .checked,
           at: at.value,
+          auto_apply: container.querySelector(
+            '[data-action="nightly-auto-apply"]',
+          ).checked,
         });
         this._scheduleDraft = null;
         await this._load(true);

@@ -291,7 +291,11 @@ export const panelLearning = {
         enabled: true,
       };
     if (learning.status === "uncertain")
-      return { level: "caution", label: "Timing uncertain", enabled: true };
+      return {
+        level: "caution",
+        label: this._estimatedOutcomeLabel(learning),
+        enabled: true,
+      };
     if (learning.status === "tradeoff")
       return {
         level: "caution",
@@ -313,6 +317,22 @@ export const panelLearning = {
       label: concerns ? "Review concerns" : "Presence target met",
       enabled: true,
     };
+  },
+
+  _estimatedOutcomeLabel(learning) {
+    const human = learning.training?.duration || {};
+    const automatic = learning.estimated_training?.duration || {};
+    const presence = human.presence_recall != null ? human : automatic;
+    const falseActive =
+      human.false_positive_percent ?? automatic.false_positive_percent;
+    const parts = [];
+    if (presence.presence_recall != null)
+      parts.push(`Recall ${this._recallText(presence)}`);
+    if (falseActive != null)
+      parts.push(`false-active ${Number(falseActive).toFixed(2)}%`);
+    return parts.length
+      ? `Estimated · ${parts.join(" · ")}`
+      : "Limited recorded time · review result";
   },
 
   _backtestHasIssues(learning) {
@@ -391,7 +411,7 @@ export const panelLearning = {
     const changed = this._timingChanged(learning, current)
       ? "<p><b>Device timing has changed or the global timing policy was updated. Learn again to assess the current settings; the saved result still uses the values shown here.</b></p>"
       : "";
-    return `<div class="notice timing-report"><b>${source}</b><div>${values}</div><p>${scope}</p>${this._timingPolicyNote(timing) ? `<p>${this._esc(this._timingPolicyNote(timing))}</p>` : ""}${changed}${uncertaintyHtml}<details data-detail="timing-assumptions"><summary>Sampling and timing assumptions</summary>
+    return `<div class="notice timing-report"><b>${source}</b><div>${values}</div><p>${scope}</p>${this._timingPolicyNote(timing) ? `<p>${this._esc(this._timingPolicyNote(timing))}</p>` : ""}${changed}${learning?.status === "uncertain" ? "<p>Sampling uncertainty: recordings do not establish every transition time, and very short periods may have no measurable duration. This can remain even when all three device timing settings are known. The estimates and sample counts below show what was measured.</p>" : ""}${uncertaintyHtml}<details data-detail="timing-assumptions"><summary>Sampling and timing assumptions</summary>
       ${timing?.active ? `<p>Sampled estimate: consecutive high readings are treated as one run; empty-room spikes allow for activity between observations. Gaps and label changes restart the replay. ${learning.training?.timing_warmup_samples || 0} initial observations were left unscored because the preceding device state is unknown.</p>` : ""}
       ${interval != null ? `<p>Typical recorded interval: ${Number(interval)}s. These snapshots cannot establish sub-second spike lengths or exact detection times.</p>` : ""}
       ${raw && timing?.active ? `<p>Before hold and filters: ${raw.false_negatives} missed / ${raw.present_samples} presence observations; ${raw.false_positives} crossings / ${raw.not_present_samples} empty observations. The quality measurements below use the timing estimate.</p>` : ""}</details></div>`;
@@ -401,7 +421,7 @@ export const panelLearning = {
     const learning = d.last_learning;
     const outcome = this._applyOutcome(learning, d.timing_configuration);
     return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}${this._comparisonHtml(id, d)}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
-      <div class="muted">Learn creates a preview; Apply writes the selected values to the radar. You can apply a result even when its targets are not met.</div>
+      <div class="muted">Manual Learn creates a preview; Apply writes the selected values to the radar. Overnight runs can automatically apply improvements when enabled in global settings. You can apply a result even when its targets are not met.</div>
       ${this._timingHtml(learning, d.timing_configuration)}${this._validationHtml(learning, d.timing_configuration)}
       <details class="gate-results"><summary>Gate thresholds and sample counts</summary>${this._detailsHtml(d)}</details>`;
   },

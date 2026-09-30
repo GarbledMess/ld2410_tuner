@@ -138,3 +138,15 @@ analyzers. The default active rules reported 61 findings before cleanup and zero
 issues or security hotspots afterwards. No `NOSONAR` markers, disabled rules, or
 source exclusions were added. This is local extension evidence, not a hosted
 SonarQube server quality-gate result.
+
+### Overnight automatic application
+
+`calibration/automatic.py` compares live and newly learned thresholds on a common
+fresh history snapshot through the existing scorer. Persisted display scores never
+authorize writes. The scheduler alone calls this path; manual jobs remain previews.
+A strictly lower weighted duration error enables the normal guarded, paced writer.
+The device operation lock and repeated state guards stop conflicting writes;
+partial application is reported separately and does not promote the saved Current
+slot. One persisted report per device contains the comparison, scorer version,
+reason and write outcome. The global schedule owns the auto-apply switch (on by
+default when overnight learning is enabled).

@@ -92,9 +92,13 @@ def _websocket_routes():
         ),
         (
             "configure_learning_schedule",
-            {vol.Required("enabled"): bool, vol.Required("at"): str},
+            {
+                vol.Required("enabled"): bool,
+                vol.Required("at"): str,
+                vol.Optional("auto_apply"): bool,
+            },
             "configure_learning_schedule",
-            ("enabled", "at"),
+            ("enabled", "at", "auto_apply"),
             "invalid_request",
             False,
         ),

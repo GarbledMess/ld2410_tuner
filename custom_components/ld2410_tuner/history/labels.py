@@ -18,6 +18,7 @@ from ..const import (
     MAX_HISTOGRAM_COUNT,
     TRAINING_STATES,
 )
+from ..presence import reference_training
 
 
 def _compact_history_labels(device: dict[str, Any]) -> None:
@@ -57,7 +58,7 @@ def label_history_range(
     _prepare_history_edit(runtime, device)
     labels = _preserved_labels(device.get("history_labels", []), start, end)
     labels.append({"start": start, "end": end, "state": state, "source": "manual"})
-    _save_history_edit(runtime, device, labels)
+    _save_history_edit(runtime, device, labels, [(start, end)])
     return {
         "ok": True,
         "labelled_samples": sum(
@@ -90,7 +91,7 @@ def edit_history_label(runtime, device_id, label_start, label_end, start, end, s
     if state != "unlabelled":
         labels = _preserved_labels(labels, start, end)
         labels.append({"start": start, "end": end, "state": state, "source": "manual"})
-    _save_history_edit(runtime, device, labels)
+    _save_history_edit(runtime, device, labels, [(label_start, label_end), (start, end)])
     return {"ok": True, "history_labels": device["history_labels"]}
 
 
@@ -117,9 +118,10 @@ def _prepare_history_edit(runtime, device):
         device["training_label_start"] = now
 
 
-def _save_history_edit(runtime, device, labels):
+def _save_history_edit(runtime, device, labels, ranges):
     device["history_labels"] = labels
     device["histograms"] = _rebuild_histograms(runtime, device)
+    reference_training.correct(runtime, device, ranges)
     device.pop("last_learning", None)
     device["label_revision"] = device.get("label_revision", 0) + 1
     runtime._compact_history_labels(device)
@@ -266,6 +268,7 @@ def clear_samples(runtime, device_id: str) -> None:
         )
         runtime.data["devices"][device_id]["histograms"] = {}
         runtime.data["devices"][device_id].pop("auto", None)
+        runtime.data["devices"][device_id].pop("reference_profile", None)
         runtime.data["devices"][device_id].pop("history", None)
         runtime.data["devices"][device_id].pop("history_labels", None)
         runtime.data["devices"][device_id].pop("history_legacy_histograms", None)

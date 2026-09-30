@@ -104,7 +104,7 @@ module.exports = async function testTimingSettings(page, screenshotDir) {
   assert.doesNotMatch(await pill.innerText(), /Failed|Timing uncertain/);
   assert.match(await pill.getAttribute("class"), /caution/);
   assert.doesNotMatch(await pill.getAttribute("class"), /warn/);
-  assert.match(await pill.getAttribute("title"), /Timing uncertain/);
+  assert.match(await pill.getAttribute("title"), /Sampling uncertainty/);
   const amber = await pill.evaluate(
     (element) => getComputedStyle(element).color,
   );

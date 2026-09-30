@@ -166,6 +166,31 @@ module.exports = async function testSources(page, screenshotDir) {
     [],
   );
   await page.evaluate(async () => {
+    fixture.devices.a.auto_learning = {
+      profile: { periods: { human: 2, entity: 3, radar: 4 } },
+      last: {
+        state: "present",
+        confidence: 0.65,
+        basis: "adaptive-guided",
+        unfamiliar_gates: ["g3_still"],
+      },
+    };
+    panel._setSectionCollapsed("a", "auto", false);
+    await panel._load();
+  });
+  assert.match(
+    await card.locator(".reference-status").innerText(),
+    /2 human, 3 entity and 4 inferred periods/,
+  );
+  assert.match(
+    await card.locator(".reference-review").innerText(),
+    /Unfamiliar readings at g3_still/,
+  );
+  assert.match(await card.innerText(), /Age-weighted room references/);
+  await card.locator(".reference-status").screenshot({
+    path: path.join(screenshotDir, "adaptive-references-mobile.png"),
+  });
+  await page.evaluate(async () => {
     fixture = beforeSources;
     panel._hass.callWS = sourcesWS;
     panel._hass.states = beforeSourceStates;

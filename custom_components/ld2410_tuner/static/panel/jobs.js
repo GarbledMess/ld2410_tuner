@@ -30,7 +30,7 @@ export const panelJobs = {
       <b>${this._esc(title)}</b><div class="muted">${source} · ${this._esc(duration)} ${running ? "elapsed" : "total"}</div>
       ${running ? '<progress aria-label="Learning in progress"></progress><div>You can leave this page. Learning continues in Home Assistant.</div>' : ""}
       ${job.error ? `<div class="job-error">${this._esc(job.error)}</div>` : ""}
-      ${job.status === "completed" ? '<div>Review the accuracy report before applying. No thresholds were applied automatically.</div><button type="button" data-action="review-learning-job">Review result</button>' : ""}
+      ${job.status === "completed" ? '<div>Manual Learn saves a preview. The overnight report records any automatic application.</div><button type="button" data-action="review-learning-job">Review result</button>' : ""}
     </div>`;
   },
 

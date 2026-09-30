@@ -26,6 +26,7 @@ from .const import (
     STORAGE_VERSION,
 )
 from .history.budget import prepare
+from .presence import reference_training
 from .runtime import schedule
 from .runtime.coordinator import TunerRuntime
 from .runtime.websocket import _register_websocket_commands
@@ -64,6 +65,7 @@ async def _start_runtime(hass):
     runtime = TunerRuntime(hass, store, data)
     schedule.restore(runtime)
     await runtime.async_clean_history(persist=False)
+    await reference_training.initialize(runtime)
     try:
         await runtime.async_save()
     except ValueError:

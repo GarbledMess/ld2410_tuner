@@ -35,7 +35,7 @@ then completion or the reason it could not finish. The progress bar is
 indeterminate; elapsed time is shown without claiming a percentage complete.
 
 Returning to the panel retrieves the job status. **Review result** opens the saved
-recommendation; learning never applies it automatically. Repeated requests for one
+recommendation. Manual Learn never applies it automatically. Repeated requests for one
 device share a calculation. Manual and overnight callers use the same job lifecycle,
 with their results saved in their respective slots. The latest job report is bounded
 to one per device; it does not duplicate recordings or result diagnostics.
@@ -49,11 +49,34 @@ resumed automatically. Previously completed results remain saved.
 Enable **Overnight learning** at the top of the existing panel, choose a time and
 save the schedule. It starts disabled with a suggested time of 03:00 and uses Home
 Assistant's configured timezone. Each enabled daily pass learns the devices one at
-a time; it never applies thresholds. If Home Assistant was offline at that time,
+a time. **Automatically apply better overnight results** defaults to enabled;
+turn it off in global settings to keep overnight runs as previews. If Home Assistant was offline at that time,
 the pass runs after startup. A persisted daily marker avoids duplicate runs after
 restarts or during the repeated autumn clock-change hour. A skipped springtime
 clock hour runs at the first check after the jump. Disabling the schedule lets an
 in-progress device finish and stops before the next device.
+
+After an overnight fit, automatic Apply compares the saved recommendation with the
+**live thresholds**, on one fresh snapshot of the same evidence and timing policy.
+It applies only a strictly lower unrounded weighted error cost: each 1% of missed
+occupied time costs five points, and each 1% of false-active empty time costs one.
+Equal or worse results and insufficient evidence cause no writes. This keeps the
+existing balance between missed presence and false activity; it does not require
+perfect training results or replace the radar's presence handling.
+
+Stored display scores are not reused to authorize writes: those scores may have
+been calculated on different recordings. The fresh comparison is saved in the
+latest overnight report with its scorer version, sample outcomes and timings.
+This is improvement on recorded evidence, not proof of improved live accuracy.
+Human labels retain priority, while automatic labels remain lower-confidence evidence.
+
+The report shows **applied**, **skipped** (with its reason), or **incomplete/failed**.
+Successful application moves the replaced settings to **Previous**. The normal
+paced writer and reported-state checks are reused. Changes to labels, timing,
+configuration, recording, or the auto-apply setting stop further writes; already
+written gates cannot be undone atomically. A partial write is never marked fully
+applied. Turning off overnight learning also stops further automatic writes.
+Manual Learn, selecting saved patterns and checking stored scores never auto-apply.
 
 Each device header shows its latest overnight outcome, including insufficient data,
 failed or interrupted runs. Tap the outcome to open its dated report in
@@ -61,6 +84,14 @@ failed or interrupted runs. Tap the outcome to open its dated report in
 remain available without needing to hover. A failed device does not prevent other
 devices learning. If labels change during a scheduled calculation, the job retries
 once using a fresh snapshot; a second change is reported, not silently accepted.
+A result can have **sampling uncertainty** even with all three package timing
+values available: snapshots cannot locate every transition and short labelled
+periods may contain no measurable duration. The Apply button shows estimated
+recall and false-active time instead of the misleading "Timing uncertain" label.
+Missing timing controls, configured fallback values and disabled timing remain
+explicitly described in the timing section. No package update is needed for this
+presentation change; saved results retain their original assessment.
+
 The **Recommendations** selector reviews four bounded saved-result slots:
 
 - **User learnt:** latest manually requested Learn result.
@@ -90,7 +121,7 @@ then estimates how the existing hold would affect missed presence and false trig
 If both ESPHome presence delays are exposed, it also evaluates `delayed_on` followed
 by `delayed_off`. The optional package publishes these as read-only diagnostics;
 [standalone configurations are supported too](docs/esphome-recovery.md#exposing-timing-for-calibration).
-Apply still writes only gate thresholds, and stays manual.
+Apply still writes only gate thresholds; manual Learn remains a preview.
 
 Recommendations show the timing used, unknown settings, original raw counts and
 sampled timing estimates. A saved result warns when current timing differs. Old
@@ -209,7 +240,7 @@ The Apply button is red when combined targets fail, yellow for unknown timing, l
 measurements or backtest concerns, and green when measured results meet the targets.
 Its text also states the outcome. It is disabled when no learned thresholds exist
 (and temporarily while an operation is running). The confirmation remains explicit;
-quality failures never trigger automatic writes or prevent a manual Apply. Invalid
+quality warnings alone neither authorize automatic writes nor prevent a manual Apply. Invalid
 thresholds, old models and incompatible/unavailable device configuration still
 require a fresh Learn preview. Explicitly selected saved results can be restored
 after label changes; their older measurements are identified in the panel.
@@ -679,7 +710,7 @@ The license remains undecided.
 
 ### Comparing saved thresholds
 
-Each device header shows **Current** (the actual live gate settings) and **Best** (the best compatible saved pattern). Open **Recommendations → Compare saved patterns** to compare User learnt, Previous, Current and Autolearnt. The saved Current slot is the last applied result; it can differ from live settings after another tool changes the radar. Review selects a saved pattern; Apply remains a separate manual action.
+Each device header shows **Current** (the actual live gate settings) and **Best** (the best compatible saved pattern). Open **Recommendations → Compare saved patterns** to compare User learnt, Previous, Current and Autolearnt. The saved Current slot is the last applied result; it can differ from live settings after another tool changes the radar. Review selects a saved pattern; Apply remains a separate manual action here; enabled overnight learning can independently apply a freshly assessed improvement.
 
 The 0–100 comparison score is `max(0, 100 − 5 × missed occupied-time percentage − false-active empty-time percentage)`. It uses the existing learner’s time penalty, with the conservative occupied-time estimate where onset is uncertain. 100 requires no measured errors; zero includes all costs at or above 100. This is a comparison score, **not measured deployment accuracy or a confidence percentage**. The 99.9% presence target is shown separately. Sample outcomes, durations, timing assumptions and exclusions remain available in each row.
 
@@ -687,6 +718,53 @@ Scores and their scorer version are persisted with the device. An existing score
 
 New recordings, corrected labels, retention changes and timing-policy changes do not silently alter a stored score. Its date and original timing describe its assessment. Scores calculated together use the same evidence; scores from different dates may use different evidence or timing and are **not a controlled head-to-head comparison**. Best ranks the stored assessments, including unrounded costs and duration tie-breaks. Incompatible results are excluded from Best.
 
-Calculations use up to the latest 5,000 observations per state and source, complete gate vectors and the existing outlier filter. Human evidence takes priority; confidence-weighted automatic evidence fills unsupported states and breaks ties. Automatic evidence is identified as estimated. Insufficient evidence is **unscored**, never a fake zero. **Check stored scores** reuses valid scores and retries unscored or failed assessments; it does not refresh already-scored configurations against newer recordings. Scoring never applies thresholds or initiates radar recovery.
+Calculations use up to the latest 5,000 observations per state and source, complete gate vectors and the existing outlier filter. Human evidence takes priority; confidence-weighted automatic evidence fills unsupported states and breaks ties. Automatic evidence is identified as estimated. Insufficient evidence is **unscored**, never a fake zero. **Check stored scores** reuses valid scores and retries unscored or failed assessments; it does not refresh already-scored configurations against newer recordings. Checking stored comparison scores never applies thresholds or initiates radar recovery.
 
 For maintainers: increment `SCORER_VERSION` in `calibration/comparison.py` whenever score calculation, evidence selection, filtering or timing-replay semantics change. A frontend-only release does not invalidate saved scores.
+
+
+## Continuing room adaptation
+
+Version 1.16.0 adds a separate, persisted room-reference profile for automatic
+labelling. Human labels and configured entity statuses keep teaching it after
+initial setup. The hardware still detects presence from its gate thresholds;
+Learn and Apply work as before and no thresholds are applied automatically.
+
+- Human labels take precedence over entity or inferred labels on the same
+  recording. Human, entity and radar-derived references remain separate.
+- Confirmed entity labels teach future radar guesses at their configured
+  confidence. The start/end buffers apply before a positive label enters the
+  profile; short excluded periods cannot teach it. Unavailable sources do not
+  become empty-room examples, and negative entity labels remain opt-in.
+- Recent reference periods have more influence. The age weight blends a
+  seven-day half-life (80%) with a sixty-day half-life (20%). Source weights are
+  human 1, entity 0.5 and inferred 0.1. Each period's influence is capped, so one
+  long recording cannot supply unlimited independent evidence. Recent entity
+  evidence can outweigh an old human distribution.
+- Radar-derived references require a confirmed estimate of at least 80%
+  confidence and existing independent reference evidence. They cannot create
+  independent support or raise its confidence cap. A continuously occupied room
+  is not deliberately reclassified as empty simply because readings are steady.
+- Unfamiliar channel energies reduce estimated confidence and show a review
+  message in **Automatic analysis & feedback**. A new fan and quiet human can
+  produce ambiguous radar evidence; a known human/entity status can resolve it.
+  High-confidence inference remains heuristic, not a measured accuracy claim.
+
+The profile keeps compressed gate distributions, not another copy of the raw
+recordings. It retains at most 24 periods per source and state (144 total),
+splitting continuous periods at 30 minutes. It survives recording expiry and
+integration restarts, and its bytes count towards the global storage ceiling.
+Clear data also clears the profile. Existing retained human recordings are
+imported once at startup, using their recording timestamps. Histogram-only legacy
+training is retained at reduced confidence, explicitly marked as having an unknown
+observation age; its timestamp is the import age, not an invented recording date.
+Historical automatic
+labels have no reliable source provenance and are not imported as entity truth.
+
+Editing a past human period rebuilds the retained human references. Any entity
+or inferred summary overlapping the edit is removed in full, since its aggregate
+cannot be precisely unlearned one sample at a time. Older, expired human summaries
+remain age-weighted references. Changing the entity source configuration resets
+its entity and inferred reference contributions while preserving human references.
+Pausing recording pauses reference training too. Profile summaries and unfamiliar
+readings appear inside the existing automatic-analysis card.

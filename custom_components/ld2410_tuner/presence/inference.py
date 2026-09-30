@@ -7,7 +7,7 @@ All temporal state is bounded, JSON-serializable and independent of Learn/Apply.
 import math
 
 MIN_REFERENCE = 20
-MODEL = "temporal_evidence_v2"
+MODEL = "temporal_evidence_v3"
 MAX_GAP = 10.0
 HUMAN_REFERENCE = "human-labelled distributions"
 

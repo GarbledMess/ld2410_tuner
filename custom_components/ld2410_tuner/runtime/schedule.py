@@ -1,4 +1,4 @@
-"""One local-time overnight learning pass, without applying learned thresholds."""
+"""One local-time overnight learning pass with optional application of improvements."""
 
 import asyncio
 import logging
@@ -6,6 +6,7 @@ import re
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from ..calibration import automatic
 from ..calibration.service import LearningEvidenceChanged
 
 _LOGGER = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ def settings(runtime):
     saved = runtime.data.get("learning_schedule", {})
     return {
         "enabled": saved.get("enabled", False),
+        "auto_apply": saved.get("auto_apply", True),
         "time": saved.get("time", "03:00"),
         "timezone": getattr(getattr(runtime.hass, "config", None), "time_zone", "UTC"),
         "last_day": saved.get("last_day"),
@@ -22,14 +24,18 @@ def settings(runtime):
     }
 
 
-def configure(runtime, enabled, at):
+def configure(runtime, enabled, at, auto_apply=None):
     if (
         not isinstance(enabled, bool)
         or not isinstance(at, str)
         or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", at)
     ):
         raise ValueError("Choose an enabled state and a valid HH:MM time")
+    if auto_apply is not None and not isinstance(auto_apply, bool):
+        raise ValueError("Choose whether to automatically apply better overnight results")
     saved = runtime.data.setdefault("learning_schedule", {})
+    if auto_apply is not None:
+        saved["auto_apply"] = auto_apply
     saved.update(enabled=enabled, time=at)
     runtime._schedule_save()
     return settings(runtime)
@@ -69,11 +75,13 @@ async def _learn_device(runtime, device_id, device, day):
     try:
         learned = await _learn_fresh(runtime, device_id, attempt)
         attempt.update(
-            status=learned["status"],
             result_id=learned["id"],
             timing=learned.get("timing"),
             assessment=_assessment(learned),
         )
+        attempt["automatic_apply"] = {}
+        await automatic.run(runtime, device_id, learned, attempt["automatic_apply"])
+        attempt["status"] = learned["status"]
     except asyncio.CancelledError:
         attempt.update(status="interrupted", error="Learning interrupted by integration shutdown")
         raise
@@ -104,11 +112,20 @@ def restore(runtime):
         for key in ("nightly_learning", "learning_job"):
             attempt = device.get(key, {})
             if attempt.get("status") == "running":
-                attempt.update(
-                    status="interrupted",
-                    error="Home Assistant restarted during learning",
-                    finished_at=datetime.now(UTC).timestamp(),
-                )
+                _interrupt_attempt(attempt)
+
+
+def _interrupt_attempt(attempt):
+    application = attempt.get("automatic_apply", {})
+    if application.get("status") in ("comparing", "applying"):
+        application.update(
+            status="interrupted", reason="Home Assistant restarted; check live thresholds."
+        )
+    attempt.update(
+        status="interrupted",
+        error="Home Assistant restarted during learning",
+        finished_at=datetime.now(UTC).timestamp(),
+    )
 
 
 async def _learn_fresh(runtime, device_id, attempt):

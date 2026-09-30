@@ -5,7 +5,7 @@ import time
 from copy import deepcopy
 
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
-from . import source_buffer
+from . import reference_training, source_buffer
 
 DEFAULTS = {
     "sources": [],
@@ -26,6 +26,8 @@ def configure(runtime, device_id, values):
     if device is None:
         raise ValueError("Unknown device")
     validated = validate(values)
+    if validated != settings(device):
+        reference_training.reset_entities(device)
     device["presence_sources"] = validated
     runtime._auto_runtime.pop(device_id, None)
     runtime._source_runtime.pop(device_id, None)
