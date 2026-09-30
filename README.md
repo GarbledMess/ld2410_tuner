@@ -35,10 +35,11 @@ then completion or the reason it could not finish. The progress bar is
 indeterminate; elapsed time is shown without claiming a percentage complete.
 
 Returning to the panel retrieves the job status. **Review result** opens the saved
-recommendation. Manual Learn never applies it automatically. Repeated requests for one
+recommendation. Manual Learn saves a preview by default; the global
+**Every completed Learn** option also enables automatic Apply after manual learning. Repeated requests for one
 device share a calculation. Manual and overnight callers use the same job lifecycle,
 with their results saved in their respective slots. The latest job report is bounded
-to one per device; it does not duplicate recordings or result diagnostics.
+to one per device; automatic Apply adds its bounded comparison and write outcome.
 
 Home Assistant shutdown/restart interrupts an active calculation. The report marks
 that interruption so you can retry with Learn; unfinished calculations are not
@@ -49,14 +50,35 @@ resumed automatically. Previously completed results remain saved.
 Enable **Overnight learning** at the top of the existing panel, choose a time and
 save the schedule. It starts disabled with a suggested time of 03:00 and uses Home
 Assistant's configured timezone. Each enabled daily pass learns the devices one at
-a time. **Automatically apply better overnight results** defaults to enabled;
-turn it off in global settings to keep overnight runs as previews. If Home Assistant was offline at that time,
+a time. In global learning settings, **Automatically apply better results** has an
+off switch and an **Apply after** selector:
+
+- **Overnight learning only** (default): manual Learn saves a preview.
+- **Every completed Learn**: manual Learn can also apply improvements, even if
+  the overnight schedule is disabled.
+
+These settings are global defaults. In each sensor's **Recommendations**, choose
+**Automatic Apply for this sensor**:
+
+- **Inherit global** (default): follows the current global enable/scope settings.
+- **Off**: keeps this sensor's learns as previews.
+- **Overnight learning only**: allows scheduled improvements for this sensor.
+- **Every completed Learn**: also allows its manual learns to apply improvements.
+
+An explicit sensor override takes precedence even when the global default is off.
+Changing the global defaults affects inheriting sensors; existing overrides remain.
+Selecting **Inherit global** removes the override. The effective setting appears
+below the selector, saves immediately, and survives restarts and clearing recordings.
+The overnight schedule remains global: an override does not enable a disabled
+schedule, bypass paused recording, or bypass the improvement and write guards.
+Existing installations inherit their current global settings without migration.
+If Home Assistant was offline at the scheduled time,
 the pass runs after startup. A persisted daily marker avoids duplicate runs after
 restarts or during the repeated autumn clock-change hour. A skipped springtime
 clock hour runs at the first check after the jump. Disabling the schedule lets an
 in-progress device finish and stops before the next device.
 
-After an overnight fit, automatic Apply compares the saved recommendation with the
+After a fit allowed by the sensor’s effective setting, automatic Apply compares the saved recommendation with the
 **live thresholds**, on one fresh snapshot of the same evidence and timing policy.
 It applies only a strictly lower unrounded weighted error cost: each 1% of missed
 occupied time costs five points, and each 1% of false-active empty time costs one.
@@ -66,7 +88,8 @@ perfect training results or replace the radar's presence handling.
 
 Stored display scores are not reused to authorize writes: those scores may have
 been calculated on different recordings. The fresh comparison is saved in the
-latest overnight report with its scorer version, sample outcomes and timings.
+latest learning-job or overnight report with its scorer version, sample outcomes
+and timings. Shared manual/overnight jobs reuse one application decision.
 This is improvement on recorded evidence, not proof of improved live accuracy.
 Human labels retain priority, while automatic labels remain lower-confidence evidence.
 
@@ -75,8 +98,12 @@ Successful application moves the replaced settings to **Previous**. The normal
 paced writer and reported-state checks are reused. Changes to labels, timing,
 configuration, recording, or the auto-apply setting stop further writes; already
 written gates cannot be undone atomically. A partial write is never marked fully
-applied. Turning off overnight learning also stops further automatic writes.
-Manual Learn, selecting saved patterns and checking stored scores never auto-apply.
+applied. Setting a sensor’s override to **Off** stops its further automatic writes.
+Narrowing its effective scope to overnight only stops further automatic writes
+from a manual job. Global default changes affect inheriting sensors in the same way.
+Turning off the schedule prevents scheduled automatic application; manual jobs
+remain eligible when the sensor’s effective scope is **Every completed Learn**. Selecting saved
+patterns and checking stored scores never auto-apply.
 
 Each device header shows its latest overnight outcome, including insufficient data,
 failed or interrupted runs. Tap the outcome to open its dated report in
@@ -121,7 +148,8 @@ then estimates how the existing hold would affect missed presence and false trig
 If both ESPHome presence delays are exposed, it also evaluates `delayed_on` followed
 by `delayed_off`. The optional package publishes these as read-only diagnostics;
 [standalone configurations are supported too](docs/esphome-recovery.md#exposing-timing-for-calibration).
-Apply still writes only gate thresholds; manual Learn remains a preview.
+Apply still writes only gate thresholds; the effective global or sensor setting controls which learns
+can automatically apply improvements.
 
 Recommendations show the timing used, unknown settings, original raw counts and
 sampled timing estimates. A saved result warns when current timing differs. Old
@@ -314,7 +342,8 @@ human references; this is not solved by assigning a higher confidence score.
 The [autolabelling replay report](docs/autolabelling-validation.md) records gains,
 regressions, and limits on the supplied recordings. Version 1.9.3 changes automatic
 labels and code organization; Learn/Apply remain explicit and retain their fitting
-targets. Quality is advisory for explicit Apply. No software presence entity or automatic Apply is added; optional overnight runs only save recommendations.
+targets. Quality is advisory for explicit Apply. No software presence entity is added. The effective global or sensor automatic Apply policy controls
+whether manual or overnight runs can apply a measured improvement.
 
 Each stored observation retains its automatic label and confidence alongside the
 gate energies. Confidence weights the observed time represented by each estimate;

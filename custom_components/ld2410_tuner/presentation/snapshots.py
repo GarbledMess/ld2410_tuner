@@ -8,7 +8,7 @@ from typing import Any
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
-from ..calibration import comparison_jobs, timing_config
+from ..calibration import automatic, comparison_jobs, timing_config
 from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
@@ -101,6 +101,7 @@ def _snapshot_device(runtime, device_id, device, registry):
         "name": name,
         "area_id": area_id,
         "recording_enabled": device.get("recording_enabled", True),
+        "automatic_apply_policy": automatic.policy(runtime, device_id),
         "presence_sources": sources.summary(runtime, device),
         "training_state": device.get("training_state", "unknown"),
         "training_expires_at": device.get("training_expires_at"),
@@ -151,6 +152,7 @@ def _export_device(runtime, did, devreg, registry):
         "name": (dev.name_by_user or dev.name or did) if dev else did,
         "area_id": dev.area_id if dev else None,
         "recording_enabled": device.get("recording_enabled", True),
+        "automatic_apply_policy": automatic.policy(runtime, did),
         "presence_sources": sources.summary(runtime, device),
         "training_state": device.get("training_state", "unknown"),
         "sample_counts": {

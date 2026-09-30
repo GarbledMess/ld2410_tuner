@@ -132,6 +132,41 @@ module.exports = async function testJobs(page, screenshotDir) {
     applies,
   );
 
+  // The same server-owned job reports automatic Apply for a manual Learn.
+  await page.evaluate(() => {
+    const job = fixture.devices.a.learning_job;
+    job.status = "running";
+    job.stage = "automatic_apply";
+    job.automatic_apply = { status: "applying", source: "user" };
+    return panel._load();
+  });
+  assert.match(
+    await card.locator(".learning-job-status").innerText(),
+    /Applying improved thresholds/,
+  );
+  assert.equal(await card.locator('[data-action="learn"]').isDisabled(), true);
+  await page.evaluate(() => {
+    const job = fixture.devices.a.learning_job;
+    job.status = "completed";
+    job.automatic_apply = {
+      status: "applied",
+      source: "user",
+      reason: "Lower weighted error on common evidence",
+      assessment: { patterns: { live: { score: 90 }, user: { score: 99 } } },
+    };
+    return panel._load();
+  });
+  assert.match(
+    await card.locator(".learning-job-status").innerText(),
+    /Automatically applied/,
+  );
+  assert.match(
+    await card.locator(".learning-job-status").innerText(),
+    /live 90 → learned 99/,
+  );
+  await card.locator(".learning-job-status").screenshot({
+    path: path.join(screenshotDir, "manual-auto-apply-mobile.png"),
+  });
   // Failure and restart reports remain readable and do not keep Learn disabled.
   await page.evaluate(async () => {
     fixture.devices.a.learning_job.status = "error";

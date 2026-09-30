@@ -9,7 +9,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from ..calibration import comparison_jobs, timing_config
+from ..calibration import automatic, comparison_jobs, timing_config
 from ..calibration import service as calibration
 from ..const import STORE_DELAY
 from ..history import labels as manual_training
@@ -75,6 +75,7 @@ class TunerRuntime:
     set_recording = storage.set_recording
     configure_presence_sources = sources.configure
     configure_learning_schedule = schedule.configure
+    configure_device_auto_apply = automatic.configure_device
     nightly_tick = schedule.tick
 
     subscribe_state_changes = discovery.subscribe_state_changes

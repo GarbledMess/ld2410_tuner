@@ -139,14 +139,25 @@ issues or security hotspots afterwards. No `NOSONAR` markers, disabled rules, or
 source exclusions were added. This is local extension evidence, not a hosted
 SonarQube server quality-gate result.
 
-### Overnight automatic application
+### Configurable automatic application
 
 `calibration/automatic.py` compares live and newly learned thresholds on a common
 fresh history snapshot through the existing scorer. Persisted display scores never
-authorize writes. The scheduler alone calls this path; manual jobs remain previews.
+authorize writes. The global auto-apply scope defaults to overnight only; selecting
+every completed Learn also enables the same path from manual jobs, independently
+of the overnight schedule. Shared callers reuse the job decision, including callers
+joining during application, rather than comparing and writing the same fit twice.
 A strictly lower weighted duration error enables the normal guarded, paced writer.
 The device operation lock and repeated state guards stop conflicting writes;
 partial application is reported separately and does not promote the saved Current
-slot. One persisted report per device contains the comparison, scorer version,
+slot. Bounded job and overnight reports contain the comparison, scorer version,
 reason and write outcome. The global schedule owns the auto-apply switch (on by
 default when overnight learning is enabled).
+
+The global automatic Apply settings are defaults. `automatic.policy` resolves the
+optional device `auto_apply_override` (`off`, `overnight`, `all`); an absent value
+means inherit, and choosing inherit removes the override. All job eligibility and
+in-flight write guards use this same resolver. Explicit overrides take precedence
+over the global default, while the global overnight schedule and recording guards
+still apply. Snapshots and exports expose the override, global default and effective
+mode; device controls use the admin-only `configure_device_auto_apply` route.

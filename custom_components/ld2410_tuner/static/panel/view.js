@@ -268,7 +268,7 @@ export const panelView = {
           <summary><h2 id="global-settings-title">Global settings</h2></summary>
           <div class="muted">Learning and recording settings for all devices.</div>
           <section class="settings-section" aria-labelledby="overnight-settings-title">
-            <h3 id="overnight-settings-title">Overnight learning</h3>
+            <h3 id="overnight-settings-title">Learning and automatic Apply</h3>
             <div id="learning-schedule" class="learning-schedule"></div>
           </section>
           <div class="settings-section"><div id="timing-controls" class="global-settings"></div></div>

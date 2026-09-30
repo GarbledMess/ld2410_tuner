@@ -127,9 +127,11 @@ export const panelSavedResults = {
       applying: "Applying improved thresholds…",
     };
     const patterns = application.assessment?.patterns;
-    const scores = patterns
-      ? `<p>Fresh comparison: live ${patterns.live.score ?? "unscored"} → learned ${patterns.automatic.score ?? "unscored"} / 100. Both use the same recordings and timing settings${patterns.automatic.basis === "estimated" ? "; includes automatic estimates" : ""}.</p>`
-      : "";
+    const candidate = patterns?.[application.source || "automatic"];
+    const scores =
+      patterns && candidate
+        ? `<p>Fresh comparison: live ${patterns.live.score ?? "unscored"} → learned ${candidate.score ?? "unscored"} / 100. Both use the same recordings and timing settings${candidate.basis === "estimated" ? "; includes automatic estimates" : ""}.</p>`
+        : "";
     const writes = application.writes;
     return `<div class="automatic-apply-report" role="status"><b>${this._esc(labels[application.status] || "Automatic Apply")}</b>${scores}<p>${this._esc(application.reason || "")}</p>${writes?.note ? `<p>${this._esc(writes.note)}</p>` : ""}${
       writes?.skipped && Object.keys(writes.skipped).length
@@ -229,7 +231,55 @@ export const panelSavedResults = {
     return parts.length ? `Completed · ${parts.join(" · ")}` : "";
   },
 
+  _deviceApplyPolicy(d) {
+    if (d.automatic_apply_policy) return d.automatic_apply_policy;
+    const config = this._data?.learning_schedule || {};
+    const mode =
+      config.auto_apply === false
+        ? "off"
+        : config.auto_apply_scope || "overnight";
+    return { override: "inherit", global: mode, effective: mode };
+  },
+
+  _deviceApplySettingsHtml(d) {
+    const policy = this._deviceApplyPolicy(d);
+    const labels = {
+      off: "Off",
+      overnight: "Overnight learning only",
+      all: "Every completed Learn",
+    };
+    const options = {
+      inherit: `Inherit global (${labels[policy.global]})`,
+      ...labels,
+    };
+    return `<label class="saved-result-picker">Automatic Apply for this sensor<select data-action="device-auto-apply">${Object.entries(
+      options,
+    )
+      .map(
+        ([value, label]) =>
+          `<option value="${value}" ${policy.override === value ? "selected" : ""}>${this._esc(label)}</option>`,
+      )
+      .join(
+        "",
+      )}</select></label><div class="muted">${this._esc(this._automaticApplyPolicyText({ auto_apply: policy.effective !== "off", auto_apply_scope: policy.effective }))}</div>`;
+  },
+
   _wireSavedResults(card, id) {
+    const override = card.querySelector('[data-action="device-auto-apply"]');
+    override.onchange = () => {
+      const mode = override.value;
+      override.blur();
+      return this._action(override, async () => {
+        try {
+          await this._call("configure_device_auto_apply", {
+            device_id: id,
+            mode,
+          });
+        } finally {
+          await this._load(true);
+        }
+      });
+    };
     const marker = card.querySelector('[data-action="review-nightly"]');
     if (marker)
       marker.onclick = (event) => {
@@ -245,11 +295,20 @@ export const panelSavedResults = {
     };
   },
 
+  _automaticApplyPolicyText(config = this._data?.learning_schedule || {}) {
+    if (config.auto_apply === false)
+      return "Automatic Apply is off. Learn saves a preview for manual Apply.";
+    if (config.auto_apply_scope === "all")
+      return "Every completed Learn can apply an improvement, including manual Learn. The overnight schedule can stay off.";
+    return "Only overnight learning can apply improvements. Manual Learn saves a preview.";
+  },
+
   _drawLearningSchedule() {
     const container = this.shadowRoot.querySelector("#learning-schedule");
     const config = this._data?.learning_schedule || {
       enabled: false,
       auto_apply: true,
+      auto_apply_scope: "overnight",
       time: "03:00",
       timezone: "Home Assistant timezone",
     };
@@ -258,15 +317,21 @@ export const panelSavedResults = {
       container,
       `<label><input data-action="nightly-enabled" type="checkbox" ${form.enabled ? "checked" : ""}> Overnight learning</label>
       <label>Time <input data-action="nightly-time" type="time" value="${this._esc(form.time)}" required></label>
-      <label><input data-action="nightly-auto-apply" type="checkbox" ${(form.auto_apply ?? true) ? "checked" : ""}> Automatically apply better overnight results</label>
-      <button data-action="nightly-save">Save schedule</button>
-      <span class="muted ${config.running ? "is-busy" : ""}" role="status">${this._esc(config.timezone)} · ${config.running ? "Learning devices…" : config.auto_apply !== false ? "Overnight: apply only a lower weighted error on fresh common evidence. Manual Learn remains a preview." : "Saves results only; Apply stays manual."}</span>`,
+      <label><input data-action="nightly-auto-apply" type="checkbox" ${(form.auto_apply ?? true) ? "checked" : ""}> Global default: automatically apply better results</label>
+      <label>Default scope <select data-action="auto-apply-scope" ${form.auto_apply === false ? "disabled" : ""}><option value="overnight" ${form.auto_apply_scope !== "all" ? "selected" : ""}>Overnight learning only</option><option value="all" ${form.auto_apply_scope === "all" ? "selected" : ""}>Every completed Learn</option></select></label>
+      <button data-action="nightly-save">Save learning settings</button>
+      <span class="muted ${config.running ? "is-busy" : ""}" role="status">${this._esc(config.timezone)} · Global default: ${config.running ? "Learning devices…" : this._automaticApplyPolicyText(config)} Override this default in each sensor’s Recommendations.</span>`,
     );
     container.oninput = () => {
+      container.querySelector('[data-action="auto-apply-scope"]').disabled =
+        !container.querySelector('[data-action="nightly-auto-apply"]').checked;
       this._scheduleDraft = {
         enabled: container.querySelector('[data-action="nightly-enabled"]')
           .checked,
         time: container.querySelector('[data-action="nightly-time"]').value,
+        auto_apply_scope: container.querySelector(
+          '[data-action="auto-apply-scope"]',
+        ).value,
         auto_apply: container.querySelector(
           '[data-action="nightly-auto-apply"]',
         ).checked,
@@ -281,6 +346,9 @@ export const panelSavedResults = {
           enabled: container.querySelector('[data-action="nightly-enabled"]')
             .checked,
           at: at.value,
+          auto_apply_scope: container.querySelector(
+            '[data-action="auto-apply-scope"]',
+          ).value,
           auto_apply: container.querySelector(
             '[data-action="nightly-auto-apply"]',
           ).checked,

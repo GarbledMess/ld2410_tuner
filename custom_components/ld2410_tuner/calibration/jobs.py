@@ -6,7 +6,7 @@ from copy import deepcopy
 from time import time
 from uuid import uuid4
 
-from . import results
+from . import automatic, results
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,14 +60,12 @@ async def _run(runtime, device_id, device, report):
     try:
         learned = await runtime._learn_once(device_id)
         stage(runtime, device_id, "saving")
-        saved = {
-            source: results.remember_learning(device, learned, source)
-            for source in report["sources"]
-        }
-        report.update(
-            status="completed",
-            results={source: result["id"] for source, result in saved.items()},
-        )
+        saved = {}
+        _save_results(device, report, learned, saved)
+        await _apply_manual_result(runtime, device_id, report, saved)
+        # Another caller may join while comparison or writes are awaiting I/O.
+        _save_results(device, report, learned, saved)
+        report["status"] = "completed"
         return saved
     except asyncio.CancelledError:
         report.update(status="interrupted", error="Learning interrupted by integration shutdown")
@@ -80,6 +78,24 @@ async def _run(runtime, device_id, device, report):
         report["finished_at"] = time()
         runtime._learning_jobs.pop(device_id, None)
         runtime._schedule_save()
+
+
+def _save_results(device, report, learned, saved):
+    current = device.get("learning_results", {})
+    if any(current.get(source, {}).get("id") != result["id"] for source, result in saved.items()):
+        raise ValueError("Saved learning was cleared or replaced while the job was running")
+    for source in report["sources"]:
+        if source not in saved:
+            saved[source] = results.remember_learning(device, learned, source)
+    report["results"] = {source: result["id"] for source, result in saved.items()}
+
+
+async def _apply_manual_result(runtime, device_id, report, saved):
+    if "user" not in saved or not automatic.enabled(runtime, "user", device_id):
+        return
+    stage(runtime, device_id, "automatic_apply")
+    report["automatic_apply"] = {}
+    await automatic.run(runtime, device_id, saved["user"], report["automatic_apply"], "user")
 
 
 def _finished(runtime, device_id, report, task):

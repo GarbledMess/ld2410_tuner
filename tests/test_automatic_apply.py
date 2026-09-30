@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import types
 import unittest
 from copy import deepcopy
 from unittest.mock import AsyncMock, patch
@@ -239,6 +240,139 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
             ]["status"]
             == "applied"
         )
+
+    async def test_every_learn_scope_applies_manual_result_without_overnight_schedule(self):
+        self.runtime.configure_learning_schedule(False, "03:00", True, "all")
+        self.runtime._learn_once = AsyncMock(return_value=deepcopy(self.learned))
+        learned = await self.runtime.async_learn("a")
+        application = self.device["learning_job"]["automatic_apply"]
+        assert application["status"] == "applied"
+        assert application["source"] == "user"
+        assert set(application["assessment"]["patterns"]) == {"user", "live"}
+        assert self.device["learning_results"]["current"]["id"] == learned["id"]
+        assert self.hass.services.async_call.await_count == 6
+
+    async def test_all_scope_still_honours_disabled_switch_and_worse_results(self):
+        self.runtime.configure_learning_schedule(False, "03:00", False, "all")
+        self.runtime._learn_once = AsyncMock(return_value=deepcopy(self.learned))
+        await self.runtime.async_learn("a")
+        assert "automatic_apply" not in self.device["learning_job"]
+        self.runtime.configure_learning_schedule(False, "03:00", True, "all")
+        worse = deepcopy(self.learned)
+        for proposal in worse["proposals"].values():
+            proposal["threshold"] = 100
+        self.runtime._learn_once = AsyncMock(return_value=worse)
+        await self.runtime.async_learn("a")
+        assert self.device["learning_job"]["automatic_apply"]["status"] == "skipped"
+        self.hass.services.async_call.assert_not_awaited()
+
+    async def test_narrowing_scope_during_manual_comparison_prevents_writes(self):
+        self.runtime.configure_learning_schedule(True, "03:00", True, "all")
+        self.runtime._learn_once = AsyncMock(return_value=deepcopy(self.learned))
+
+        async def execute(fn, *args):
+            measured = fn(*args)
+            self.runtime.configure_learning_schedule(True, "03:00", True, "overnight")
+            return measured
+
+        self.hass.async_add_executor_job = execute
+        await self.runtime.async_learn("a")
+        application = self.device["learning_job"]["automatic_apply"]
+        assert application["status"] == "skipped"
+        assert "no longer permits" in application["reason"]
+        self.hass.services.async_call.assert_not_awaited()
+
+    async def test_narrowing_scope_mid_write_stops_manual_auto_apply(self):
+        self.runtime.configure_learning_schedule(True, "03:00", True, "all")
+        self.runtime._learn_once = AsyncMock(return_value=deepcopy(self.learned))
+
+        async def write(*args, **kwargs):
+            await self.report_write(*args, **kwargs)
+            self.runtime.configure_learning_schedule(True, "03:00", True, "overnight")
+
+        self.hass.services.async_call.side_effect = write
+        await self.runtime.async_learn("a")
+        assert self.device["learning_job"]["automatic_apply"]["status"] == "partial"
+        assert self.hass.services.async_call.await_count == 1
+        assert "current" not in self.device["learning_results"]
+
+    async def test_overnight_join_during_manual_application_reuses_one_decision(self):
+        self.runtime.configure_learning_schedule(True, "03:00", True, "all")
+        learned = deepcopy(self.learned)
+        learned.pop("id")
+        self.runtime._learn_once = AsyncMock(return_value=learned)
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def execute(fn, *args):
+            calls.append(fn)
+            entered.set()
+            await release.wait()
+            return fn(*args)
+
+        self.hass.async_add_executor_job = execute
+        caller = asyncio.create_task(self.runtime.async_learn("a"))
+        await entered.wait()
+        task = self.runtime._learning_jobs["a"]
+        caller.cancel()  # Leaving the panel cannot lose the pending application.
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        overnight = asyncio.create_task(
+            schedule._learn_device(self.runtime, "a", self.device, "2026-09-30")
+        )
+        await asyncio.sleep(0)
+        assert self.device["learning_job"]["sources"] == ["user", "automatic"]
+        release.set()
+        saved = await task
+        await overnight
+        assert set(saved) == {"user", "automatic"}
+        assert saved["user"]["id"] != saved["automatic"]["id"]
+        assert len(calls) == 1
+        assert self.hass.services.async_call.await_count == 6
+        assert (
+            self.device["nightly_learning"]["automatic_apply"]
+            == self.device["learning_job"]["automatic_apply"]
+        )
+        assert self.device["nightly_learning"]["automatic_apply"]["status"] == "applied"
+
+    async def test_clear_during_manual_application_cannot_restore_a_late_joined_result(self):
+        self.runtime.configure_learning_schedule(True, "03:00", True, "all")
+        self.runtime._learn_once = AsyncMock(return_value=deepcopy(self.learned))
+        jobs = sys.modules["tuner_under_test.calibration.jobs"]
+
+        async def execute(fn, *args):
+            measured = fn(*args)
+            jobs.start(self.runtime, "a", "automatic")
+            self.runtime.clear_samples("a")
+            return measured
+
+        self.hass.async_add_executor_job = execute
+        with pytest.raises(ValueError, match="cleared or replaced"):
+            await self.runtime.async_learn("a")
+        assert not self.device.get("learning_results")
+        assert "last_learning" not in self.device
+        assert self.device["learning_job"]["status"] == "error"
+        self.hass.services.async_call.assert_not_awaited()
+
+    async def test_scope_defaults_validation_and_persistence(self):
+        assert schedule.settings(self.runtime)["auto_apply_scope"] == "overnight"
+        for value in ("manual", "", True, []):
+            before = deepcopy(self.runtime.data["learning_schedule"])
+            with pytest.raises(ValueError):
+                self.runtime.configure_learning_schedule(True, "03:00", True, value)
+            assert self.runtime.data["learning_schedule"] == before
+        self.runtime.configure_learning_schedule(False, "04:00", True, "all")
+        self.runtime.configure_learning_schedule(False, "05:00")  # Older clients preserve scope.
+        await self.runtime.async_save()
+        restored = types.SimpleNamespace(
+            data=self.runtime.store.async_save.call_args.args[0],
+            hass=self.hass,
+            _nightly_task=None,
+        )
+        assert schedule.settings(restored)["auto_apply_scope"] == "all"
+        assert automatic.enabled(restored, "user")
+        assert not automatic.enabled(restored, "automatic")
+        assert not automatic.enabled(restored, "unknown")
 
     def test_policy_validation_and_restart_during_apply(self):
         with pytest.raises(ValueError):

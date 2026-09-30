@@ -7,6 +7,10 @@ export const panelJobs = {
       preparing: "Checking radar settings",
       fitting: "Fitting and validating thresholds",
       saving: "Saving learned results",
+      automatic_apply:
+        job.automatic_apply?.status === "applying"
+          ? "Applying improved thresholds"
+          : "Comparing against live settings",
     };
     const title = running
       ? stages[job.stage] || "Learning thresholds"
@@ -30,7 +34,8 @@ export const panelJobs = {
       <b>${this._esc(title)}</b><div class="muted">${source} · ${this._esc(duration)} ${running ? "elapsed" : "total"}</div>
       ${running ? '<progress aria-label="Learning in progress"></progress><div>You can leave this page. Learning continues in Home Assistant.</div>' : ""}
       ${job.error ? `<div class="job-error">${this._esc(job.error)}</div>` : ""}
-      ${job.status === "completed" ? '<div>Manual Learn saves a preview. The overnight report records any automatic application.</div><button type="button" data-action="review-learning-job">Review result</button>' : ""}
+      ${this._automaticApplyHtml(job.automatic_apply)}
+      ${job.status === "completed" ? '<div>Review the saved result and any automatic Apply outcome.</div><button type="button" data-action="review-learning-job">Review result</button>' : ""}
     </div>`;
   },
 

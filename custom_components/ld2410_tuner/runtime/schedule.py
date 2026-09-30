@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+from copy import deepcopy
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -17,6 +18,7 @@ def settings(runtime):
     return {
         "enabled": saved.get("enabled", False),
         "auto_apply": saved.get("auto_apply", True),
+        "auto_apply_scope": saved.get("auto_apply_scope", "overnight"),
         "time": saved.get("time", "03:00"),
         "timezone": getattr(getattr(runtime.hass, "config", None), "time_zone", "UTC"),
         "last_day": saved.get("last_day"),
@@ -24,7 +26,7 @@ def settings(runtime):
     }
 
 
-def configure(runtime, enabled, at, auto_apply=None):
+def configure(runtime, enabled, at, auto_apply=None, auto_apply_scope=None):
     if (
         not isinstance(enabled, bool)
         or not isinstance(at, str)
@@ -32,8 +34,12 @@ def configure(runtime, enabled, at, auto_apply=None):
     ):
         raise ValueError("Choose an enabled state and a valid HH:MM time")
     if auto_apply is not None and not isinstance(auto_apply, bool):
-        raise ValueError("Choose whether to automatically apply better overnight results")
+        raise ValueError("Choose whether to automatically apply better results")
+    if auto_apply_scope is not None and auto_apply_scope not in ("overnight", "all"):
+        raise ValueError("Choose overnight only or every completed Learn for automatic Apply")
     saved = runtime.data.setdefault("learning_schedule", {})
+    if auto_apply_scope is not None:
+        saved["auto_apply_scope"] = auto_apply_scope
     if auto_apply is not None:
         saved["auto_apply"] = auto_apply
     saved.update(enabled=enabled, time=at)
@@ -79,8 +85,7 @@ async def _learn_device(runtime, device_id, device, day):
             timing=learned.get("timing"),
             assessment=_assessment(learned),
         )
-        attempt["automatic_apply"] = {}
-        await automatic.run(runtime, device_id, learned, attempt["automatic_apply"])
+        await _apply_result(runtime, device_id, device, learned, attempt)
         attempt["status"] = learned["status"]
     except asyncio.CancelledError:
         attempt.update(status="interrupted", error="Learning interrupted by integration shutdown")
@@ -91,6 +96,17 @@ async def _learn_device(runtime, device_id, device, day):
     finally:
         attempt["finished_at"] = datetime.now(UTC).timestamp()
         runtime._schedule_save()
+
+
+async def _apply_result(runtime, device_id, device, learned, attempt):
+    job = device.get("learning_job", {})
+    application = job.get("automatic_apply")
+    if application and job.get("results", {}).get("automatic") == learned["id"]:
+        # Manual and overnight callers can share a fit. Never apply that fit twice.
+        attempt["automatic_apply"] = deepcopy(application)
+        return
+    attempt["automatic_apply"] = {}
+    await automatic.run(runtime, device_id, learned, attempt["automatic_apply"])
 
 
 async def stop(runtime):

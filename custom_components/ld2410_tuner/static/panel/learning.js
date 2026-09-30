@@ -420,8 +420,8 @@ export const panelLearning = {
   _recommendationsHtml(d, id) {
     const learning = d.last_learning;
     const outcome = this._applyOutcome(learning, d.timing_configuration);
-    return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}${this._comparisonHtml(id, d)}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
-      <div class="muted">Manual Learn creates a preview; Apply writes the selected values to the radar. Overnight runs can automatically apply improvements when enabled in global settings. You can apply a result even when its targets are not met.</div>
+    return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}${this._comparisonHtml(id, d)}${this._deviceApplySettingsHtml(d)}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
+      <div class="muted">Apply writes the selected values to the radar. You can apply a result even when its targets are not met.</div>
       ${this._timingHtml(learning, d.timing_configuration)}${this._validationHtml(learning, d.timing_configuration)}
       <details class="gate-results"><summary>Gate thresholds and sample counts</summary>${this._detailsHtml(d)}</details>`;
   },

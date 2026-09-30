@@ -31,9 +31,26 @@ module.exports = async function testSavedResults(page, screenshotDir) {
           ...fixture.learning_schedule,
           enabled: message.enabled,
           auto_apply: message.auto_apply,
+          auto_apply_scope: message.auto_apply_scope,
           time: message.at,
         };
         return fixture.learning_schedule;
+      }
+      if (message.type.endsWith("/configure_device_auto_apply")) {
+        requests.push(message);
+        if (window.rejectDeviceOverride)
+          throw new Error("Override save failed");
+        const config = fixture.learning_schedule;
+        const global =
+          config.auto_apply === false
+            ? "off"
+            : config.auto_apply_scope || "overnight";
+        fixture.devices[message.device_id].automatic_apply_policy = {
+          override: message.mode,
+          global,
+          effective: message.mode === "inherit" ? global : message.mode,
+        };
+        return fixture.devices[message.device_id].automatic_apply_policy;
       }
       if (message.type.endsWith("/apply")) {
         requests.push(message);
@@ -171,9 +188,93 @@ module.exports = async function testSavedResults(page, screenshotDir) {
   assert.deepEqual(await page.evaluate(() => fixture.learning_schedule), {
     enabled: true,
     auto_apply: false,
+    auto_apply_scope: "overnight",
     time: "04:15",
     timezone: "Europe/London",
   });
+  const scope = page.locator('[data-action="auto-apply-scope"]');
+  assert.equal(await scope.inputValue(), "overnight");
+  assert.equal(await scope.isDisabled(), true);
+  await page.locator('[data-action="nightly-auto-apply"]').check();
+  await scope.selectOption("all");
+  await page.locator('[data-action="nightly-enabled"]').uncheck();
+  await scope.blur();
+  await page.evaluate(() => panel._load());
+  assert.equal(
+    await scope.inputValue(),
+    "all",
+    "unsaved scope survives polling",
+  );
+  await page.locator('[data-action="nightly-save"]').click();
+  await page.waitForFunction(() => panel._activeActions === 0);
+  assert.equal(
+    await page.evaluate(() => fixture.learning_schedule.auto_apply_scope),
+    "all",
+  );
+  assert.equal(
+    await page.evaluate(() => fixture.learning_schedule.enabled),
+    false,
+  );
+  assert.match(
+    await page.locator("#learning-schedule").innerText(),
+    /including manual Learn/,
+  );
+  assert.match(
+    await card.locator('.subsection[data-section="details"]').innerText(),
+    /including manual Learn/,
+  );
+  const override = card.locator('[data-action="device-auto-apply"]');
+  assert.equal(await override.inputValue(), "inherit");
+  assert.match(
+    await override.locator("option:checked").innerText(),
+    /Inherit global.*Every completed Learn/,
+  );
+  for (const mode of ["off", "overnight", "all", "inherit"]) {
+    await override.selectOption(mode);
+    await page.waitForFunction(() => panel._activeActions === 0);
+    await page.evaluate(() => panel._load());
+    assert.equal(await override.inputValue(), mode);
+    const sent = await page.evaluate(() =>
+      requests
+        .filter((r) => r.type.endsWith("/configure_device_auto_apply"))
+        .at(-1),
+    );
+    assert.deepEqual(sent, {
+      type: "ld2410_tuner/configure_device_auto_apply",
+      device_id: "a",
+      mode,
+    });
+    assert.equal(
+      await page.evaluate(() => fixture.learning_schedule.auto_apply_scope),
+      "all",
+      "Device overrides do not alter the global default",
+    );
+  }
+  await override.selectOption("off");
+  await page.waitForFunction(() => panel._activeActions === 0);
+  assert.match(
+    await card.locator('.subsection[data-section="details"]').innerText(),
+    /Automatic Apply is off/,
+  );
+  await page.evaluate(() => {
+    window.rejectDeviceOverride = true;
+  });
+  await override.selectOption("all");
+  await page.waitForFunction(() => panel._activeActions === 0);
+  assert.equal(
+    await override.inputValue(),
+    "off",
+    "A failed save restores the server policy",
+  );
+  assert.match(
+    await page.locator("#error").innerText(),
+    /Override save failed/,
+  );
+  await page.evaluate(() => {
+    window.rejectDeviceOverride = false;
+  });
+  await override.selectOption("inherit");
+  await page.waitForFunction(() => panel._activeActions === 0);
   await page.evaluate(() => {
     fixture.devices.a.nightly_learning = {
       status: "uncertain",
