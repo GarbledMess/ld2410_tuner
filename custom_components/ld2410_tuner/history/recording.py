@@ -245,6 +245,8 @@ def _stored_estimate(device, now):
         if now - last.get("timestamp", 0) <= AUTO_SAMPLE_INTERVAL * 2
         else "unknown"
     )
+    if last.get("buffered"):
+        return "unknown", 0, 0  # Confirm only after the external end buffer has elapsed.
     code = {"present": 1, "not_present": 2}.get(inferred, 0)
     confidence = max(0, min(100, round(last.get("confidence", 0) * 100))) if code else 0
     return inferred, code, confidence

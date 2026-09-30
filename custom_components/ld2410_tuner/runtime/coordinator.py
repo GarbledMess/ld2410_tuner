@@ -39,6 +39,7 @@ class TunerRuntime:
         self._applying: set[str] = set()
         self._live: dict[str, dict[str, float]] = defaultdict(dict)
         self._auto_runtime: dict[str, dict[str, Any]] = {}
+        self._source_runtime: dict[str, dict[str, Any]] = {}
         self._history_runtime: dict[str, dict[str, Any]] = {}
         self._history_cache = OrderedDict()
         self._history_jobs = {}

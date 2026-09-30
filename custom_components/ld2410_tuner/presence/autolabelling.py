@@ -72,6 +72,7 @@ def _update_auto_state(
         "top_gates": result["top_gates"],
         "timestamp": now,
         "basis": result.get("basis"),
+        "buffered": result.get("buffered", False),
         "sources": result.get("sources", []),
         "model": result.get("model"),
         "presence_probability": result.get("presence_probability"),
@@ -208,18 +209,23 @@ def _feedback_reading(auto):
 def _sample_devices(runtime):
     for device_id, device in runtime.data["devices"].items():
         if device.get("configuration_recovery", {}).get("status") == "running":
+            runtime._source_runtime.pop(device_id, None)
             continue
         values = _read_energies(runtime, device)
         runtime._live[device_id] = values  # Drop unavailable readings, never carry them forward.
         if not values:
             runtime._auto_runtime.pop(device_id, None)
+            runtime._source_runtime.pop(device_id, None)
             device.get("auto", {}).pop("last_classification", None)
             continue
         if not device.get("recording_enabled", True) or runtime._storage_status.get("blocked"):
+            runtime._source_runtime.pop(device_id, None)
             continue
         now = time.time()
         runtime._migrate_device_samples(device)
-        result = sources.estimate(runtime, device) or runtime._classify_auto(device, values)
+        result = sources.estimate(runtime, device, device_id, now) or runtime._classify_auto(
+            device, values
+        )
         runtime._update_auto_state(device_id, device, result, now)
         runtime._record_history_sample(device_id, values, now)
         runtime._schedule_save()

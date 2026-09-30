@@ -35,6 +35,7 @@ def set_recording(runtime, device_id, enabled):
     runtime.set_training_state(device_id, "unknown")
     device["recording_enabled"] = enabled
     runtime._auto_runtime.pop(device_id, None)
+    runtime._source_runtime.pop(device_id, None)
     auto = device.get("auto", {})
     auto.pop("last_classification", None)
     auto.pop("filter", None)

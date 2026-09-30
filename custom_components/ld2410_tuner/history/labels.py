@@ -272,6 +272,7 @@ def clear_samples(runtime, device_id: str) -> None:
         runtime.data["devices"][device_id].pop("history_legacy_since", None)
         runtime._live.pop(device_id, None)
         runtime._auto_runtime.pop(device_id, None)
+        runtime._source_runtime.pop(device_id, None)
         runtime._history_runtime.pop(device_id, None)
         runtime._schedule_save()
 

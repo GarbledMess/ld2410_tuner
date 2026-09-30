@@ -596,7 +596,7 @@ from other entities**. Add one or more independent sources:
   Add each person's tracked device separately; choose human-carried devices, not
   pets or permanently placed beacons.
 
-Any positive source provides a Present label. **Mark “Not Present” defaults to
+Any positive source starts or continues a Present period. **Mark “Not Present” defaults to
 OFF**: an off boolean or a person leaving the Bermuda area supplies no negative
 label. If you enable it, every selected source must explicitly report absence.
 Missing, unavailable, unknown or non-boolean states do not count as absence.
@@ -604,11 +604,29 @@ Only enable negative labelling when the selected sources cover everyone in the
 room. Bermuda tracks a device, which may be left behind or not carried; cameras
 may have blind spots. See [Bermuda's Area sensor documentation](https://github.com/agittins/bermuda/wiki).
 
+**Trim start of presence** and **Trim end of presence** each default to **10
+seconds**, configurable per device from 0 to 3600 seconds. For an observed
+presence period from 12:00:00 to 12:01:00, the defaults label only readings from
+12:00:10 up to 12:00:50. Periods lasting 20 seconds or less contribute no automatic
+presence labels. During a longer period, labels are confirmed progressively;
+the latest 10 seconds remain unlabelled until more time has passed. This also
+keeps provisional boundary readings out of a Learn started during the period.
+
+Raw energy readings remain available for graphs and manual labels. These buffers
+only affect automatic Present labels from external sources; they do not delay
+radar detection or change opt-in Not Present labels. Radar guessing does not
+fill in the excluded positive boundaries. Set both trims to 0 to disable them.
+Changes affect future periods, not historical labels. Source changes, recording
+pauses, missing energy readings and sampling gaps restart the buffer. After an
+integration restart, the unconfirmed tail remains unlabelled and a new observed
+period starts; it is not assumed to have been continuously present while offline.
+
 Source confidence defaults to **90%** and is configurable. This is a chosen
 training confidence, not a measured accuracy claim. Below 55%, readings are
 recorded but excluded from learning, like other low-confidence automatic evidence.
 Sources take precedence over
-radar guesses when they supply a label; otherwise the normal estimator continues.
+radar guesses when they supply a label or are buffering presence; otherwise the
+normal estimator continues.
 Labels use the existing automatic evidence/retention path, including confidence
 weighting and human priority. They never become human-labelled validation data.
 Live manual labels and retrospective corrections still override them; mark an

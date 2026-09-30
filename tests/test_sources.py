@@ -33,7 +33,14 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
 
     def configure(self, entries=None, negative=False):
         return self.runtime.configure_presence_sources(
-            "a", {"sources": entries or [boolean()], "mark_not_present": negative, "confidence": 90}
+            "a",
+            {
+                "sources": entries or [boolean()],
+                "mark_not_present": negative,
+                "confidence": 90,
+                "start_buffer_seconds": 0,
+                "end_buffer_seconds": 0,
+            },
         )
 
     def test_boolean_on_records_automatic_not_human_and_survives_compression(self):

@@ -1,11 +1,19 @@
 """Independent HA entities supplying automatic, never human, training labels."""
 
 import re
+import time
 from copy import deepcopy
 
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
+from . import source_buffer
 
-DEFAULTS = {"sources": [], "mark_not_present": False, "confidence": 90}
+DEFAULTS = {
+    "sources": [],
+    "mark_not_present": False,
+    "confidence": 90,
+    "start_buffer_seconds": 10,
+    "end_buffer_seconds": 10,
+}
 UNKNOWN = {"unknown", "unavailable", "", "none"}
 
 
@@ -20,14 +28,20 @@ def configure(runtime, device_id, values):
     validated = validate(values)
     device["presence_sources"] = validated
     runtime._auto_runtime.pop(device_id, None)
+    runtime._source_runtime.pop(device_id, None)
     device.get("auto", {}).pop("last_classification", None)
     runtime._schedule_save()
     return settings(device)
 
 
 def validate(values):
-    if not isinstance(values, dict) or set(values) != set(DEFAULTS):
-        raise ValueError("Supply sources, mark_not_present and confidence")
+    required = {"sources", "mark_not_present", "confidence"}
+    if not isinstance(values, dict) or not required <= set(values) or set(values) - set(DEFAULTS):
+        raise ValueError(
+            "Supply sources, mark_not_present, confidence and optional presence buffers"
+        )
+    values = {**DEFAULTS, **values}
+    _validate_buffers(values)
     if type(values["mark_not_present"]) is not bool:
         raise ValueError("Mark Not Present must be enabled or disabled")
     confidence = values["confidence"]
@@ -39,6 +53,13 @@ def validate(values):
     for source in sources:
         _validate_source(source)
     return deepcopy(values)
+
+
+def _validate_buffers(values):
+    for key in ("start_buffer_seconds", "end_buffer_seconds"):
+        value = values[key]
+        if type(value) not in (int, float) or not 0 <= value <= 3600:
+            raise ValueError("Presence buffers must be between 0 and 3600 seconds")
 
 
 def _validate_source(source):
@@ -71,7 +92,7 @@ def source_state(hass, source):
     return target in {str(value).casefold() for value in current if value is not None}
 
 
-def summary(runtime, device):
+def _read_sources(runtime, device):
     config = settings(device)
     readings = [
         {**source, "present": source_state(runtime.hass, source)} for source in config["sources"]
@@ -90,20 +111,50 @@ def summary(runtime, device):
     }
 
 
-def estimate(runtime, device):
-    evidence = summary(runtime, device)
+def _device_id(runtime, device):
+    return next(key for key, value in runtime.data["devices"].items() if value is device)
+
+
+def _buffered(config):
+    return bool(config["start_buffer_seconds"] or config["end_buffer_seconds"])
+
+
+def summary(runtime, device):
+    evidence = _read_sources(runtime, device)
+    buffering = (
+        evidence["state"] == "present"
+        and _buffered(evidence)
+        and not source_buffer.ready(runtime, _device_id(runtime, device), evidence, time.time())
+    )
+    return {
+        **evidence,
+        "raw_state": evidence["state"],
+        "buffering": buffering,
+        "state": "unknown" if buffering else evidence["state"],
+    }
+
+
+def estimate(runtime, device, device_id=None, now=None):
+    evidence = _read_sources(runtime, device)
+    now = time.time() if now is None else now
+    device_id = _device_id(runtime, device) if device_id is None else device_id
+    positive = evidence["state"] == "present"
+    buffered = _buffered(evidence)
+    confirmed = (
+        source_buffer.observe(runtime, device_id, positive, evidence, now) if buffered else True
+    )
     if evidence["state"] == "unknown":
         return None
     confidence = evidence["confidence"] / 100
-    present = evidence["state"] == "present"
     return {
-        "state": evidence["state"],
+        "state": "unknown" if positive and not confirmed else evidence["state"],
         "confidence": confidence,
-        "score": confidence if present else 1 - confidence,
-        "presence_probability": confidence if present else 1 - confidence,
+        "score": confidence if positive else 1 - confidence,
+        "presence_probability": confidence if positive else 1 - confidence,
         "active_gates": 0,
         "top_gates": [],
         "basis": "external",
-        "model": "entity-sources-v1",
+        "model": "entity-sources-v2",
+        "buffered": positive and buffered,
         "sources": [source["entity_id"] for source in evidence["readings"]],
     }

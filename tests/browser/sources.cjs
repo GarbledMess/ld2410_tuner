@@ -34,6 +34,13 @@ module.exports = async function testSources(page, screenshotDir) {
   const card = page.locator('[data-device-id="a"]');
   const form = card.locator(".presence-sources");
   await form.locator("summary").click();
+  const startBuffer = form.locator(
+    '[data-source-buffer="start_buffer_seconds"]',
+  );
+  const endBuffer = form.locator('[data-source-buffer="end_buffer_seconds"]');
+  assert.equal(await startBuffer.inputValue(), "10");
+  assert.equal(await endBuffer.inputValue(), "10");
+
   assert.equal(await form.locator("[data-source-negative]").isChecked(), false);
   await form.locator('[data-action="source-add"]').click();
   await form
@@ -65,10 +72,18 @@ module.exports = async function testSources(page, screenshotDir) {
       ],
       mark_not_present: false,
       confidence: 90,
+      start_buffer_seconds: 10,
+      end_buffer_seconds: 10,
     },
   );
   await form.locator("[data-source-negative]").check();
   await form.locator("[data-source-confidence]").fill("85");
+  await startBuffer.fill("12.5");
+  await endBuffer.fill("8");
+  await page.evaluate(() => panel.shadowRoot.activeElement.blur());
+  await page.evaluate(() => panel._load());
+  assert.equal(await startBuffer.inputValue(), "12.5");
+  assert.equal(await endBuffer.inputValue(), "8");
   await page.evaluate(() => {
     window.failSources = true;
   });
@@ -96,6 +111,28 @@ module.exports = async function testSources(page, screenshotDir) {
     ),
     true,
   );
+  assert.equal(
+    await page.evaluate(
+      () => fixture.devices.a.presence_sources.start_buffer_seconds,
+    ),
+    12.5,
+  );
+  assert.equal(
+    await page.evaluate(
+      () => fixture.devices.a.presence_sources.end_buffer_seconds,
+    ),
+    8,
+  );
+  await page.evaluate(async () => {
+    Object.assign(fixture.devices.a.presence_sources, {
+      buffering: true,
+      state: "unknown",
+      raw_state: "present",
+    });
+    await panel._load();
+  });
+  assert.match(await form.innerText(), /Buffering presence/);
+  assert.doesNotMatch(await form.innerText(), /radar guessing continues/);
   await page.setViewportSize({ width: 390, height: 844 });
   await form.screenshot({
     path: path.join(screenshotDir, "presence-sources-mobile.png"),
@@ -106,10 +143,24 @@ module.exports = async function testSources(page, screenshotDir) {
     ),
     true,
   );
+  await startBuffer.fill("0");
+  await endBuffer.fill("0");
   await form.locator("[data-source-remove]").first().click();
   await form.locator("[data-source-remove]").first().click();
   await form.locator('[data-action="sources-save"]').click();
   await page.waitForFunction(() => panel._activeActions === 0);
+  assert.equal(
+    await page.evaluate(
+      () => fixture.devices.a.presence_sources.start_buffer_seconds,
+    ),
+    0,
+  );
+  assert.equal(
+    await page.evaluate(
+      () => fixture.devices.a.presence_sources.end_buffer_seconds,
+    ),
+    0,
+  );
   assert.deepEqual(
     await page.evaluate(() => fixture.devices.a.presence_sources.sources),
     [],
