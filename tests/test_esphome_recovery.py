@@ -18,7 +18,9 @@ class RecoveryReplay:
     """Interpret only the automation primitives used by this package, failing closed."""
 
     def __init__(self):
-        self.package = yaml.load(PACKAGE.read_text(), Loader=yaml.BaseLoader)
+        self.package = yaml.load(
+            PACKAGE.read_text().replace("${ld2410_id}", "ld2410"), Loader=yaml.BaseLoader
+        )
         self.values = {
             item["id"]: item["initial_value"] == "true" for item in self.package["globals"]
         }

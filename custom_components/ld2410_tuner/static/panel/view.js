@@ -21,6 +21,13 @@ export const panelView = {
         .global-settings summary { cursor:pointer; font-weight:600; padding:8px 0; }
         .source-row { min-width:0; margin:8px 0; border:1px solid var(--divider-color,#ddd); border-radius:8px; }
         .presence-sources { margin-top:12px; }
+        .source-picker { min-width:0; display:flex; flex-direction:column; gap:5px; }
+        .source-picker [data-source-suggestions] { border:1px solid var(--divider-color,#ddd); border-radius:9px; background:var(--card-background-color); overflow:hidden; }
+        .source-picker [data-source-options] { max-height:240px; overflow-y:auto; overscroll-behavior:contain; }
+        .source-picker [data-source-option] { display:flex; flex-direction:column; gap:4px; width:100%; min-height:48px; padding:10px; border:0; border-radius:0; text-align:start; overflow-wrap:anywhere; }
+        .source-picker [data-source-option] span { color:var(--secondary-text-color); font-size:12px; }
+        .source-picker [data-source-option]:hover, .source-picker [aria-selected="true"] { background:var(--secondary-background-color); outline:2px solid var(--primary-color); outline-offset:-2px; }
+        .source-picker-status { padding:8px; }
         .source-row input, .source-row select { min-width:0; width:100%; box-sizing:border-box; }
         .presence-sources .source-negative { flex-direction:row; align-items:center; }
         .source-negative input { width:22px; height:22px; min-height:22px; flex:none; }

@@ -31,6 +31,10 @@ class TunerRuntime:
         self.unsub_registry = None
         self.unsub_retention = None
         self.unsub_sampling = None
+        self.unsub_engineering = None
+        self._engineering_task = None
+        self._engineering_status = {}
+        self._engineering_attempts = {}
         self.unsub_nightly = None
         self._nightly_task = None
         self.data.setdefault("devices", {})

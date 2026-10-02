@@ -63,6 +63,32 @@ module.exports = async function testSavedResults(page, screenshotDir) {
     return panel._load();
   });
   const card = page.locator('[data-device-id="a"]');
+  for (const status of ["running", "waiting", "retrying"]) {
+    await page.evaluate(async (status) => {
+      fixture.devices.a.engineering_mode = {
+        status,
+        message: "Engineering Mode <check> is pending",
+      };
+      await panel._load();
+    }, status);
+    assert.match(
+      await card.locator(".recovery-progress").innerText(),
+      /Engineering Mode <check> is pending/,
+    );
+    assert.equal(await card.locator(".recovery-progress check").count(), 0);
+    assert.equal(
+      await card.locator(".recovery-progress .is-busy").count(),
+      status === "running" ? 1 : 0,
+    );
+  }
+  await page.evaluate(async () => {
+    delete fixture.devices.a.engineering_mode;
+    await panel._load();
+  });
+  assert.doesNotMatch(
+    await card.locator(".recovery-progress").innerText(),
+    /Engineering Mode/,
+  );
   const picker = card.locator('[data-action="learning-result"]');
   const apply = card.locator('[data-action="apply"]');
   assert.match(

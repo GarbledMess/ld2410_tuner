@@ -223,15 +223,23 @@ For missing settings after boot, Query Params / Radar Restart buttons, and Apply
 that appears to do nothing, see the [ESPHome recovery guide](docs/esphome-recovery.md)
 and [complete LD2410C package](examples/esphome/ld2410c.yaml). Keep each node's
 existing UART pins and host configuration; the package supplies all radar entities
-and includes recovery in one self-contained file. The package is optional: the
+and includes recovery in one self-contained file. Include the same file once per
+radar with a unique internal prefix, UART ID and Home Assistant subdevice; see the
+[multi-radar example](docs/esphome-recovery.md#multiple-ld2410cs-on-one-esp).
+Existing single-radar includes and entity names remain unchanged. The tuner now
+checks every 10 minutes and requests Engineering Mode on only for radars with
+recording enabled that report it off; see [automatic Engineering Mode](docs/esphome-recovery.md#automatic-engineering-mode).
+The package is optional: the
 tuner also supports existing ESPHome configurations with the required entities.
 Recovery runs primarily on the ESP; the tuner checks readiness, paces writes and
 retains failures.
 
 ## Calibration workflow
 
-1. Enable engineering mode and the per-gate energy and threshold entities on the
-   LD2410. Entity IDs must retain the existing `*_g0_move_energy` /
+1. Expose the per-gate energy and threshold entities on the LD2410. The tuner
+   enables Engineering Mode for recording-enabled devices when an unambiguous
+   switch reports off; otherwise
+   enable it in ESPHome. Entity IDs must retain the existing `*_g0_move_energy` /
    `*_g0_move_threshold` naming convention (gates 0–8, move/still).
 2. Label the empty room NOT PRESENT with the normal fans, curtains and background
    activity. Use the timeout to avoid accidentally leaving a label running.
@@ -655,6 +663,13 @@ from other entities**. Add one or more independent sources:
   or a home/away tracker. Area IDs keep working when the room name changes.
   Add each person's tracked device separately; choose human-carried devices, not
   pets or permanently placed beacons.
+
+Search the Entity field by friendly name or entity ID, then tap a matching result.
+Results are rendered inside the panel so selection does not depend on the browser's
+native suggestion popup. Desktop keyboard users can use arrow keys and Enter;
+Escape closes the results. Direct entity ID entry remains available. The list shows
+up to 30 matches at once; keep typing to narrow it. Source type limits the suggestions
+to boolean entities or Bermuda Area sensors, and unsaved choices survive polling.
 
 Any positive source starts or continues a Present period. **Mark “Not Present” defaults to
 OFF**: an off boolean or a person leaving the Bermuda area supplies no negative

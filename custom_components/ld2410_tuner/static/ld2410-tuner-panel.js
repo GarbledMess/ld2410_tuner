@@ -106,7 +106,10 @@ class LD2410TunerPanel extends HTMLElement {
       active.matches('input[type="checkbox"], input[type="radio"]')
     )
       return false;
-    return ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName);
+    return (
+      Boolean(active.closest("[data-source-picker]")) ||
+      ["INPUT", "SELECT", "TEXTAREA"].includes(active.tagName)
+    );
   }
 
   async _export(id, format) {

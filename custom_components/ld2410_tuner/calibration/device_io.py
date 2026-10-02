@@ -26,7 +26,7 @@ READBACK_NOTE = (
 def device_operation(runtime, device_id):
     """Keep manual writes and Apply from interleaving on the same radar."""
     if device_id in runtime._applying:
-        raise ValueError("Threshold application is already in progress")
+        raise ValueError("Radar configuration update is already in progress")
     runtime._applying.add(device_id)
     try:
         yield

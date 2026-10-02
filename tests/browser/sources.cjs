@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const testSourcePicker = require("./source_picker.cjs");
 
 module.exports = async function testSources(page, screenshotDir) {
   await page.evaluate(async () => {
@@ -43,6 +44,7 @@ module.exports = async function testSources(page, screenshotDir) {
 
   assert.equal(await form.locator("[data-source-negative]").isChecked(), false);
   await form.locator('[data-action="source-add"]').click();
+  await testSourcePicker(page, screenshotDir);
   await form
     .locator("[data-source-entity]")
     .fill("binary_sensor.camera_person");

@@ -122,6 +122,7 @@ def _snapshot_device(runtime, device_id, device, registry):
         "nightly_learning": device.get("nightly_learning"),
         "learning_job": device.get("learning_job"),
         "configuration_recovery": device.get("configuration_recovery"),
+        "engineering_mode": runtime._engineering_status.get(device_id),
         "last_applied": device.get("last_applied", {}),
         "auto_learning": runtime.auto_learning_summary(device),
         "history": {
@@ -175,6 +176,7 @@ def _export_device(runtime, did, devreg, registry):
         "nightly_learning": device.get("nightly_learning"),
         "learning_job": device.get("learning_job"),
         "configuration_recovery": device.get("configuration_recovery"),
+        "engineering_mode": runtime._engineering_status.get(did),
         "last_applied": device.get("last_applied", {}),
         "auto_learning": device.get("auto", {}),
         "history": {

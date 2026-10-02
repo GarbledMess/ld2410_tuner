@@ -1,3 +1,5 @@
+import { sourcePickerHtml, wireSourcePicker } from "./source_picker.js";
+
 export const panelSources = {
   _sourcesHtml(id, d) {
     const config = this._sourceDrafts?.get(id) || d.presence_sources || {};
@@ -24,17 +26,9 @@ export const panelSources = {
 
   _sourceRowHtml(id, source, index) {
     const listId = `source-options-${id}-${index}`;
-    const options = Object.entries(this._hass?.states || {}).filter(
-      ([entityId, state]) =>
-        source.kind === "bermuda"
-          ? entityId.startsWith("sensor.") &&
-            "area_id" in (state.attributes || {})
-          : ["on", "off", "true", "false"].includes(state.state) ||
-            /^(binary_sensor|input_boolean|switch)\./.test(entityId),
-    );
     return `<fieldset class="source-row" data-source-row><legend>Source ${index + 1}</legend><div class="storage-fields">
       <label>Type<select data-source-kind><option value="boolean" ${source.kind !== "bermuda" ? "selected" : ""}>Boolean entity</option><option value="bermuda" ${source.kind === "bermuda" ? "selected" : ""}>Bermuda area</option></select></label>
-      <label>Entity<input data-source-entity list="${this._esc(listId)}" value="${this._esc(source.entity_id || "")}" required placeholder="binary_sensor.camera_person"><datalist id="${this._esc(listId)}">${options.map(([entityId, state]) => `<option value="${this._esc(entityId)}">${this._esc(state.attributes?.friendly_name || entityId)}</option>`).join("")}</datalist></label>
+      ${sourcePickerHtml((value) => this._esc(value), listId, source.entity_id)}
       ${source.kind === "bermuda" ? `<label>Target area ID or name<input data-source-area value="${this._esc(source.area || "")}" required placeholder="bedroom"></label>` : ""}</div>
       <button type="button" data-source-remove="${index}">Remove source</button></fieldset>`;
   },
@@ -67,6 +61,12 @@ export const panelSources = {
     };
     form.ontoggle = () => this._sectionState.set(`${id}:sources`, form.open);
     form.oninput = capture;
+    for (const row of form.querySelectorAll("[data-source-row]"))
+      wireSourcePicker(
+        row,
+        () => this._hass?.states,
+        (value) => this._esc(value),
+      );
     form.onchange = (event) => {
       capture();
       if (event.target.matches("[data-source-kind]")) redraw();

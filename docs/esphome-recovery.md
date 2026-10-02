@@ -111,9 +111,113 @@ Optional settings are `ld2410_presence_name` (Presence), `ld2410_presence_on_del
 Other custom radar names or logic need a tailored configuration; an existing
 standalone ESPHome setup remains supported by the tuner without adopting this file.
 
-The complete package targets **one radar on one UART per node**. If a node has
-additional UARTs or radars, it needs explicit per-bus/per-radar mapping rather
-than this automatic single-UART selection.
+### Updating existing single-radar nodes
+
+Replace the shared `ld2410c.yaml` file and rebuild normally. Keep the existing
+`packages: ld2410: !include ...` configuration, UART pins/ID, node identity, and
+`ld2410_presence_*` / throttle substitutions. No new include variables or
+subdevice declarations are required for existing single-radar nodes. The added
+instance options are only needed when introducing more radars or explicitly
+selecting a UART. The tuner also continues to support nodes still running the
+previous package, without reflashing them for its Engineering Mode checks.
+
+### Multiple LD2410Cs on one ESP
+
+Include the **same local file once per radar**. Give each additional radar a unique
+`ld2410_id` prefix, its own `ld2410_uart_id`, and a separate `ld2410_device_id` from
+`esphome.devices`. These are [ESPHome subdevices](https://esphome.io/components/esphome/#sub-devices):
+Home Assistant and the tuner treat each radar separately. Names such as **Presence**,
+**G0 Still Energy**, **Timeout**, and **Engineering Mode** stay unchanged; the
+subdevice name identifies which radar they belong to.
+
+This example keeps the existing first radar on the main device, preserving its
+identity, internal IDs, and entity names. Merge `devices` into your existing
+`esphome` block; keep its name and friendly name. Use your actual UART pins.
+
+```yaml
+esphome:
+  # Keep your existing name, friendly_name and other settings here.
+  devices:
+    - id: second_device
+      name: Second Radar
+
+uart:
+  - id: radar_bus_one
+    tx_pin: GPIO4
+    rx_pin: GPIO3
+    baud_rate: 256000
+    rx_buffer_size: 1024
+    parity: NONE
+    stop_bits: 1
+  - id: radar_bus_two
+    tx_pin: GPIO6
+    rx_pin: GPIO7
+    baud_rate: 256000
+    rx_buffer_size: 1024
+    parity: NONE
+    stop_bits: 1
+
+packages:
+  first_radar: !include
+    file: packages/ld2410c.yaml
+    vars:
+      ld2410_uart_id: radar_bus_one
+  second_radar: !include
+    file: packages/ld2410c.yaml
+    vars:
+      ld2410_id: second
+      ld2410_uart_id: radar_bus_two
+      ld2410_device_id: second_device
+```
+
+Add another UART, subdevice and include for each further radar; there is no fixed
+radar count in the package. Each radar requires a separate supported UART and
+suitable pins. ESP32 variants have different UART limits, and a serial logger may
+use a UART too. The example pins are for an ESP32-C3 and must not be copied onto a
+different board without checking its pin assignments.
+
+For multiple UARTs, supply their full configuration in the host's `uart:` list:
+that list replaces the package's single-UART defaults. The package respects your
+pins and uses the bus explicitly selected by `ld2410_uart_id`. Use unique IDs
+throughout: `ld2410_id: second` reserves internal IDs starting `second_`, including
+`second_radar`, so the subdevice above deliberately uses `second_device`.
+
+Timing and reporting options can also go in an include's `vars`, for example
+`ld2410_presence_on_delay: 2s`. Existing top-level timing `substitutions` continue
+to work as defaults. Every radar gets independent recovery state, buttons,
+thresholds and timing diagnostics. Existing single-radar includes need no changes.
+
+For a new installation you may give every radar its own subdevice. Keep existing
+radars on their current device if preserving HA entity identity and tuner history
+is important; moving an existing radar into a new subdevice creates a different
+HA device association. Never put multiple radars' same-named gate entities on one
+HA device, as that loses the distinction the tuner needs.
+
+This revision is validated with ESPHome **2026.9.0 and 2026.9.1**. Subdevices require Home
+Assistant **2025.7 or later** ([release notes](https://www.home-assistant.io/blog/2025/07/02/release-20257)).
+Updating the tuner through HACS does not replace or flash the local ESPHome package.
+
+### Automatic Engineering Mode
+
+The tuner checks radars with **recording enabled** on startup and every **10 minutes**. If an enabled,
+unambiguous **Engineering Mode** switch reports **off**, it requests **on** so the
+radar can supply per-gate energies. This works with ordinary ESPHome firmware too;
+no custom package, internal ID or recovery button is required. Renamed entities
+are recognized by their original Engineering Mode name. Radars with recording disabled are left alone. Existing devices without an explicit
+recording setting retain their original recording-enabled default. Newly discovered
+devices start with recording disabled and are not switched on until you enable recording.
+
+The tuner waits during its own configuration writes/recovery and while the package
+reports active recovery. Failed calls or missing on reports retry no sooner than 10 minutes,
+then 20 minutes, then 30 minutes between later attempts, on a periodic check. A brief optimistic on
+report followed by off retains a cooldown. The device's Recommendations section
+shows pending or unsuccessful enabling, and failures are logged. Unknown,
+unavailable, disabled, absent, or ambiguous switches are left alone.
+
+This changes reporting mode, not gate thresholds, presence filters, timeout or
+Bluetooth. Turning Engineering Mode off manually is temporary while recording is
+enabled: it will try to enable it again. Reported on is an ESPHome state check, not
+proof of a hardware acknowledgement.
 
 ## Existing firmware without the package
 
@@ -351,3 +455,15 @@ or interruption prevented confirmation. Overnight calculation quality is separat
 from job failure: a completed recommendation can have a false-active penalty.
 Service calls and reported-state restoration are covered by synthetic tests;
 physical radar recovery and the intermittent firmware cause remain unproven.
+
+## Multi-radar regression checks
+
+Run `python3 tools/validate_esphome.py` in an environment with `esphome==2026.9.1`.
+CI runs the same check on ESPHome 2026.9.0 and 2026.9.1. It validates the original
+plain `!include`, existing UART IDs/pins, all five timing/name/reporting substitutions,
+two radars on ESP32-C3, three on ESP32, and twelve independent host UART instances
+at 115200 baud. Assertions check entity names, bus/subdevice isolation, independent
+timing, and recovery instance counts; each case generates C++ successfully. The
+host case checks that package structure has no small fixed count, not ESP32 UART
+capacity. These are schema/code-generation checks, not compiled firmware or
+physical multi-radar tests.

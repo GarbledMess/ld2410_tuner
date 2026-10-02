@@ -64,6 +64,14 @@ export const panelSavedResults = {
   },
 
   _recoveryHtml(d) {
+    const mode = d.engineering_mode;
+    const engineering = mode
+      ? `<div class="notice ${mode.status === "running" ? "is-busy" : ""}" role="status">${this._esc(mode.message)}</div>`
+      : "";
+    return engineering + this._configurationRecoveryHtml(d);
+  },
+
+  _configurationRecoveryHtml(d) {
     const report = d.configuration_recovery;
     if (!report) return "";
     const stages = {

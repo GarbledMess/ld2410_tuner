@@ -27,7 +27,7 @@ from .const import (
 )
 from .history.budget import prepare
 from .presence import reference_training
-from .runtime import schedule
+from .runtime import engineering, schedule
 from .runtime.coordinator import TunerRuntime
 from .runtime.websocket import _register_websocket_commands
 
@@ -75,6 +75,7 @@ async def _start_runtime(hass):
     _register_websocket_commands(hass)
     runtime.refresh_devices(er.async_get(hass))
     runtime.subscribe_state_changes()
+    engineering.start(runtime)
     runtime.unsub_sampling = async_track_time_interval(
         hass, runtime.sample_devices, timedelta(seconds=AUTO_SAMPLE_INTERVAL)
     )
@@ -130,6 +131,7 @@ async def _stop_runtime(runtime):
 
 
 async def _shutdown(runtime):
+    await engineering.stop(runtime)
     await schedule.stop(runtime)
     if runtime.unsub:
         runtime.unsub()

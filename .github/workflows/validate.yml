@@ -21,6 +21,20 @@ jobs:
       - run: python3 tools/validate_package.py
       - run: python3 tools/release.py
 
+  esphome:
+    name: ESPHome package instances (${{ matrix.esphome }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        esphome: ['2026.9.0', '2026.9.1']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install esphome==${{ matrix.esphome }}
+      - run: python3 tools/validate_esphome.py
+
   hassfest:
     name: Hassfest
     runs-on: ubuntu-latest
@@ -62,7 +76,7 @@ jobs:
   release:
     name: Publish versioned HACS archive
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [package, hassfest, tests, browser]
+    needs: [package, esphome, hassfest, tests, browser]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -1,5 +1,10 @@
-# Complete, self-contained single-radar package.
+# Complete, self-contained radar package; include once per LD2410C.
 # Keep each node's existing uart pins and host configuration; see docs/esphome-recovery.md.
+
+defaults:
+  ld2410_id: ld2410
+  ld2410_uart_id: ""
+  ld2410_device_id: ""
 
 substitutions:
   ld2410_presence_name: Presence
@@ -8,6 +13,7 @@ substitutions:
   ld2410_sensor_throttle: 1s
   ld2410_gate_throttle: 2s
 
+# A host uart list replaces these single-bus defaults; set all bus options there.
 uart:
   baud_rate: 256000
   rx_buffer_size: 1024
@@ -15,400 +21,462 @@ uart:
   stop_bits: 1
 
 ld2410:
-  id: ld2410_radar
-  # ESPHome binds the only UART automatically, including a locally named UART.
+  - id: ${ld2410_id}_radar
+    uart_id: ${ld2410_uart_id or none}
 
 binary_sensor:
   - platform: ld2410
-    ld2410_id: ld2410_radar
+    ld2410_id: ${ld2410_id}_radar
     has_target:
-      id: ld2410_presence
+      id: ${ld2410_id}_presence
       name: ${ld2410_presence_name}
+      device_id: ${ld2410_device_id}
       filters:
         - delayed_on: ${ld2410_presence_on_delay}
         - delayed_off: ${ld2410_presence_off_delay}
     has_moving_target:
-      id: ld2410_moving_target
+      id: ${ld2410_id}_moving_target
       name: Moving Target
+      device_id: ${ld2410_device_id}
     has_still_target:
-      id: ld2410_still_target
+      id: ${ld2410_id}_still_target
       name: Still Target
+      device_id: ${ld2410_device_id}
     out_pin_presence_status:
-      id: ld2410_out_pin_presence
+      id: ${ld2410_id}_out_pin_presence
       name: Out Pin Presence
+      device_id: ${ld2410_device_id}
 
   - platform: template
-    id: ld2410_configuration_ready
+    id: ${ld2410_id}_configuration_ready
     internal: true
     on_press:
       - globals.set:
-          id: ld2410_recovery_paused
+          id: ${ld2410_id}_recovery_paused
           value: 'false'
     lambda: |-
       // These settings share the radar's parameter-query response. Checking
       // several fields also avoids trusting a lone optimistic threshold echo.
-      return id(ld2410_g0_move).has_state() && std::isfinite(id(ld2410_g0_move).state)
-          && id(ld2410_g0_still).has_state() && std::isfinite(id(ld2410_g0_still).state)
-          && id(ld2410_max_move).has_state() && std::isfinite(id(ld2410_max_move).state)
-          && id(ld2410_max_still).has_state() && std::isfinite(id(ld2410_max_still).state)
-          && id(ld2410_timeout).has_state() && std::isfinite(id(ld2410_timeout).state);
+      return id(${ld2410_id}_g0_move).has_state() && std::isfinite(id(${ld2410_id}_g0_move).state)
+          && id(${ld2410_id}_g0_still).has_state() && std::isfinite(id(${ld2410_id}_g0_still).state)
+          && id(${ld2410_id}_max_move).has_state() && std::isfinite(id(${ld2410_id}_max_move).state)
+          && id(${ld2410_id}_max_still).has_state() && std::isfinite(id(${ld2410_id}_max_still).state)
+          && id(${ld2410_id}_timeout).has_state() && std::isfinite(id(${ld2410_id}_timeout).state);
 
 sensor:
   - platform: ld2410
-    ld2410_id: ld2410_radar
+    ld2410_id: ${ld2410_id}_radar
     moving_distance:
-      id: ld2410_moving_distance
+      id: ${ld2410_id}_moving_distance
       name: Moving Distance
+      device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
     still_distance:
-      id: ld2410_still_distance
+      id: ${ld2410_id}_still_distance
       name: Still Distance
+      device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
     moving_energy:
-      id: ld2410_moving_energy
+      id: ${ld2410_id}_moving_energy
       name: Moving Energy
+      device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
     still_energy:
-      id: ld2410_still_energy
+      id: ${ld2410_id}_still_energy
       name: Still Energy
+      device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
     detection_distance:
-      id: ld2410_detection_distance
+      id: ${ld2410_id}_detection_distance
       name: Detection Distance
+      device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
     g0:
       move_energy:
-        id: ld2410_g0_move_energy
+        id: ${ld2410_id}_g0_move_energy
         name: G0 Move Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
       still_energy:
-        id: ld2410_g0_still_energy
+        id: ${ld2410_id}_g0_still_energy
         name: G0 Still Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
     g1:
       move_energy:
-        id: ld2410_g1_move_energy
+        id: ${ld2410_id}_g1_move_energy
         name: G1 Move Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
       still_energy:
-        id: ld2410_g1_still_energy
+        id: ${ld2410_id}_g1_still_energy
         name: G1 Still Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
     g2:
       move_energy:
-        id: ld2410_g2_move_energy
+        id: ${ld2410_id}_g2_move_energy
         name: G2 Move Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
       still_energy:
-        id: ld2410_g2_still_energy
+        id: ${ld2410_id}_g2_still_energy
         name: G2 Still Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
     g3:
       move_energy:
-        id: ld2410_g3_move_energy
+        id: ${ld2410_id}_g3_move_energy
         name: G3 Move Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
       still_energy:
-        id: ld2410_g3_still_energy
+        id: ${ld2410_id}_g3_still_energy
         name: G3 Still Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
     g4:
       move_energy:
-        id: ld2410_g4_move_energy
+        id: ${ld2410_id}_g4_move_energy
         name: G4 Move Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
       still_energy:
-        id: ld2410_g4_still_energy
+        id: ${ld2410_id}_g4_still_energy
         name: G4 Still Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
     g5:
       move_energy:
-        id: ld2410_g5_move_energy
+        id: ${ld2410_id}_g5_move_energy
         name: G5 Move Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
       still_energy:
-        id: ld2410_g5_still_energy
+        id: ${ld2410_id}_g5_still_energy
         name: G5 Still Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
     g6:
       move_energy:
-        id: ld2410_g6_move_energy
+        id: ${ld2410_id}_g6_move_energy
         name: G6 Move Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
       still_energy:
-        id: ld2410_g6_still_energy
+        id: ${ld2410_id}_g6_still_energy
         name: G6 Still Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
     g7:
       move_energy:
-        id: ld2410_g7_move_energy
+        id: ${ld2410_id}_g7_move_energy
         name: G7 Move Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
       still_energy:
-        id: ld2410_g7_still_energy
+        id: ${ld2410_id}_g7_still_energy
         name: G7 Still Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
     g8:
       move_energy:
-        id: ld2410_g8_move_energy
+        id: ${ld2410_id}_g8_move_energy
         name: G8 Move Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
       still_energy:
-        id: ld2410_g8_still_energy
+        id: ${ld2410_id}_g8_still_energy
         name: G8 Still Energy
+        device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
 
 number:
   - platform: ld2410
-    ld2410_id: ld2410_radar
+    ld2410_id: ${ld2410_id}_radar
     timeout:
-      id: ld2410_timeout
+      id: ${ld2410_id}_timeout
       name: Timeout
+      device_id: ${ld2410_device_id}
     max_move_distance_gate:
-      id: ld2410_max_move
+      id: ${ld2410_id}_max_move
       name: Max Move Distance
+      device_id: ${ld2410_device_id}
     max_still_distance_gate:
-      id: ld2410_max_still
+      id: ${ld2410_id}_max_still
       name: Max Still Distance
+      device_id: ${ld2410_device_id}
     g0:
       move_threshold:
-        id: ld2410_g0_move
+        id: ${ld2410_id}_g0_move
         name: G0 Move Threshold
+        device_id: ${ld2410_device_id}
       still_threshold:
-        id: ld2410_g0_still
+        id: ${ld2410_id}_g0_still
         name: G0 Still Threshold
+        device_id: ${ld2410_device_id}
     g1:
       move_threshold:
-        id: ld2410_g1_move
+        id: ${ld2410_id}_g1_move
         name: G1 Move Threshold
+        device_id: ${ld2410_device_id}
       still_threshold:
-        id: ld2410_g1_still
+        id: ${ld2410_id}_g1_still
         name: G1 Still Threshold
+        device_id: ${ld2410_device_id}
     g2:
       move_threshold:
-        id: ld2410_g2_move
+        id: ${ld2410_id}_g2_move
         name: G2 Move Threshold
+        device_id: ${ld2410_device_id}
       still_threshold:
-        id: ld2410_g2_still
+        id: ${ld2410_id}_g2_still
         name: G2 Still Threshold
+        device_id: ${ld2410_device_id}
     g3:
       move_threshold:
-        id: ld2410_g3_move
+        id: ${ld2410_id}_g3_move
         name: G3 Move Threshold
+        device_id: ${ld2410_device_id}
       still_threshold:
-        id: ld2410_g3_still
+        id: ${ld2410_id}_g3_still
         name: G3 Still Threshold
+        device_id: ${ld2410_device_id}
     g4:
       move_threshold:
-        id: ld2410_g4_move
+        id: ${ld2410_id}_g4_move
         name: G4 Move Threshold
+        device_id: ${ld2410_device_id}
       still_threshold:
-        id: ld2410_g4_still
+        id: ${ld2410_id}_g4_still
         name: G4 Still Threshold
+        device_id: ${ld2410_device_id}
     g5:
       move_threshold:
-        id: ld2410_g5_move
+        id: ${ld2410_id}_g5_move
         name: G5 Move Threshold
+        device_id: ${ld2410_device_id}
       still_threshold:
-        id: ld2410_g5_still
+        id: ${ld2410_id}_g5_still
         name: G5 Still Threshold
+        device_id: ${ld2410_device_id}
     g6:
       move_threshold:
-        id: ld2410_g6_move
+        id: ${ld2410_id}_g6_move
         name: G6 Move Threshold
+        device_id: ${ld2410_device_id}
       still_threshold:
-        id: ld2410_g6_still
+        id: ${ld2410_id}_g6_still
         name: G6 Still Threshold
+        device_id: ${ld2410_device_id}
     g7:
       move_threshold:
-        id: ld2410_g7_move
+        id: ${ld2410_id}_g7_move
         name: G7 Move Threshold
+        device_id: ${ld2410_device_id}
       still_threshold:
-        id: ld2410_g7_still
+        id: ${ld2410_id}_g7_still
         name: G7 Still Threshold
+        device_id: ${ld2410_device_id}
     g8:
       move_threshold:
-        id: ld2410_g8_move
+        id: ${ld2410_id}_g8_move
         name: G8 Move Threshold
+        device_id: ${ld2410_device_id}
       still_threshold:
-        id: ld2410_g8_still
+        id: ${ld2410_id}_g8_still
         name: G8 Still Threshold
+        device_id: ${ld2410_device_id}
 
 select:
   - platform: ld2410
-    ld2410_id: ld2410_radar
+    ld2410_id: ${ld2410_id}_radar
     distance_resolution:
-      id: ld2410_distance_resolution
+      id: ${ld2410_id}_distance_resolution
       name: Distance Resolution
+      device_id: ${ld2410_device_id}
     baud_rate:
-      id: ld2410_baud_rate
+      id: ${ld2410_id}_baud_rate
       name: Baud Rate
+      device_id: ${ld2410_device_id}
 
 switch:
   - platform: ld2410
-    ld2410_id: ld2410_radar
+    ld2410_id: ${ld2410_id}_radar
     engineering_mode:
-      id: ld2410_engineering_mode
+      id: ${ld2410_id}_engineering_mode
       name: Engineering Mode
+      device_id: ${ld2410_device_id}
     bluetooth:
-      id: ld2410_bluetooth
+      id: ${ld2410_id}_bluetooth
       name: Bluetooth
+      device_id: ${ld2410_device_id}
 
 text_sensor:
   - platform: template
+    id: ${ld2410_id}_recovery_status
     name: LD2410 Recovery Status
+    device_id: ${ld2410_device_id}
     entity_category: diagnostic
     update_interval: 1s
     lambda: |-
-      if (id(ld2410_configuration_ready).state) return {"Settings available"};
-      if (id(ld2410_recovery_paused)) return {"Paused after failed recovery; use Retry Radar Recovery"};
-      if (id(ld2410_recover_parameters).is_running()) return {"Recovering missing settings"};
+      if (id(${ld2410_id}_configuration_ready).state) return {"Settings available"};
+      if (id(${ld2410_id}_recovery_paused)) return {"Paused after failed recovery; use Retry Radar Recovery"};
+      if (id(${ld2410_id}_recover_parameters).is_running()) return {"Recovering missing settings"};
       return {"Waiting for settings"};
   # Read-only metadata: these use the exact substitutions wired to the existing
   # filters above. Exposing them does not alter presence or add a new handler.
   - platform: template
     name: LD2410 Presence On Delay
-    id: ld2410_presence_on_delay_info
+    device_id: ${ld2410_device_id}
+    id: ${ld2410_id}_presence_on_delay_info
     entity_category: diagnostic
     lambda: return {"${ld2410_presence_on_delay}"};
     update_interval: 60s
   - platform: template
     name: LD2410 Presence Off Delay
-    id: ld2410_presence_off_delay_info
+    device_id: ${ld2410_device_id}
+    id: ${ld2410_id}_presence_off_delay_info
     entity_category: diagnostic
     lambda: return {"${ld2410_presence_off_delay}"};
     update_interval: 60s
   - platform: ld2410
-    ld2410_id: ld2410_radar
+    ld2410_id: ${ld2410_id}_radar
     version:
-      id: ld2410_firmware_version
+      id: ${ld2410_id}_firmware_version
       name: Firmware Version
+      device_id: ${ld2410_device_id}
     mac_address:
-      id: ld2410_mac_address
+      id: ${ld2410_id}_mac_address
       name: Mac Address
+      device_id: ${ld2410_device_id}
 
 button:
   - platform: template
+    id: ${ld2410_id}_retry_recovery
     name: Retry Radar Recovery
+    device_id: ${ld2410_device_id}
     entity_category: config
     on_press:
       - if:
           condition:
             not:
-              script.is_running: ld2410_recover_parameters
+              script.is_running: ${ld2410_id}_recover_parameters
           then:
             - globals.set:
-                id: ld2410_recovery_paused
+                id: ${ld2410_id}_recovery_paused
                 value: 'false'
-            - script.execute: ld2410_recover_parameters
+            - script.execute: ${ld2410_id}_recover_parameters
   - platform: ld2410
-    ld2410_id: ld2410_radar
+    ld2410_id: ${ld2410_id}_radar
     query_params:
-      id: ld2410_query_params
+      id: ${ld2410_id}_query_params
       name: Query Params
+      device_id: ${ld2410_device_id}
     restart:
-      id: ld2410_radar_restart
+      id: ${ld2410_id}_radar_restart
       name: Radar Restart
+      device_id: ${ld2410_device_id}
 
 globals:
-  - id: ld2410_recovery_paused
+  - id: ${ld2410_id}_recovery_paused
     type: bool
     restore_value: false
     initial_value: 'false'
-  - id: ld2410_recovery_restarted
+  - id: ${ld2410_id}_recovery_restarted
     type: bool
     restore_value: false
     initial_value: 'false'
-  - id: ld2410_last_recovery_restart
+  - id: ${ld2410_id}_last_recovery_restart
     type: uint32_t
     restore_value: false
     initial_value: '0'
-  - id: ld2410_restore_engineering
+  - id: ${ld2410_id}_restore_engineering
     type: bool
     restore_value: false
     initial_value: 'false'
 
 script:
-  - id: ld2410_recover_parameters
+  - id: ${ld2410_id}_recover_parameters
     mode: single
     then:
       - if:
           condition:
-            lambda: return id(ld2410_recovery_paused);
+            lambda: return id(${ld2410_id}_recovery_paused);
           then:
-            - script.stop: ld2410_recover_parameters
+            - script.stop: ${ld2410_id}_recover_parameters
       - delay: 5s
       - repeat: &ld2410_parameter_retries
           count: 3
           then:
             - if:
                 condition:
-                  binary_sensor.is_off: ld2410_configuration_ready
+                  binary_sensor.is_off: ${ld2410_id}_configuration_ready
                 then:
-                  - button.press: ld2410_query_params
+                  - button.press: ${ld2410_id}_query_params
                   - delay: 2s
       - if:
           condition:
             and:
-              - binary_sensor.is_off: ld2410_configuration_ready
+              - binary_sensor.is_off: ${ld2410_id}_configuration_ready
               - lambda: |-
-                  return !id(ld2410_recovery_restarted)
-                      || uint32_t(millis() - id(ld2410_last_recovery_restart)) >= 60000U;
+                  return !id(${ld2410_id}_recovery_restarted)
+                      || uint32_t(millis() - id(${ld2410_id}_last_recovery_restart)) >= 60000U;
           then:
             # Start the cooldown before sending, even if the UART is broken.
             # A recurring fault can recover again without rebooting the ESP.
             - globals.set:
-                id: ld2410_recovery_restarted
+                id: ${ld2410_id}_recovery_restarted
                 value: 'true'
             - globals.set:
-                id: ld2410_last_recovery_restart
+                id: ${ld2410_id}_last_recovery_restart
                 value: !lambda return millis();
             - globals.set:
-                id: ld2410_restore_engineering
-                value: !lambda return id(ld2410_engineering_mode).state;
+                id: ${ld2410_id}_restore_engineering
+                value: !lambda return id(${ld2410_id}_engineering_mode).state;
             - logger.log:
                 level: WARN
                 format: "LD2410 settings missing; attempting radar restart"
-            - button.press: ld2410_radar_restart
+            - button.press: ${ld2410_id}_radar_restart
             # The driver schedules its own reread after one second. Let it
             # finish before sending any further configuration commands.
             - delay: 3s
             - if:
                 condition:
-                  lambda: return id(ld2410_restore_engineering);
+                  lambda: return id(${ld2410_id}_restore_engineering);
                 then:
-                  - switch.turn_on: ld2410_engineering_mode
+                  - switch.turn_on: ${ld2410_id}_engineering_mode
                   - delay: 1s
             - repeat: *ld2410_parameter_retries
       - if:
           condition:
-            binary_sensor.is_off: ld2410_configuration_ready
+            binary_sensor.is_off: ${ld2410_id}_configuration_ready
           then:
             - globals.set:
-                id: ld2410_recovery_paused
+                id: ${ld2410_id}_recovery_paused
                 value: 'true'
             - logger.log:
                 level: WARN
@@ -418,7 +486,7 @@ esphome:
   on_boot:
     priority: -100
     then:
-      - script.execute: ld2410_recover_parameters
+      - script.execute: ${ld2410_id}_recover_parameters
 
 interval:
   - interval: 60s
@@ -426,7 +494,7 @@ interval:
       - if:
           condition:
             and:
-              - binary_sensor.is_off: ld2410_configuration_ready
-              - lambda: return !id(ld2410_recovery_paused);
+              - binary_sensor.is_off: ${ld2410_id}_configuration_ready
+              - lambda: return !id(${ld2410_id}_recovery_paused);
           then:
-            - script.execute: ld2410_recover_parameters
+            - script.execute: ${ld2410_id}_recover_parameters
