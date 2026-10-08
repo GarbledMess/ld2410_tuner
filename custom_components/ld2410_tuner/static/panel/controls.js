@@ -128,6 +128,7 @@ export const panelControls = {
   async _applyRecommendation(id, device) {
     const slot = device.learning_slot;
     const selected = device.last_learning;
+    if (selected?.joint) return this._openJointResult(selected.joint);
     const outcome = this._applyOutcome(selected, device.timing_configuration);
     if (
       !confirm(

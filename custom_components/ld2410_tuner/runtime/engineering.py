@@ -57,7 +57,9 @@ def _recovering(runtime, device_id):
 
 
 async def _check_devices(runtime):
-    for device_id in list(runtime.data["devices"]):
+    # Devices can change while a switch service call is awaiting completion.
+    device_ids = list(runtime.data["devices"])
+    for device_id in device_ids:
         device = runtime.data["devices"].get(device_id, {})
         entity_id = _switch(runtime, device_id, device)
         state = recovery._switch_state(runtime, entity_id)

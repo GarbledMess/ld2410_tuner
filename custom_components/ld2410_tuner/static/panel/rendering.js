@@ -7,13 +7,16 @@ function nodeKey(node) {
     node.dataset.action ||
     node.dataset.detail ||
     node.dataset.pattern ||
+    node.dataset.roomId ||
+    node.dataset.roomMember ||
     node.classList[0] ||
     "";
   return `${node.tagName}:${identity}`;
 }
 
 function patchAttributes(target, source) {
-  for (const { name } of [...target.attributes])
+  // Attribute removal mutates the NamedNodeMap; iterate a snapshot of names.
+  for (const name of target.getAttributeNames())
     if (!source.hasAttribute(name)) target.removeAttribute(name);
   for (const { name, value } of source.attributes)
     if (target.getAttribute(name) !== value) target.setAttribute(name, value);
@@ -42,7 +45,7 @@ function patchNode(target, source) {
     return;
   }
   // The chart renderer owns its canvas, event handlers and selection state.
-  if (target.hasAttribute("data-chart-canvas")) return;
+  if (target.dataset.chartCanvas !== undefined) return;
   patchAttributes(target, source);
   patchChildren(target, source);
   if (target instanceof HTMLInputElement) {
@@ -54,6 +57,14 @@ function patchNode(target, source) {
 }
 
 export const panelRendering = {
+  _paragraphHtml(text) {
+    return text ? `<p>${this._esc(text)}</p>` : "";
+  },
+
+  _listItemsHtml(items) {
+    return items.map((text) => `<li>${this._esc(text)}</li>`).join("");
+  },
+
   _patchElement(target, source) {
     patchNode(target, source);
   },

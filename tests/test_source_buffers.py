@@ -116,7 +116,8 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
         self.tick(0)
         with patch("time.time", return_value=self.now):
             summary = sources.summary(self.runtime, self.device)
-        assert summary["buffering"] and summary["state"] == "unknown"
+        assert summary["buffering"]
+        assert summary["state"] == "unknown"
         assert summary["raw_state"] == "present"
         assert not self.present_times()
         for second in (6, 12, 18, 24):
@@ -124,7 +125,8 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
         before = deepcopy(self.rows())
         with patch("time.time", return_value=self.now + 26):
             summary = sources.summary(self.runtime, self.device)
-        assert not summary["buffering"] and summary["state"] == "present"
+        assert not summary["buffering"]
+        assert summary["state"] == "present"
         assert self.rows() == before
 
     def test_config_change_and_recording_pause_discard_unconfirmed_tail(self):

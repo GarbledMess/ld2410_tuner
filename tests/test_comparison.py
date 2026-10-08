@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import pytest
 import test_tuner as harness
 
+scoring = sys.modules["tuner_under_test.calibration.scoring"]
 comparison = sys.modules["tuner_under_test.calibration.comparison"]
 jobs = sys.modules["tuner_under_test.calibration.comparison_jobs"]
 
@@ -52,14 +53,14 @@ def calculate(rows=None, automatic=None, settings=None):
 
 
 def test_score_boundaries_and_weighting():
-    assert comparison.score_from_cost(0) == 100
-    assert comparison.score_from_cost(0.000001) == 99.99
-    assert comparison.score_from_cost(1000) == 0
-    assert comparison.score_from_cost(comparison._error_cost(0.01, 0.01)) == 94
-    assert comparison._error_cost(0.01, 0) == comparison._error_cost(0, 0.05)
+    assert scoring.score_from_cost(0) == 100
+    assert scoring.score_from_cost(0.000001) == 99.99
+    assert scoring.score_from_cost(1000) == 0
+    assert scoring.score_from_cost(scoring.error_cost(0.01, 0.01)) == 94
+    assert scoring.error_cost(0.01, 0) == scoring.error_cost(0, 0.05)
     for cost in (-1, float("nan"), float("inf")):
         with pytest.raises(ValueError):
-            comparison.score_from_cost(cost)
+            scoring.score_from_cost(cost)
 
 
 def test_all_patterns_use_same_data_and_live_is_not_saved_current():

@@ -43,7 +43,8 @@ export const panelSavedResults = {
         const outcome = value
           ? this._applyOutcome(value, d.timing_configuration).label
           : "No result";
-        return `<option value="${key}" ${key === slot ? "selected" : ""} ${value ? "" : "disabled"}>${this._esc(`${label} · ${outcome}${stamp}`)}</option>`;
+        const text = `${label} · ${outcome}${stamp}`;
+        return `<option value="${key}" ${key === slot ? "selected" : ""} ${value ? "" : "disabled"}>${this._esc(text)}</option>`;
       })
       .join("");
     const stale =
@@ -65,8 +66,9 @@ export const panelSavedResults = {
 
   _recoveryHtml(d) {
     const mode = d.engineering_mode;
+    const busy = mode?.status === "running" ? "is-busy" : "";
     const engineering = mode
-      ? `<div class="notice ${mode.status === "running" ? "is-busy" : ""}" role="status">${this._esc(mode.message)}</div>`
+      ? `<div class="notice ${busy}" role="status">${this._esc(mode.message)}</div>`
       : "";
     return engineering + this._configurationRecoveryHtml(d);
   },
@@ -85,7 +87,7 @@ export const panelSavedResults = {
       failed: "Radar recovery failed",
       interrupted: "Radar recovery was interrupted",
     };
-    return `<div class="notice recovery-report ${report.status === "running" ? "is-busy" : ""}" role="status"><b>${this._esc(outcomes[report.status] || report.status)}</b><p>${this._esc((report.steps || []).map((step) => stages[step] || step).join(" → "))}</p>${report.error ? `<p>${this._esc(report.error)}</p>` : ""}${report.restore_bluetooth ? "<p>Original Bluetooth state still needs restoration. The next Learn retries restoration first.</p>" : ""}</div>`;
+    return `<div class="notice recovery-report ${report.status === "running" ? "is-busy" : ""}" role="status"><b>${this._esc(outcomes[report.status] || report.status)}</b><p>${this._esc((report.steps || []).map((step) => stages[step] || step).join(" → "))}</p>${this._paragraphHtml(report.error)}${report.restore_bluetooth ? "<p>Original Bluetooth state still needs restoration. The next Learn retries restoration first.</p>" : ""}</div>`;
   },
 
   _nightlyTiming(d) {
@@ -115,12 +117,19 @@ export const panelSavedResults = {
     const date = new Date(
       (run.finished_at || run.started_at) * 1000,
     ).toLocaleString();
+    const timingNote =
+      run.finished_at && !run.error
+        ? this._paragraphHtml(this._timingPolicyNote(this._nightlyTiming(d)))
+        : "";
+    const error = run.error
+      ? `<details data-detail="nightly-reason"><summary>Technical reason</summary><p>${this._esc(run.error)}</p></details>`
+      : "";
     return `<div class="notice nightly-report" role="status"><b>Last overnight run · ${this._esc(date)}</b>
       <p>${this._esc(messages[run.status] || run.status)}</p>
-      ${run.finished_at && !run.error && this._timingPolicyNote(this._nightlyTiming(d)) ? `<p>${this._esc(this._timingPolicyNote(this._nightlyTiming(d)))}</p>` : ""}
+      ${timingNote}
       ${this._automaticApplyHtml(run.automatic_apply)}
       ${run.attempts > 1 ? "<p>Retried once using the updated labels.</p>" : ""}
-      ${run.error ? `<details data-detail="nightly-reason"><summary>Technical reason</summary><p>${this._esc(run.error)}</p></details>` : ""}</div>`;
+      ${error}</div>`;
   },
 
   _automaticApplyHtml(application) {
@@ -134,22 +143,26 @@ export const panelSavedResults = {
       comparing: "Comparing against live settings…",
       applying: "Applying improved thresholds…",
     };
+    const writes = application.writes;
+    return `<div class="automatic-apply-report" role="status"><b>${this._esc(labels[application.status] || "Automatic Apply")}</b>${this._automaticComparisonHtml(application)}<p>${this._esc(application.reason || "")}</p>${this._paragraphHtml(writes?.note)}${this._writeDetailsHtml(writes)}</div>`;
+  },
+
+  _automaticComparisonHtml(application) {
     const patterns = application.assessment?.patterns;
     const candidate = patterns?.[application.source || "automatic"];
-    const scores =
-      patterns && candidate
-        ? `<p>Fresh comparison: live ${patterns.live.score ?? "unscored"} → learned ${candidate.score ?? "unscored"} / 100. Both use the same recordings and timing settings${candidate.basis === "estimated" ? "; includes automatic estimates" : ""}.</p>`
-        : "";
-    const writes = application.writes;
-    return `<div class="automatic-apply-report" role="status"><b>${this._esc(labels[application.status] || "Automatic Apply")}</b>${scores}<p>${this._esc(application.reason || "")}</p>${writes?.note ? `<p>${this._esc(writes.note)}</p>` : ""}${
-      writes?.skipped && Object.keys(writes.skipped).length
-        ? `<details><summary>Write details</summary><p>${this._esc(
-            Object.entries(writes.skipped)
-              .map(([key, reason]) => `${key}: ${reason}`)
-              .join("; "),
-          )}</p></details>`
-        : ""
-    }</div>`;
+    if (!patterns || !candidate) return "";
+    const evidence =
+      candidate.basis === "estimated" ? "; includes automatic estimates" : "";
+    return `<p>Fresh comparison: live ${patterns.live.score ?? "unscored"} → learned ${candidate.score ?? "unscored"} / 100. Both use the same recordings and timing settings${evidence}.</p>`;
+  },
+
+  _writeDetailsHtml(writes) {
+    const skipped = Object.entries(writes?.skipped || {});
+    if (!skipped.length) return "";
+    const details = skipped
+      .map(([key, reason]) => `${key}: ${reason}`)
+      .join("; ");
+    return `<details><summary>Write details</summary><p>${this._esc(details)}</p></details>`;
   },
 
   _nightlyErrorText(error = "") {
@@ -205,20 +218,29 @@ export const panelSavedResults = {
       run.status === "uncertain"
         ? "Sampling uncertainty; see the result for the estimated range."
         : note;
-    const style =
-      run.status === "running"
-        ? "is-busy"
-        : ["error", "unsafe"].includes(run.status) ||
-            ["partial", "error"].includes(application?.status)
-          ? "warn"
-          : run.status === "ok" &&
-              (!note || timing?.configuration?.mode === "disabled")
-            ? "ok"
-            : "caution";
+    const style = this._nightlyStyle(run, timing, note);
     const date = new Date(
       (run.finished_at || run.started_at) * 1000,
     ).toLocaleString();
-    return `<button type="button" data-action="review-nightly" class="pill nightly-marker ${style}" aria-label="Review last overnight run" title="${this._esc(`${date} · ${labels[run.status] || run.status}${run.error ? ` · ${run.error}` : ""}${caveat ? ` · ${caveat}` : ""}`)}">Overnight: ${this._esc(label)}</button>`;
+    const title = [date, labels[run.status] || run.status, run.error, caveat]
+      .filter(Boolean)
+      .join(" · ");
+    return `<button type="button" data-action="review-nightly" class="pill nightly-marker ${style}" aria-label="Review last overnight run" title="${this._esc(title)}">Overnight: ${this._esc(label)}</button>`;
+  },
+
+  _nightlyStyle(run, timing, note) {
+    if (run.status === "running") return "is-busy";
+    if (
+      ["error", "unsafe"].includes(run.status) ||
+      ["partial", "error"].includes(run.automatic_apply?.status)
+    )
+      return "warn";
+    if (
+      run.status === "ok" &&
+      (!note || timing?.configuration?.mode === "disabled")
+    )
+      return "ok";
+    return "caution";
   },
 
   _nightlyMetrics(d) {

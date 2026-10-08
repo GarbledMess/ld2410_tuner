@@ -5,6 +5,7 @@ from copy import deepcopy
 from time import time
 
 from . import comparison, comparison_jobs, device_io
+from .scoring import improves
 
 
 def policy(runtime, device_id=None):
@@ -52,7 +53,7 @@ def decision(patterns, source="automatic"):
         return "Not enough usable occupied and empty evidence to compare both settings."
     if not candidate.get("applicable"):
         return "The learned settings no longer match this device."
-    if candidate["error_cost"] >= current["error_cost"] - 1e-9:
+    if not improves(current, candidate):
         return (
             "The learned settings do not reduce the weighted missed-time and false-active penalty."
         )
@@ -78,6 +79,12 @@ def _guard(runtime, device_id, signature, applied, source):
 
 async def run(runtime, device_id, learned, report, source="automatic"):
     """Keep one bounded report; application errors must not discard a successful fit."""
+    if learned.get("joint"):
+        from ..rooms import application
+
+        joint = application.selected(runtime, learned["joint"]["group_id"], learned["id"], source)
+        await application.automatic(runtime, joint, report, source)
+        return
     report.update(status="skipped", result_id=learned["id"], source=source)
     if not enabled(runtime, source, device_id):
         report["reason"] = (

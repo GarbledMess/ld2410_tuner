@@ -80,7 +80,8 @@ def test_repeated_guesses_never_increase_independent_confidence():
     untrained = refs.empty()
     teach(untrained, "not_present", 70, "radar", count=600, confidence=0.98)
     reference, cap = refs.distributions(untrained, NOW + 3600)
-    assert not reference and cap == 0.65
+    assert not reference
+    assert cap == 0.65
 
 
 def test_quiet_presence_is_not_absorbed_into_background():
@@ -191,7 +192,8 @@ class ReferenceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         for i in range(120, 150):
             self.sample(self.now + i * 6, 70)
         last = self.device["auto"]["last_classification"]
-        assert last["basis"] == "adaptive-guided" and last["state"] == "present"
+        assert last["basis"] == "adaptive-guided"
+        assert last["state"] == "present"
         assert self.device.get("histograms", {}) == {}
 
     def test_retroactive_correction_replaces_human_and_removes_conflicting_entity_summary(self):
@@ -227,8 +229,10 @@ class ReferenceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         for i in range(6):
             self.sample(self.now + i * 6, 70)
         periods = self.device["reference_profile"]["periods"]
-        assert len(periods) == 1 and periods[0]["count"] == 2
-        assert periods[0]["start"] == self.now + 12 and periods[0]["end"] == self.now + 18
+        assert len(periods) == 1
+        assert periods[0]["count"] == 2
+        assert periods[0]["start"] == self.now + 12
+        assert periods[0]["end"] == self.now + 18
 
     def test_source_reconfiguration_drops_entity_models_and_clear_drops_all_models(self):
         self.configure()

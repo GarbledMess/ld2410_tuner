@@ -1,11 +1,11 @@
 """Report the same bounded timing replay used by threshold search."""
 
 from .duration import DurationReplay
-from .metrics import _TemporalMetrics
+from .metrics import measure_observations
 from .timing import TimingReplay
 
 
-def _hit_mask(rows, thresholds):
+def hit_mask(rows, thresholds):
     return sum(
         1 << i
         for i, row in enumerate(rows)
@@ -17,7 +17,7 @@ def observations(groups, thresholds, config=None, *, recent=False):
     """Return eligible rows and their combined, optionally held detection state."""
     present, absent = groups.get("present", []), groups.get("not_present", [])
     replay = TimingReplay(present, absent, config)
-    hits = replay.project(_hit_mask(present, thresholds), _hit_mask(absent, thresholds))
+    hits = replay.project(hit_mask(present, thresholds), hit_mask(absent, thresholds))
     result = []
     for rows, detected, eligible in zip((present, absent), hits, replay.eligible, strict=True):
         start = int(len(rows) * 0.8) if recent else 0
@@ -31,10 +31,10 @@ def observations(groups, thresholds, config=None, *, recent=False):
 
 def evaluate(groups, thresholds, config=None, *, recent=False):
     selected = observations(groups, thresholds, config, recent=recent)
-    result = _measure(selected)
+    result = measure_observations(selected)
     present, absent = groups.get("present", []), groups.get("not_present", [])
     result["duration"] = DurationReplay(present, absent, config).summary(
-        _hit_mask(present, thresholds), _hit_mask(absent, thresholds), recent
+        hit_mask(present, thresholds), hit_mask(absent, thresholds), recent
     )
     if config and config.get("timeout") is not None:
         total = sum(
@@ -49,7 +49,7 @@ def evaluate(groups, thresholds, config=None, *, recent=False):
 def onset_uncertainty(groups, thresholds, config, *, recent=False):
     present, absent = groups.get("present", []), groups.get("not_present", [])
     replay = TimingReplay(present, absent, config)
-    raw = _hit_mask(present, thresholds)
+    raw = hit_mask(present, thresholds)
     possible, latest = replay.positive.project(raw), replay.latest_onset.project(raw)
     mask = replay.positive.eligible
     if recent:
@@ -58,28 +58,6 @@ def onset_uncertainty(groups, thresholds, config, *, recent=False):
         "samples": (mask & possible & ~latest).bit_count(),
         "misses_if_latest_onset": (mask & ~latest).bit_count(),
         "misses_if_earliest_onset": (mask & ~possible).bit_count(),
-    }
-
-
-def _measure(observations):
-    counts = {"present": 0, "not_present": 0}
-    hits = dict(counts)
-    temporal = _TemporalMetrics()
-    for row, hit in sorted(observations, key=lambda item: item[0][0]):
-        ts, _values, label = row[:3]
-        counts[label] += 1
-        hits[label] += hit
-        temporal.observe(ts, label, hit)
-    return {
-        **temporal.summary(),
-        "present_samples": counts["present"],
-        "not_present_samples": counts["not_present"],
-        "false_negatives": counts["present"] - hits["present"],
-        "false_positives": hits["not_present"],
-        "sensitivity": hits["present"] / counts["present"] if counts["present"] else 0.0,
-        "false_positive_rate": hits["not_present"] / counts["not_present"]
-        if counts["not_present"]
-        else 0.0,
     }
 
 

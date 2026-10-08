@@ -16,6 +16,9 @@ import { panelChart } from "./panel/chart.js";
 import { panelSelection } from "./panel/selection.js";
 import { panelCalendar } from "./panel/calendar.js";
 import { panelHistory } from "./panel/history.js";
+import { panelRoomLearning } from "./panel/room_learning.js";
+import { panelRooms } from "./panel/rooms.js";
+import { panelRoomReport } from "./panel/room_report.js";
 import { panelView } from "./panel/view.js";
 
 // One distinct color per gate (0-8), shared between "move" and "still" views
@@ -249,6 +252,9 @@ Object.assign(
   panelChart,
   panelVisualization,
   panelSelection,
+  panelRoomLearning,
+  panelRooms,
+  panelRoomReport,
   panelView,
   panelCards,
   panelControls,

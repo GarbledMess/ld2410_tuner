@@ -1,9 +1,10 @@
 """Elapsed-time calibration scores over observed sessions, never a live detector."""
 
-from bisect import bisect_right
 from functools import lru_cache
 
 from .constants import MISSED_TIME_COST
+from .intervals import WeightedTime
+from .scoring import error_cost
 from .timing import _sessions, _Window, bit_runs
 
 
@@ -33,26 +34,10 @@ def _recent_start(windows):
     return 0
 
 
-class _ConfidenceTime:
-    """Piecewise confidence over midpoint cells; dense telemetry adds no time."""
-
-    def __init__(self, rows):
-        self.times = [rows[0][0]] + [
-            (a[0] + b[0]) / 2 for a, b in zip(rows, rows[1:], strict=False)
-        ]
-        self.weights = [row[3] if len(row) > 3 else 1.0 for row in rows]
-        self.prefix = [0.0]
-        for i in range(1, len(rows)):
-            self.prefix.append(
-                self.prefix[-1] + (self.times[i] - self.times[i - 1]) * self.weights[i - 1]
-            )
-
-    def at(self, timestamp):
-        i = max(0, bisect_right(self.times, timestamp) - 1)
-        return self.prefix[i] + (timestamp - self.times[i]) * self.weights[i]
-
-    def between(self, start, end):
-        return self.at(end) - self.at(start)
+def _confidence_time(rows):
+    """Assign observations midpoint cells; dense telemetry adds no time."""
+    times = [rows[0][0]] + [(a[0] + b[0]) / 2 for a, b in zip(rows, rows[1:], strict=False)]
+    return WeightedTime(times, [row[3] if len(row) > 3 else 1.0 for row in rows])
 
 
 class DurationGroup:
@@ -68,7 +53,7 @@ class DurationGroup:
         )
         on, off = (config["on_delay"], config["off_delay"]) if known else (0, 0)
         self.windows = [
-            (offset, _Window(part, hold, on, off), _ConfidenceTime(part))
+            (offset, _Window(part, hold, on, off), _confidence_time(part))
             for offset, part in _sessions(rows, barriers)
         ]
         self.unscored_mask = sum(
@@ -163,7 +148,7 @@ class DurationReplay:
             "unscored_presence_samples": present["unscored_samples"],
             "unscored_empty_samples": absent["unscored_samples"],
             "basis": "observed_session_time_estimate",
-            "error_cost": _error_cost(
+            "error_cost": error_cost(
                 1 - lower if lower is not None else 0.0,
                 -penalty / 100 if penalty is not None else 0.0,
             ),
@@ -194,9 +179,4 @@ class DurationReplay:
         false_rate = (
             n["weighted_active_seconds"] / n["weighted_seconds"] if n["weighted_seconds"] else 0.0
         )
-        return round(_error_cost(miss, false_rate), 10), round(miss, 12), round(false_rate, 10)
-
-
-def _error_cost(missed_fraction, false_fraction):
-    """Class-normalized time cost: missed presence matters more, never infinitely."""
-    return 100 * (MISSED_TIME_COST * max(0.0, missed_fraction) + max(0.0, false_fraction))
+        return round(error_cost(miss, false_rate), 10), round(miss, 12), round(false_rate, 10)

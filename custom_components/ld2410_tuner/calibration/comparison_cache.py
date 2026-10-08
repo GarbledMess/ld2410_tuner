@@ -32,8 +32,10 @@ def stored(device, context, pattern):
 def missing(device, context, retry_unscored=False):
     wanted, seen = {}, set()
     for slot, pattern in context["patterns"].items():
-        if pattern is None or not comparison.complete_thresholds(
-            pattern["thresholds"], context["keys"]
+        if (
+            pattern is None
+            or pattern.get("joint")
+            or not comparison.complete_thresholds(pattern["thresholds"], context["keys"])
         ):
             continue
         key = pattern_key(context, pattern)
@@ -65,6 +67,12 @@ def report(device, context):
 def _item(device, context, pattern):
     if pattern is None:
         return {"score": None, "reason": "No saved result", "applicable": False}
+    if pattern.get("joint"):
+        return {
+            "score": None,
+            "reason": "Joint zone result; compare and apply the complete group in Rooms and zones",
+            "applicable": False,
+        }
     if not comparison.complete_thresholds(pattern["thresholds"], context["keys"]):
         return {
             "score": None,

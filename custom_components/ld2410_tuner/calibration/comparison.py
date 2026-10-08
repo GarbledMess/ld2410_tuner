@@ -3,23 +3,15 @@
 import math
 
 from .constants import MIN_CLASS_SAMPLES, MIN_RECALL, MISSED_TIME_COST
-from .duration import DurationReplay, _error_cost
+from .duration import DurationReplay
 from .evidence import collect_samples
 from .reliability import prepare_evidence
-from .timing_metrics import _hit_mask, evaluate
+from .scoring import error_cost, score_from_cost
+from .timing_metrics import evaluate, hit_mask
 
 SCORE_MODEL = "weighted_time_v1"
 # Increment whenever scoring, evidence selection, outlier or timing semantics change.
 SCORER_VERSION = 1
-
-
-def score_from_cost(cost):
-    """100 requires zero measured error; rounding must not turn small errors into perfection."""
-    if not math.isfinite(cost) or cost < 0:
-        raise ValueError("Score requires a finite, non-negative error cost")
-    if cost == 0:
-        return 100.0
-    return min(99.99, round(max(0.0, 100.0 - cost), 2))
 
 
 def _groups(rows, keys):
@@ -92,7 +84,7 @@ def _measure_pattern(pattern, keys, human, automatic, timing):
     estimated = evaluate(automatic, values, timing)
     replay = DurationReplay(automatic["present"], automatic["not_present"], timing)
     auto_cost, auto_miss, auto_false = replay.automatic_rank(
-        _hit_mask(automatic["present"], values), _hit_mask(automatic["not_present"], values)
+        hit_mask(automatic["present"], values), hit_mask(automatic["not_present"], values)
     )
     sources = {label: _source(label, measured, estimated) for label in human}
     result.update(human=measured, automatic=estimated, sources=sources)
@@ -109,10 +101,10 @@ def _measure_pattern(pattern, keys, human, automatic, timing):
         if sources["not_present"] == "human"
         else auto_false
     )
-    cost = _error_cost(miss, false)
+    cost = error_cost(miss, false)
     human_replay = DurationReplay(human["present"], human["not_present"], timing)
     human_rank = human_replay.rank(
-        _hit_mask(human["present"], values), _hit_mask(human["not_present"], values)
+        hit_mask(human["present"], values), hit_mask(human["not_present"], values)
     )
     return {
         **result,

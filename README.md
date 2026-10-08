@@ -26,6 +26,95 @@ in HACS under **Custom repositories** using
 **LD2410 Tuner**, restart Home Assistant, and add the integration as above.
 Adding a custom repository does not require submitting it to the default catalogue.
 
+## Rooms and independent zones
+
+The **Rooms and zones** card assesses multiple radars together using their current
+thresholds. Home Assistant areas supply default groups containing the area's
+recording-enabled radars. **Edit members** overrides that selection; **Restore
+area default** restores it. **Add zone / manual group** creates an independently
+assessed selection, optionally organized under an area. These settings do not
+change Home Assistant's registry or require the optional ESPHome package.
+
+For example, **Office** can contain **Desk** and **Sofa** zones, each with its own
+radar selection. The Office assessment can cover both, while the two zone
+assessments stay separate. A person at the desk does not count as sofa occupancy,
+and a desk detection cannot hide a sofa miss. A radar selected in multiple zones
+contributes to each; grouping cannot locate a person within that radar's coverage.
+Area membership for manual zones is organizational: the whole-area default still
+uses the actual device areas, unless you explicitly edit its members.
+
+Each member's existing labels are interpreted as occupancy within its coverage:
+any Present label establishes group occupancy; Empty requires every member to be
+labelled empty. Human labels override estimates on that same member. An explicit
+Unknown suppresses automatic fallback. No labels are propagated from a whole area
+into its zones. Review old labels that described a wider area before using them
+for a narrower zone. Automatic evidence remains confidence-weighted and is clearly
+identified as an estimate, not independent validation of the detector.
+
+**Assess current settings** replays 24 hours, 3 days or 7 days of recordings.
+Each radar's own timeout and configured delay policy are replayed first; detections
+are then combined. Any member may detect presence, and any member may cause a
+false positive. Overlapping detections count once. Only shared recording coverage
+is assessed; missing readings, gaps and timing warm-up are excluded and reported.
+A history window limits the assessed dates, without deleting recordings.
+
+The result includes the combined score, occupied/empty time, hits, misses, false
+triggers, correct empties, and each radar's exclusive occupied-time contribution.
+All valid readings are included, without the individual learner's outlier filter.
+The replay follows continuous recordings across label transitions so existing
+holds can extend into an empty period. It therefore differs from per-device Learn
+and its stored scores; the per-member rows instead use identical group evidence.
+Observation counts describe estimated detection at unique recording timestamps;
+elapsed time determines the score, with the existing 5:1 missed/false-active cost.
+Timing and unknown-label limitations remain visible. A high score on these
+recordings is not a guarantee of future accuracy.
+
+Assessment runs on the server and can finish after leaving the panel. The latest
+result per group is stored with its scorer version. Polling and new recordings do
+not recalculate it. Changed membership, labels, thresholds, timing or scorer
+version mark it for reassessment; use Assess again to refresh the evidence. An
+integration restart cancels unfinished jobs, which can be requested again.
+
+### Joint learning within a zone
+
+**Learn together** fits all selected radars against the last seven days of shared
+recordings. Device Learn and overnight learning use the most specific unambiguous
+multi-radar zone, or the area when it has no independent zones. Single-radar zones
+keep individual learning. Overlapping manual groups require selecting the intended
+group explicitly; a whole area containing independent zones cannot be learned as
+one zone. Overnight learning handles each joint group once and shares its outcome
+with all members.
+
+A miss counts only when no member detects presence after its own timing filters.
+Every member's false activity counts against the group. Strong overlapping
+signals are retained: equally scoring settings favour thresholds inside supported
+noise/presence gaps across all radars. There is no strongest-radar winner or fixed
+threshold floor. A weak, nonseparating radar is not forced to detect every occupied
+moment. The report shows combined outcomes without double-counting occupied time.
+
+The joint learner uses the same continuous interval replay as group assessment,
+including valid spikes and lower-confidence automatic labels. It uses a bounded,
+deterministic coordinate search with multiple starting points; it does not claim
+the globally optimal solution or independently validated field accuracy. Joint
+measurements are not interchangeable with individually filtered learner scores.
+
+Results appear in each member's existing User learnt / Autolearnt slot, with joint
+outcomes clearly identified. Apply on a device opens the group review. The group
+shows every proposed threshold and applies the complete recommendation. Automatic
+Apply requires every member to permit the learning source and a lower joint time
+penalty on the same fresh evidence. A disabled member blocks automatic application
+for the whole group.
+
+Membership, labels, active gates, timing, current thresholds and saved results are
+checked before and during writes. Lower thresholds establish replacement coverage
+before higher thresholds withdraw old coverage. Writes use the existing paced
+writer and reported-value checks; they are not atomic hardware transactions.
+Failure stops further writes and leaves any already-written values in place.
+Current/Previous rotate only when all members finish successfully. A joint result
+whose companion configuration has changed must be relearned; it cannot be applied
+as a standalone device pattern. Jobs survive leaving the panel and report
+interruption on integration restart. No new live presence entity is introduced.
+
 ## Learning in the background
 
 **Learn thresholds** starts a server-owned job. You can switch pages, close the tab,

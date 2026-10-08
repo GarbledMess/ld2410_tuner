@@ -9,7 +9,7 @@ Failure at that ceiling proves a conflict; passing it does not prove feasibility
 from math import floor
 
 from .constants import MAX_FPR, MAX_MISSED_RUN, MIN_CLASS_SAMPLES, MIN_RECALL, SAMPLE_SECONDS
-from .metrics import _masks, metrics
+from .metrics import metrics, threshold_masks
 
 
 def assess_feasibility(positives, negatives, keys):
@@ -35,7 +35,7 @@ def assess_feasibility(positives, negatives, keys):
 def _window_bounds(positives, negatives, keys, scope):
     miss_budget = floor(len(positives) * (1 - MIN_RECALL) + 1e-9)
     false_budget = floor(len(negatives) * MAX_FPR + 1e-9)
-    masks = {key: _masks(negatives, key) for key in keys}
+    masks = {key: threshold_masks(negatives, key) for key in keys}
     bounds = {
         key: next(t for t, mask in enumerate(values) if mask.bit_count() <= false_budget)
         for key, values in masks.items()

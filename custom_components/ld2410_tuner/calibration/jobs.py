@@ -6,6 +6,7 @@ from copy import deepcopy
 from time import time
 from uuid import uuid4
 
+from ..runtime.tasks import finish_task
 from . import automatic, results
 
 _LOGGER = logging.getLogger(__name__)
@@ -18,6 +19,11 @@ def start(runtime, device_id, source="user"):
     device = runtime.data["devices"].get(device_id)
     if device is None:
         raise ValueError("Unknown device")
+    from ..rooms import groups, learning
+
+    group_id = groups.for_device(runtime, device_id)
+    if group_id:
+        return learning.start_device(runtime, device_id, source, group_id)
     task = runtime._learning_jobs.get(device_id)
     if task is None:
         report = {
@@ -107,8 +113,4 @@ def _finished(runtime, device_id, report, task):
             finished_at=time(),
         )
         runtime._schedule_save()
-    if runtime._learning_jobs.get(device_id) is task:
-        runtime._learning_jobs.pop(device_id)
-    # A browser may leave without awaiting the job; its error is in the saved report.
-    if not task.cancelled():
-        task.exception()
+    finish_task(runtime._learning_jobs, device_id, task)

@@ -123,7 +123,7 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.async_learn = AsyncMock(return_value={"status": "ok", "id": "new"})
 
     async def tick(self, instant):
-        await self.runtime.nightly_tick(datetime.fromisoformat(instant))
+        self.runtime.nightly_tick(datetime.fromisoformat(instant))
         if self.runtime._nightly_task:
             await self.runtime._nightly_task
 
@@ -205,9 +205,9 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.Event().wait()
 
         self.runtime.async_learn.side_effect = learning
-        await self.runtime.nightly_tick(datetime.fromisoformat("2026-09-26T02:00:00+00:00"))
+        self.runtime.nightly_tick(datetime.fromisoformat("2026-09-26T02:00:00+00:00"))
         await started.wait()
-        await self.runtime.nightly_tick(datetime.fromisoformat("2026-09-27T02:00:00+00:00"))
+        self.runtime.nightly_tick(datetime.fromisoformat("2026-09-27T02:00:00+00:00"))
         self.assertEqual(self.runtime.async_learn.await_count, 1)
         self.runtime.unsub_nightly = Mock()
         await schedule.stop(self.runtime)

@@ -139,6 +139,10 @@ async def _apply_validated(
         if slot
         else device.get("last_learning") or {}
     )
+    if learned.get("joint"):
+        raise ValueError(
+            "Apply this complete joint recommendation from Rooms and zones; one radar alone cannot reproduce its result"
+        )
     _validate_learning(device, learned, check_revision=slot is None)
     button = await device_io.prepare_device(runtime, device_id, learned["entities"])
     _validate_learning(device, learned, check_revision=slot is None)

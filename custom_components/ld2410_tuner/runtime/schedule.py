@@ -7,6 +7,8 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from homeassistant.core import callback
+
 from ..calibration import automatic
 from ..calibration.service import LearningEvidenceChanged
 
@@ -47,7 +49,8 @@ def configure(runtime, enabled, at, auto_apply=None, auto_apply_scope=None):
     return settings(runtime)
 
 
-async def tick(runtime, now):
+@callback
+def tick(runtime, now):
     config = settings(runtime)
     if not config["enabled"] or config["running"]:
         return
@@ -62,11 +65,17 @@ async def tick(runtime, now):
 async def _run(runtime, day):
     # Persist the claim before starting: restarts and repeated DST hours do not rerun it.
     await runtime.async_save()
-    for device_id, device in list(runtime.data["devices"].items()):
+    processed = set()
+    # Learning yields to discovery/removal; retain this run's starting membership.
+    devices = list(runtime.data["devices"].items())
+    for device_id, device in devices:
+        if device_id in processed:
+            continue
         if not settings(runtime)["enabled"]:
             break
         if device.get("entities") and device.get("recording_enabled", True):
             await _learn_device(runtime, device_id, device, day)
+            _share_joint_attempt(runtime, device_id, device, processed)
     await runtime.async_save()
 
 
@@ -112,7 +121,12 @@ async def _apply_result(runtime, device_id, device, learned, attempt):
 async def stop(runtime):
     if runtime.unsub_nightly:
         runtime.unsub_nightly()
-    tasks = list(runtime._learning_jobs.values()) + list(runtime._comparison_jobs.values())
+    tasks = (
+        list(runtime._learning_jobs.values())
+        + list(runtime._comparison_jobs.values())
+        + list(runtime._room_jobs.values())
+        + list(runtime._room_learning_jobs.values())
+    )
     if runtime._nightly_task:
         tasks.append(runtime._nightly_task)
     for task in tasks:
@@ -121,6 +135,7 @@ async def stop(runtime):
 
 
 def restore(runtime):
+    _restore_joint(runtime)
     for device in runtime.data["devices"].values():
         recovery = device.get("configuration_recovery", {})
         if recovery.get("status") == "running":
@@ -158,6 +173,8 @@ async def _learn_fresh(runtime, device_id, attempt):
 
 def _assessment(learned):
     """Keep the overnight headline tied to that run, including automatic-only fits."""
+    if learned.get("joint"):
+        return learned["joint"]["report"]["room"]
     human = learned.get("training", {}).get("duration", {})
     automatic = learned.get("estimated_training", {}).get("duration", {})
     fields = ("presence_recall", "presence_recall_lower", "false_positive_percent")
@@ -165,3 +182,32 @@ def _assessment(learned):
         field: human.get(field) if human.get(field) is not None else automatic.get(field)
         for field in fields
     }
+
+
+def _share_joint_attempt(runtime, device_id, device, processed):
+    from ..rooms import groups
+
+    processed.add(device_id)
+    try:
+        group_id = groups.for_device(runtime, device_id)
+        group = groups.learning_group(runtime, group_id) if group_id else None
+    except ValueError:
+        return
+    if not group_id:
+        return
+    for key in group["device_ids"]:
+        runtime.data["devices"][key]["nightly_learning"] = deepcopy(device["nightly_learning"])
+        processed.add(key)
+
+
+def _restore_joint(runtime):
+    for state in runtime.data.get("room_learning", {}).values():
+        job = state.get("job", {})
+        if job.get("status") == "running":
+            _interrupt_attempt(job)
+        application = state.get("application", {})
+        if application.get("status") == "applying":
+            application.update(
+                status="interrupted",
+                reason="Home Assistant restarted; check every zone member's thresholds",
+            )

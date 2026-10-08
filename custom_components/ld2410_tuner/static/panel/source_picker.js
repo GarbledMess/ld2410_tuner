@@ -1,6 +1,16 @@
 // Render suggestions in the panel: native datalist popups vary across browsers.
 const RESULT_LIMIT = 30;
 
+function searchStatus(count) {
+  if (!count)
+    return "No matching entities. You can enter an entity ID directly.";
+  const suffix =
+    count > RESULT_LIMIT
+      ? `; showing the first ${RESULT_LIMIT}. Keep typing to narrow the search.`
+      : ".";
+  return `${count} matching entities${suffix}`;
+}
+
 function eligible(entityId, state, kind) {
   if (kind === "bermuda")
     return (
@@ -56,9 +66,7 @@ export function wireSourcePicker(row, getStates, escape) {
           `<button type="button" role="option" tabindex="-1" aria-selected="false" id="${escape(list.id)}-${index}" data-source-option="${escape(id)}"><b>${escape(state.attributes?.friendly_name || id)}</b><span>${escape(id)}</span></button>`,
       )
       .join("");
-    status.textContent = matches.length
-      ? `${matches.length} matching entities${matches.length > RESULT_LIMIT ? `; showing the first ${RESULT_LIMIT}. Keep typing to narrow the search.` : "."}`
-      : "No matching entities. You can enter an entity ID directly.";
+    status.textContent = searchStatus(matches.length);
     popup.hidden = false;
     list.scrollTop = 0;
     input.setAttribute("aria-expanded", "true");
@@ -76,12 +84,8 @@ export function wireSourcePicker(row, getStates, escape) {
     if (popup.hidden) show();
     const options = [...list.querySelectorAll("[data-source-option]")];
     if (!options.length) return;
-    active =
-      active < 0
-        ? direction > 0
-          ? 0
-          : options.length - 1
-        : (active + direction + options.length) % options.length;
+    if (active < 0) active = direction > 0 ? 0 : options.length - 1;
+    else active = (active + direction + options.length) % options.length;
     options.forEach((option, index) =>
       option.setAttribute("aria-selected", String(index === active)),
     );

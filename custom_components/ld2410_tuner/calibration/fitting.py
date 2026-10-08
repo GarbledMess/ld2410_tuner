@@ -20,11 +20,11 @@ from .diagnostics import review_evidence
 from .feasibility import exclusive_presence
 from .metrics import _episode_masks as _episode_masks
 from .metrics import _human_ranker as _human_ranker
-from .metrics import _masks as _masks
 from .metrics import _temporal_metrics as _temporal_metrics
 from .metrics import _weight as _weight
 from .metrics import _weighted_masks as _weighted_masks
 from .metrics import metrics as metrics
+from .metrics import threshold_masks as threshold_masks
 from .reliability import filter_groups, prepare_evidence
 from .search import _search
 from .separation import gate_preference

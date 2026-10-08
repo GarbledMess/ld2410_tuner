@@ -264,6 +264,11 @@ export const panelView = {
           .comparison-table th,.comparison-table td { display:block; border:0; padding:4px; }
           .comparison-table td:nth-child(n+3) { grid-column:1 / -1; }
         }
+        .room-members { display:flex; flex-direction:column; gap:10px; margin:10px 0; }
+        #rooms { margin-bottom:14px; }
+        #rooms > summary { cursor:pointer; }
+        #rooms h2 { display:inline; }
+        #rooms .table-scroll { display:block; }
       </style>
       <div class="wrap">
         <div id="error" role="alert" class="notice warn" hidden></div>
@@ -280,6 +285,12 @@ export const panelView = {
           </section>
           <div class="settings-section"><div id="timing-controls" class="global-settings"></div></div>
           <div class="settings-section"><div id="storage-controls" class="global-settings"></div></div>
+        </details>
+        <details class="panel-card" id="rooms"><summary><h2>Rooms and zones</h2></summary>
+          <p>Assess complementary radar coverage using current thresholds. An area can contain independent zones; an occupied zone does not make its neighbours occupied. Whole-area assessment combines the selected area radars.</p>
+          <p class="muted">Each member's labels describe its coverage: any Present label establishes group occupancy; Empty requires every member labelled empty. Human labels override estimates on that member. No labels are copied between zones. Review older labels if they described a wider area.</p>
+          <div class="room-list"></div><button data-room-action="add">Add zone / manual group</button><div class="room-editor"></div>
+          <p class="muted">Learn together fits all radars in a zone. Areas with independent zones are assessed as a whole but learned by zone. Device Learn and overnight jobs use the most specific unambiguous group. Results are stored until you assess again; new recordings do not continuously recalculate them. Scores use elapsed time: each 1% missed occupied time costs 5 points, each 1% false-active empty time costs 1 point, on a 0–100 scale. This is a recording comparison, not an accuracy guarantee. Human-labelled durations take priority for each occupancy state; confidence-weighted estimates fill missing evidence. All valid readings are included, without the individual learner's outlier filtering. Counts refer to estimated detection at unique observation times; they do not determine the score.</p>
         </details>
         <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         <div class="grid" id="grid"></div>
@@ -337,10 +348,11 @@ export const panelView = {
     this._drawLearningSchedule();
     this._drawStorage();
     this._drawTimingSettings();
+    this._drawRooms();
     const grid = this.shadowRoot.querySelector("#grid");
     this._captureDrafts(grid);
     const cards = new Map(
-      [...grid.querySelectorAll("[data-device-id]")].map((card) => [
+      Array.from(grid.querySelectorAll("[data-device-id]"), (card) => [
         card.dataset.deviceId,
         card,
       ]),
@@ -353,7 +365,9 @@ export const panelView = {
       );
       return;
     }
-    for (const child of [...grid.children]) {
+    // Removing cards mutates this live collection.
+    const children = [...grid.children];
+    for (const child of children) {
       if (!(child.dataset.deviceId in devices)) child.remove();
     }
     for (const [index, [id, device]] of Object.entries(devices).entries()) {

@@ -17,6 +17,10 @@ from ..history import recording, storage
 from ..presence import autolabelling, sources
 from ..presentation import charts
 from ..presentation import snapshots as presentation
+from ..rooms import application as room_application
+from ..rooms import groups as room_groups
+from ..rooms import jobs as room_jobs
+from ..rooms import learning as room_learning
 from . import discovery, schedule
 
 
@@ -49,6 +53,8 @@ class TunerRuntime:
         self._history_jobs = {}
         self._learning_jobs = {}
         self._comparison_jobs = {}
+        self._room_jobs = {}
+        self._room_learning_jobs = {}
         self._comparison_cache = {}
         self._comparison_semaphore = asyncio.Semaphore(2)
         self._cleanup_task = None
@@ -72,6 +78,11 @@ class TunerRuntime:
                 return  # Reported in the panel; a settings change can retry.
 
     async_save = storage.async_save
+    configure_room = room_groups.configure
+    remove_room = room_groups.remove
+    assess_room = room_jobs.start
+    learn_room = room_learning.start
+    apply_room = room_application.apply
     compare_results = comparison_jobs.compare_results
     configure_timing = timing_config.configure
     configure_storage = storage.configure

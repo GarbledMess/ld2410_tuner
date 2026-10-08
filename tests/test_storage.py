@@ -89,7 +89,8 @@ def test_total_size_trim_discards_low_confidence_globally_before_human():
     target = budget.storage_bytes(normalized) - 15000
     prepared, changes, report = budget.prepare(original, {}, NOW, target=target)
     assert budget.storage_bytes(prepared) <= target
-    assert report["removed_automatic"] > 0 and report["removed_human"] == 0
+    assert report["removed_automatic"] > 0
+    assert report["removed_human"] == 0
     assert original == original_copy
     assert changes
     remaining = [

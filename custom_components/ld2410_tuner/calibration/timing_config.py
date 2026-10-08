@@ -65,7 +65,7 @@ def _seconds(state, field):
         return None
     text = str(state.state).strip()
     unit = str(getattr(state, "attributes", {}).get("unit_of_measurement", ""))
-    encoded = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*(ms|s|min|h)", text)
+    encoded = re.fullmatch(r"(?a:(\d+(?:\.\d+)?))\s*(ms|s|min|h)", text)
     if encoded:
         text, unit = encoded.groups()
     try:

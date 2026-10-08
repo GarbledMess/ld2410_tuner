@@ -31,6 +31,7 @@ def load_runtime():
         "homeassistant.helpers",
         "homeassistant.helpers.entity_registry",
         "homeassistant.helpers.device_registry",
+        "homeassistant.helpers.area_registry",
         "homeassistant.helpers.event",
         "homeassistant.helpers.storage",
     ]
@@ -41,6 +42,12 @@ def load_runtime():
     core = sys.modules["homeassistant.core"]
     core.HomeAssistant, core.callback = object, lambda fn: fn
     sys.modules["homeassistant.helpers.entity_registry"].EVENT_ENTITY_REGISTRY_UPDATED = "registry"
+    sys.modules["homeassistant.helpers.area_registry"].async_get = lambda hass: (
+        types.SimpleNamespace(async_list_areas=lambda: [])
+    )
+    sys.modules["homeassistant.helpers.device_registry"].async_get = lambda hass: (
+        types.SimpleNamespace(async_get=lambda key: None)
+    )
     events = sys.modules["homeassistant.helpers.event"]
     events.async_track_state_change_event = lambda *a: lambda: None
     events.async_track_time_interval = lambda *a: lambda: None
@@ -153,8 +160,8 @@ class LearningTests(unittest.TestCase):
             positive = [row for row in rows if row[2] == "present"]
             negative = [row for row in rows if row[2] == "not_present"]
             threshold = rng.randrange(31)
-            detected = learning._masks(positive, "g0_move")[threshold]
-            false = learning._masks(negative, "g0_move")[threshold]
+            detected = learning.threshold_masks(positive, "g0_move")[threshold]
+            false = learning.threshold_masks(negative, "g0_move")[threshold]
             score = learning._human_ranker(positive, negative)(detected, false)
             all_metrics = learning.metrics(positive + negative, {"g0_move": threshold})
             recent = learning.metrics(
@@ -464,6 +471,7 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
         ws.vol.Required = lambda key, **kwargs: key
         ws.vol.Optional = lambda key, **kwargs: key
         ws.vol.In = lambda values: values
+        ws.vol.Any = lambda *values: values
         ws.vol.All = lambda *values: values
         ws.vol.Coerce = lambda value: value
         ws.vol.Range = lambda **kwargs: kwargs
@@ -502,7 +510,7 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
         await self.commands[f"{mod.DOMAIN}/{name}"](self.hass, self.connection, {"id": 7, **fields})
 
     async def test_commands_remain_admin_only_and_lookup_live_runtime(self):
-        self.assertEqual(len(self.commands), 20)
+        self.assertEqual(len(self.commands), 25)
         self.assertTrue(all(command.admin_only for command in self.commands.values()))
         self.hass.data[mod.DOMAIN] = types.SimpleNamespace(snapshot=lambda: {"reloaded": True})
         await self.call("snapshot")

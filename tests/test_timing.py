@@ -124,7 +124,9 @@ def test_timed_rank_matches_public_validation_including_recent_and_gaps():
         replay = sys.modules["tuner_under_test.calibration.duration"].DurationReplay(
             groups["present"], groups["not_present"], settings
         )
-        masks = [metrics_module._masks(groups[label], "g0_still")[threshold] for label in groups]
+        masks = [
+            metrics_module.threshold_masks(groups[label], "g0_still")[threshold] for label in groups
+        ]
         rank = replay.rank(*masks)
         all_metrics = measure_module.evaluate(groups, {"g0_still": threshold}, settings)
         recent = measure_module.evaluate(groups, {"g0_still": threshold}, settings, recent=True)

@@ -14,6 +14,7 @@ from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
 from ..history import policy, storage
 from ..presence import sources
+from ..rooms import jobs as room_jobs
 from ..runtime.schedule import settings
 
 
@@ -39,6 +40,7 @@ def snapshot(runtime) -> dict[str, Any]:
     }
 
     _snapshot_devices(runtime, registry, result)
+    result["rooms"] = room_jobs.snapshot(runtime)
     return result
 
 

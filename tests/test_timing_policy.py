@@ -91,8 +91,9 @@ def test_invalid_policy_does_not_change_saved_settings(field, value):
 
 def test_invalid_policy_shape_is_rejected():
     for values in (None, {}, {**policy.DEFAULTS, "extra": 1}):
+        runtime = types.SimpleNamespace(data={})
         with pytest.raises(ValueError):
-            policy.configure(types.SimpleNamespace(data={}), values)
+            policy.configure(runtime, values)
 
 
 class TimingPolicyRuntimeTests(unittest.IsolatedAsyncioTestCase):

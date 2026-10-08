@@ -14,6 +14,7 @@ const testTiming = require("./browser/timing.cjs");
 const testActivity = require("./browser/activity.cjs");
 const testJobs = require("./browser/jobs.cjs");
 const testSources = require("./browser/sources.cjs");
+const testRooms = require("./browser/rooms.cjs");
 const testStorage = require("./browser/storage.cjs");
 const testTimeline = require("./browser/timeline.cjs");
 const testHistoryGraph = require("./browser/history_graph.cjs");
@@ -702,6 +703,7 @@ const { execFileSync } = require("node:child_process");
     await testSavedResults(page, screenshotDir);
     await testJobs(page, screenshotDir);
     await testStorage(page, screenshotDir);
+    await testRooms(page);
     await testSources(page, screenshotDir);
     await page.setViewportSize({ width: 390, height: 844 });
     await cards

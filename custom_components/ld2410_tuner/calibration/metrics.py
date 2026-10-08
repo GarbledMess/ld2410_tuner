@@ -18,13 +18,23 @@ from .timing import TimingReplay
 
 
 def metrics(rows, thresholds):
+    return measure_observations(
+        (row, any(row[1].get(key, -1) > value for key, value in thresholds.items())) for row in rows
+    )
+
+
+def measure_observations(observations):
+    """Count outcomes and episodes identically for raw and timing-adjusted hits."""
     counts = {"present": 0, "not_present": 0}
     hits = {"present": 0, "not_present": 0}
-    for _timestamp, values, label in rows:
+    temporal = _TemporalMetrics()
+    for row, hit in sorted(observations, key=lambda item: item[0][0]):
+        timestamp, _values, label = row[:3]
         counts[label] += 1
-        hits[label] += any(values.get(key, -1) > threshold for key, threshold in thresholds.items())
+        hits[label] += hit
+        temporal.observe(timestamp, label, hit)
     return {
-        **_temporal_metrics(rows, thresholds),
+        **temporal.summary(),
         "present_samples": counts["present"],
         "not_present_samples": counts["not_present"],
         "sensitivity": hits["present"] / counts["present"] if counts["present"] else 0.0,
@@ -115,7 +125,7 @@ def _episode_masks(positives, negatives):
     return [(mask, mask.bit_count()) for mask in episodes]
 
 
-def _masks(rows, key):
+def threshold_masks(rows, key):
     bins = [0] * 101
     for i, row in enumerate(rows):
         values = row[1]

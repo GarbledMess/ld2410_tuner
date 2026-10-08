@@ -68,7 +68,7 @@ export const panelChart = {
       cs.loadedRevision === revision
     )
       return;
-    this._fetchChartData(id);
+    void this._fetchChartData(id);
   },
 
   _queueChartCall(call) {
@@ -82,7 +82,7 @@ export const panelChart = {
     while (this._activeCharts < 2 && this._chartQueue.length) {
       const { call, resolve, reject } = this._chartQueue.shift();
       this._activeCharts++;
-      Promise.resolve()
+      void Promise.resolve()
         .then(call)
         .then(resolve, reject)
         .finally(() => {
@@ -299,22 +299,25 @@ export const panelChart = {
       ["chart-range", cs.hours],
     ]) {
       const control = card.querySelector(`[data-action="${action}"]`);
-      if (control && action === "chart-range") {
-        for (const option of [...control.options])
-          if (option.dataset.customRange && option.value !== String(value))
-            option.remove();
-        if (
-          ![...control.options].some((option) => option.value === String(value))
-        ) {
-          const option = new Option("Selected period", String(value));
-          option.dataset.customRange = "true";
-          control.add(option);
-        }
-      }
+      if (control && action === "chart-range")
+        this._syncRangeOptions(control, value);
       if (control && control.value !== String(value))
         control.value = String(value);
     }
     this._updateGateChipHighlight(card, cs.gate);
+  },
+
+  _syncRangeOptions(control, value) {
+    // HTMLSelectElement.options is live; removing options requires a snapshot.
+    const options = [...control.options];
+    for (const option of options)
+      if (option.dataset.customRange && option.value !== String(value))
+        option.remove();
+    if ([...control.options].some((option) => option.value === String(value)))
+      return;
+    const option = new Option("Selected period", String(value));
+    option.dataset.customRange = "true";
+    control.add(option);
   },
 
   _chartStatusText(cs, matches) {

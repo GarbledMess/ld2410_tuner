@@ -6,7 +6,7 @@ from math import floor
 
 from .constants import MAX_FPR, MIN_CLASS_SAMPLES
 from .duration import DurationReplay
-from .metrics import _masks, _weight, _weighted_masks
+from .metrics import _weight, _weighted_masks, threshold_masks
 from .separation import gate_preference
 from .timing import TimingReplay
 
@@ -56,7 +56,7 @@ class _ThresholdSearch:
         if preference["human_supported"]:
             self.human_gaps.add(key)
         self.quiet[key] = max(noise) if noise else self.preferred[key]
-        masks = [_masks(rows, key) for rows in groups]
+        masks = [threshold_masks(rows, key) for rows in groups]
         candidates = range(101) if observed else [int(fallback)]
         self.tables[key] = {t: tuple(mask[t] for mask in masks) for t in candidates}
 

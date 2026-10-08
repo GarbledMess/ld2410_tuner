@@ -55,7 +55,7 @@ async def trim(runtime, target_mib=None):
     if target_mib is not None:
         if type(target_mib) not in (int, float) or not 1 <= target_mib <= maximum:
             raise ValueError("Trim target must be between 1 MiB and the configured limit")
-    for device_id in list(runtime._history_runtime):
+    for device_id in runtime._history_runtime:
         runtime._flush_history_block(device_id)
     return await _persist(
         runtime, clean=True, target=None if target_mib is None else int(target_mib * policy.MIB)

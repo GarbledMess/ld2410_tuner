@@ -58,7 +58,8 @@ class RecoveryReplay:
         if kind == "script.is_running":
             assert value == SCRIPT
             return self.running
-        assert kind == "binary_sensor.is_off" and value == READY
+        assert kind == "binary_sensor.is_off"
+        assert value == READY
         return not self.ready
 
     def set_ready(self):

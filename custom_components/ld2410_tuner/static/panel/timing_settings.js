@@ -1,3 +1,5 @@
+import { readNumberFields } from "./forms.js";
+
 const TIMING_FIELDS = [
   ["timeout", "Fallback radar timeout (seconds)", 1],
   ["on_delay", "Fallback on delay (seconds)", 0.5],
@@ -32,9 +34,7 @@ export const panelTimingSettings = {
     const inputs = [...container.querySelectorAll("[data-timing]")];
     const capture = () => ({
       mode: mode.value,
-      ...Object.fromEntries(
-        inputs.map((input) => [input.dataset.timing, Number(input.value)]),
-      ),
+      ...readNumberFields(inputs, "timing"),
     });
     container.oninput = () => {
       this._timingDraft = capture();
@@ -66,5 +66,82 @@ export const panelTimingSettings = {
     if (timing.scope !== "reported_presence")
       return "Timing metadata is incomplete. Learning completed using available timing; missing delays are not a job failure.";
     return "";
+  },
+  _timingNeedsReview(learning) {
+    const timing = learning.timing;
+    if (timing?.configuration?.mode === "disabled") return false;
+    return (
+      timing?.scope !== "reported_presence" ||
+      Object.values(timing?.configuration?.sources || {}).includes("fallback")
+    );
+  },
+
+  _timingChanged(learning, current) {
+    const captured = learning?.timing?.configuration;
+    return Boolean(
+      captured &&
+      current &&
+      ((captured.mode || "device") !== (current.mode || "device") ||
+        ["timeout", "on_delay", "off_delay"].some(
+          (key) =>
+            (captured[key] ?? null) !== (current[key] ?? null) ||
+            (captured.sources &&
+              (captured.sources[key] || null) !==
+                (current.sources?.[key] || null)),
+        )),
+    );
+  },
+
+  _timingHtml(learning, current) {
+    const timing = learning?.timing;
+    if (learning && !timing)
+      return '<div class="notice timing-report">This saved result has no timing assessment. Learn again to use the current model and device settings.</div>';
+    const settings = timing?.configuration || current || {};
+    const duration = (value) =>
+      value == null ? "unknown" : `${Number(value)}s`;
+    const source = timing
+      ? "Timing used for this result"
+      : "Available device timing";
+    const values = `Radar timeout: ${duration(settings.timeout)} · On delay: ${duration(settings.on_delay)} · Off delay: ${duration(settings.off_delay)}`;
+    const scope = this._timingScopeText(settings);
+    const uncertainty = learning?.training?.onset_uncertainty;
+    const uncertaintyHtml = uncertainty?.samples
+      ? `<p><b>${Number(uncertainty.samples)} presence observations have unresolved transition timing.</b> The signal recovered between snapshots, so the actual transition and any on delay may precede the high snapshot. The missed-presence range shows both possible onset times. These observations are retained. Their conservative missed-time estimate contributes to the finite error cost; uncertainty does not impose an absolute threshold requirement.</p>`
+      : "";
+    const changed = this._timingChanged(learning, current)
+      ? "<p><b>Device timing has changed or the global timing policy was updated. Learn again to assess the current settings; the saved result still uses the values shown here.</b></p>"
+      : "";
+    return `<div class="notice timing-report"><b>${source}</b><div>${values}</div><p>${scope}</p>${this._paragraphHtml(this._timingPolicyNote(timing))}${changed}${learning?.status === "uncertain" ? "<p>Sampling uncertainty: recordings do not establish every transition time, and very short periods may have no measurable duration. This can remain even when all three device timing settings are known. The estimates and sample counts below show what was measured.</p>" : ""}${uncertaintyHtml}<details data-detail="timing-assumptions"><summary>Sampling and timing assumptions</summary>
+      ${this._timingAssumptionsHtml(learning)}</details></div>`;
+  },
+
+  _timingScopeText(settings) {
+    if (settings.mode === "disabled")
+      return "Timing adjustments are disabled. Scores use raw threshold activity without timeout or on/off delays. Apply still changes gate thresholds only.";
+    if (settings.timeout == null)
+      return "Timeout is unavailable: time scores estimate raw threshold activity between snapshots. Your existing firmware remains supported.";
+    if (settings.on_delay == null || settings.off_delay == null)
+      return "Learning accounts for radar hold only. ESPHome filters are unknown; expose both delays or configure global fallback values to include them. The package is optional.";
+    return "Learning accounts for radar hold, then delayed on and delayed off. These are read-only inputs; Apply changes gate thresholds only.";
+  },
+
+  _timingAssumptionsHtml(learning) {
+    const timing = learning?.timing;
+    const raw = learning?.raw_training;
+    const interval = timing?.sample_interval_seconds;
+    const paragraphs = [];
+    if (timing?.active)
+      paragraphs.push(
+        `Sampled estimate: consecutive high readings are treated as one run; empty-room spikes allow for activity between observations. Gaps and label changes restart the replay. ${learning.training?.timing_warmup_samples || 0} initial observations were left unscored because the preceding device state is unknown.`,
+      );
+    if (interval != null)
+      paragraphs.push(
+        `Typical recorded interval: ${Number(interval)}s. These snapshots cannot establish sub-second spike lengths or exact detection times.`,
+      );
+    if (raw && timing?.active)
+      paragraphs.push(
+        `Before hold and filters: ${raw.false_negatives} missed / ${raw.present_samples} presence observations; ${raw.false_positives} crossings / ${raw.not_present_samples} empty observations. The quality measurements below use the timing estimate.`,
+      );
+    return paragraphs.map((text) => this._paragraphHtml(text)).join("");
   },
 };

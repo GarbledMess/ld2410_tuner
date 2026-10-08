@@ -5,6 +5,7 @@ import time
 from copy import deepcopy
 
 from ..history import policy
+from ..runtime.tasks import finish_task
 from . import comparison, comparison_cache, results
 from .constants import METHOD
 from .timing_config import read_timing, timing_signature
@@ -15,6 +16,7 @@ def _pattern(result, entities):
         return None
     return {
         "id": result.get("id"),
+        "joint": result.get("joint"),
         "thresholds": {
             key: value.get("threshold")
             for key, value in result.get("proposals", {}).items()
@@ -74,7 +76,7 @@ async def compare_results(runtime, device_id, force=False):
             return report
         task = asyncio.create_task(_run(runtime, device_id, context, signature, wanted))
         runtime._comparison_jobs[device_id] = task
-        task.add_done_callback(lambda done: _finished(runtime, device_id, done))
+        task.add_done_callback(lambda done: finish_task(runtime._comparison_jobs, device_id, done))
     return await asyncio.shield(task)
 
 
@@ -108,10 +110,3 @@ async def _run(runtime, device_id, context, signature, wanted):
         runtime._comparison_cache.pop(device_id, None)
         runtime._schedule_save()
         return comparison_cache.report(device, context)
-
-
-def _finished(runtime, device_id, task):
-    if runtime._comparison_jobs.get(device_id) is task:
-        runtime._comparison_jobs.pop(device_id, None)
-    if not task.cancelled():
-        task.exception()

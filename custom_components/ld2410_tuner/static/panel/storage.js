@@ -1,3 +1,5 @@
+import { readNumberFields } from "./forms.js";
+
 const STORAGE_FIELDS = [
   ["thin_after_days", "Start thinning after (days)", 0, 3649, 7],
   ["minimum_confidence", "Starting confidence cutoff (%)", 0, 100, 50],
@@ -10,7 +12,11 @@ export const panelStorage = {
   _recordingHtml(d) {
     const enabled = d.recording_enabled !== false;
     const blocked = this._data?.storage?.blocked;
-    return `<div class="recording-control"><label><input type="checkbox" role="switch" data-action="recording" ${enabled ? "checked" : ""}> Record data</label><span class="muted">${blocked ? "Paused · storage limit needs attention" : enabled ? "Recording history and training evidence" : "Paused · existing data kept"}</span></div>`;
+    let status = enabled
+      ? "Recording history and training evidence"
+      : "Paused · existing data kept";
+    if (blocked) status = "Paused · storage limit needs attention";
+    return `<div class="recording-control"><label><input type="checkbox" role="switch" data-action="recording" ${enabled ? "checked" : ""}> Record data</label><span class="muted">${status}</span></div>`;
   },
 
   _wireRecording(card, id, d) {
@@ -44,7 +50,13 @@ export const panelStorage = {
     const trim = storage.last_trim
       ? ` Last cleanup removed ${last.removed_automatic} automatic/unlabelled and ${last.removed_human} human-labelled readings.`
       : "";
-    return `<span>${this._esc(size + trim)}</span>${storage.error ? `<div class="notice">${storage.blocked ? "Recording paused to protect the storage limit. " : ""}${this._esc(storage.error)}</div>` : ""}`;
+    const paused = storage.blocked
+      ? "Recording paused to protect the storage limit. "
+      : "";
+    const error = storage.error
+      ? `<div class="notice">${paused}${this._esc(storage.error)}</div>`
+      : "";
+    return `<span>${this._esc(size + trim)}</span>${error}`;
   },
 
   _drawStorage() {
@@ -66,11 +78,9 @@ export const panelStorage = {
       this._storageOpen = event.target.open;
     };
     container.oninput = () => {
-      this._storageDraft = Object.fromEntries(
-        [...container.querySelectorAll("[data-storage]")].map((input) => [
-          input.dataset.storage,
-          Number(input.value),
-        ]),
+      this._storageDraft = readNumberFields(
+        container.querySelectorAll("[data-storage]"),
+        "storage",
       );
       this._trimTarget = container.querySelector(
         '[data-action="trim-target"]',
@@ -90,12 +100,7 @@ export const panelStorage = {
         await this._call(
           "configure_storage",
           {
-            settings: Object.fromEntries(
-              inputs.map((input) => [
-                input.dataset.storage,
-                Number(input.value),
-              ]),
-            ),
+            settings: readNumberFields(inputs, "storage"),
           },
           120000,
         );

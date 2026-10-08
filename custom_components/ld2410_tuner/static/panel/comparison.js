@@ -27,8 +27,9 @@ export const panelComparison = {
     const rows = Object.entries(LABELS)
       .map(([slot, label]) => this._comparisonRow(slot, label, report))
       .join("");
+    const dates = report.mixed_evidence ? " · Different evaluation dates" : "";
     const stored = report.scorer_version
-      ? `Stored scores · Scorer v${report.scorer_version}${report.mixed_evidence ? " · Different evaluation dates" : ""}`
+      ? `Stored scores · Scorer v${report.scorer_version}${dates}`
       : "No stored assessment yet";
     return `<div class="pattern-comparison"><div class="comparison-heading"><b>Compare saved patterns</b><button data-action="refresh-comparison" ${busy ? "disabled" : ""}>Check stored scores</button></div>
       <div class="muted ${busy ? "is-busy" : ""}" role="status">${busy ? "Calculating missing scores…" : this._esc(reason || stored)}</div>
@@ -44,7 +45,10 @@ export const panelComparison = {
       slot !== "live" && item?.result_id && !item.applicable
         ? " · incompatible; learn again to apply"
         : "";
-    return `<tr data-pattern="${slot}"><th>${label}${best ? ' <span class="pill">Best</span>' : ""}</th><td class="comparison-score">${this._scoreText(item)}</td><td>${this._comparisonMetrics(item, slot)}${this._esc(note)}${this._storedScoreStamp(item)}</td><td>${selectable ? `<button data-action="select-comparison" data-slot="${slot}">Review</button>` : ""}</td></tr>`;
+    const review = selectable
+      ? `<button data-action="select-comparison" data-slot="${slot}">Review</button>`
+      : "";
+    return `<tr data-pattern="${slot}"><th>${label}${best ? ' <span class="pill">Best</span>' : ""}</th><td class="comparison-score">${this._scoreText(item)}</td><td>${this._comparisonMetrics(item, slot)}${this._esc(note)}${this._storedScoreStamp(item)}</td><td>${review}</td></tr>`;
   },
 
   _storedScoreStamp(item) {

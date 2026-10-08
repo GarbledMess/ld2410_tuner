@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 import yaml
 
 PACKAGE = Path(__file__).resolve().parents[1] / "examples/esphome/ld2410c.yaml"
+OVERRIDE_PRESENCE_NAME = "Existing Presence"
 DOMAINS = ("binary_sensor", "sensor", "number", "select", "switch", "text_sensor", "button")
 
 
@@ -43,7 +44,7 @@ def _node(count, override=False):
             id="existing_bus", tx_pin="GPIO6", rx_pin="GPIO7", baud_rate=115200, rx_buffer_size=2048
         )
         node["substitutions"] = {
-            "ld2410_presence_name": "Existing Presence",
+            "ld2410_presence_name": OVERRIDE_PRESENCE_NAME,
             "ld2410_presence_on_delay": "3s",
             "ld2410_presence_off_delay": "10s",
             "ld2410_sensor_throttle": "3s",
@@ -113,7 +114,7 @@ def _check(config, count, expected_names, override=False):
 def _expected_names(expected_names, domain, override):
     names = expected_names[domain].copy()
     if override and domain == "binary_sensor":
-        names["Existing Presence"] = names.pop("Presence")
+        names[OVERRIDE_PRESENCE_NAME] = names.pop("Presence")
     return names
 
 
@@ -164,7 +165,7 @@ def _check_options(config, count, override):
 
 
 def _check_legacy_options(config, presence, override):
-    assert presence["name"] == ("Existing Presence" if override else "Presence")
+    assert presence["name"] == (OVERRIDE_PRESENCE_NAME if override else "Presence")
     assert presence["filters"][1]["delayed_off"].total_milliseconds == (10000 if override else 1000)
     bus = config["uart"][0]
     assert bus["tx_pin"]["number"] == (6 if override else 4)

@@ -53,8 +53,8 @@ export const panelHistoryGraph = {
     const rect = plot.getBoundingClientRect();
     const parent = bar.parentElement.getBoundingClientRect();
     const style = getComputedStyle(bar.parentElement);
-    const left = parent.left + parseFloat(style.paddingLeft);
-    const right = parent.right - parseFloat(style.paddingRight);
+    const left = parent.left + Number.parseFloat(style.paddingLeft);
+    const right = parent.right - Number.parseFloat(style.paddingRight);
     if (!rect.width) return;
     for (const element of [bar, axis]) {
       element.style.marginLeft = `${rect.left - left}px`;

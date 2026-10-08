@@ -127,7 +127,8 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
             60 * policy.DAY,
             {**policy.DEFAULTS, "human_days": 60},
         )
-        assert not cleaned["history"] and stats["discarded_samples"] == 1
+        assert not cleaned["history"]
+        assert stats["discarded_samples"] == 1
         self.runtime.set_recording("a", False)
         before = deepcopy(self.device)
         self.sample(self.now + 6, 90)
