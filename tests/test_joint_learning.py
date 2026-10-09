@@ -1,6 +1,7 @@
 """Joint fits preserve complementary and redundant detection, without inventing timing."""
 
 import asyncio
+import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -204,3 +205,46 @@ class JointRuntimeTests(unittest.IsolatedAsyncioTestCase):
         a, b = (item["nightly_learning"] for item in self.runtime.data["devices"].values())
         assert a["result_id"] == b["result_id"]
         assert a["automatic_apply"]["status"] == "skipped"
+
+    def number_entities(self, device_id, threshold):
+        # Home Assistant reports number entities as float strings, e.g. "20.0".
+        states = {
+            f"radar_{device_id}_max_{kind}_distance_gate": "2.0" for kind in ("move", "still")
+        }
+        for gate in range(3):
+            for kind in ("move", "still"):
+                states[f"radar_{device_id}_g{gate}_{kind}_threshold"] = threshold
+        for name, state in states.items():
+            entity_id = f"number.{name}"
+            self.registry.entities[entity_id] = types.SimpleNamespace(
+                device_id=device_id, domain="number", entity_id=entity_id
+            )
+            self.states[entity_id] = types.SimpleNamespace(state=state)
+
+    async def test_overnight_joint_learn_reads_float_threshold_states(self):
+        from tuner_under_test.runtime import schedule
+
+        self.office()
+        del self.runtime._threshold_configuration
+        for device_id in ("a", "b"):
+            self.number_entities(device_id, "20.0")
+        # Gates 0-2 recorded, matching the 2-gate distance limit.
+        records = [(i * 6, [40 if i < 100 else 0] * 6 + [255] * 12 + [0, 0]) for i in range(200)]
+
+        def history_view(key):
+            view = member(key, [], labels())["view"]
+            view._iter_history_samples = lambda *args, **kwargs: iter(records)
+            return view
+
+        self.runtime._history_view = history_view
+        self.runtime.data["learning_schedule"] = {"enabled": True, "auto_apply": False}
+        self.runtime.async_save = AsyncMock()
+        with (
+            patch.object(learning.recovery, "prepare_learning", AsyncMock()),
+            patch.object(learning.time, "time", return_value=1200),
+        ):
+            await schedule._run(self.runtime, "2026-10-08")
+        for device in self.runtime.data["devices"].values():
+            attempt = device["nightly_learning"]
+            assert attempt["status"] != "error", attempt.get("error")
+            assert attempt["result_id"]

@@ -42,6 +42,11 @@ def number_value(state):
         return float("nan")
 
 
+def threshold_value(value):
+    """HA reports "20.0"; gate thresholds are integers and index mask tables."""
+    return int(value) if value.is_integer() else value
+
+
 def distance_kind(entity_id):
     """Support both documented ESPHome names for the gate-limit numbers."""
     for kind in ("move", "still"):

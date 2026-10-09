@@ -40,7 +40,14 @@ def load_runtime():
     sys.modules["homeassistant.components.http"].StaticPathConfig = object
     sys.modules["homeassistant.config_entries"].ConfigEntry = object
     core = sys.modules["homeassistant.core"]
-    core.HomeAssistant, core.callback = object, lambda fn: fn
+    core.HomeAssistant = object
+
+    def callback(fn):
+        # Like HA: only marked callables run on the event loop; others go to an executor.
+        fn._hass_callback = True
+        return fn
+
+    core.callback = callback
     sys.modules["homeassistant.helpers.entity_registry"].EVENT_ENTITY_REGISTRY_UPDATED = "registry"
     sys.modules["homeassistant.helpers.area_registry"].async_get = lambda hass: (
         types.SimpleNamespace(async_list_areas=lambda: [])

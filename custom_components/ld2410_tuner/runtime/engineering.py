@@ -19,8 +19,9 @@ RETRY_DELAYS = (600, 1200, 1800)
 
 def start(runtime):
     """Check on startup and periodically, including devices discovered later."""
+    # Unmarked sync callbacks run in an executor thread, where creating the task is unsafe.
     runtime.unsub_engineering = async_track_time_interval(
-        runtime.hass, lambda now: tick(runtime), CHECK_INTERVAL
+        runtime.hass, callback(lambda now: tick(runtime)), CHECK_INTERVAL
     )
     tick(runtime)
 

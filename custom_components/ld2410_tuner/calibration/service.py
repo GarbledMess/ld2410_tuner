@@ -220,7 +220,7 @@ def _read_threshold_configuration(runtime, device_id, registry, entities, curren
             key = f"g{match.group('gate')}_{match.group('kind')}"
             entities[key] = entity.entity_id
             if math.isfinite(value):
-                current[key] = value
+                current[key] = device_io.threshold_value(value)
 
 
 def _distance_limit(entity_id, value, limits):

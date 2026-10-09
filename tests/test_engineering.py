@@ -258,5 +258,9 @@ class EngineeringTests(unittest.IsolatedAsyncioTestCase):
             engineering.start(self.runtime)
             await self.runtime._engineering_task
         assert track.call_args.args[2] == timedelta(minutes=10)
-        track.call_args.args[1](None)
+        action = track.call_args.args[1]
+        # HA sends unmarked sync callbacks to an executor thread, where creating
+        # the check task is unsafe and the coroutine is never awaited.
+        assert getattr(action, "_hass_callback", False)
+        action(None)
         await self.runtime._engineering_task

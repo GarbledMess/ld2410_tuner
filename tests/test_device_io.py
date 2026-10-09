@@ -172,6 +172,15 @@ class DeviceIOTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "Multiple Query"):
             io.query_button(self.runtime, "a")
 
+    def test_float_threshold_states_are_read_as_integers(self):
+        self.configuration()
+        for state in self.states.values():
+            state.state = f"{float(state.state)}"
+        _, current = self.runtime._threshold_configuration("a")
+        self.assertEqual(current["g0_move"], 10)
+        self.assertTrue(all(type(value) is int for value in current.values()))
+        self.assertEqual(io.threshold_value(12.5), 12.5)
+
     def test_distance_limits_support_names_in_user_configuration(self):
         self.configuration()
         for kind in ("move", "still"):
