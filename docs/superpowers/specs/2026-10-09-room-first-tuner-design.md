@@ -31,6 +31,24 @@ several, but not all.
   fitting search's iteration order and tie-breaking for a single group.
 - No claim of field accuracy; existing caveats in the README stay.
 
+## Constraint: no regressions
+
+The current integration is in daily use and largely working. Implementation must not
+regress existing behaviour:
+
+- The full existing suite (pytest and `tests/panel.cjs`) stays green at every commit;
+  existing tests are only changed where this spec deliberately changes behaviour, and
+  each such change is called out in the commit message. No test is deleted, skipped or
+  weakened to pass.
+- Before changing a module, characterisation tests pin its current observable
+  behaviour where coverage is thin (notably room assessment output, joint fit results,
+  device Learn/Apply, overnight scheduling, autolabelling references).
+- Ungrouped radars, single-radar groups and one-group learning sets must behave
+  exactly as today (numerical parity tests for fits and scores).
+- Stored data written by the current release loads unchanged; new keys are additive.
+- Work lands in small, independently releasable steps; each step leaves the panel
+  usable.
+
 ## Definitions
 
 - **Group**: an entry from `rooms/groups.definitions` — an area group (`area:<id>`,
