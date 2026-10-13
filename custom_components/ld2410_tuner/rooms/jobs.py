@@ -5,12 +5,16 @@ import math
 import time
 from copy import deepcopy
 
+from ..calibration import settings
 from ..calibration.timing_config import read_timing, timing_signature
+from ..const import TRAINING_FIELDS
 from ..runtime.tasks import finish_task
-from . import assessment, groups
+from . import assessment, attribution, groups, room_labels, room_sources, sets, truth
 
 
-def _context(runtime, group_id):
+def _context(runtime, group_id, sensor=True):
+    """``(members, signature)`` for a group. Assessment signatures include room sensor
+    activity (``sensor``); learning and Apply signatures leave it out."""
     _, available, definitions = groups.definitions(runtime)
     group = definitions.get(group_id)
     if not group:
@@ -36,12 +40,74 @@ def _context(runtime, group_id):
             "thresholds": thresholds,
             "timing": timing_signature(timing),
             "revision": device.get("label_revision", 0),
-            "training": [
-                device.get(field)
-                for field in ("training_state", "training_label_start", "training_expires_at")
-            ],
+            "training": [device.get(field) for field in TRAINING_FIELDS],
         }
+    if revisions := truth.revisions(runtime, definitions, group_id, sensor):
+        # Absent until a room label exists, so upgraded signatures stay identical.
+        signature["room_labels"] = revisions
     return members, signature
+
+
+def set_context(runtime, group_ids):
+    """``({group_id: members}, signature)`` for a learning set.
+
+    One group: exactly ``_context`` without room sensor activity, so one-group results keep
+    their signatures. Several: a shared radar is one member entry in every group that has
+    it, and the signature holds each group's definition and manual room label revisions
+    plus each radar's entry once. A non-default automatic evidence weight is added to
+    either (so changing it stales saved results); at the default nothing is added."""
+    found, signature = _set_context(runtime, group_ids)
+    signature.update(settings.signature(runtime.data))
+    return found, signature
+
+
+def _set_context(runtime, group_ids):
+    if len(group_ids) == 1:
+        members, signature = _context(runtime, group_ids[0], sensor=False)
+        return {group_ids[0]: members}, signature
+    shared, found = {}, {}
+    signature = {"groups": {}, "scorer_version": assessment.SCORER_VERSION}
+    for group_id in group_ids:
+        members, part = _context(runtime, group_id, sensor=False)
+        found[group_id] = {key: shared.setdefault(key, item) for key, item in members.items()}
+        signature["groups"][group_id] = part.pop("group")
+        if "room_labels" in part:
+            signature.setdefault("room_labels", {})[group_id] = part.pop("room_labels")
+        part.pop("scorer_version")
+        signature.update(part)
+    return found, signature
+
+
+def set_views(runtime, members, since=None):
+    """Read each radar's history once; a shared radar's entry is the same in every zone.
+    Each view computes its radar's attribution once for the whole job, from the shared
+    attribution cache where its inputs are unchanged (``attribution.prepare``)."""
+    shared = {}  # The members' guesses, built once for the job's views.
+    for found in members.values():
+        for key, item in found.items():
+            if "view" not in item:
+                item["view"] = attribution.prepared_view(
+                    runtime, key, shared, **({} if since is None else {"since": since})
+                )
+
+
+async def on_views(runtime, members, job, *args):
+    """Run ``job(*args)`` in the executor on ``set_views`` views, then keep each view's
+    attribution for the next job (``attribution.remember``)."""
+    views = [item["view"] for found in members.values() for item in found.values()]
+    attribution.adopt(runtime, views)
+
+    def run():
+        try:
+            return job(*args)
+        finally:
+            attribution.release(views)
+
+    result = await runtime.hass.async_add_executor_job(run)
+    for found in members.values():
+        for item in found.values():
+            attribution.remember(runtime, item["view"])
+    return result
 
 
 def summary(runtime, group_id):
@@ -63,9 +129,10 @@ def summary(runtime, group_id):
     return saved["report"]
 
 
-def snapshot(runtime):
+def snapshot_with_inventory(runtime):
+    """Return ``(rooms, areas, members, definitions)`` from one registry read."""
     areas, members, definitions = groups.definitions(runtime)
-    return {
+    rooms = {
         "areas": areas,
         "members": members,
         "groups": {
@@ -73,9 +140,31 @@ def snapshot(runtime):
                 **item,
                 "assessment": summary(runtime, key),
                 "learning": runtime.data.get("room_learning", {}).get(key),
+                "labels": room_labels.room_labels_for(runtime, key),
+                "label_revision": runtime.data.get("room_label_revision", {}).get(key, 0),
+                "presence_sources": room_sources.summary(runtime, key),
+                "estimate": room_labels.cached_estimate(runtime, key, item["device_ids"]),
             }
             for key, item in definitions.items()
         },
+    }
+    for key in set(runtime._room_estimates) - set(definitions):
+        runtime._room_estimates.pop(key)  # Removed groups leave the estimate cache.
+    for key in set(runtime._room_recent) - set(runtime.data["devices"]):
+        runtime._room_recent.pop(key)  # So do removed radars (their newest sample and runs).
+    return rooms, areas, members, definitions
+
+
+def learning_sets(runtime, definitions):
+    """``{set_id: {"group_ids", "device_ids", "learning"}}``.
+
+    ``learning`` is the set's own stored entry (its job, running or finished, and saved
+    results), never a zone's entry from before it joined the set. A one-group set's id is
+    its group id, so it matches that group's ``learning``."""
+    stored = runtime.data.get("room_learning", {})
+    return {
+        key: {**item, "learning": stored.get(key)}
+        for key, item in sets.learning_sets(definitions).items()
     }
 
 
@@ -84,22 +173,28 @@ def start(runtime, group_id, hours=24):
         raise ValueError("Choose between 1 and 168 hours of history")
     if group_id not in runtime._room_jobs:
         members, signature = _context(runtime, group_id)
+        room = truth.view(runtime, group_id)
         task = runtime.hass.async_create_task(
-            _run(runtime, group_id, members, deepcopy(signature), hours)
+            _run(runtime, group_id, members, deepcopy(signature), hours, room)
         )
         runtime._room_jobs[group_id] = task
         task.add_done_callback(lambda done: finish_task(runtime._room_jobs, group_id, done))
     return {"state": "running"}
 
 
-async def _run(runtime, group_id, members, signature, hours):
+async def _run(runtime, group_id, members, signature, hours, room=None):
     async with runtime._comparison_semaphore:
         end = time.time()
         try:
-            for key, item in members.items():
-                item["view"] = runtime._history_view(key)
-            report = await runtime.hass.async_add_executor_job(
-                assessment.calculate, members, end - hours * 3600, end
+            set_views(runtime, {group_id: members})
+            report = await on_views(
+                runtime,
+                {group_id: members},
+                assessment.calculate,
+                members,
+                end - hours * 3600,
+                end,
+                room,
             )
             report.update(state="ready", evaluated_at=end)
         except asyncio.CancelledError:

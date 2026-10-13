@@ -5,36 +5,25 @@ from __future__ import annotations
 from math import isfinite
 
 from .constants import AUTO_CLASS_CAP as AUTO_CLASS_CAP
-from .constants import AUTO_WEIGHT as AUTO_WEIGHT
 from .constants import MAX_CLASS_SAMPLES as MAX_CLASS_SAMPLES
-from .constants import MAX_FALSE_BURSTS_PER_HOUR as MAX_FALSE_BURSTS_PER_HOUR
-from .constants import MAX_FPR as MAX_FPR
-from .constants import MAX_MISSED_RUN as MAX_MISSED_RUN
 from .constants import METHOD as METHOD
 from .constants import MIN_AUTO_CONFIDENCE as MIN_AUTO_CONFIDENCE
 from .constants import MIN_CLASS_SAMPLES as MIN_CLASS_SAMPLES
 from .constants import MIN_RECALL as MIN_RECALL
 from .constants import MISSED_TIME_COST
-from .constants import SAMPLE_SECONDS as SAMPLE_SECONDS
 from .diagnostics import review_evidence
 from .feasibility import exclusive_presence
-from .metrics import _episode_masks as _episode_masks
-from .metrics import _human_ranker as _human_ranker
-from .metrics import _temporal_metrics as _temporal_metrics
-from .metrics import _weight as _weight
-from .metrics import _weighted_masks as _weighted_masks
 from .metrics import metrics as metrics
-from .metrics import threshold_masks as threshold_masks
 from .reliability import filter_groups, prepare_evidence
 from .search import _search
 from .separation import gate_preference
+from .settings import DEFAULT_AUTOMATIC_WEIGHT
 from .timing_metrics import evaluate, timing_summary
 
 
 def _human_failures(measured):
-    duration = measured.get("duration")
-    if duration is None:
-        return _sample_failures(measured)
+    """Human-target failures of an ``evaluate`` result (its presence-time ``duration``)."""
+    duration = measured["duration"]
     failures = []
     recall = duration["presence_recall"]
     if recall is not None and recall < MIN_RECALL - 1e-12:
@@ -46,28 +35,15 @@ def _human_failures(measured):
     return failures
 
 
-def _sample_failures(measured):
-    # Legacy raw diagnostics and stored results retain their original meaning.
-    failures = []
-    if measured["present_samples"] and measured["sensitivity"] < MIN_RECALL:
-        failures.append("Raw presence-sample recall target not met")
-    for key in ("missed_presence_episodes", "longest_missed_run_samples"):
-        limit = MAX_MISSED_RUN if key == "longest_missed_run_samples" else 0
-        if measured.get(key, 0) > limit:
-            failures.append(key)
-    if measured["not_present_samples"] and measured["false_positive_rate"] > MAX_FPR:
-        failures.append("Raw false-positive sample limit exceeded")
-    if measured.get("false_trigger_bursts_per_hour", 0) > MAX_FALSE_BURSTS_PER_HOUR:
-        failures.append("Raw false-trigger burst limit exceeded")
-    return failures
-
-
-def fit_thresholds(rows, keys, current=None, automatic=(), timing=None):
+def fit_thresholds(
+    rows, keys, current=None, automatic=(), timing=None, automatic_weight=DEFAULT_AUTOMATIC_WEIGHT
+):
     """Fit all usable evidence; supported human observations take priority.
 
     Source proportions never block Apply. A chronological human backtest is
     reported separately, then the final recommendation is refit with all retained data.
     Its measurements are training evidence, not held-out accuracy guarantees.
+    ``automatic_weight`` is the learning setting, read once by the job.
     """
     keys = list(dict.fromkeys(keys))
     groups = {"present": [], "not_present": []}
@@ -90,7 +66,7 @@ def fit_thresholds(rows, keys, current=None, automatic=(), timing=None):
     evidence = {
         "samples": auto_counts,
         "deferred_samples": 0,
-        "base_weight": AUTO_WEIGHT,
+        "base_weight": automatic_weight,
         "class_weight_cap": AUTO_CLASS_CAP,
         "mean_confidence": {
             label: sum(row[3] for row in group) / len(group) if group else None
@@ -116,12 +92,18 @@ def fit_thresholds(rows, keys, current=None, automatic=(), timing=None):
     # Backtest only earlier observations. Later estimates may have seen the
     # human holdout, so they must not enter this evaluation's fitting step.
     held_out, validation, validation_exclusions = _backtest(
-        raw_counts, raw_groups, raw_auto, keys, current, timing
+        raw_counts, raw_groups, raw_auto, keys, current, timing, automatic_weight
     )
-    thresholds, mass = _search(
-        groups["present"], groups["not_present"], auto_groups, keys, current, timing
+    thresholds, share = _search(
+        groups["present"],
+        groups["not_present"],
+        auto_groups,
+        keys,
+        current,
+        timing,
+        automatic_weight,
     )
-    evidence["effective_weight"] = mass
+    evidence["share"] = share
     all_rows = groups["present"] + groups["not_present"]
     training = evaluate(groups, thresholds, timing)
     recent = (
@@ -195,7 +177,7 @@ def _group_observations(rows, automatic, clean, groups):
     groups = {label: group[-MAX_CLASS_SAMPLES:] for label, group in groups.items()}
     counts = {label: len(group) for label, group in groups.items()}
     auto_groups = {"present": [], "not_present": []}
-    for ts, values, label, confidence in sorted(automatic, key=lambda row: row[0]):
+    for ts, values, label, confidence, *weight in sorted(automatic, key=lambda row: row[0]):
         usable = clean(values)
         if (
             label in auto_groups
@@ -203,17 +185,12 @@ def _group_observations(rows, automatic, clean, groups):
             and usable
             and ts not in manual_times
         ):
-            auto_groups[label].append((ts, usable, label, confidence))
-    auto_groups = {label: group[-MAX_CLASS_SAMPLES:] for label, group in auto_groups.items()}
+            auto_groups[label].append((ts, usable, label, confidence, *weight))
     auto_counts = {label: len(group) for label, group in auto_groups.items()}
     return groups, counts, auto_groups, auto_counts
 
 
-def _recent_rows(groups):
-    return [row for group in groups.values() for row in group[int(len(group) * 0.8) :]]
-
-
-def _backtest(counts, groups, auto_groups, keys, current, timing=None):
+def _backtest(counts, groups, auto_groups, keys, current, timing, weight):
     if min(counts.values()) < MIN_CLASS_SAMPLES:
         return None, [], None
     earlier = {label: group[: int(len(group) * 0.8)] for label, group in groups.items()}
@@ -228,7 +205,7 @@ def _backtest(counts, groups, auto_groups, keys, current, timing=None):
     retained, excluded = filter_groups(later, models["human"])
     validation = retained["present"] + retained["not_present"]
     backtest, _ = _search(
-        training["present"], training["not_present"], inferred, keys, current, timing
+        training["present"], training["not_present"], inferred, keys, current, timing, weight
     )
     return evaluate(retained, backtest, timing), validation, excluded
 

@@ -11,16 +11,18 @@ from homeassistant.helpers.storage import Store
 
 from ..calibration import automatic, comparison_jobs, timing_config
 from ..calibration import service as calibration
+from ..calibration import settings as learning_settings
 from ..const import STORE_DELAY
 from ..history import labels as manual_training
 from ..history import recording, storage
-from ..presence import autolabelling, sources
+from ..presence import autolabelling, rebuilds, sources
 from ..presentation import charts
 from ..presentation import snapshots as presentation
 from ..rooms import application as room_application
 from ..rooms import groups as room_groups
 from ..rooms import jobs as room_jobs
 from ..rooms import learning as room_learning
+from ..rooms import room_labels, room_sources
 from . import discovery, schedule
 
 
@@ -48,12 +50,36 @@ class TunerRuntime:
         self._live: dict[str, dict[str, float]] = defaultdict(dict)
         self._auto_runtime: dict[str, dict[str, Any]] = {}
         self._source_runtime: dict[str, dict[str, Any]] = {}
+        self._room_sensor_open: dict[str, dict[str, Any]] = {}
+        self._room_sensor_checked: set[str] = set()
         self._history_runtime: dict[str, dict[str, Any]] = {}
         self._history_cache = OrderedDict()
+        # Device id -> history.recording.BlockIndex of its current history list.
+        self._block_index = {}
+        # Device id -> history.label_counts.Counts behind its histograms.
+        self._label_counts = {}
         self._history_jobs = {}
         self._learning_jobs = {}
         self._comparison_jobs = {}
         self._room_jobs = {}
+        # Group id -> cached "Seen by" episodes and their rebuilds (rooms/seen_by.py).
+        self._room_attribution = {}
+        self._room_attribution_jobs = {}
+        self._room_attribution_semaphore = asyncio.Semaphore(1)
+        # Group id -> (inputs key, published room estimate) (rooms/room_labels.py).
+        self._room_estimates = {}
+        # Member id -> its newest sample and recent guess runs (rooms/room_labels.py).
+        self._room_recent = {}
+        self._room_membership = None
+        # What the entity registry held when last read (runtime/discovery.py).
+        self._entity_index = None
+        # Reference rebuilds (presence/rebuilds.py) and the attribution cache
+        # they share with Seen by: device id -> (inputs key, found).
+        self._reference_pending: set[str] = set()
+        self._reference_task = None
+        self._reference_running: set[str] = set()
+        self._reference_closed = False
+        self._attribution_cache = {}
         self._room_learning_jobs = {}
         self._comparison_cache = {}
         self._comparison_semaphore = asyncio.Semaphore(2)
@@ -80,9 +106,13 @@ class TunerRuntime:
     async_save = storage.async_save
     configure_room = room_groups.configure
     remove_room = room_groups.remove
+    label_room_range = room_labels.label_room_range
+    edit_room_label = room_labels.edit_room_label
+    room_estimate_feedback = room_labels.room_estimate_feedback
+    configure_room_sources = room_sources.configure_room_sources
     assess_room = room_jobs.start
-    learn_room = room_learning.start
-    apply_room = room_application.apply
+    learn_set = room_learning.start_set
+    apply_set = room_application.apply
     compare_results = comparison_jobs.compare_results
     configure_timing = timing_config.configure
     configure_storage = storage.configure
@@ -90,6 +120,7 @@ class TunerRuntime:
     set_recording = storage.set_recording
     configure_presence_sources = sources.configure
     configure_learning_schedule = schedule.configure
+    configure_automatic_weight = learning_settings.configure
     configure_device_auto_apply = automatic.configure_device
     nightly_tick = schedule.tick
 
@@ -105,6 +136,7 @@ class TunerRuntime:
     _compact_history_labels = staticmethod(manual_training._compact_history_labels)
     flush_history = recording.flush_history
     _iter_history_samples = recording._iter_history_samples
+    _history_columns = recording._history_columns
     label_history_range = manual_training.label_history_range
     edit_history_label = manual_training.edit_history_label
     _manual_history_state = staticmethod(manual_training._manual_history_state)
@@ -116,6 +148,7 @@ class TunerRuntime:
     _update_auto_state = autolabelling._update_auto_state
     auto_learning_summary = staticmethod(autolabelling.auto_learning_summary)
     record_auto_feedback = autolabelling.record_auto_feedback
+    refresh_references = rebuilds.refresh_references
     _migrate_device_samples = manual_training._migrate_device_samples
     _compress_histogram = staticmethod(manual_training._compress_histogram)
     _ensure_histograms = manual_training._ensure_histograms

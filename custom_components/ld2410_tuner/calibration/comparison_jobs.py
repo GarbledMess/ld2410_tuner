@@ -4,7 +4,9 @@ import asyncio
 import time
 from copy import deepcopy
 
+from ..const import TRAINING_FIELDS
 from ..history import policy
+from ..rooms import attribution
 from ..runtime.tasks import finish_task
 from . import comparison, comparison_cache, results
 from .constants import METHOD
@@ -42,10 +44,7 @@ def _context(runtime, device_id):
         "patterns": patterns,
         "timing": timing_signature(timing),
         "revision": device.get("label_revision", 0),
-        "training": [
-            device.get(key)
-            for key in ("training_state", "training_label_start", "training_expires_at")
-        ],
+        "training": [device.get(key) for key in TRAINING_FIELDS],
         "retention": policy.settings(runtime.data),
     }
     return context, signature
@@ -84,10 +83,11 @@ async def _run(runtime, device_id, context, signature, wanted):
     async with runtime._comparison_semaphore:
         started = time.time()
         try:
-            view = runtime._history_view(device_id)
+            view = attribution.prepared_view(runtime, device_id)
             report = await runtime.hass.async_add_executor_job(
                 comparison.calculate, view, device_id, {**context, "patterns": wanted}
             )
+            attribution.remember(runtime, view)
             report.update(state="ready", evaluated_at=started)
         except asyncio.CancelledError:
             raise

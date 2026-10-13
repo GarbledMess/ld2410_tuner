@@ -17,8 +17,9 @@ import { panelSelection } from "./panel/selection.js";
 import { panelCalendar } from "./panel/calendar.js";
 import { panelHistory } from "./panel/history.js";
 import { panelRoomLearning } from "./panel/room_learning.js";
-import { panelRooms } from "./panel/rooms.js";
+import { panelLayout, PlacementCollapse } from "./panel/layout.js";
 import { panelRoomReport } from "./panel/room_report.js";
+import { panelRoomTimeline } from "./panel/room_timeline.js";
 import { panelView } from "./panel/view.js";
 
 // One distinct color per gate (0-8), shared between "move" and "still" views
@@ -33,10 +34,17 @@ class LD2410TunerPanel extends HTMLElement {
     super();
     // Capture the version of this loaded entrypoint; polling must not relabel an old tab.
     this._frontendVersion = new URL(import.meta.url).searchParams.get("v");
-    // Which device cards are collapsed, keyed by device id. Kept on the
-    // instance (not recomputed in _draw) so a collapse/expand survives the
-    // periodic redraw instead of springing back open every poll.
-    this._collapsed = new Set();
+    // Which cards are collapsed, keyed by placement ("<leaf id>|<device id>")
+    // with a bare device id addressing every copy. Kept on the instance (not
+    // recomputed in _draw) so a collapse/expand survives the periodic redraw
+    // instead of springing back open every poll.
+    this._collapsed = new PlacementCollapse();
+    // Room tree node/leaf open state, keyed by node or leaf id.
+    this._layoutOpen = new Map();
+    // Group ids whose header (overview block) is open; headers start closed.
+    this._groupOpen = new Set();
+    // Device id -> placement last edited, so drafts come from that copy.
+    this._lastEditedPlacement = new Map();
     // Devices we've already applied the "start collapsed" default to, so a
     // card the user deliberately expanded doesn't get re-collapsed under them.
     this._seenDevices = new Set();
@@ -253,8 +261,9 @@ Object.assign(
   panelVisualization,
   panelSelection,
   panelRoomLearning,
-  panelRooms,
+  panelLayout,
   panelRoomReport,
+  panelRoomTimeline,
   panelView,
   panelCards,
   panelControls,

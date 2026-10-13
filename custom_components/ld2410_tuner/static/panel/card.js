@@ -1,5 +1,5 @@
 export const panelCards = {
-  _createCard(id, d, previousCard) {
+  _createCard(id, d, previousCard, placement, options = {}) {
     d = this._learningView(id, d);
     if (!this._seenDevices.has(id)) {
       this._seenDevices.add(id);
@@ -8,10 +8,11 @@ export const panelCards = {
     let card = document.createElement("div");
     card.className = "card";
     card.dataset.deviceId = id;
+    card.dataset.placement = placement;
     const info = this._autoInfo(d.auto_learning || {});
-    const isCollapsed = this._collapsed.has(id);
+    const isCollapsed = this._cardCollapsed(placement);
     card.innerHTML =
-      this._cardHeaderHtml(d, info, isCollapsed) +
+      this._cardHeaderHtml(id, d, info, isCollapsed, options) +
       this._recordingHtml(d) +
       `<div class="action-status muted" role="status" aria-live="polite"></div>` +
       `<div class="learning-job-status" role="status" aria-live="polite">${this._learningJobHtml(d)}</div>` +
@@ -33,13 +34,14 @@ export const panelCards = {
     return card;
   },
 
-  _cardHeaderHtml(d, info, isCollapsed) {
+  _cardHeaderHtml(id, d, info, isCollapsed, options = {}) {
     const { autoState, autoPill, al } = info;
+    const group = this._memberGroup(id, options.groupId);
     const confidence =
       autoState !== "unknown"
         ? " · " + Math.round((al.confidence || 0) * 100) + "%"
         : "";
-    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}</div><div class="area">${this._esc(d.area_id || "No area")}</div>${this._comparisonHeaderHtml(d)}</div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>`;
+    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}${options.notRecording ? '<span class="pill not-recording">Not recording</span>' : ""}</div><div class="area">${this._esc(d.area_id || "No area")}</div>${group ? this._roomRoleHtml(id, group) : this._comparisonHeaderHtml(d)}</div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>${group ? this._ownScoreHtml(d) : ""}`;
   },
 
   _cardBodyHtml(id, d, info) {
@@ -61,7 +63,10 @@ export const panelCards = {
         id,
         "auto",
         "Automatic analysis & feedback",
-        this._autoHtml(d.auto_learning || {}, info),
+        this._autoHtml(d.auto_learning || {}, {
+          ...info,
+          refreshing: d.references_refreshing,
+        }),
       ),
       this._section(
         id,
@@ -134,10 +139,10 @@ export const panelCards = {
         "adaptive-guided": "Age-weighted room references",
         "human-guided": "Labelled examples",
       }[al?.basis] || "Background estimate";
-    return `<div class="auto-head"><span class="pill ${autoState}">${autoPill}</span><span class="muted">Confidence-weighted time; human labels take priority</span></div><div class="auto-details"><div><span>Estimated confidence</span>${confidence}</div><div><span>Evidence source</span>${source}</div><div><span>Segments</span>${auto.segments || 0}</div></div><div class="muted" style="margin-top:7px">${this._esc(top)}</div><div class="muted">${auto.observations || 0} estimates stored. Confidence is an estimate, not measured accuracy.</div>${this._referenceHtml(auto)}<div class="feedback-row"><span class="muted">Was this reading right?</span><button class="fb-btn correct" data-action="auto-feedback" data-correct="true" ${canFeedback ? "" : "disabled"}>✓ Correct</button><button class="fb-btn incorrect" data-action="auto-feedback" data-correct="false" ${canFeedback ? "" : "disabled"}>✗ Incorrect</button></div><div class="muted" style="margin-top:5px">Feedback accuracy — present: ${this._feedbackText(auto.feedback, "present")}, not present: ${this._feedbackText(auto.feedback, "not_present")}${calibNote}</div>`;
+    return `<div class="auto-head"><span class="pill ${autoState}">${autoPill}</span><span class="muted">Confidence-weighted time; human labels take priority</span></div><div class="auto-details"><div><span>Estimated confidence</span>${confidence}</div><div><span>Evidence source</span>${source}</div><div><span>Segments</span>${auto.segments || 0}</div></div><div class="muted" style="margin-top:7px">${this._esc(top)}</div><div class="muted">${auto.observations || 0} estimates stored. Confidence is an estimate, not measured accuracy.</div>${this._referenceHtml(auto, info.refreshing)}<div class="feedback-row"><span class="muted">Was this reading right?</span><button class="fb-btn correct" data-action="auto-feedback" data-correct="true" ${canFeedback ? "" : "disabled"}>✓ Correct</button><button class="fb-btn incorrect" data-action="auto-feedback" data-correct="false" ${canFeedback ? "" : "disabled"}>✗ Incorrect</button></div><div class="muted" style="margin-top:5px">Feedback accuracy — present: ${this._feedbackText(auto.feedback, "present")}, not present: ${this._feedbackText(auto.feedback, "not_present")}${calibNote}</div>`;
   },
 
-  _referenceHtml(auto) {
+  _referenceHtml(auto, refreshing) {
     const profile = auto.profile;
     if (!profile) return "";
     const counts = profile.periods || {};
@@ -145,7 +150,12 @@ export const panelCards = {
     const warning = novelty.length
       ? `<div class="muted reference-review" role="status">Unfamiliar readings at ${novelty.map((key) => this._esc(key)).join(", ")}. Confidence is reduced. Mark a known period or use an independent entity to confirm the room’s current behaviour.</div>`
       : "";
-    return `<div class="muted reference-status">Room references: ${counts.human || 0} human, ${counts.entity || 0} entity and ${counts.radar || 0} inferred periods. Recent corrections have more influence; repeated guesses do not increase independent confidence. Human labels and configured entities continue teaching this model.</div>${warning}`;
+    const stale = refreshing
+      ? `<div class="muted reference-refreshing" role="status">Refreshing references…</div>`
+      : auto.stale_since
+        ? `<div class="muted reference-stale" role="status">References out of date since ${this._esc(new Date(auto.stale_since * 1000).toLocaleString())}. They rebuild daily at the learning schedule time, even with overnight learning off, or now with Refresh references.</div>`
+        : "";
+    return `<div class="muted reference-status">Room references: ${counts.human || 0} human, ${counts.entity || 0} entity and ${counts.radar || 0} inferred periods. Recent corrections have more influence; repeated guesses do not increase independent confidence. Human labels and configured entities continue teaching this model.</div>${stale}<div class="reference-actions"><button type="button" data-action="refresh-references" ${refreshing ? "disabled" : ""}>Refresh references</button></div>${warning}`;
   },
 
   _gateTables(d) {

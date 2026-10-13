@@ -18,7 +18,9 @@ from ..const import (
     MAX_HISTOGRAM_COUNT,
     TRAINING_STATES,
 )
-from ..presence import reference_training
+from ..presence import reference_training, references
+from . import label_counts
+from .policy import STORED
 
 
 def _compact_history_labels(device: dict[str, Any]) -> None:
@@ -31,46 +33,63 @@ def _compact_history_labels(device: dict[str, Any]) -> None:
     labels = device.get("history_labels")
     if not labels or len(labels) < 2:
         return
+    device["history_labels"] = compact_labels(labels)
+
+
+def compact_labels(labels: list[dict[str, Any]], key=None) -> list[dict[str, Any]]:
+    """Return ``labels`` sorted, with same-``key`` runs merged (default: state) and capped."""
+    key = key or (lambda label: label.get("state"))
     labels = sorted(labels, key=lambda x: float(x.get("start", 0)))
     merged: list[dict[str, Any]] = []
     for label in labels:
         start = float(label.get("start", 0))
         end = float(label.get("end", start))
-        if (
-            merged
-            and merged[-1].get("state") == label.get("state")
-            and start <= float(merged[-1]["end"])
-        ):
+        if merged and key(merged[-1]) == key(label) and start <= float(merged[-1]["end"]):
             merged[-1]["end"] = max(float(merged[-1]["end"]), end)
         else:
             merged.append(dict(label, start=start, end=end))
     if len(merged) > HISTORY_LABELS_MAX:
         merged = merged[-HISTORY_LABELS_MAX:]
-    device["history_labels"] = merged
+    return merged
+
+
+def apply_range(labels, start, end, state, source="manual"):
+    """Return ``labels`` with ``[start, end)`` set to ``state``, keeping outer parts."""
+    result = _preserved_labels(labels, start, end)
+    result.append({"start": start, "end": end, "state": state, "source": source})
+    return result
+
+
+def replace_label(labels, original_start, original_end, start, end, state):
+    """Return ``labels`` with one saved period moved, changed or (unlabelled) removed."""
+    # Remove the original boundaries before applying the replacement. Shrinking or
+    # moving a period must not silently leave its former label behind.
+    result = _preserved_labels(labels, original_start, original_end)
+    if state != "unlabelled":
+        result = apply_range(result, start, end, state)
+    return result
 
 
 def label_history_range(
     runtime, device_id: str, start: float, end: float, state: str
 ) -> dict[str, Any]:
     """Apply a retrospective manual label to historical samples in a time range."""
-    _validate_history_range(start, end, state)
+    validate_history_range(start, end, state)
     device = _history_device(runtime, device_id)
     _prepare_history_edit(runtime, device)
-    labels = _preserved_labels(device.get("history_labels", []), start, end)
-    labels.append({"start": start, "end": end, "state": state, "source": "manual"})
+    labels = apply_range(device.get("history_labels", []), start, end, state)
     _save_history_edit(runtime, device, labels, [(start, end)])
+    samples = runtime._iter_history_samples(device, since=start, until=end)
     return {
         "ok": True,
-        "labelled_samples": sum(
-            1 for ts, _ in runtime._iter_history_samples(device) if start <= ts < end
-        ),
+        "labelled_samples": sum(1 for ts, _ in samples if start <= ts < end),
         "history_labels": device["history_labels"],
     }
 
 
 def edit_history_label(runtime, device_id, label_start, label_end, start, end, state, revision):
     """Replace or remove one saved period, rejecting edits to a stale snapshot."""
-    _validate_history_range(start, end, "unknown" if state == "unlabelled" else state)
+    validate_history_range(start, end, "unknown" if state == "unlabelled" else state)
     device = _history_device(runtime, device_id)
     if device.get("label_revision", 0) != revision:
         raise ValueError("History labels changed. Refresh and select the period again.")
@@ -85,17 +104,12 @@ def edit_history_label(runtime, device_id, label_start, label_end, start, end, s
     if original is None:
         raise ValueError("This saved period no longer exists. Refresh and select it again.")
     _prepare_history_edit(runtime, device)
-    # Remove the original boundaries before applying the replacement. Shrinking or
-    # moving a period must not silently leave its former label behind.
-    labels = _preserved_labels(device["history_labels"], label_start, label_end)
-    if state != "unlabelled":
-        labels = _preserved_labels(labels, start, end)
-        labels.append({"start": start, "end": end, "state": state, "source": "manual"})
+    labels = replace_label(device["history_labels"], label_start, label_end, start, end, state)
     _save_history_edit(runtime, device, labels, [(label_start, label_end), (start, end)])
     return {"ok": True, "history_labels": device["history_labels"]}
 
 
-def _validate_history_range(start, end, state):
+def validate_history_range(start, end, state):
     if state not in {"present", "not_present", "unknown"}:
         raise ValueError("Invalid training state")
     if not math.isfinite(start) or not math.isfinite(end) or end <= start:
@@ -111,7 +125,8 @@ def _history_device(runtime, device_id):
 
 def _prepare_history_edit(runtime, device):
     runtime._ensure_histograms(device)
-    device.setdefault("history_legacy_histograms", deepcopy(device["histograms"]))
+    if "history_legacy_histograms" not in device:  # Copied once, not on every edit.
+        device["history_legacy_histograms"] = deepcopy(device["histograms"])
     now = time.time()
     runtime._close_training_interval(device, now)
     if device.get("training_state") in {"present", "not_present"}:
@@ -269,19 +284,27 @@ def clear_samples(runtime, device_id: str) -> None:
         runtime.data["devices"][device_id]["histograms"] = {}
         runtime.data["devices"][device_id].pop("auto", None)
         runtime.data["devices"][device_id].pop("reference_profile", None)
-        runtime.data["devices"][device_id].pop("history", None)
-        runtime.data["devices"][device_id].pop("history_labels", None)
+        runtime.data["devices"][device_id].pop(references.STALE, None)
+        for key in (*STORED, "history_labels"):
+            runtime.data["devices"][device_id].pop(key, None)
         runtime.data["devices"][device_id].pop("history_legacy_histograms", None)
         runtime.data["devices"][device_id].pop("history_legacy_since", None)
         runtime._live.pop(device_id, None)
         runtime._auto_runtime.pop(device_id, None)
         runtime._source_runtime.pop(device_id, None)
         runtime._history_runtime.pop(device_id, None)
+        label_counts.forget(runtime, device_id)
         runtime._schedule_save()
 
 
 def _history_label_reader(device):
     """Resolve labels once, keeping last-label-wins semantics in logarithmic time."""
+    return index_reader(label_index(device))
+
+
+def label_index(device):
+    """``(times, states)``: the device's label (saved periods, then its live label) from each
+    time until the next one; None before the first or where no label applies."""
     intervals = list(device.get("history_labels", []))
     start = device.get("training_label_start")
     if start is not None:
@@ -292,13 +315,18 @@ def _history_label_reader(device):
                 "state": device.get("training_state", "unknown"),
             }
         )
-    events = _label_events(intervals)
-    times, states = _label_index(events)
+    return _label_index(_label_events(intervals))
+
+
+def index_reader(index):
+    """Read the label at a time from a ``label_index``."""
+    times, states = index
 
     def read(timestamp):
-        index = bisect_right(times, timestamp) - 1
-        return states[index] if index >= 0 else None
+        position = bisect_right(times, timestamp) - 1
+        return states[position] if position >= 0 else None
 
+    read.edges = times  # Where the answer can change, in order.
     return read
 
 
@@ -325,19 +353,13 @@ def _preserved_labels(labels, start, end):
 
 
 def _rebuild_histograms(runtime, device):
+    """Every retained sample's gate values under its current label, plus the untimed legacy
+    summaries, compressed. The counting itself is ``label_counts`` (incremental)."""
+    counted = label_counts.current(runtime, device)
     rebuilt = {
-        key: {"present": [0] * HISTOGRAM_BINS, "not_present": [0] * HISTOGRAM_BINS}
+        key: {state: list(counted[key][state]) for state in ("present", "not_present")}
         for key in HISTORY_KEYS
     }
-    label_at = _history_label_reader(device)
-    for timestamp, row in runtime._iter_history_samples(device):
-        label = label_at(timestamp)
-        if label not in {"present", "not_present"}:
-            continue
-        for index, key in enumerate(HISTORY_KEYS):
-            value = row[index]
-            if value <= 100:
-                rebuilt[key][label][value] += 1
     _restore_legacy_histograms(device, rebuilt)
     for series in rebuilt.values():
         runtime._compress_histogram(series["present"])

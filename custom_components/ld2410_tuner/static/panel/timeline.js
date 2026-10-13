@@ -53,13 +53,16 @@ export const panelTimeline = {
   },
 
   _setHistoryRange(card, id, selection, newPeriod = false) {
-    if (newPeriod) this._newHistoryPeriod(card, id);
+    // A room's timeline (room_timeline.js) shares this editor but not the card.
+    if (newPeriod && card.dataset.roomTimeline !== undefined)
+      this._newRoomPeriod(card, id);
+    else if (newPeriod) this._newHistoryPeriod(card, id);
     this._historyStateFor(id).range = { ...selection };
     for (const boundary of ["start", "end"])
       card.querySelector(`[data-action="history-${boundary}"]`).value =
         this._historyInputValue(selection[boundary]);
     this._paintHistoryRange(card, id, selection);
-    this._captureDrafts(this.shadowRoot.querySelector("#grid"));
+    this._captureDrafts();
     this._syncHistorySelection(card, id);
   },
 

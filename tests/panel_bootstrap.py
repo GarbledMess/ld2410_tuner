@@ -16,6 +16,7 @@ async def panel_registration():
         http=SimpleNamespace(async_register_static_paths=AsyncMock()),
         async_add_executor_job=asyncio.to_thread,
         async_create_task=asyncio.create_task,
+        async_create_background_task=lambda target, name: asyncio.create_task(target),
     )
     store = SimpleNamespace(
         async_load=AsyncMock(return_value={"devices": {}}), async_save=AsyncMock()

@@ -1,6 +1,7 @@
 """External presence boundaries never become provisional learning evidence."""
 
 import sys
+import time
 import unittest
 from copy import deepcopy
 from unittest.mock import patch
@@ -30,28 +31,45 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
         self.sample(self.now + second, 70)
 
     def rows(self):
-        return list(self.runtime._iter_history_samples(self.device, include_auto=True))
+        return list(self.runtime._iter_history_samples(self.device))
+
+    def runs(self):
+        return harness.guesses.of(self.runtime, "a")
+
+    def codes(self):
+        """Each recorded sample's guess code: 0 none, 1 present, 2 not present."""
+        known = self.runs()
+        return [
+            harness.guesses.CODES[run[2]] if (run := known.of_sample(ts)) else 0
+            for ts, _ in self.rows()
+        ]
 
     def present_times(self):
-        return [round(ts - self.now, 3) for ts, row in self.rows() if row[-2] == 1]
+        return [
+            round(ts - self.now, 3)
+            for (ts, _), code in zip(self.rows(), self.codes(), strict=True)
+            if code == 1
+        ]
 
     def test_live_period_only_confirms_interior_and_never_changes_raw_readings(self):
         self.configure()
         for second in range(0, 31, 6):
             self.tick(second)
         assert self.present_times() == [12, 18]
-        assert [row[-2] for _, row in self.rows()] == [0, 0, 1, 1, 0, 0]
-        before = [(ts, row[:-2]) for ts, row in self.rows()]
+        assert self.codes() == [0, 0, 1, 1, 0, 0]
+        before = self.rows()
         self.tick(36, "off")
         assert self.present_times() == [12, 18, 24]
-        assert before == [(ts, row[:-2]) for ts, row in self.rows()][:6]
+        assert before == self.rows()[:6]
         assert self.device["auto"]["observations"]["present"] == 3
-        assert all(row[-1] == 90 for _, row in self.rows() if row[-2] == 1)
+        guessed = self.runs().runs
+        assert len(guessed) == 1, "the confirmed stretch is one run"
+        assert guessed[0][2:] == ("present", 18, harness.guesses.EXTERNAL)
         with patch.object(service, "fit_thresholds", return_value={}) as fit:
             service._fit_history(self.runtime, "a", {"g0_move": "number.threshold"}, {})
         assert [
             (round(ts - self.now), state, confidence)
-            for ts, _, state, confidence in fit.call_args.args[3]
+            for ts, _, state, confidence, *_ in fit.call_args.args[3]
         ] == [(12, "present", 0.9), (18, "present", 0.9), (24, "present", 0.9)]
 
     def test_compressed_tail_can_be_confirmed_without_mutating_a_learning_snapshot(self):
@@ -59,14 +77,14 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
         for second in range(0, 19, 6):
             self.tick(second)
         self.runtime._flush_history_block("a")
-        original = deepcopy(self.device["history"])
+        original = deepcopy(self.device["guess_runs"])
         view = self.runtime._history_view("a")
         self.runtime._history_cache["old"] = "cached"
         self.tick(24)
         self.tick(30, "off")
         assert self.present_times() == [12, 18]
-        assert self.device["history"] != original
-        assert view.data["devices"]["a"]["history"] == original
+        assert self.device["guess_runs"] != original
+        assert view.data["devices"]["a"]["guess_runs"] == original
         assert not self.runtime._history_cache
         self.runtime._flush_history_block("a")
         assert self.present_times() == [12, 18]
@@ -93,12 +111,13 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
             self.tick(second)
         self.tick(36, "unavailable")
         assert self.present_times() == [12, 18, 24]
-        assert self.rows()[-2][1][-2:] == bytes((0, 0))
+        assert self.codes()[-2] == 0
         assert not self.runtime._source_runtime
         self.tick(42)
         self.tick(48, "off")
         assert self.present_times() == [12, 18, 24]
-        assert self.rows()[-1][1][-2:] == bytes((2, 90))
+        assert self.codes()[-1] == 2
+        assert self.runs().of_sample(self.rows()[-1][0])[3] == 18
 
     def test_or_handoff_between_boolean_and_bermuda_is_continuous(self):
         self.configure(sources=[boolean(), bermuda()])
@@ -189,7 +208,7 @@ def test_empty_trimmed_intervals_never_enter_learning(duration):
             case.tick(second)
         case.tick(duration, "off")
         assert case.present_times() == []
-        assert all(row[-2:] == bytes((0, 0)) for _, row in case.rows())
+        assert set(case.codes()) == {0}
         assert case.rows(), "Raw samples must remain available"
     finally:
         case.doCleanups()
@@ -219,9 +238,38 @@ def test_invalid_buffers_are_rejected(field, value):
         sources.validate({**sources.DEFAULTS, field: value})
 
 
-def test_confirmation_leaves_other_labels_and_malformed_blocks_alone():
-    row = bytes([70] * source_labels.WIDTH)
-    pending = [(1, row + bytes((2, 90))), (2, row + bytes((1, 80))), (3, row)]
-    assert source_labels._confirm_pending(pending, 0, 4, 90) == 0
-    block = {"start": 1, "count": 1, "version": 3, "data": "bad"}
-    assert source_labels._confirm_block(block, 0, 4, 90) == (block, 0)
+class ConfirmTests(unittest.TestCase):
+    """``confirm_presence`` marks only samples the radar left without a guess."""
+
+    def setUp(self):
+        self.runtime = harness.mod.TunerRuntime(None, None, {"devices": {"a": {}}})
+        self.runtime.hass = None
+        self.runtime._schedule_save = lambda: None
+        row = bytes([70] * len(harness.constants.HISTORY_KEYS))
+        records = [(1, row + bytes((2, 90))), (2, row + bytes((1, 80))), (3, row), (4, row)]
+        self.runtime._history_runtime["a"] = harness.pending(records)
+
+    def guessed(self):
+        known = harness.guesses.of(self.runtime, "a")
+        return [known.of_sample(ts) for ts in (1, 2, 3, 4)]
+
+    def test_samples_that_already_have_a_guess_keep_it(self):
+        with patch.object(time, "time", return_value=10):
+            source_labels.confirm_presence(self.runtime, "a", 0, 4, 90)
+        not_present, present, confirmed, outside = self.guessed()
+        assert not_present[2:4] == ("not_present", 18)
+        assert present[2:4] == ("present", 16)
+        assert confirmed[2:] == ("present", 18, harness.guesses.EXTERNAL)
+        assert outside is None, "the range is half-open"
+        assert self.runtime.data["devices"]["a"]["auto"]["observations"] == {"present": 1}
+
+    def test_an_empty_range_and_an_unreadable_stored_chunk_change_nothing_else(self):
+        before = self.guessed()
+        source_labels.confirm_presence(self.runtime, "a", 4, 4, 90)
+        assert self.guessed() == before
+        self.runtime.data["devices"]["a"]["guess_runs"] = [
+            {"version": 1, "start": 0, "end": 5, "count": 1, "data": "bad"}
+        ]
+        with patch.object(time, "time", return_value=10):
+            source_labels.confirm_presence(self.runtime, "a", 0, 4, 90)
+        assert self.guessed()[2][2:] == ("present", 18, harness.guesses.EXTERNAL)

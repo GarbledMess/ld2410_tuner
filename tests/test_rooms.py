@@ -3,19 +3,20 @@
 import asyncio
 import types
 import unittest
+from contextlib import ExitStack
 from copy import deepcopy
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import test_tuner as harness
-from tuner_under_test.rooms import assessment, evidence, groups, intervals, jobs, replay
+from sample_rows import rows_of
+from test_tuner import set_records as set_records
+from tuner_under_test.rooms import assessment, evidence, groups, intervals, jobs, replay, truth
 
 
 def member(device_id, values, labels, timing=None, offset=0):
     records = [(offset + i * 6, [value] + [255] * 17 + [0, 0]) for i, value in enumerate(values)]
     device = {"history_labels": labels, "training_state": "unknown"}
-    view = types.SimpleNamespace(
-        data={"devices": {device_id: device}}, _iter_history_samples=lambda *a, **kw: iter(records)
-    )
+    view = harness.stub_view(device_id, device, records)
     return {"view": view, "thresholds": {"g0_move": 20}, "timing": timing or {}}
 
 
@@ -86,8 +87,8 @@ class ReplayTests(unittest.TestCase):
         rows_b = [(i, {"g0_move": 40 if 8 <= i < 12 else 0}, "unknown") for i in range(30)]
         timing_a = {"timeout": 10, "on_delay": 0, "off_delay": 0}
         timing_b = {"timeout": 1, "on_delay": 0, "off_delay": 0}
-        a = replay.radar(rows_a, {"g0_move": 20}, timing_a)
-        b = replay.radar(rows_b, {"g0_move": 20}, timing_b)
+        a = replay.radar(rows_of(rows_a), {"g0_move": 20}, timing_a)
+        b = replay.radar(rows_of(rows_b), {"g0_move": 20}, timing_b)
         combined = replay.lookups(replay.combined({"a": a, "b": b}))
         self.assertTrue(combined["lower"].at(13))  # a's hold still covers the handoff
         self.assertFalse(replay.lookups(b)["lower"].at(13, False))
@@ -105,12 +106,14 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(evidence.room_label({"a": a, "b": b}, 10), ("present", "human", 1))
 
     def test_automatic_scores_identify_estimated_evidence(self):
-        a = member("a", [40] * 100 + [0] * 100, [])
         records = [
-            (i * 6, [40 if i < 100 else 0] + [255] * 17 + [1 if i < 100 else 2, 80])
+            (i * 6, [40 if i < 100 else 0] + [255] * 17 + [1 if i < 100 else 2, 100])
             for i in range(200)
         ]
-        a["view"]._iter_history_samples = lambda *args, **kw: iter(records)
+        a = member("a", [40] * 100 + [0] * 100, [])
+        a["view"] = harness.stub_view(
+            "a", {"history_labels": [], "training_state": "unknown"}, records
+        )
         report = assessment.calculate({"a": a}, 0, 1200)
         self.assertEqual(report["room"]["basis"], "estimated")
         self.assertGreater(report["room"]["score"], 99)
@@ -126,6 +129,109 @@ class ReplayTests(unittest.TestCase):
         )
         self.assertEqual(report["shared_recording_seconds"], 1191)
         self.assertLessEqual(report["room"]["presence_recall"], 1)
+
+
+def role(report, key):
+    return {
+        name: report["devices"][key][name]
+        for name in (
+            "missed_seen_seconds",
+            "missed_seen_inferred_seconds",
+            "missed_seen_automatic_seconds",
+            "false_active_seconds",
+            "occupied_seconds",
+            "empty_seconds",
+        )
+    }
+
+
+class RoleTests(unittest.TestCase):
+    def test_missed_seen_counts_only_attributed_time(self):
+        # a is labelled Present and detects only the first half; b is labelled Empty
+        # throughout, so the room is Present by a's label but b is not attributed.
+        a = member("a", [40] * 50 + [0] * 150, [{"start": 0, "end": 600, "state": "present"}])
+        b = member("b", [0] * 200, [{"start": 0, "end": 1200, "state": "not_present"}])
+        report = assessment.calculate({"a": a, "b": b}, 0, 1200)
+        self.assertAlmostEqual(role(report, "a")["missed_seen_seconds"], 297, delta=6)
+        self.assertEqual(role(report, "a")["missed_seen_inferred_seconds"], 0)
+        self.assertEqual(role(report, "b")["missed_seen_seconds"], 0)
+        self.assertAlmostEqual(role(report, "a")["occupied_seconds"], 597, delta=6)
+        self.assertEqual(
+            role(report, "a")["occupied_seconds"], role(report, "b")["occupied_seconds"]
+        )
+
+    def test_false_active_seconds_per_member(self):
+        a = member("a", [40] * 105 + [0] * 95, labels())
+        b = member("b", [0] * 200, labels())
+        report = assessment.calculate({"a": a, "b": b}, 0, 1200)
+        self.assertEqual(role(report, "a")["false_active_seconds"], 27)
+        self.assertEqual(role(report, "b")["false_active_seconds"], 0)
+        self.assertEqual(role(report, "a")["empty_seconds"], 594)
+        self.assertEqual(role(report, "b")["empty_seconds"], 594)
+
+    def test_missed_seen_inferred_from_baseline_is_separate(self):
+        # b is labelled only while Empty: that baseline makes its energy during the occupied
+        # half a rule-2 "yes", even though its threshold never fires.
+        a = member("a", [40] * 100 + [0] * 100, labels())
+        values = [40] * 30 + [0] * 70 + [0] * 100
+        b = member("b", values, [{"start": 600, "end": 1200, "state": "not_present"}])
+        b["thresholds"] = {"g0_move": 100}  # never detects, though the energy was seen
+        report = assessment.calculate({"a": a, "b": b}, 0, 1200)
+        found = role(report, "b")
+        self.assertGreater(found["missed_seen_seconds"], 0)
+        self.assertEqual(found["missed_seen_inferred_seconds"], found["missed_seen_seconds"])
+
+    def test_inferred_yes_below_the_confidence_floor_is_not_counted(self):
+        a = member("a", [40] * 100 + [0] * 100, labels())
+        b = member(
+            "b", [40] * 30 + [0] * 170, [{"start": 900, "end": 1200, "state": "not_present"}]
+        )
+        b["thresholds"] = {"g0_move": 100}  # 50 baseline samples: confidence 0.5 < 0.55
+        found = role(assessment.calculate({"a": a, "b": b}, 0, 1200), "b")
+        self.assertEqual(found["missed_seen_seconds"], 0)
+        self.assertEqual(found["missed_seen_inferred_seconds"], 0)
+
+    def test_room_label_snapshot_attributes_a_radar_with_no_labels(self):
+        a = member("a", [40] * 50 + [0] * 150, [])
+        room = {
+            "group_id": "g",
+            "groups": {"g": {"kind": "zone", "device_ids": ["a"]}},
+            "room_labels": {
+                "g": [
+                    {"start": 0, "end": 600, "state": "present", "source": "manual"},
+                    {"start": 600, "end": 1200, "state": "not_present", "source": "manual"},
+                ]
+            },
+        }
+        found = role(assessment.calculate({"a": a}, 0, 1200, room), "a")
+        self.assertAlmostEqual(found["missed_seen_seconds"], 297, delta=6)
+        self.assertEqual(found["missed_seen_inferred_seconds"], found["missed_seen_seconds"])
+        self.assertEqual(found["missed_seen_automatic_seconds"], 0)
+
+    def test_sensor_only_room_counts_missed_seen_as_automatic(self):
+        a = member("a", [40] * 100 + [0] * 100, [])
+        a["thresholds"] = {"g0_move": 100}  # never detects what it saw
+        room = {
+            "group_id": "g",
+            "groups": {"g": {"kind": "zone", "device_ids": ["a"]}},
+            "room_labels": {
+                "g": [
+                    {"start": 0, "end": 600, "state": "present", "source": "sensor"},
+                    {"start": 600, "end": 1200, "state": "not_present", "source": "sensor"},
+                ]
+            },
+        }
+        found = role(assessment.calculate({"a": a}, 0, 1200, room), "a")
+        self.assertAlmostEqual(found["missed_seen_seconds"], 597, delta=6)
+        self.assertEqual(found["missed_seen_automatic_seconds"], found["missed_seen_seconds"])
+        self.assertEqual(found["missed_seen_inferred_seconds"], 0)
+
+    def test_unlabelled_room_reports_zero_role_seconds(self):
+        report = assessment.calculate({"a": member("a", [0] * 200, [])}, 0, 1200)
+        self.assertEqual(
+            role(report, "a"),
+            dict.fromkeys(role(report, "a"), 0.0),
+        )
 
 
 class GroupTests(unittest.IsolatedAsyncioTestCase):
@@ -173,6 +279,20 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn(zone["id"], groups.definitions(self.runtime)[2])
 
+    def test_snapshot_layout_places_every_snapshot_device(self):
+        self.office()
+        for key in ("a", "b"):
+            self.registry.entities[f"sensor.{key}_g0_move_energy"] = types.SimpleNamespace(
+                entity_id=f"sensor.{key}_g0_move_energy", device_id=key, domain="sensor"
+            )
+        snapshot = self.runtime.snapshot()
+        self.assertEqual(set(snapshot["devices"]), {"a", "b"})
+        office = next(n for n in snapshot["layout"] if n["id"] == "area:office")
+        self.assertEqual(office["devices"], ["a", "b"])
+        placed = {d for n in snapshot["layout"] for d in n["devices"]}
+        self.assertEqual(placed, set(snapshot["devices"]))
+        self.assertIn("area:office", snapshot["rooms"]["groups"])
+
     def test_paused_devices_excluded_from_defaults_but_manually_selectable(self):
         self.office()
         self.runtime.data["devices"]["b"]["recording_enabled"] = False
@@ -204,7 +324,9 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(assessment, "calculate", side_effect=AssertionError("Must use cache")):
             for _ in range(3):
                 self.assertEqual(
-                    jobs.snapshot(self.runtime)["groups"]["area:office"]["assessment"]["state"],
+                    jobs.snapshot_with_inventory(self.runtime)[0]["groups"]["area:office"][
+                        "assessment"
+                    ]["state"],
                     "ready",
                 )
         with patch.object(assessment, "SCORER_VERSION", 2):
@@ -259,3 +381,768 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
         await schedule.stop(self.runtime)
         self.assertTrue(task.cancelled())
         self.assertEqual(jobs.summary(self.runtime, "area:office"), {"state": "pending"})
+
+
+class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
+    """``snapshot["room_attribution"]``: who saw each occupied episode, cached off-loop."""
+
+    setUp = harness.RuntimeTests.setUp
+    asyncTearDown = harness.RuntimeTests.asyncTearDown
+
+    def office(self):
+        from tuner_under_test.rooms import seen_by
+
+        GroupTests.office(self)
+        del self.runtime._history_view  # Seen by reads real history views, like learning.
+        self.clock = 1000.0
+        clock = patch.object(seen_by, "_clock", side_effect=lambda: self.clock)
+        clock.start()
+        self.addCleanup(clock.stop)
+        for key in ("a", "b"):
+            self.registry.entities[f"sensor.{key}_g0_move_energy"] = types.SimpleNamespace(
+                entity_id=f"sensor.{key}_g0_move_energy", device_id=key, domain="sensor"
+            )
+
+    def record(self, episodes, zone=None, flush=True, quiet_b=False):
+        """Radar a: per episode 6 strong samples with the zone Present, then 6 quiet ones with
+        the area Empty (which empties the zone too, so a is quiet in every group it is in)."""
+        self.zone = zone or groups.configure(self.runtime, None, "Desk", "office", ["a"])["id"]
+        first = self.now - episodes * 72 - 60
+        starts, saved, empty = [], [], []
+        for index in range(episodes):
+            begin = first + index * 72
+            starts.append(begin)
+            for step in range(12):
+                value = 60 if step < 6 else 2
+                self.runtime._record_history_sample("a", {"g0_move": value}, begin + step * 6)
+                if quiet_b:  # b, offset 3 s, stays quiet throughout.
+                    self.runtime._record_history_sample("b", {"g0_move": 2}, begin + step * 6 + 3)
+            saved.append(
+                {"start": begin, "end": begin + 36, "state": "present", "source": "manual"}
+            )
+            empty.append(
+                {"start": begin + 36, "end": begin + 72, "state": "not_present", "source": "manual"}
+            )
+        if flush:
+            self.runtime._flush_history_block("a")
+            self.runtime._flush_history_block("b")
+        self.runtime.data["room_labels"] = {self.zone: saved, "area:office": empty}
+        self.runtime.data["room_label_revision"] = {self.zone: 1, "area:office": 1}
+        return starts
+
+    async def poll(self):
+        snapshot = self.runtime.snapshot()
+        await asyncio.gather(*self.runtime._room_attribution_jobs.values())
+        return snapshot
+
+    def built(self, spy):
+        return sorted(call.args[2] for call in spy.call_args_list)
+
+    async def test_room_attribution_bounded_to_50(self):
+        self.office()
+        starts = self.record(60)
+        first = await self.poll()
+        self.assertEqual(first["room_attribution"][self.zone], [], "computed off the poll")
+        snapshot = await self.poll()
+        episodes = snapshot["room_attribution"][self.zone]
+        self.assertEqual(len(episodes), 50)
+        self.assertEqual([item["start"] for item in episodes], starts[10:])
+        # The end covers the last Present sample's 6 s cell.
+        self.assertEqual(episodes[-1]["end"], starts[-1] + 36)
+        self.assertEqual(
+            episodes[-1]["devices"], {"a": {"state": "yes", "confidence": 1.0, "inferred": True}}
+        )
+        # A zone Present implies its area Present; b recorded nothing, so it is unknown.
+        area = snapshot["room_attribution"]["area:office"]
+        self.assertEqual(len(area), 50)
+        self.assertEqual(
+            area[-1]["devices"],
+            {
+                "a": {"state": "yes", "confidence": 1.0, "inferred": True},
+                "b": {"state": "unknown", "confidence": 0.0, "inferred": True},
+            },
+        )
+
+    async def test_room_attribution_is_cached_until_its_inputs_change(self):
+        from tuner_under_test.rooms import room_labels, seen_by
+
+        self.office()
+        starts = self.record(3)
+        with patch.object(seen_by, "build", wraps=seen_by.build) as spy:
+            for _ in range(3):
+                await self.poll()
+            self.assertEqual(self.built(spy), ["area:office", self.zone], "one build per group")
+            before = self.runtime.snapshot()["room_attribution"][self.zone]
+            room_labels.label_room_range(
+                self.runtime, self.zone, starts[0], starts[0] + 6, "unknown"
+            )
+            stale = self.runtime.snapshot()["room_attribution"][self.zone]
+            self.assertEqual((len(stale), stale), (3, before), "served while it rebuilds")
+            await asyncio.gather(*self.runtime._room_attribution_jobs.values())
+            self.assertEqual(len(spy.call_args_list), 4, "a room label edit rebuilds zone and area")
+            self.runtime.data["devices"]["a"]["label_revision"] = 7
+            await self.poll()
+            self.assertEqual(len(spy.call_args_list), 6, "a member label edit rebuilds")
+            self.runtime._record_history_sample("a", {"g0_move": 2}, self.now)
+            await self.poll()
+            self.assertEqual(len(spy.call_args_list), 6, "pending samples wait for their block")
+            self.runtime._flush_history_block("a")
+            await self.poll()
+            self.assertEqual(len(spy.call_args_list), 6, "history-only changes wait")
+            self.clock += seen_by.HISTORY_REBUILD_SECONDS - 1
+            await self.poll()
+            self.assertEqual(len(spy.call_args_list), 6)
+            self.clock += 1
+            await self.poll()
+            self.assertEqual(len(spy.call_args_list), 8, "a new history block rebuilds in time")
+            await self.poll()
+            self.assertEqual(len(spy.call_args_list), 8)
+            self.runtime._record_history_sample("a", {"g0_move": 2}, self.now + 6)
+            self.runtime._flush_history_block("a")
+            self.runtime.data["devices"]["a"]["label_revision"] = 8
+            await self.poll()
+            self.assertEqual(len(spy.call_args_list), 10, "a label change never waits")
+
+    async def test_a_shared_radar_is_attributed_once_for_all_the_groups_of_a_poll(self):
+        """Regression: a poll that finds several groups stale prepared every group's views before
+        any build had landed, so a radar in three groups was attributed three times in a row."""
+        from tuner_under_test.rooms import attribution
+
+        self.office()
+        self.record(3, quiet_b=True)
+        with patch.object(attribution, "_rows", wraps=attribution._rows) as spy:
+            await self.poll()
+        decoded = sorted(call.args[1] for call in spy.call_args_list)
+        self.assertEqual(decoded, ["a", "b"], "a is in the zone and the area: one decode")
+        episodes = (await self.poll())["room_attribution"]
+        self.assertEqual(len(episodes[self.zone]), 3)
+        self.assertEqual(len(episodes["area:office"]), 3)
+
+    async def test_a_job_takes_what_an_earlier_job_attributed_while_it_waited(self):
+        """Two jobs prepared before either ran (as the learning and assessment jobs of one
+        radar can be) attribute the radar once."""
+        from tuner_under_test.rooms import attribution
+
+        self.office()
+        self.record(3, quiet_b=True)
+        first, second = (attribution.prepared_view(self.runtime, "a") for _ in range(2))
+
+        def job(view):
+            return attribution.radar_attribution(view, "a", view.data["room_snapshot"])["found"]
+
+        with patch.object(attribution, "_rows", wraps=attribution._rows) as spy:
+            found = await jobs.on_views(self.runtime, {"g": {"a": {"view": first}}}, job, first)
+            again = await jobs.on_views(self.runtime, {"g": {"a": {"view": second}}}, job, second)
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(again, found)
+
+    async def test_every_input_of_a_radars_baseline_is_in_the_signature(self):
+        from tuner_under_test.rooms import seen_by
+
+        self.office()
+        self.record(2)
+        # a is also in an area-less group: its labels change a's quiet samples, so the zone.
+        other = groups.configure(self.runtime, None, "Bench", None, ["a"])["id"]
+        await self.poll()
+        changes = (
+            lambda: self.runtime.data.setdefault("room_label_revision", {}).update({other: 1}),
+            lambda: self.runtime.data.setdefault("room_sensor_revision", {}).update({self.zone: 1}),
+            lambda: self.runtime.data["devices"]["a"].update(training_label_start=self.now),
+        )
+        for change in changes:
+            with (
+                self.subTest(change=change),
+                patch.object(seen_by, "build", wraps=seen_by.build) as spy,
+            ):
+                change()
+                await self.poll()
+                self.assertIn(self.zone, self.built(spy))
+
+    async def test_history_fingerprint_sees_flushes_and_prunes(self):
+        from tuner_under_test.rooms import seen_by
+
+        self.office()
+        self.record(6)  # Two stored blocks.
+        history = self.runtime.data["devices"]["a"]["history"]
+        self.assertEqual(len(history), 2)
+        await self.poll()
+        trims = (
+            # Cleanup trimming the oldest block changes only its start and count.
+            lambda: history.__setitem__(0, {**history[0], "start": history[0]["start"] + 6}),
+            lambda: history.__setitem__(0, {**history[0], "count": history[0]["count"] - 1}),
+            lambda: history.__setitem__(-1, {**history[-1], "count": history[-1]["count"] - 1}),
+            lambda: history.__setitem__(-1, {**history[-1], "start": history[-1]["start"] + 6}),
+            lambda: history.pop(0),
+        )
+        for trim in trims:
+            with (
+                self.subTest(trim=trim),
+                patch.object(seen_by, "build", wraps=seen_by.build) as spy,
+            ):
+                trim()
+                self.clock += seen_by.HISTORY_REBUILD_SECONDS
+                await self.poll()
+                self.assertIn(self.zone, self.built(spy))
+
+    async def test_builds_run_one_at_a_time(self):
+        self.office()
+        self.record(2)
+        active, peak = 0, 0
+
+        async def executor(fn, *args):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return fn(*args)
+
+        self.hass.async_add_executor_job = executor
+        await self.poll()
+        self.assertEqual(len(self.runtime._room_attribution), 2)
+        self.assertEqual(peak, 1)
+
+    def guess(self, t, state, confidence=1.0):
+        self.runtime.data["devices"]["a"].setdefault("auto", {})["last_classification"] = {
+            "state": state,
+            "confidence": confidence,
+            "timestamp": t,
+        }
+
+    async def test_estimate_only_episodes_are_marked(self):
+        self.office()
+        starts = self.record(2)
+        later = starts[-1] + 144
+        for step in range(12):
+            self.guess(later + step * 6, "present" if step < 6 else "not_present")
+            self.runtime._record_history_sample("a", {"g0_move": 60}, later + step * 6)
+        self.runtime._flush_history_block("a")
+        await self.poll()
+        episodes = (await self.poll())["room_attribution"][self.zone]
+        self.assertEqual([item["start"] for item in episodes], [*starts, later])
+        self.assertEqual([item["estimated"] for item in episodes], [False, False, True])
+
+    def test_snapshot_publishes_the_current_room_estimate(self):
+        from tuner_under_test.rooms import room_labels
+
+        self.office()
+        zone = groups.configure(self.runtime, None, "Desk", "office", ["a"])["id"]
+        first = self.now - 60
+        for step in range(10):
+            self.guess(first + step * 6, "present")
+            self.runtime._record_history_sample("a", {"g0_move": 60}, first + step * 6)
+        with patch.object(room_labels.time, "time", return_value=self.now):
+            estimate = jobs.snapshot_with_inventory(self.runtime)[0]["groups"][zone]["estimate"]
+            result = room_labels.room_estimate_feedback(self.runtime, zone, False)
+        self.assertEqual(
+            estimate,
+            {"state": "present", "confidence": 0.95, "start": first, "end": self.now - 3},
+        )
+        self.assertEqual(
+            result["room_labels"],
+            [{"start": first, "end": self.now - 3, "state": "not_present", "source": "manual"}],
+        )
+        with patch.object(room_labels.time, "time", return_value=self.now + 60):
+            self.assertIsNone(
+                jobs.snapshot_with_inventory(self.runtime)[0]["groups"][zone]["estimate"]
+            )
+
+    def test_the_published_estimate_is_cached_between_polls(self):
+        from tuner_under_test.rooms import room_labels
+
+        self.office()
+        zone = groups.configure(self.runtime, None, "Desk", "office", ["a"])["id"]
+        first = self.now - 60
+        for step in range(10):
+            self.guess(first + step * 6, "present")
+            self.runtime._record_history_sample("a", {"g0_move": 60}, first + step * 6)
+        estimates = room_labels.current_estimate
+        with (
+            patch.object(room_labels, "current_estimate", wraps=estimates) as spy,
+            patch.object(room_labels.time, "time", return_value=self.now),
+        ):
+            first_poll = jobs.snapshot_with_inventory(self.runtime)[0]["groups"][zone]["estimate"]
+            calls = spy.call_count
+            again = jobs.snapshot_with_inventory(self.runtime)[0]["groups"][zone]["estimate"]
+            self.assertEqual(spy.call_count, calls, "an unchanged poll reuses the estimate")
+            self.assertEqual(again, first_poll)
+            self.guess(self.now, "present")
+            self.runtime._record_history_sample("a", {"g0_move": 60}, self.now)
+            jobs.snapshot_with_inventory(self.runtime)[0]
+            self.assertGreater(spy.call_count, calls, "a new sample recomputes it")
+        calls = spy.call_count
+        with (
+            patch.object(room_labels, "current_estimate", wraps=estimates) as spy,
+            patch.object(
+                room_labels.time,
+                "time",
+                return_value=self.now + room_labels.ESTIMATE_CACHE_SECONDS,
+            ),
+        ):
+            jobs.snapshot_with_inventory(self.runtime)[0]
+            self.assertGreater(spy.call_count, 0, "time passing recomputes it (staleness)")
+
+    async def test_seen_by_matches_the_learners_attribution(self):
+        """Human-labelled episodes are attributed against the human-only baseline, as
+        ``room_targets`` (the learner) does; a full-truth baseline would differ here."""
+        from tuner_under_test.rooms import attribution, seen_by
+
+        self.office()
+        self.zone = groups.configure(self.runtime, None, "Desk", "office", ["a"])["id"]
+        first = self.now - 3600
+        t, zone, area = first, [], []
+        # Human Empty (area Empty empties the zone): a quiet at 2, 60 samples.
+        area.append({"start": t, "end": t + 360, "state": "not_present", "source": "manual"})
+        for step in range(60):
+            self.runtime._record_history_sample("a", {"g0_move": 2}, t + step * 6)
+        t += 400
+        # No human label, both radars guess Empty: the estimate is Empty, a reads 40.
+        for step in range(80):
+            for key in ("a", "b"):
+                self.runtime.data["devices"][key].setdefault("auto", {})["last_classification"] = {
+                    "state": "not_present",
+                    "confidence": 0.9,
+                    "timestamp": t + step * 6,
+                }
+                self.runtime._record_history_sample(key, {"g0_move": 40}, t + step * 6)
+        for key in ("a", "b"):
+            self.runtime.data["devices"][key]["auto"]["last_classification"] = {}
+        t += 600
+        # Human Present on the zone: a reads 30, above its human baseline only.
+        zone.append({"start": t, "end": t + 60, "state": "present", "source": "manual"})
+        for step in range(10):
+            self.runtime._record_history_sample("a", {"g0_move": 30}, t + step * 6)
+        self.runtime._flush_history_block("a")
+        self.runtime._flush_history_block("b")
+        self.runtime.data["room_labels"] = {self.zone: zone, "area:office": area}
+        self.runtime.data["room_label_revision"] = {self.zone: 1, "area:office": 1}
+        with patch.object(
+            attribution, "radar_attribution", wraps=attribution.radar_attribution
+        ) as spy:
+            await self.poll()
+            episodes = (await self.poll())["room_attribution"][self.zone]
+            self.assertTrue(spy.called, "Seen by uses the learner's attribution")
+        chip = episodes[-1]["devices"]["a"]
+        saved = attribution.snapshot(self.runtime, "a")
+        learner = attribution.radar_attribution(self.runtime, "a", saved)["found"][self.zone]
+        self.assertEqual(chip, learner[-1][1])
+        self.assertEqual((chip["state"], chip["inferred"]), ("yes", True))
+        full = attribution.radar_attribution(self.runtime, "a", saved, human=False)
+        self.assertEqual(full["found"][self.zone][-1][1]["state"], "no", "the baselines differ")
+        with patch.object(
+            attribution, "radar_attribution", wraps=attribution.radar_attribution
+        ) as spy:
+            attribution.room_targets(self.runtime, "a")
+            self.assertTrue(spy.called, "the learner path uses the same function")
+        self.assertIn(seen_by.build.__module__, seen_by.__name__)
+
+    def shared_radar_desk(self):
+        """Radar a is in the office area [a, b] and the Desk zone [a]. It reads 40 while Desk
+        is Empty but the area is Present (someone elsewhere in the office), 2 while the area
+        is Empty, then 30 under human Desk Present. Only the union rule (quiet when every
+        group is Empty) keeps the 40s out of a's baseline, so only it attributes the 30s."""
+        self.office()
+        desk = groups.configure(self.runtime, None, "Desk", "office", ["a"])["id"]
+        t, zone, area = self.now - 3600, [], []
+        zone.append({"start": t, "end": t + 360, "state": "not_present", "source": "manual"})
+        area.append({"start": t, "end": t + 360, "state": "present", "source": "manual"})
+        for step in range(60):
+            self.runtime._record_history_sample("a", {"g0_move": 40}, t + step * 6)
+        t += 400
+        area.append({"start": t, "end": t + 360, "state": "not_present", "source": "manual"})
+        for step in range(60):
+            self.runtime._record_history_sample("a", {"g0_move": 2}, t + step * 6)
+        t += 400
+        zone.append({"start": t, "end": t + 60, "state": "present", "source": "manual"})
+        for step in range(10):
+            self.runtime._record_history_sample("a", {"g0_move": 30}, t + step * 6)
+        self.runtime._flush_history_block("a")
+        self.runtime.data["room_labels"] = {desk: zone, "area:office": area}
+        self.runtime.data["room_label_revision"] = {desk: 1, "area:office": 1}
+        members = {
+            "a": {
+                "view": self.runtime._history_view("a"),
+                "thresholds": {"g0_move": 100},  # Never detects what it saw.
+                "timing": {},
+            }
+        }
+        return desk, t, members, truth.view(self.runtime, desk)
+
+    async def test_objective_and_roles_attribute_a_shared_radar_as_the_learner_does(self):
+        """M2: assessment roles and the joint objective read the learner's attribution (one
+        baseline, union rule over every group the radar is in), not a per-group baseline."""
+        from tuner_under_test.rooms import attribution
+        from tuner_under_test.rooms.objective import Objective
+
+        desk, episode, members, room = self.shared_radar_desk()
+        saved = attribution.snapshot(self.runtime, "a")
+        learner = attribution.radar_attribution(self.runtime, "a", saved)["found"][desk][-1][1]
+        self.assertEqual((learner["state"], learner["inferred"]), ("yes", True))
+        self.assertEqual(
+            attribution.room_targets(self.runtime, "a")(episode)[:2], ("present", "attributed")
+        )
+        start, end = episode - 1200, episode + 60
+        report = assessment.calculate(members, start, end, room)
+        role = report["devices"]["a"]
+        self.assertGreater(role["missed_seen_seconds"], 0, "the learner's yes is a miss here")
+        self.assertEqual(role["missed_seen_inferred_seconds"], role["missed_seen_seconds"])
+        preference = Objective(members, start, end, room).preferences["a"]["g0_move"]
+        self.assertEqual(preference["presence_reference"], 30, "attributed Present is evidence")
+
+    async def test_a_job_attributes_each_radar_once(self):
+        """Roles (human and automatic) and every measure in a job share one attribution of
+        each radar, from one pass over its history; the job keeps it in the cache."""
+        from tuner_under_test.rooms import attribution
+
+        desk, episode, _members, _room = self.shared_radar_desk()
+        with (
+            patch.object(jobs.time, "time", return_value=episode + 60),
+            patch.object(attribution, "_rows", wraps=attribution._rows) as spy,
+        ):
+            jobs.start(self.runtime, desk, 1)
+            await self.runtime._room_jobs[desk]
+        self.assertEqual(jobs.summary(self.runtime, desk)["state"], "ready")
+        self.assertEqual(spy.call_count, 1)
+        self.assertGreater(jobs.summary(self.runtime, desk)["devices"]["a"]["occupied_seconds"], 0)
+        self.assertIn("a", self.runtime._attribution_cache, "kept for the next job")
+
+    async def test_a_cache_hit_keeps_no_rows_and_decodes_no_history(self):
+        """A job keeps only its radars' sample times, never per-sample gate dicts, and a
+        second job on unchanged inputs reads the attribution cache without decoding rows."""
+        from tuner_under_test.rooms import attribution
+
+        desk, episode, _members, _room = self.shared_radar_desk()
+        views = []
+
+        def prepared(runtime, key, shared=None, real=attribution.prepared_view):
+            views.append(real(runtime, key, shared))
+            return views[-1]
+
+        with (
+            patch.object(jobs.time, "time", return_value=episode + 60),
+            patch.object(attribution, "prepared_view", side_effect=prepared),
+        ):
+            jobs.start(self.runtime, desk, 1)
+            await self.runtime._room_jobs[desk]
+            first = views[-1]._attribution_both["a"]
+            with patch.object(attribution, "_rows", wraps=attribution._rows) as spy:
+                jobs.start(self.runtime, desk, 1)
+                await self.runtime._room_jobs[desk]
+        self.assertNotIn("rows", first)
+        self.assertTrue(all(type(t) is float for t in first["times"]))
+        self.assertEqual(len(first["times"]), 130)
+        self.assertEqual(spy.call_args_list, [], "a cache hit decodes no sample rows")
+        self.assertEqual(views[-1]._attribution_both["a"]["found"], first["found"])
+        self.assertEqual(jobs.summary(self.runtime, desk)["state"], "ready")
+
+    async def test_a_group_outside_the_snapshot_never_reaches_the_shared_attribution(self):
+        """The roles fallback (a group the radar's snapshot does not hold) computes alone: a
+        made-up one-group result must not enter the job's memo or the attribution cache."""
+        from tuner_under_test.rooms import attribution, roles
+
+        _desk, _episode, members, _room = self.shared_radar_desk()
+        view = attribution.prepared_view(self.runtime, "a")
+        members = {"a": {**members["a"], "view": view}}
+        elsewhere = {"group_id": "zone:elsewhere", "groups": {}, "room_labels": {}}
+        roles.attributed_yes(members, elsewhere)
+        roles.target(members, elsewhere, "a")(0)
+        self.assertEqual(view._attribution_both, {})
+        self.assertIsNone(view._attribution_slots["a"]["found"])
+        attribution.remember(self.runtime, view)
+        self.assertNotIn("a", self.runtime._attribution_cache)
+
+    async def learn_office_set(self, *patchers):
+        """Learn the office area (radars a and b, human labels) with the ``patchers`` active;
+        returns what they give. The job must complete."""
+        from tuner_under_test.rooms import learning
+
+        self.office()
+        t, area = self.now - 3600, []
+        for state, value in (("present", 40), ("not_present", 2)):
+            area.append({"start": t, "end": t + 360, "state": state, "source": "manual"})
+            for step in range(60):
+                self.guess(t + step * 6, state)
+                self.runtime._record_history_sample("a", {"g0_move": value}, t + step * 6)
+                self.runtime._record_history_sample("b", {"g0_move": 2}, t + step * 6 + 3)
+            t += 360
+        self.runtime._flush_history_block("a")
+        self.runtime._flush_history_block("b")
+        self.runtime.data["room_labels"] = {"area:office": area}
+        self.runtime.data["room_label_revision"] = {"area:office": 1}
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(learning.recovery, "prepare_learning", AsyncMock()))
+            stack.enter_context(patch.object(learning.time, "time", return_value=t + 60))
+            entered = [stack.enter_context(patcher) for patcher in patchers]
+            report = learning.start_set(self.runtime, "area:office", "automatic")
+            await self.runtime._room_learning_jobs[report["group_id"]]
+        job = self.runtime.data["room_learning"]["area:office"]["job"]
+        self.assertEqual(job["status"], "completed", job.get("error"))
+        return entered
+
+    async def test_learning_a_set_decodes_each_radars_rows_once(self):
+        """Set learning (before, objective, search, after) attributes each radar once."""
+        from tuner_under_test.rooms import attribution
+
+        (spy,) = await self.learn_office_set(
+            patch.object(attribution, "_rows", wraps=attribution._rows)
+        )
+        decoded = sorted(call.args[1] for call in spy.call_args_list)
+        self.assertEqual(decoded, ["a", "b"], "one row decode per radar")
+        self.assertEqual(set(self.runtime._attribution_cache), {"a", "b"})
+
+    async def test_a_device_job_attributes_its_radar_once(self):
+        """Regression: a device-level job on an unprepared view made two attribution passes
+        (human truth, then full truth), each decoding every row; prepared, it makes one."""
+        from tuner_under_test.calibration import service
+        from tuner_under_test.rooms import attribution
+
+        await self.learn_office_set()
+        self.runtime._attribution_cache.clear()
+        self.runtime.hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *a: fn(*a))
+        entities, current = {"g0_move": "number.a_g0_move"}, {"g0_move": 20}
+        with (
+            patch.object(
+                service.recovery, "prepare_learning", AsyncMock(return_value=(entities, current))
+            ),
+            patch.object(service, "read_timing", return_value={}),
+            patch.object(attribution, "_rows", wraps=attribution._rows) as spy,
+        ):
+            await service._learn_once(self.runtime, "a")
+        self.assertEqual(len(spy.call_args_list), 1, "one decode of the radar's rows")
+        self.assertIn("a", self.runtime._attribution_cache, "the attribution is kept for reuse")
+
+    def assert_released(self, views):
+        """A finished job's views hold no truth readers, only the attribution result kept for
+        the next job."""
+        from tuner_under_test.rooms import attribution
+
+        self.assertTrue(views)
+        for view in views:
+            for entry in view._attribution_both.values():
+                self.assertFalse(set(attribution.HEAVY) & set(entry))
+        self.assertTrue(
+            any(slot["found"] for view in views for slot in view._attribution_slots.values())
+        )
+
+    async def test_a_set_job_frees_its_views_in_the_executor(self):
+        """Regression: dropping the views of a finished job freed millions of small objects
+        on the event loop (0.2 s at 30 days; seconds on a Pi)."""
+        from tuner_under_test.rooms import attribution
+
+        views = []
+
+        def prepared(runtime, key, shared=None, real=attribution.prepared_view):
+            views.append(real(runtime, key, shared))
+            return views[-1]
+
+        await self.learn_office_set(
+            patch.object(attribution, "prepared_view", side_effect=prepared)
+        )
+        self.assert_released(views)
+
+    async def test_a_seen_by_build_frees_its_views_in_the_executor(self):
+        from tuner_under_test.rooms import attribution
+
+        views = []
+
+        def prepared(runtime, key, shared=None, real=attribution.prepared_view):
+            views.append(real(runtime, key, shared))
+            return views[-1]
+
+        self.office()
+        self.record(10, quiet_b=True)
+        with patch.object(attribution, "prepared_view", side_effect=prepared):
+            await self.poll()
+        self.assert_released(views)
+
+    async def test_a_device_job_frees_its_view_before_scoring(self):
+        from tuner_under_test.calibration import service
+        from tuner_under_test.rooms import attribution
+
+        await self.learn_office_set()
+        self.runtime._attribution_cache.clear()
+        self.runtime.hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *a: fn(*a))
+        entities, current = {"g0_move": "number.a_g0_move"}, {"g0_move": 20}
+        views = []
+
+        def prepared(runtime, key, shared=None, real=attribution.prepared_view):
+            views.append(real(runtime, key, shared))
+            return views[-1]
+
+        with (
+            patch.object(
+                service.recovery, "prepare_learning", AsyncMock(return_value=(entities, current))
+            ),
+            patch.object(service, "read_timing", return_value={}),
+            patch.object(service.attribution, "prepared_view", side_effect=prepared),
+        ):
+            await service._learn_once(self.runtime, "a")
+        self.assert_released(views)
+
+    async def test_overlapping_member_episodes_share_one_row(self):
+        self.office()
+        starts = self.record(10, quiet_b=True)  # 60 quiet samples each: above the floor
+        await self.poll()
+        area = (await self.poll())["room_attribution"]["area:office"]
+        self.assertEqual([row["start"] for row in area], starts)
+        self.assertEqual({row["devices"]["a"]["state"] for row in area}, {"yes"})
+        self.assertEqual({row["devices"]["b"]["state"] for row in area}, {"no"})
+
+    async def test_weak_inferred_results_show_unknown_as_the_learner_drops_them(self):
+        self.office()
+        self.record(4)  # 24 quiet samples: baseline confidence 0.24, below the floor.
+        await self.poll()
+        rows = (await self.poll())["room_attribution"][self.zone]
+        self.assertEqual(
+            rows[-1]["devices"]["a"], {"state": "unknown", "confidence": 0.24, "inferred": True}
+        )
+
+    def later_run(self, start, values, zone_labels=(), guess=None):
+        for step, value in enumerate(values):
+            if guess:
+                self.guess(start + step * 6, guess)
+            self.runtime._record_history_sample("a", {"g0_move": value}, start + step * 6)
+        self.runtime.data["devices"]["a"].setdefault("auto", {})["last_classification"] = {}
+        self.runtime._flush_history_block("a")
+        self.runtime.data["room_labels"][self.zone] += list(zone_labels)
+        self.runtime.data["room_label_revision"][self.zone] += 1
+
+    async def test_rows_split_where_the_learner_switches_attribution(self):
+        self.office()
+        starts = self.record(10)  # 60 quiet samples: confidence 0.6
+        b = starts[-1] + 144
+        # Human Present for the first half; the recorded estimate keeps it occupied after.
+        human = {"start": b, "end": b + 36, "state": "present", "source": "manual"}
+        self.later_run(b, [60] * 12, [human], guess="present")
+        await self.poll()
+        rows = (await self.poll())["room_attribution"][self.zone]
+        self.assertEqual(
+            [(row["start"] - b, row["end"] - b, row["estimated"]) for row in rows[-2:]],
+            # The last sample's estimate cell is clipped at the sample, so the run ends at 60.
+            [(0, 36, False), (36, 66, True)],
+        )
+
+    async def test_one_radars_neighbouring_episodes_keep_their_own_rows(self):
+        self.office()
+        starts = self.record(10)
+        b = starts[-1] + 144
+        labels = [
+            {"start": b, "end": b + 36, "state": "present", "source": "manual"},
+            {"start": b + 36, "end": b + 42, "state": "not_present", "source": "manual"},
+            {"start": b + 42, "end": b + 78, "state": "present", "source": "manual"},
+        ]
+        self.later_run(b, [60] * 6 + [2] * 7, labels)
+        await self.poll()
+        rows = (await self.poll())["room_attribution"][self.zone]
+        self.assertEqual(
+            [(row["start"] - b, row["devices"]["a"]["state"]) for row in rows[-2:]],
+            [(0, "yes"), (42, "no")],
+        )
+
+    def test_a_cached_estimate_still_expires_on_time(self):
+        from tuner_under_test.rooms import room_labels
+
+        self.office()
+        zone = groups.configure(self.runtime, None, "Desk", "office", ["a"])["id"]
+        bucket = room_labels.ESTIMATE_CACHE_SECONDS
+        poll = (int(self.now // bucket) + 2) * bucket + 0.1
+        latest = poll - room_labels.FEEDBACK_WINDOW_SECONDS + 0.5
+        for step in range(10):
+            self.guess(latest - 54 + step * 6, "present")
+            self.runtime._record_history_sample("a", {"g0_move": 60}, latest - 54 + step * 6)
+        with patch.object(room_labels.time, "time", return_value=poll):
+            self.assertIsNotNone(
+                jobs.snapshot_with_inventory(self.runtime)[0]["groups"][zone]["estimate"]
+            )
+        # Same cache bucket, but now more than the feedback window after the last sample.
+        with patch.object(room_labels.time, "time", return_value=poll + bucket - 0.2):
+            self.assertIsNone(
+                jobs.snapshot_with_inventory(self.runtime)[0]["groups"][zone]["estimate"]
+            )
+
+    def test_removed_groups_leave_the_estimate_cache(self):
+        self.office()
+        zone = groups.configure(self.runtime, None, "Desk", "office", ["a"])["id"]
+        jobs.snapshot_with_inventory(self.runtime)[0]
+        self.assertIn(zone, self.runtime._room_estimates)
+        groups.remove(self.runtime, zone)
+        jobs.snapshot_with_inventory(self.runtime)[0]
+        self.assertNotIn(zone, self.runtime._room_estimates)
+
+    async def test_samples_not_yet_in_a_block_are_attributed(self):
+        self.office()
+        starts = self.record(2, flush=False)
+        self.assertEqual(self.runtime.data["devices"]["a"].get("history", []), [])
+        await self.poll()
+        episodes = (await self.poll())["room_attribution"][self.zone]
+        self.assertEqual([item["start"] for item in episodes], starts)
+
+    def test_groups_without_recordings_need_no_job(self):
+        self.office()
+        snapshot = self.runtime.snapshot()
+        self.assertEqual(snapshot["room_attribution"], {"area:office": []})
+        self.assertEqual(self.runtime._room_attribution_jobs, {})
+
+    async def test_failed_build_is_not_retried_every_poll(self):
+        from tuner_under_test.rooms import seen_by
+
+        self.office()
+        self.record(2)
+        with patch.object(seen_by, "build", side_effect=ValueError("broken")) as spy:
+            await self.poll()
+            snapshot = await self.poll()
+        self.assertEqual(spy.call_count, 2)
+        self.assertEqual(snapshot["room_attribution"][self.zone], [])
+
+    async def test_removed_group_forgets_its_episodes(self):
+        self.office()
+        self.record(2)
+        await self.poll()
+        self.assertIn(self.zone, self.runtime._room_attribution)
+        groups.remove(self.runtime, self.zone)
+        snapshot = await self.poll()
+        self.assertNotIn(self.zone, snapshot["room_attribution"])
+        self.assertNotIn(self.zone, self.runtime._room_attribution)
+
+    async def test_change_during_build_is_rebuilt_and_never_runs_twice(self):
+        self.office()
+        self.record(2)
+        started, finish = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def executor(fn, *args):
+            calls.append(args[2])
+            started.set()
+            await finish.wait()
+            return fn(*args)
+
+        self.hass.async_add_executor_job = executor
+        self.runtime.snapshot()
+        await asyncio.wait_for(started.wait(), 5)
+        await asyncio.sleep(0)
+        self.runtime.data["room_label_revision"][self.zone] = 2
+        self.runtime.snapshot()
+        self.assertEqual(len(calls), 1, "builds queue one at a time, never twice per group")
+        self.assertEqual(len(self.runtime._room_attribution_jobs), 2)
+        finish.set()
+        await asyncio.gather(*self.runtime._room_attribution_jobs.values())
+        await self.poll()
+        self.assertEqual(calls.count(self.zone), 2, "the result of stale inputs is rebuilt")
+
+    async def test_stop_cancels_pending_builds(self):
+        from tuner_under_test.runtime import schedule
+
+        self.office()
+        self.record(2)
+        started = asyncio.Event()
+
+        async def executor(fn, *args):
+            started.set()
+            await asyncio.Event().wait()
+
+        self.hass.async_add_executor_job = executor
+        self.runtime.snapshot()
+        await asyncio.wait_for(started.wait(), 5)
+        tasks = list(self.runtime._room_attribution_jobs.values())
+        await schedule.stop(self.runtime)
+        self.assertTrue(tasks and all(task.cancelled() for task in tasks))

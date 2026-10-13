@@ -10,9 +10,24 @@ MIN_REFERENCE = 20
 MODEL = "temporal_evidence_v3"
 MAX_GAP = 10.0
 HUMAN_REFERENCE = "human-labelled distributions"
+# Event-driven classification (see ``reclassify``). CHANGE: how far (energy units) any one
+# channel must move from the readings last classified, and SUSTAIN: how long (seconds) it must
+# stay moved. Chosen by replaying the recorded radars (tools/replay_autolabels.py): the 18
+# channels of a quiet room already move 5-25 units from one sample to the next, so without
+# SUSTAIN a move of 3 units reclassified about 90 % of the samples, and the larger moves that
+# skip more of them cost the decided samples 1-2 points of accuracy. A move of 3 units that
+# lasts 5 seconds skips 44-56 % of the classifications of the four labelled radars and moves
+# no accuracy or coverage measure by more than 0.7 points. HEARTBEAT: the longest
+# the last result is reused, in seconds (the references themselves are refreshed once a
+# minute). SETTLED: a filter whose probability moved less than this in the last classification
+# is at rest, so unchanged readings give the same answer.
+CHANGE = 3.0
+HEARTBEAT = 60.0
+SETTLED = 0.05
+SUSTAIN = 5.0  # Seconds a channel must stay moved before that counts as a change.
 
 
-def _quantile(histogram, fraction):
+def quantile(histogram, fraction):
     target = max(1, math.ceil(sum(histogram) * fraction))
     count = 0
     for value, mass in enumerate(histogram):
@@ -62,9 +77,15 @@ def _start_filter(temporal, now):
     last = temporal.get("timestamp")
     elapsed = now - last if last is not None else 6.0
     previous = temporal.get("probability", 0.5)
-    if elapsed < 0 or elapsed > MAX_GAP:
+    # A gap is time with no readings at all (``seen``). Readings that only reused the result
+    # (``hold``) were unchanged and the filter at rest, so they leave it as it is; the new
+    # reading stands for the time since the last of them.
+    seen = temporal.get("seen", last if last is not None else now)
+    if elapsed < 0 or now - seen > MAX_GAP:
         previous, elapsed = 0.5, 6.0
-    temporal["timestamp"] = now
+    elif last is not None:
+        elapsed = now - seen
+    temporal.update(timestamp=now, seen=now)
     return previous, elapsed
 
 
@@ -173,12 +194,12 @@ def estimate_presence(values, manual, background, temporal, now, expected_keys, 
 
 def confirm_estimate(result, runtime, now):
     """Confirm sustained evidence using elapsed time, never callback counts."""
-    last = runtime.get("timestamp")
+    last = runtime.get("seen", runtime.get("timestamp"))
     if runtime.get("model") != result["model"] or (
         last is not None and not 0 <= now - last <= MAX_GAP
     ):
         runtime.clear()
-    runtime.update(timestamp=now, model=result["model"])
+    runtime.update(timestamp=now, seen=now, model=result["model"])
     label = result["label"]
     if label == "unknown":
         runtime.update(state="unknown", pending="unknown", pending_since=now)
@@ -195,6 +216,45 @@ def confirm_estimate(result, runtime, now):
     return label
 
 
+def reclassify(cadence, values, now):
+    """Whether the readings ``values`` at ``now`` need a new classification, or the last
+    result can be reused (``hold``). ``cadence`` is the state ``classified`` left. Needed when
+    nothing was classified yet, the last classification was not at rest (``at_rest``), the
+    channels differ, one has stayed ``CHANGE`` or more away for ``SUSTAIN`` seconds (this keeps
+    that time in ``cadence``), or ``HEARTBEAT`` seconds have passed."""
+    anchor = cadence.get("anchor")
+    if anchor is None or not cadence["rest"] or now - cadence["time"] >= HEARTBEAT:
+        return True
+    if anchor.keys() != values.keys():
+        return True
+    if not any(abs(value - values[key]) >= CHANGE for key, value in anchor.items()):
+        cadence["moved"] = None
+        return False
+    # A lone spike is noise: the readings must stay moved for a few seconds.
+    cadence["moved"] = now if cadence.get("moved") is None else cadence["moved"]
+    return now - cadence["moved"] >= SUSTAIN
+
+
+def at_rest(before, result, temporal, confirmed, now):
+    """Whether reusing ``result`` (made from the filter at probability ``before``, confirmed as
+    ``confirmed``) would answer as a new classification of unchanged readings would: nothing
+    is waiting for confirmation, the filter has settled, and no timed hold-over is running."""
+    steady = abs(result["presence_probability"] - before) < SETTLED
+    supported = abs(result["score"]) < 0.05 and now - temporal.get("supported_at", -math.inf) <= 12
+    return confirmed == result["label"] and steady and not supported
+
+
+def classified(cadence, values, now, rest):
+    """Remember a classification of ``values`` at ``now`` (``rest``: ``at_rest``)."""
+    cadence.update(anchor=values, time=now, rest=rest, moved=None)
+
+
+def hold(temporal, confirmation, now):
+    """Reuse the last result at ``now``: the readings are still arriving, so the filter and
+    the confirmation see no gap."""
+    temporal["seen"] = confirmation["seen"] = now
+
+
 def _observe_channel(key, value, manual, background, ranges):
     if not math.isfinite(value) or not 0 <= value <= 100:
         return None
@@ -205,8 +265,8 @@ def _observe_channel(key, value, manual, background, ranges):
     baseline = n if sum(n) >= MIN_REFERENCE else background.get(key, [])
     if sum(baseline) < MIN_REFERENCE:
         return None
-    q25, q75 = _quantile(baseline, 0.25), _quantile(baseline, 0.75)
-    tail = _quantile(baseline, 0.90)
+    q25, q75 = quantile(baseline, 0.25), quantile(baseline, 0.75)
+    tail = quantile(baseline, 0.90)
     z = max(0.0, (value - tail) / max(2, q75 - q25))
     elevation = max(-0.6, min(3.5, (z - 1) * 1.2))
     guided = sum(p) >= MIN_REFERENCE and sum(n) >= MIN_REFERENCE

@@ -2,12 +2,16 @@ import { readNumberFields } from "./forms.js";
 import { sourcePickerHtml, wireSourcePicker } from "./source_picker.js";
 
 export const panelSources = {
-  _sourcesHtml(id, d) {
+  // ``groupId`` attaches the sources to a room group instead of a radar.
+  _sourcesHtml(id, d, groupId = null) {
     const config = this._sourceDrafts?.get(id) || d.presence_sources || {};
     const status = this._sourceStatusText(d.presence_sources);
     const open = this._sectionState.get(`${id}:sources`) ? "open" : "";
-    return `<details class="presence-sources" ${open}><summary>Automatic labels from other entities</summary>
-      <p class="muted">Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor. Choose independent sources, not this radar's own presence output. Any positive source starts or continues a presence period.</p>
+    const intro = groupId
+      ? "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor to label this whole room. Their output is stored as read-only sensor room labels; your manual room labels always win."
+      : "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor. Choose independent sources, not this radar's own presence output.";
+    return `<details class="presence-sources" ${open}><summary>${groupId ? "Room presence sources" : "Automatic labels from other entities"}</summary>
+      <p class="muted">${intro} Any positive source starts or continues a presence period.</p>
       <div class="source-rows">${(config.sources || []).map((source, index) => this._sourceRowHtml(id, source, index)).join("")}</div>
       <button data-action="source-add" type="button" ${(config.sources || []).length >= 16 ? "disabled" : ""}>Add source</button>
       <div class="storage-fields"><label class="source-negative"><input type="checkbox" data-source-negative ${config.mark_not_present ? "checked" : ""}> Mark “Not Present”</label>
@@ -63,13 +67,13 @@ export const panelSources = {
     };
   },
 
-  _wireSources(card, id, d) {
+  _wireSources(card, id, d, groupId = null) {
     const form = card.querySelector(".presence-sources");
     this._sourceDrafts ||= new Map();
     const capture = () => this._sourceDrafts.set(id, this._readSources(form));
     const redraw = () => {
-      form.outerHTML = this._sourcesHtml(id, d);
-      this._wireSources(card, id, d);
+      form.outerHTML = this._sourcesHtml(id, d, groupId);
+      this._wireSources(card, id, d, groupId);
     };
     form.ontoggle = () => this._sectionState.set(`${id}:sources`, form.open);
     form.oninput = capture;
@@ -107,10 +111,16 @@ export const panelSources = {
           )
         )
           return;
-        await this._call("configure_presence_sources", {
-          device_id: id,
-          settings: this._readSources(form),
-        });
+        const settings = this._readSources(form);
+        await (groupId
+          ? this._call("configure_room_sources", {
+              group_id: groupId,
+              settings,
+            })
+          : this._call("configure_presence_sources", {
+              device_id: id,
+              settings,
+            }));
         this._sourceDrafts.delete(id);
         await this._load(true);
       });

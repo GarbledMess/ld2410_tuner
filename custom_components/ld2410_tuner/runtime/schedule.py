@@ -11,6 +11,7 @@ from homeassistant.core import callback
 
 from ..calibration import automatic
 from ..calibration.service import LearningEvidenceChanged
+from ..presence import rebuilds
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,32 +52,91 @@ def configure(runtime, enabled, at, auto_apply=None, auto_apply_scope=None):
 
 @callback
 def tick(runtime, now):
+    """Once per local day at the schedule time: the learning pass (which refreshes stale
+    references first) when enabled, otherwise a references-only refresh."""
     config = settings(runtime)
-    if not config["enabled"] or config["running"]:
+    day = _due_day(config, now)
+    if day is None or config["running"]:
         return
+    if config["enabled"]:
+        _start_learning(runtime, config, day)
+    else:
+        _refresh_references(runtime, day)
+
+
+def _due_day(config, now):
+    """The local day if the schedule time has passed today, else None."""
     local = now.astimezone(ZoneInfo(config["timezone"]))
-    day = local.date().isoformat()
-    if local.strftime("%H:%M") < config["time"] or config["last_day"] == day:
+    if local.strftime("%H:%M") < config["time"]:
+        return None
+    return local.date().isoformat()
+
+
+def _start_learning(runtime, config, day):
+    if config["last_day"] == day:
         return
     runtime.data.setdefault("learning_schedule", {})["last_day"] = day
     runtime._nightly_task = runtime.hass.async_create_task(_run(runtime, day))
 
 
+def _refresh_references(runtime, day):
+    """With learning off, stale references still rebuild once a day; claimed separately
+    from learning's ``last_day`` so enabling learning later that day still learns."""
+    saved = runtime.data.setdefault("learning_schedule", {})
+    if saved.get("references_day") == day:
+        return
+    saved["references_day"] = day
+    runtime._schedule_save()
+    rebuilds.queue(runtime, reason="daily")
+
+
 async def _run(runtime, day):
     # Persist the claim before starting: restarts and repeated DST hours do not rerun it.
     await runtime.async_save()
-    processed = set()
+    # Out-of-date references rebuild here, before learning, rather than at each edit.
+    await rebuilds.refresh(runtime, reason="overnight")
     # Learning yields to discovery/removal; retain this run's starting membership.
     devices = list(runtime.data["devices"].items())
-    for device_id, device in devices:
-        if device_id in processed:
-            continue
+    for device_id, device, members in _plan(runtime, devices):
         if not settings(runtime)["enabled"]:
             break
-        if device.get("entities") and device.get("recording_enabled", True):
-            await _learn_device(runtime, device_id, device, day)
-            _share_joint_attempt(runtime, device_id, device, processed)
+        await _learn_device(runtime, device_id, device, day)
+        _share_attempt(runtime, device["nightly_learning"], members)
     await runtime.async_save()
+
+
+def _plan(runtime, devices):
+    """``(device_id, device, members)``: each learning set once, through its first eligible
+    member, then every radar in no learning set. ``members`` share the set's outcome."""
+    from ..rooms import groups
+
+    eligible = {
+        key: device
+        for key, device in devices
+        if device.get("entities") and device.get("recording_enabled", True)
+    }
+    plan, covered = [], set()
+    try:
+        found = groups.current_sets(runtime)
+    except Exception as error:
+        # Learn every radar on its own; each records why it could not learn.
+        _LOGGER.warning("Scheduled learning could not read learning sets: %s", error)
+        found = {}
+    for item in found.values():
+        members = [key for key in item["device_ids"] if key in eligible]
+        covered.update(item["device_ids"])
+        if members:
+            plan.append((members[0], eligible[members[0]], members))
+    plan.extend((key, device, []) for key, device in eligible.items() if key not in covered)
+    return plan
+
+
+def _share_attempt(runtime, attempt, members):
+    """Every member of a learning set records the set's one overnight outcome."""
+    for key in members:
+        device = runtime.data["devices"].get(key)
+        if device is not None:
+            device["nightly_learning"] = deepcopy(attempt)
 
 
 async def _learn_device(runtime, device_id, device, day):
@@ -126,6 +186,7 @@ async def stop(runtime):
         + list(runtime._comparison_jobs.values())
         + list(runtime._room_jobs.values())
         + list(runtime._room_learning_jobs.values())
+        + list(runtime._room_attribution_jobs.values())
     )
     if runtime._nightly_task:
         tasks.append(runtime._nightly_task)
@@ -182,22 +243,6 @@ def _assessment(learned):
         field: human.get(field) if human.get(field) is not None else automatic.get(field)
         for field in fields
     }
-
-
-def _share_joint_attempt(runtime, device_id, device, processed):
-    from ..rooms import groups
-
-    processed.add(device_id)
-    try:
-        group_id = groups.for_device(runtime, device_id)
-        group = groups.learning_group(runtime, group_id) if group_id else None
-    except ValueError:
-        return
-    if not group_id:
-        return
-    for key in group["device_ids"]:
-        runtime.data["devices"][key]["nightly_learning"] = deepcopy(device["nightly_learning"])
-        processed.add(key)
 
 
 def _restore_joint(runtime):

@@ -5,6 +5,13 @@ const STATUS = {
   unlabelled: "No manual label",
 };
 
+// Room states read as occupancy of a whole room.
+export const ROOM_STATUS = {
+  present: "Present",
+  not_present: "Empty",
+  unknown: "Unknown",
+};
+
 export const panelHistory = {
   _historyStateFor(id) {
     if (!this._historyState.has(id))
@@ -173,7 +180,7 @@ export const panelHistory = {
   },
 
   _refreshHistorySection(card, id) {
-    this._captureDrafts(this.shadowRoot.querySelector("#grid"));
+    this._captureDrafts();
     const chart = card.querySelector('.subsection[data-section="chart"]');
     card.querySelector(".chart-home").append(chart);
     card.querySelector('[data-section="history"] .subsection-body').innerHTML =
@@ -279,6 +286,98 @@ export const panelHistory = {
       revision: edit.revision,
     });
     await this._historyChanged(id);
+  },
+
+  // ---- Conflicting labels (spec 4.3) --------------------------------------
+  // Room Empty vs a member radar's Present label, a zone Present inside its
+  // area labelled Empty, and a manual room label vs a contradicting sensor
+  // room label. Read-only: each overlap is listed with its time range.
+
+  _labelOverlaps(first, second, text) {
+    return first.flatMap((a) =>
+      second
+        .map((b) => ({
+          start: Math.max(a.start, b.start),
+          end: Math.min(a.end, b.end),
+          text,
+        }))
+        .filter((overlap) => overlap.end > overlap.start),
+    );
+  },
+
+  _roomConflicts(gid) {
+    const rooms = this._roomsData();
+    const group = rooms.groups[gid];
+    const pick = (owner, source, state) =>
+      (owner?.labels || []).filter(
+        (label) =>
+          (source === "manual") === (label.source === "manual") &&
+          label.state === state,
+      );
+    const radarPresent = (id) =>
+      (this._data?.devices?.[id]?.history?.labels || []).filter(
+        (label) => label.state === "present",
+      );
+    const empty = pick(group, "manual", "not_present");
+    const conflicts = group.device_ids.flatMap((id) =>
+      this._labelOverlaps(
+        empty,
+        radarPresent(id),
+        `room Empty vs radar Present (${rooms.members[id]?.name || id})`,
+      ),
+    );
+    for (const [state, other] of [
+      ["present", "not_present"],
+      ["not_present", "present"],
+    ])
+      conflicts.push(
+        ...this._labelOverlaps(
+          pick(group, "manual", state),
+          pick(group, "sensor", other),
+          `room ${ROOM_STATUS[state]} vs sensor ${ROOM_STATUS[other]}`,
+        ),
+      );
+    conflicts.push(...this._areaConflicts(gid, group, pick));
+    return conflicts.sort((a, b) => a.start - b.start);
+  },
+
+  _areaConflicts(gid, group, pick) {
+    const groups = this._roomsData().groups;
+    if (group.kind === "area")
+      return Object.values(groups)
+        .filter(
+          (zone) => zone.kind !== "area" && zone.area_id === group.area_id,
+        )
+        .flatMap((zone) =>
+          this._labelOverlaps(
+            pick(zone, "manual", "present"),
+            pick(group, "manual", "not_present"),
+            `zone Present (${zone.name}) inside area Empty`,
+          ),
+        );
+    const area = groups[`area:${group.area_id}`];
+    if (!area) return [];
+    return this._labelOverlaps(
+      pick(group, "manual", "present"),
+      pick(area, "manual", "not_present"),
+      `zone Present inside area Empty (${area.name})`,
+    );
+  },
+
+  // Only conflicts overlapping the shown day, like the timeline above them.
+  _roomConflictsHtml(gid, bounds) {
+    const shown = this._roomConflicts(gid).filter(
+      (conflict) => conflict.end > bounds.start && conflict.start < bounds.end,
+    );
+    const items = shown.map((conflict) => {
+      const from = new Date(conflict.start * 1000).toLocaleString();
+      const to = new Date(conflict.end * 1000).toLocaleString();
+      return `<li><span>${this._esc(from)} → ${this._esc(to)}</span> <b>${this._esc(conflict.text)}</b></li>`;
+    });
+    if (!items.length) return "";
+    return `<div class="room-conflicts notice"><b>Reviewing conflicting labels</b>
+      <p class="muted">These labels disagree. Correct whichever is wrong; nothing is changed automatically.</p>
+      <ul class="review-periods">${items.join("")}</ul></div>`;
   },
 
   async _historyChanged(id) {

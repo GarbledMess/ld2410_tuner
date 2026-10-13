@@ -2,8 +2,11 @@
 
 import math
 import re
+from functools import lru_cache
 
 from homeassistant.helpers import entity_registry as er
+
+from .. import entity_index
 
 FIELDS = ("timeout", "on_delay", "off_delay")
 DEFAULTS = {"mode": "device", "timeout": 1.0, "on_delay": 0.5, "off_delay": 1.0}
@@ -50,7 +53,13 @@ def _names(entity):
 
 
 def _field(entity):
-    names = _names(entity)
+    return _field_of(tuple(_names(entity)))
+
+
+@lru_cache(maxsize=4096)
+def _field_of(names):
+    """The timing field an entity with these names controls (None: none). Pure, and asked of
+    every entity of a radar on every poll."""
     for field, suffix in (("on_delay", "presence_on_delay"), ("off_delay", "presence_off_delay")):
         if any(name.endswith(suffix) for name in names):
             return field
@@ -81,14 +90,16 @@ def _seconds(state, field):
 
 
 def _candidates(runtime, device_id):
-    candidates = {field: [] for field in FIELDS}
-    for entity in er.async_get(runtime.hass).entities.values():
-        if entity.device_id != device_id or entity.domain not in ("number", "sensor"):
-            continue
-        field = _field(entity)
-        if field:
-            candidates[field].append(entity.entity_id)
-    return candidates
+    """The entities of a radar that control each timing field. They change only with the
+    registry, so they are worked out once for each registry the index reads."""
+    index = entity_index.read(runtime, er.async_get(runtime.hass))
+    if device_id not in index.timing:
+        candidates = {field: [] for field in FIELDS}
+        for entity in index.by_device.get(device_id, ()):
+            if entity.domain in ("number", "sensor") and (field := _field(entity)):
+                candidates[field].append(entity.entity_id)
+        index.timing[device_id] = candidates
+    return index.timing[device_id]
 
 
 def read_timing(runtime, device_id):

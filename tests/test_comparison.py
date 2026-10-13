@@ -172,6 +172,47 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         assert len(calls) == 1
         self.hass.services.async_call.assert_not_awaited()
 
+    async def test_the_scoring_job_runs_on_an_attribution_prepared_view(self):
+        """Regression: unprepared, the job attributed its radar twice (human, then full
+        truth) and kept nothing for the next job."""
+        self.configuration()
+        views = []
+
+        async def execute(fn, *args):
+            if fn is comparison.calculate:
+                views.append(args[0])
+                return assessment(args[-1])
+            return await asyncio.to_thread(fn, *args)
+
+        self.hass.async_add_executor_job = execute
+        with patch.object(jobs.attribution, "remember", wraps=jobs.attribution.remember) as keep:
+            await self.runtime.compare_results("a")
+        assert getattr(views[0], "_attribution_slots", None) is not None
+        keep.assert_called_once_with(self.runtime, views[0])
+
+    async def test_scoring_frees_the_views_attribution_once_the_evidence_is_collected(self):
+        """Regression: the view's guesses and truth readers were freed on the event loop
+        after the job."""
+        self.configuration()
+        view = jobs.attribution.prepared_view(self.runtime, "a")
+        view._attribution_both["a"] = {"others": {"a": object()}, "found": {"kept": True}}
+        context, _ = jobs._context(self.runtime, "a")
+        comparison.calculate(view, "a", context)
+        assert view._attribution_both["a"] == {"found": {"kept": True}}
+
+    async def test_comparison_job_reads_float_threshold_states(self):
+        self.configuration()
+        for state in self.states.values():
+            state.state = f"{float(state.state)}"
+        calls = self.scoring_executor()
+        report = await self.runtime.compare_results("a")
+        assert report["state"] == "ready", report.get("reason")
+        live = calls[0]["patterns"]["live"]["thresholds"]
+        assert live and all(type(value) is int for value in live.values())
+        assert all(
+            type(value) is int for value in calls[0]["patterns"]["user"]["thresholds"].values()
+        )
+
     async def test_history_labels_retention_and_timing_do_not_rescore(self):
         self.configuration()
         calls = self.scoring_executor()

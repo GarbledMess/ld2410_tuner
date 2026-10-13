@@ -121,7 +121,7 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
         runtime._history_cache.move_to_end(cache_key)
         return runtime._history_cache[cache_key]
     if cache_key not in runtime._history_jobs:
-        view = runtime._history_view(device_id)
+        view = runtime._history_view(device_id, members=False)
 
         async def build():
             try:

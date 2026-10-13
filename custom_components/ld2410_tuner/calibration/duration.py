@@ -4,23 +4,26 @@ from functools import lru_cache
 
 from .constants import MISSED_TIME_COST
 from .intervals import WeightedTime
-from .scoring import error_cost
-from .timing import _sessions, _Window, bit_runs
+from .scoring import error_cost, mass
+from .timing import _sessions, _Window, hit_runs
 
 
 def _clip(intervals, start, end):
     return [(max(a, start), min(b, end)) for a, b in intervals if b > start and a < end]
 
 
-def _raw_intervals(window, bits):
+def _raw_spans(window, bits):
+    """``(starts, ends)`` of the runs of hits: each from halfway to the sample before to
+    halfway to the sample after."""
     times = window.times
-    return [
-        (
-            (times[first - 1] + times[first]) / 2 if first else times[0],
-            (times[last] + times[last + 1]) / 2 if last + 1 < len(times) else times[-1],
-        )
-        for first, last in bit_runs(bits)
-    ]
+    runs = hit_runs(bits)
+    return (
+        [(times[first - 1] + times[first]) / 2 if first else times[0] for first, _ in runs],
+        [
+            (times[stop - 1] + times[stop]) / 2 if stop < len(times) else times[-1]
+            for _, stop in runs
+        ],
+    )
 
 
 def _recent_start(windows):
@@ -37,11 +40,13 @@ def _recent_start(windows):
 def _confidence_time(rows):
     """Assign observations midpoint cells; dense telemetry adds no time."""
     times = [rows[0][0]] + [(a[0] + b[0]) / 2 for a, b in zip(rows, rows[1:], strict=False)]
-    return WeightedTime(times, [row[3] if len(row) > 3 else 1.0 for row in rows])
+    return WeightedTime(times, [mass(row) for row in rows])
 
 
 class DurationGroup:
-    def __init__(self, rows, config=None, *, absent=False, barriers=()):
+    def __init__(self, rows, config=None, *, absent=False, barriers=(), measured=True):
+        """``measured`` False for a group that only replays hit masks (``_spans``): its windows
+        keep no time integrals (``measure``), which are as large as the samples again."""
         config = config or {}
         self.timed = config.get("timeout") is not None
         self.absent = absent
@@ -53,7 +58,7 @@ class DurationGroup:
         )
         on, off = (config["on_delay"], config["off_delay"]) if known else (0, 0)
         self.windows = [
-            (offset, _Window(part, hold, on, off), _confidence_time(part))
+            (offset, _Window(part, hold, on, off), _confidence_time(part) if measured else None)
             for offset, part in _sessions(rows, barriers)
         ]
         self.unscored_mask = sum(
@@ -64,12 +69,15 @@ class DurationGroup:
         self.recent_start = _recent_start(self.windows)
         self.measure = lru_cache(maxsize=256)(self._measure)
 
-    def _intervals(self, window, bits, latest):
+    def _spans(self, window, bits, latest):
         if not self.timed:
-            return _raw_intervals(window, bits)
+            return _raw_spans(window, bits)
         if self.absent:
             return window._upper(bits)
         return window._lower(bits) if latest else window._possible_onset(bits)
+
+    def _intervals(self, window, bits, latest):
+        return list(zip(*self._spans(window, bits, latest), strict=True))
 
     def _measure(self, bits, recent=False, latest=False):
         result = {

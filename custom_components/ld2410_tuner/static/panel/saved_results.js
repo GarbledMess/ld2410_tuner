@@ -50,9 +50,21 @@ export const panelSavedResults = {
     const stale =
       result?.label_revision != null &&
       result.label_revision !== (d.history?.revision || 0);
+    const weightStale = result && !result.joint && this._weightChanged(result);
     return `<label class="saved-result-picker">Saved thresholds<select data-action="learning-result">${options}</select></label>
       <div class="muted">User learnt: latest manual run. Autolearnt: latest overnight run. Current: last fully applied result. Previous: settings replaced by that Apply. Live device values are shown in the gate table.</div>
-      ${stale ? '<div class="notice">Labels have changed since this result was learned. Its accuracy report describes the earlier labels; you can still apply these saved values.</div>' : ""}`;
+      ${stale ? '<div class="notice">Labels have changed since this result was learned. Its accuracy report describes the earlier labels; you can still apply these saved values.</div>' : ""}
+      ${weightStale ? '<div class="notice">The automatic evidence weight has changed since this result was learned. Learn again to use the current setting; you can still apply these saved values.</div>' : ""}`;
+  },
+
+  _automaticWeight(config = this._data?.learning_schedule || {}) {
+    return config.automatic_weight ?? config.default_automatic_weight ?? 0;
+  },
+
+  _weightChanged(result) {
+    const config = this._data?.learning_schedule || {};
+    const learned = result.automatic_weight ?? config.default_automatic_weight;
+    return (learned ?? 0) !== this._automaticWeight(config);
   },
 
   _refreshRecoveryProgress() {
@@ -148,12 +160,28 @@ export const panelSavedResults = {
   },
 
   _automaticComparisonHtml(application) {
+    if (application.assessment?.zones)
+      return this._zonesComparisonHtml(application);
     const patterns = application.assessment?.patterns;
     const candidate = patterns?.[application.source || "automatic"];
     if (!patterns || !candidate) return "";
     const evidence =
       candidate.basis === "estimated" ? "; includes automatic estimates" : "";
     return `<p>Fresh comparison: live ${patterns.live.score ?? "unscored"} → learned ${candidate.score ?? "unscored"} / 100. Both use the same recordings and timing settings${evidence}.</p>`;
+  },
+
+  // A linked set has no single room score: show its summed cost and each
+  // zone's live and learned scores.
+  _zonesComparisonHtml(application) {
+    const source = application.source || "automatic";
+    const { patterns, zones } = application.assessment;
+    const each = Object.entries(zones)
+      .map(
+        ([key, zone]) =>
+          `${this._groupName(key)} ${this._scoreText(zone.live)} → ${this._scoreText(zone[source])}`,
+      )
+      .join("; ");
+    return `<p>Fresh comparison: total error cost ${this._costText(patterns.live?.error_cost)} → ${this._costText(patterns[source]?.error_cost)} (lower is better). ${this._esc(each)}. All zones use the same recordings and timing settings.</p>`;
   },
 
   _writeDetailsHtml(writes) {
@@ -349,6 +377,8 @@ export const panelSavedResults = {
       <label>Time <input data-action="nightly-time" type="time" value="${this._esc(form.time)}" required></label>
       <label><input data-action="nightly-auto-apply" type="checkbox" ${(form.auto_apply ?? true) ? "checked" : ""}> Global default: automatically apply better results</label>
       <label>Default scope <select data-action="auto-apply-scope" ${form.auto_apply === false ? "disabled" : ""}><option value="overnight" ${form.auto_apply_scope !== "all" ? "selected" : ""}>Overnight learning only</option><option value="all" ${form.auto_apply_scope === "all" ? "selected" : ""}>Every completed Learn</option></select></label>
+      <label>Automatic evidence weight <input data-action="automatic-weight" type="number" min="0" max="1" step="any" required value="${this._esc(form.automatic_weight ?? this._automaticWeight(config))}"></label>
+      <span class="muted">How much automatic guesses, including a radar's own and scaled by their confidence, count beside human labels: 0 = automatic evidence only breaks ties; 1 = automatic evidence counts up to a quarter of the human evidence. Changing it makes learned results stale. Automatic Apply still requires an improvement on human labels. Not-present guesses count in full; a present guess counts only from a fresh reference and where the radar reads above its own empty-room level, and a room is present only when two members agree. The room and zone blend is not yet validated on real data.</span>
       <button data-action="nightly-save">Save learning settings</button>
       <span class="muted ${config.running ? "is-busy" : ""}" role="status">${this._esc(config.timezone)} · Global default: ${config.running ? "Learning devices…" : this._automaticApplyPolicyText(config)} Override this default in each sensor’s Recommendations.</span>`,
     );
@@ -365,13 +395,20 @@ export const panelSavedResults = {
         auto_apply: container.querySelector(
           '[data-action="nightly-auto-apply"]',
         ).checked,
+        automatic_weight: container.querySelector(
+          '[data-action="automatic-weight"]',
+        ).value,
       };
     };
     const save = container.querySelector('[data-action="nightly-save"]');
-    save.onclick = () =>
-      this._action(save, async () => {
-        const at = container.querySelector('[data-action="nightly-time"]');
-        if (!at.reportValidity()) return;
+    save.onclick = () => {
+      const at = container.querySelector('[data-action="nightly-time"]');
+      const weight = container.querySelector(
+        '[data-action="automatic-weight"]',
+      );
+      // Validate before the action starts: busy (disabled) controls skip validation.
+      if (!at.reportValidity() || !weight.reportValidity()) return;
+      return this._action(save, async () => {
         await this._call("configure_learning_schedule", {
           enabled: container.querySelector('[data-action="nightly-enabled"]')
             .checked,
@@ -383,8 +420,13 @@ export const panelSavedResults = {
             '[data-action="nightly-auto-apply"]',
           ).checked,
         });
+        if (Number(weight.value) !== this._automaticWeight(config))
+          await this._call("configure_automatic_weight", {
+            weight: Number(weight.value),
+          });
         this._scheduleDraft = null;
         await this._load(true);
       });
+    };
   },
 };

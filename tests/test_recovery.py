@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import test_tuner as harness
+from tuner_under_test import entity_index
 from tuner_under_test.calibration import recovery
 
 
@@ -25,6 +26,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
             entity_id=name, domain=name.split(".")[0], device_id=device, disabled_by=disabled
         )
         self.states[name] = types.SimpleNamespace(state=state)
+        entity_index.forget(self.runtime)  # The registry announces every change it makes.
         return name
 
     def unavailable(self):

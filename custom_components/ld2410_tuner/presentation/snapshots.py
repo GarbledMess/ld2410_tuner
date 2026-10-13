@@ -8,13 +8,16 @@ from typing import Any
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
+from .. import entity_index
 from ..calibration import automatic, comparison_jobs, timing_config
+from ..calibration import settings as learning_settings
 from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
-from ..history import policy, storage
-from ..presence import sources
+from ..history import policy, recording, storage
+from ..presence import rebuilds, sources
 from ..rooms import jobs as room_jobs
+from ..rooms import layout, seen_by
 from ..runtime.schedule import settings
 
 
@@ -34,13 +37,24 @@ def snapshot(runtime) -> dict[str, Any]:
     runtime.refresh_devices(registry)
     result = {
         "devices": {},
-        "learning_schedule": settings(runtime),
+        "learning_schedule": {**settings(runtime), **learning_settings.summary(runtime.data)},
         "timing_settings": timing_config.settings(runtime),
         "storage": storage.summary(runtime),
     }
 
     _snapshot_devices(runtime, registry, result)
-    result["rooms"] = room_jobs.snapshot(runtime)
+    rooms, areas, members, definitions = room_jobs.snapshot_with_inventory(runtime)
+    result["rooms"] = rooms
+    result["layout"] = layout.build(
+        areas,
+        members,
+        definitions,
+        list(result["devices"]),
+        {key: item["recording_enabled"] for key, item in members.items()},
+        {key: item["area_id"] for key, item in members.items()},
+    )
+    result["learning_sets"] = room_jobs.learning_sets(runtime, definitions)
+    result["room_attribution"] = seen_by.snapshot(runtime, definitions)
     return result
 
 
@@ -126,20 +140,24 @@ def _snapshot_device(runtime, device_id, device, registry):
         "configuration_recovery": device.get("configuration_recovery"),
         "engineering_mode": runtime._engineering_status.get(device_id),
         "last_applied": device.get("last_applied", {}),
-        "auto_learning": runtime.auto_learning_summary(device),
-        "history": {
-            "retention_days": policy.settings(runtime.data)["human_days"],
-            "revision": device.get("label_revision", 0),
-            "blocks": len(device.get("history", [])),
-            "samples": sum(int(b.get("count", 0)) for b in device.get("history", [])),
-            "labels": device.get("history_labels", []),
-            "oldest": min(
-                (float(b.get("start", 0)) for b in device.get("history", [])), default=None
-            ),
-            "newest": max(
-                (float(b.get("start", 0)) for b in device.get("history", [])), default=None
-            ),
-        },
+        "references_refreshing": rebuilds.busy(runtime, device_id),
+        "auto_learning": runtime.auto_learning_summary(
+            device, learning_settings.automatic_weight(runtime.data)
+        ),
+        "history": _history_summary(runtime, device_id, device),
+    }
+
+
+def _history_summary(runtime, device_id, device):
+    blocks, samples, oldest, newest = recording.history_summary(runtime, device_id)
+    return {
+        "retention_days": policy.settings(runtime.data)["human_days"],
+        "revision": device.get("label_revision", 0),
+        "blocks": blocks,
+        "samples": samples,
+        "labels": device.get("history_labels", []),
+        "oldest": oldest,
+        "newest": newest,
     }
 
 
@@ -204,8 +222,8 @@ def _snapshot_identity(runtime, device_id):
 
 def _snapshot_thresholds(runtime, device_id, registry):
     current = {}
-    for entity in registry.entities.values():
-        if entity.device_id != device_id or entity.domain != "number":
+    for entity in entity_index.read(runtime, registry).by_device.get(device_id, ()):
+        if entity.domain != "number":
             continue
         match = GATE_RE.match(entity.entity_id.split(".", 1)[1])
         if match and match.group("metric") == "threshold":

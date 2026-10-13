@@ -69,8 +69,9 @@ The profile is bounded at 24 periods per source and state.
 
 A batched rebuild using the supplied device's retained human recordings took
 approximately 0.81 seconds on the development environment. Startup imports run
-in Home Assistant's executor. Historical correction rebuilds remain synchronous,
-as does the existing histogram rebuild; this measurement is not a guarantee for
+in Home Assistant's executor. Historical correction rebuilds now only mark the
+references out of date and run in the executor overnight or on demand; the
+existing histogram rebuild remains synchronous; this measurement is not a guarantee for
 larger histories or slower Home Assistant hosts.
 
 Local verification: 395 Python tests passed with 97.09% aggregate coverage;

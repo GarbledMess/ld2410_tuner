@@ -1,13 +1,27 @@
 export const panelControls = {
   _openRecommendations(card, id) {
-    if (this._collapsed.has(id))
+    if (this._cardCollapsed(card.dataset.placement))
       card.querySelector('[data-action="toggle"]').click();
     this._setSectionCollapsed(id, "details", false);
-    const section = card.querySelector('.subsection[data-section="details"]');
-    section.classList.remove("collapsed");
-    section.querySelector(".sub-toggle").textContent = "▾";
-    section.querySelector(".sub-toggle").setAttribute("aria-expanded", "true");
-    section.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    this._showSection(card, id, "details", false);
+    card
+      .querySelector('.subsection[data-section="details"]')
+      .scrollIntoView({ behavior: "smooth", block: "nearest" });
+  },
+
+  // Sections are shared per radar: show the change in every copy.
+  _showSection(card, id, key, collapsed) {
+    const copies = this._placements(id);
+    if (!copies.includes(card)) copies.push(card);
+    for (const copy of copies) {
+      const sub = copy.querySelector(`.subsection[data-section="${key}"]`);
+      if (!sub) continue;
+      sub.classList.toggle("collapsed", collapsed);
+      const btn = sub.querySelector(".sub-toggle");
+      btn.textContent = collapsed ? "▸" : "▾";
+      btn.setAttribute("aria-expanded", String(!collapsed));
+    }
+    return copies;
   },
 
   _wireCard(card, id, d) {
@@ -26,9 +40,10 @@ export const panelControls = {
   },
   _wireCollapse(card, id, d) {
     const toggleBody = () => {
-      const willCollapse = !this._collapsed.has(id);
-      if (willCollapse) this._collapsed.add(id);
-      else this._collapsed.delete(id);
+      const placement = card.dataset.placement;
+      const willCollapse = !this._cardCollapsed(placement);
+      if (willCollapse) this._collapsed.add(placement);
+      else this._collapsed.delete(placement);
       const body = card.querySelector(".body");
       const btn = card.querySelector('[data-action="toggle"]');
       body.classList.toggle("collapsed", willCollapse);
@@ -48,13 +63,9 @@ export const panelControls = {
         const key = head.dataset.section;
         const willCollapse = !this._sectionCollapsed(id, key);
         this._setSectionCollapsed(id, key, willCollapse);
-        const sub = head.closest(".subsection");
-        sub.classList.toggle("collapsed", willCollapse);
-        const btn = head.querySelector(".sub-toggle");
-        btn.textContent = willCollapse ? "▸" : "▾";
-        btn.setAttribute("aria-expanded", String(!willCollapse));
+        const copies = this._showSection(card, id, key, willCollapse);
         if (key === "history") {
-          this._placeHistoryGraph(card, id);
+          for (const copy of copies) this._placeHistoryGraph(copy, id);
           if (!willCollapse)
             this._showHistoryWindow(
               card,
@@ -180,6 +191,7 @@ export const panelControls = {
           Number(button.dataset.end),
           button.dataset.state || "present",
           button.dataset.gateKey,
+          card,
         );
     });
     const actions = {
@@ -189,9 +201,21 @@ export const panelControls = {
       json: () => this._export(id, "json"),
       csv: () => this._export(id, "csv"),
     };
-    for (const [name, action] of Object.entries(actions))
-      card.querySelector(`[data-action="${name}"]`).onclick = (event) =>
-        this._action(event.currentTarget, action);
+    for (const [name, action] of Object.entries(actions)) {
+      // Grouped radars have no Learn/Apply buttons.
+      const button = card.querySelector(`[data-action="${name}"]`);
+      if (button)
+        button.onclick = (event) => this._action(event.currentTarget, action);
+    }
+    const show = card.querySelector('[data-action="show-set"]');
+    if (show) show.onclick = () => this._revealSet(show.dataset.learningSet);
+    const references = card.querySelector('[data-action="refresh-references"]');
+    if (references)
+      references.onclick = () =>
+        this._action(references, async () => {
+          await this._call("refresh_references", { device_id: id });
+          await this._load(true);
+        });
     card.querySelectorAll('[data-action="auto-feedback"]').forEach((button) => {
       button.onclick = () =>
         this._action(button, async () => {

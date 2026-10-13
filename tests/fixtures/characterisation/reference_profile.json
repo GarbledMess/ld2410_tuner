@@ -1,0 +1,31 @@
+{
+ "periods": [
+  {
+   "confidence": 1.0,
+   "count": 20,
+   "end": 1800000114,
+   "source": "human",
+   "start": 1800000000,
+   "state": "present"
+  },
+  {
+   "confidence": 1.0,
+   "count": 20,
+   "end": 1800000234,
+   "source": "human",
+   "start": 1800000120,
+   "state": "not_present"
+  }
+ ],
+ "summary": {
+  "last_independent_label": 1800000234,
+  "legacy_age_unknown": false,
+  "periods": {
+   "entity": 0,
+   "human": 2,
+   "radar": 0
+  },
+  "reference_strength": 0.999277509,
+  "version": 1
+ }
+}

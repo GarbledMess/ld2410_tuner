@@ -23,3 +23,27 @@ class WeightedTime:
 
     def between(self, start, end):
         return self.at(end) - self.at(start)
+
+
+def across(masses, starts, ends):
+    """The sum of ``between`` over the spans ``(start, end)`` for each of ``masses`` (which
+    share their times): the same terms in the same order, with each end located once."""
+    times = masses[0].times
+    if any(mass.times is not times for mass in masses):
+        raise ValueError("Masses must share their times")
+    firsts = [k - 1 if (k := bisect_right(times, x)) else 0 for x in starts]
+    lasts = [k - 1 if (k := bisect_right(times, x)) else 0 for x in ends]
+    sums = []
+    for mass in masses:
+        prefix, weights = mass.prefix, mass.weights
+        sums.append(
+            sum(
+                [
+                    prefix[last]
+                    + (end - times[last]) * weights[last]
+                    - (prefix[first] + (start - times[first]) * weights[first])
+                    for start, end, first, last in zip(starts, ends, firsts, lasts, strict=True)
+                ]
+            )
+        )
+    return sums

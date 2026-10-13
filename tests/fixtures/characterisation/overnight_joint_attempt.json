@@ -1,0 +1,132 @@
+{
+ "a": {
+  "assessment": {
+   "basis": "human",
+   "false_positive_percent": 0.0,
+   "missed_time_cost": 5.0,
+   "outcomes": {
+    "automatic": {
+     "not_present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 0,
+      "seconds": 0.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 0.0
+     },
+     "present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 0,
+      "seconds": 0.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 0.0
+     }
+    },
+    "human": {
+     "not_present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 99,
+      "seconds": 594.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 594.0
+     },
+     "present": {
+      "active_seconds": 597.0,
+      "hits": 100,
+      "possible_seconds": 597.0,
+      "samples": 100,
+      "seconds": 600.0,
+      "weighted_active_seconds": 597.0,
+      "weighted_seconds": 600.0
+     }
+    }
+   },
+   "presence_recall": 0.995,
+   "score": 97.5,
+   "sources": {
+    "not_present": "human",
+    "present": "human"
+   },
+   "target_met": false
+  },
+  "attempts": 1,
+  "automatic_apply": {
+   "reason": "Automatic Apply must be enabled for this source on every zone member",
+   "source": "automatic",
+   "status": "skipped"
+  },
+  "day": "2026-10-07",
+  "status": "unsafe",
+  "timing": null
+ },
+ "b": {
+  "assessment": {
+   "basis": "human",
+   "false_positive_percent": 0.0,
+   "missed_time_cost": 5.0,
+   "outcomes": {
+    "automatic": {
+     "not_present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 0,
+      "seconds": 0.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 0.0
+     },
+     "present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 0,
+      "seconds": 0.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 0.0
+     }
+    },
+    "human": {
+     "not_present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 99,
+      "seconds": 594.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 594.0
+     },
+     "present": {
+      "active_seconds": 597.0,
+      "hits": 100,
+      "possible_seconds": 597.0,
+      "samples": 100,
+      "seconds": 600.0,
+      "weighted_active_seconds": 597.0,
+      "weighted_seconds": 600.0
+     }
+    }
+   },
+   "presence_recall": 0.995,
+   "score": 97.5,
+   "sources": {
+    "not_present": "human",
+    "present": "human"
+   },
+   "target_met": false
+  },
+  "attempts": 1,
+  "automatic_apply": {
+   "reason": "Automatic Apply must be enabled for this source on every zone member",
+   "source": "automatic",
+   "status": "skipped"
+  },
+  "day": "2026-10-07",
+  "status": "unsafe",
+  "timing": null
+ }
+}

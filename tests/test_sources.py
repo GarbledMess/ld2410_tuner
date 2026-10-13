@@ -48,13 +48,18 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.entity("binary_sensor.camera_person", "on")
         self.sample(self.now, 70)
         sample = self.runtime._history_runtime["a"]["samples"][0][1]
-        assert sample[-2:] == bytes([1, 90])
+        assert len(sample) == len(harness.constants.HISTORY_KEYS)
+        (run,) = self.runtime._history_runtime["a"]["runs"]
+        assert run[2:] == ["present", 18, harness.guesses.EXTERNAL]  # 90 % is 18 steps of 5 %
         assert not self.device.get("history_labels")
         assert sum(self.device.get("histograms", {}).get("g0_move", {}).get("present", [])) == 0
         assert self.device["auto"]["last_classification"]["basis"] == "external"
         self.runtime._flush_history_block("a")
-        restored = list(self.runtime._iter_history_samples(self.device, include_auto=True))
+        restored = list(self.runtime._iter_history_samples(self.device))
         assert restored[0][1] == sample
+        assert harness.guesses.of(self.runtime, "a").runs == [tuple(run)]
+        assert not self.device["guess_runs"], "the open run waits in memory until it closes"
+        assert self.runtime._history_runtime["a"]["runs"] == [run]
         with self.assertRaisesRegex(ValueError, "Correct external labels"):
             self.runtime.record_auto_feedback("a", False)
 
@@ -105,9 +110,9 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
             service._fit_history(
                 self.runtime, "a", {"g0_move": "number.threshold"}, {"g0_move": 20}
             )
-        human, _, _, automatic, _ = fit.call_args.args
+        human, _, _, automatic, _, _ = fit.call_args.args
         assert [(ts, state) for ts, _, state in human] == [(self.now, "not_present")]
-        assert [(ts, state, confidence) for ts, _, state, confidence in automatic] == [
+        assert [(ts, state, confidence) for ts, _, state, confidence, *_ in automatic] == [
             (self.now + 6, "not_present", 0.9)
         ]
         self.runtime.label_history_range("a", self.now + 5, self.now + 7, "unknown")

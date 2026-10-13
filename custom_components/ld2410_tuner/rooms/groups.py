@@ -5,6 +5,8 @@ from uuid import uuid4
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 
+from . import sets
+
 
 def inventory(runtime):
     devices = dr.async_get(runtime.hass)
@@ -61,17 +63,38 @@ def configure(runtime, group_id, name, area_id, device_ids):
     }
     runtime.data.setdefault("room_groups", {})[key] = saved
     runtime.data.setdefault("room_assessments", {}).pop(key, None)
+    _membership_changed(runtime, groups)
     runtime._schedule_save()
     return {"id": key, **saved}
 
 
 def remove(runtime, group_id):
+    before = definitions(runtime)[2]
     # Removing an area override restores its registry-derived membership.
     runtime.data.setdefault("room_groups", {}).pop(group_id, None)
     runtime.data.setdefault("room_assessments", {}).pop(group_id, None)
     runtime.data.setdefault("room_learning", {}).pop(group_id, None)
+    if not group_id.startswith("area:"):
+        # Restoring an area default keeps its labels; a zone's labels go with it.
+        runtime.data.get("room_labels", {}).pop(group_id, None)
+        runtime.data.get("room_label_revision", {}).pop(group_id, None)
+        runtime.data.get("room_sensor_revision", {}).pop(group_id, None)
+        _forget_sources(runtime, group_id)
+    _membership_changed(runtime, before)
     runtime._schedule_save()
     return {"ok": True}
+
+
+def _forget_sources(runtime, group_id):
+    from . import room_sources
+
+    room_sources.forget(runtime, group_id)
+
+
+def _membership_changed(runtime, before):
+    from . import membership
+
+    membership.membership_changed(runtime, before)
 
 
 def _validate(name, area_id, device_ids, areas, members):
@@ -87,55 +110,66 @@ def _validate(name, area_id, device_ids, areas, members):
         raise ValueError("Choose at least one discovered radar")
 
 
-def learning_group(runtime, group_id):
-    _, _, known = definitions(runtime)
+PAUSED_MEMBER = (
+    "Enable recording for every member, or remove paused radars from this learning group"
+)
+
+
+def _learnable(known, group_id):
     group = known.get(group_id)
     if not group:
         raise ValueError("This zone no longer exists")
     if group["kind"] == "area" and any(
         item["kind"] == "zone" and item["area_id"] == group["area_id"] for item in known.values()
     ):
-        raise ValueError("This area contains independent zones. Learn each zone separately.")
-    if any(
-        not runtime.data["devices"].get(key, {}).get("recording_enabled", True)
-        for key in group["device_ids"]
-    ):
         raise ValueError(
-            "Enable recording for every member, or remove paused radars from this learning group"
+            "This area is split into zones. Learn its zones from their headers or linked band."
         )
     return group
 
 
-def for_device(runtime, device_id):
-    _, _, known = definitions(runtime)
-    zones = [
-        key
-        for key, item in known.items()
-        if item["kind"] == "zone" and device_id in item["device_ids"]
-    ]
-    if len(zones) > 1:
-        raise ValueError(
-            "This radar belongs to multiple zones. Choose Learn together on the intended zone."
-        )
-    if zones:
-        key = zones[0]
-        return key if len(known[key]["device_ids"]) > 1 else None
-    areas = [
-        key
-        for key, item in known.items()
-        if item["kind"] == "area" and device_id in item["device_ids"]
-    ]
-    if len(areas) > 1:
-        raise ValueError("This radar belongs to multiple area groups. Choose the intended group.")
-    return _area_learning_group(known, areas)
-
-
-def _area_learning_group(known, areas):
-    if not areas:
-        return None
-    key = areas[0]
-    parent = known[key]
-    subdivided = any(
-        item["kind"] == "zone" and item["area_id"] == parent["area_id"] for item in known.values()
+def _paused(runtime, chosen):
+    return any(
+        not runtime.data["devices"].get(key, {}).get("recording_enabled", True)
+        for group in chosen
+        for key in group["device_ids"]
     )
-    return key if len(parent["device_ids"]) > 1 and not subdivided else None
+
+
+def _set_id(found, key):
+    """A set id, or the id of the set holding group ``key``; otherwise ``key`` itself."""
+    return next(
+        (set_id for set_id, item in found.items() if key == set_id or key in item["group_ids"]),
+        key,
+    )
+
+
+def learning_set(runtime, key):
+    """Resolve a set id, or one of its group ids, to ``(set_id, name, {group_id: group})``.
+
+    A group in no learning set (for example a single-radar zone) learns as its own
+    one-group set, as before learning sets existed."""
+    known = definitions(runtime)[2]
+    found = sets.learning_sets(known)
+    set_id = _set_id(found, key)
+    group_ids = found[set_id]["group_ids"] if set_id in found else [key]
+    chosen = {group_id: _learnable(known, group_id) for group_id in group_ids}
+    name = " + ".join(item["name"] for item in chosen.values())
+    if _paused(runtime, chosen.values()):
+        raise ValueError(f"{name}: {PAUSED_MEMBER}")
+    return set_id, name, chosen
+
+
+def current_sets(runtime):
+    """The learning sets of the current group definitions (``sets.learning_sets``)."""
+    return sets.learning_sets(definitions(runtime)[2])
+
+
+def set_id_for(runtime, key):
+    """The stored learning key for ``key`` (a set id or one of its group ids)."""
+    return _set_id(current_sets(runtime), key)
+
+
+def for_device(runtime, device_id):
+    """Return the id of the device's learning set (a group id for a one-group set)."""
+    return sets.set_for_device(current_sets(runtime), device_id)

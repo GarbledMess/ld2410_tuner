@@ -2,7 +2,10 @@
 
 import math
 
+from .codec import SPAN
+
 DAY = 86400
+STORED = ("history", "guess_runs")  # A device's stored blocks and guess run chunks, by time.
 MIB = 1024 * 1024
 DEFAULTS = {
     "thin_after_days": 7,
@@ -33,14 +36,15 @@ def validate(values):
     return dict(values)
 
 
-def keep_automatic(timestamp, row, now, policy):
+def keep_automatic(timestamp, confidence, now, policy):
+    """Whether an automatic sample ``timestamp`` whose guess had ``confidence`` percent
+    (0: none) survives thinning."""
     age = (now - timestamp) / DAY
     start, end = policy["thin_after_days"], policy["automatic_days"]
     if age < start:
         return True
     if age >= end:
         return False
-    confidence = row[19] if len(row) >= 20 and row[18] in (1, 2) else 0
     minimum = policy["minimum_confidence"]
     cutoff = minimum + (100 - minimum) * (age - start) / (end - start)
     return confidence >= cutoff
@@ -48,3 +52,9 @@ def keep_automatic(timestamp, row, now, policy):
 
 def retention_seconds(data):
     return settings(data)["human_days"] * DAY
+
+
+def retained(blocks, cutoff):
+    """The stored ``blocks`` (history blocks or guess run chunks) that end at or after
+    ``cutoff``: retention, in one place for everything stored by time."""
+    return [b for b in blocks if float(b.get("end", float(b.get("start", 0)) + SPAN)) >= cutoff]

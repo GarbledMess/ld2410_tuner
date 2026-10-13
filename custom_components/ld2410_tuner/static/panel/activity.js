@@ -36,14 +36,18 @@ export const panelActivity = {
     this._busyCards.add(id);
     this._activeActions++;
     // Keep navigation available; lock edits until the current write settles.
-    const fields = [
-      ...(card || this.shadowRoot).querySelectorAll("button, input, select"),
-    ].filter(
-      (field) =>
-        !field.matches(
-          '.toggle, .sub-toggle, .subsection-head, [data-action="review-results"], [data-action="review-learning-job"]',
-        ),
-    );
+    // Busy state is shared, so every copy of the radar is locked.
+    const scopes = card
+      ? [card, ...this._placements(id).filter((copy) => copy !== card)]
+      : [this.shadowRoot];
+    const fields = scopes
+      .flatMap((scope) => [...scope.querySelectorAll("button, input, select")])
+      .filter(
+        (field) =>
+          !field.matches(
+            '.toggle, .sub-toggle, .subsection-head, [data-action="review-results"], [data-action="review-learning-job"]',
+          ),
+      );
     const disabled = fields.map((field) => [field, field.disabled]);
     for (const [field] of disabled) field.disabled = true;
     control.setAttribute("aria-busy", "true");
@@ -79,6 +83,7 @@ export const panelActivity = {
         json: "Preparing JSON export…",
         csv: "Preparing CSV export…",
         "auto-feedback": "Saving feedback…",
+        "refresh-references": "Queueing a reference refresh…",
         "history-apply": "Saving presence labels…",
         "history-remove": "Removing presence label…",
         "selection-label": "Saving presence labels…",
@@ -160,9 +165,9 @@ export const panelActivity = {
     } catch (err) {
       this._showError(`Unable to refresh: ${err?.message || err}`);
       if (!this._loaded) {
-        const grid = this.shadowRoot?.querySelector("#grid");
-        if (grid)
-          grid.innerHTML = `<div class="card">Unable to load LD2410 Tuner: ${this._esc(err?.message || err)}</div>`;
+        const layout = this.shadowRoot?.querySelector("#layout");
+        if (layout)
+          layout.innerHTML = `<div class="card">Unable to load LD2410 Tuner: ${this._esc(err?.message || err)}</div>`;
       }
     } finally {
       clearTimeout(timer);

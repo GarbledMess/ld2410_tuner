@@ -63,10 +63,7 @@ export const panelJobs = {
         this._learningSelection.set(id, slot);
         this._setSectionCollapsed(id, "details", false);
         this._draw();
-        this._openRecommendations(
-          this.shadowRoot.querySelector(`[data-device-id="${CSS.escape(id)}"]`),
-          id,
-        );
+        this._openRecommendations(card, id);
       };
   },
 };

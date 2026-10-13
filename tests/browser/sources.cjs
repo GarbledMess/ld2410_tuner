@@ -189,9 +189,52 @@ module.exports = async function testSources(page, screenshotDir) {
     /Unfamiliar readings at g3_still/,
   );
   assert.match(await card.innerText(), /Age-weighted room references/);
+  assert.equal(await card.locator(".reference-stale").count(), 0);
   await card.locator(".reference-status").screenshot({
     path: path.join(screenshotDir, "adaptive-references-mobile.png"),
   });
+  // P1: events only mark references stale; the panel says so and offers a refresh.
+  await page.evaluate(async () => {
+    fixture.devices.a.auto_learning.stale_since =
+      Date.UTC(2026, 9, 9, 21) / 1000;
+    window.requests = [];
+    await panel._load();
+  });
+  assert.match(
+    await card.locator(".reference-stale").innerText(),
+    /References out of date since .*2026.*22:00.*\. They rebuild daily at the learning schedule time, even with overnight learning off, or now with Refresh references\./,
+  );
+  assert.equal(await card.locator(".reference-refreshing").count(), 0);
+  await card.locator('[data-action="refresh-references"]').click();
+  await page.waitForFunction(() => panel._activeActions === 0);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      requests
+        .filter((message) => message.type.endsWith("/refresh_references"))
+        .map((message) => message.device_id),
+    ),
+    ["a"],
+  );
+  assert.ok(
+    await page.evaluate(() =>
+      requests.some((message) => message.type.endsWith("/snapshot")),
+    ),
+    "the panel reloads after queueing a refresh",
+  );
+  // While the rebuild is queued or computing, the panel says so instead.
+  await page.evaluate(async () => {
+    fixture.devices.a.references_refreshing = true;
+    await panel._load();
+  });
+  assert.equal(
+    await card.locator(".reference-refreshing").innerText(),
+    "Refreshing references…",
+  );
+  assert.equal(await card.locator(".reference-stale").count(), 0);
+  assert.equal(
+    await card.locator('[data-action="refresh-references"]').isDisabled(),
+    true,
+  );
   await page.evaluate(async () => {
     fixture = beforeSources;
     panel._hass.callWS = sourcesWS;

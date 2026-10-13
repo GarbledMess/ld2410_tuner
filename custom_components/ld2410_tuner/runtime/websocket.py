@@ -6,6 +6,7 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 
 from ..const import DOMAIN, TRAINING_STATES
+from ..history import label_counts
 
 
 def _websocket_routes():
@@ -14,22 +15,22 @@ def _websocket_routes():
     return [
         ("snapshot", {}, "snapshot", (), None, False),
         (
-            "learn_room",
-            {vol.Required("group_id"): str},
-            "learn_room",
-            ("group_id",),
+            "learn_set",
+            {vol.Required("set_id"): str},
+            "learn_set",
+            ("set_id",),
             "invalid_request",
             False,
         ),
         (
-            "apply_room",
+            "apply_set",
             {
-                vol.Required("group_id"): str,
+                vol.Required("set_id"): str,
                 vol.Required("result_id"): str,
                 vol.Required("source"): vol.In(["user", "automatic"]),
             },
-            "apply_room",
-            ("group_id", "result_id", "source"),
+            "apply_set",
+            ("set_id", "result_id", "source"),
             "invalid_request",
             False,
         ),
@@ -83,6 +84,14 @@ def _websocket_routes():
             {**device, vol.Required("settings"): dict},
             "configure_presence_sources",
             ("device_id", "settings"),
+            "invalid_request",
+            False,
+        ),
+        (
+            "configure_room_sources",
+            {vol.Required("group_id"): str, vol.Required("settings"): dict},
+            "configure_room_sources",
+            ("group_id", "settings"),
             "invalid_request",
             False,
         ),
@@ -160,6 +169,14 @@ def _websocket_routes():
             "invalid_request",
             False,
         ),
+        (
+            "configure_automatic_weight",
+            {vol.Required("weight"): vol.Coerce(float)},
+            "configure_automatic_weight",
+            ("weight",),
+            "invalid_request",
+            False,
+        ),
         ("export", {vol.Optional("device_id"): str}, "export_data", ("device_id",), None, False),
         ("clear", device, "clear_samples", ("device_id",), None, True),
         (
@@ -192,11 +209,56 @@ def _websocket_routes():
             False,
         ),
         (
+            "label_room_range",
+            {
+                vol.Required("group_id"): str,
+                **state,
+                vol.Required("start"): vol.Coerce(float),
+                vol.Required("end"): vol.Coerce(float),
+            },
+            "label_room_range",
+            ("group_id", "start", "end", "state"),
+            "invalid_request",
+            False,
+        ),
+        (
+            "edit_room_label",
+            {
+                vol.Required("group_id"): str,
+                vol.Required("label_start"): vol.Coerce(float),
+                vol.Required("label_end"): vol.Coerce(float),
+                vol.Required("start"): vol.Coerce(float),
+                vol.Required("end"): vol.Coerce(float),
+                vol.Required("state"): vol.In(["present", "not_present", "unknown", "unlabelled"]),
+                vol.Required("revision"): vol.Coerce(int),
+            },
+            "edit_room_label",
+            ("group_id", "label_start", "label_end", "start", "end", "state", "revision"),
+            "invalid_request",
+            False,
+        ),
+        (
+            "room_estimate_feedback",
+            {vol.Required("group_id"): str, vol.Required("correct"): bool},
+            "room_estimate_feedback",
+            ("group_id", "correct"),
+            "invalid_request",
+            False,
+        ),
+        (
             "auto_feedback",
             {**device, vol.Required("correct"): bool},
             "record_auto_feedback",
             ("device_id", "correct"),
             "invalid_device",
+            False,
+        ),
+        (
+            "refresh_references",
+            {vol.Optional("device_id"): vol.Any(str, None)},
+            "refresh_references",
+            ("device_id",),
+            "invalid_request",
             False,
         ),
         (
@@ -228,6 +290,8 @@ async def _websocket_result(runtime, method, fields, message):
     import inspect
 
     values = [message.get(field) for field in fields]
+    if method in label_counts.EDITS:
+        await label_counts.ensure(runtime, values[0])
     if method == "set_training_state":
         values[-1] = values[-1] or None
     result = getattr(runtime, method)(*values)

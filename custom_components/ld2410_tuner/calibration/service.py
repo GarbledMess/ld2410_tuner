@@ -9,8 +9,10 @@ from typing import Any
 
 from homeassistant.helpers import entity_registry as er
 
+from .. import entity_index
 from ..const import GATE_RE, HISTORY_KEYS
-from . import device_io, jobs, recovery, results
+from ..rooms import attribution
+from . import device_io, jobs, recovery, results, settings
 from .evidence import collect_samples
 from .fitting import METHOD, fit_thresholds
 from .timing_config import read_timing, timing_signature
@@ -55,7 +57,7 @@ start_learning = jobs.start_learning
 async def _learn_once(runtime, device_id):
     entities, current = await recovery.prepare_learning(runtime, device_id)
     timing = read_timing(runtime, device_id)
-    view = runtime._history_view(device_id)
+    view = attribution.prepared_view(runtime, device_id)
     view._fit_timing = timing
     device = runtime.data["devices"][device_id]
     revision = device.get("label_revision", 0)
@@ -63,10 +65,15 @@ async def _learn_once(runtime, device_id):
     learned = await runtime.hass.async_add_executor_job(
         view._fit_history, device_id, entities, current
     )
+    attribution.remember(runtime, view)
     if revision != device.get("label_revision", 0):
         raise LearningEvidenceChanged("Training labels changed while learning; learn again")
     if timing_signature(read_timing(runtime, device_id)) != timing_signature(timing):
         raise ValueError("Device timing changed while learning; learn again")
+    if settings.automatic_weight(runtime.data) != settings.automatic_weight(view.data):
+        raise LearningEvidenceChanged(
+            "Automatic evidence weight changed while learning; learn again"
+        )
     learned["timing_configuration"] = timing
     learned["label_revision"] = revision
     return learned
@@ -74,9 +81,16 @@ async def _learn_once(runtime, device_id):
 
 def _fit_history(runtime, device_id, entities, current):
     rows, guesses = collect_samples(runtime, device_id, entities)
+    attribution.release([runtime])
     learned = fit_thresholds(
-        rows, list(entities), current, guesses, getattr(runtime, "_fit_timing", None)
+        rows,
+        list(entities),
+        current,
+        guesses,
+        getattr(runtime, "_fit_timing", None),
+        settings.automatic_weight(runtime.data),
     )
+    learned.update(settings.signature(runtime.data))  # Stale once the setting changes.
     learned["configuration"] = current
     learned["entities"] = entities
     learned["created_at"] = time.time()
@@ -210,8 +224,8 @@ def _validate_proposals(learned):
 
 
 def _read_threshold_configuration(runtime, device_id, registry, entities, current, limits):
-    for entity in registry.entities.values():
-        if entity.device_id != device_id or entity.domain != "number":
+    for entity in entity_index.read(runtime, registry).by_device.get(device_id, ()):
+        if entity.domain != "number":
             continue
         value = device_io.number_value(runtime.hass.states.get(entity.entity_id))
         _distance_limit(entity.entity_id, value, limits)

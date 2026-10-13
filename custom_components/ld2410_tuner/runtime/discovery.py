@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
+from .. import entity_index
 from ..const import GATE_RE
+from ..rooms import groups, membership
 
 
 @callback
@@ -17,13 +17,11 @@ def subscribe_state_changes(runtime) -> None:
     if runtime.unsub:
         runtime.unsub()
     registry = er.async_get(runtime.hass)
-    entity_ids = []
-    for entity in registry.entities.values():
-        if entity.domain != "sensor" or not entity.device_id:
-            continue
-        match = GATE_RE.match(entity.entity_id.split(".", 1)[1])
-        if match and match.group("metric") == "energy":
-            entity_ids.append(entity.entity_id)
+    entity_ids = [
+        entity_id
+        for radar in entity_index.read(runtime, registry).radars.values()
+        for entity_id in radar["entities"]
+    ]
     runtime.unsub = async_track_state_change_event(
         runtime.hass, entity_ids, runtime.handle_state_change
     )
@@ -31,14 +29,18 @@ def subscribe_state_changes(runtime) -> None:
 
 @callback
 def handle_registry_update(runtime, event) -> None:
+    entity_index.forget(runtime)
+    before = groups.definitions(runtime)[2]
     runtime.refresh_devices(er.async_get(runtime.hass))
+    # Radars that lose their entities leave their groups; keep their room evidence current.
+    membership.membership_changed(runtime, before)
     runtime.subscribe_state_changes()
 
 
 @callback
 def refresh_devices(runtime, registry: er.EntityRegistry) -> None:
     before = {key: value.get("entities", {}) for key, value in runtime.data["devices"].items()}
-    devices = _discover_devices(registry)
+    devices = entity_index.read(runtime, registry).radars
 
     # Keep persisted training data, but hide devices whose LD2410 entities
     # have actually been removed from the entity registry.
@@ -47,7 +49,7 @@ def refresh_devices(runtime, registry: er.EntityRegistry) -> None:
             existing["entities"] = {}
     for device_id, info in devices.items():
         runtime.data["devices"].setdefault(device_id, {"recording_enabled": False})
-        runtime.data["devices"][device_id]["entities"] = info["entities"]
+        runtime.data["devices"][device_id]["entities"] = dict(info["entities"])
         runtime.data["devices"][device_id].setdefault("training_state", "unknown")
 
     if before != {key: value.get("entities", {}) for key, value in runtime.data["devices"].items()}:
@@ -83,19 +85,3 @@ def handle_state_change(runtime, event) -> None:
 
     key = f"g{match.group('gate')}_{match.group('kind')}"
     runtime._live.setdefault(entity.device_id, {})[key] = value
-
-
-def _discover_devices(registry):
-    devices: dict[str, dict[str, Any]] = {}
-    for entity in registry.entities.values():
-        if entity.domain != "sensor" or not entity.device_id:
-            continue
-        match = GATE_RE.match(entity.entity_id.split(".", 1)[1])
-        if not match or match.group("metric") != "energy":
-            continue
-        devices.setdefault(entity.device_id, {"entities": {}})
-        devices[entity.device_id]["entities"][entity.entity_id] = {
-            "gate": int(match.group("gate")),
-            "kind": match.group("kind"),
-        }
-    return devices

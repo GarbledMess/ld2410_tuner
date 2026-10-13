@@ -4,16 +4,16 @@ import logging
 import time
 from copy import deepcopy
 
-from . import budget, policy
+from ..const import TRAINING_FIELDS
+from ..rooms import groups, membership
+from . import budget, guesses, policy, recording
 
 _LOGGER = logging.getLogger(__name__)
 GUARDED = (
-    "history",
+    *policy.STORED,
     "history_labels",
     "label_revision",
-    "training_state",
-    "training_label_start",
-    "training_expires_at",
+    *TRAINING_FIELDS,
     "history_legacy_histograms",
     "history_legacy_since",
 )
@@ -33,7 +33,10 @@ def set_recording(runtime, device_id, enabled):
         return {"enabled": enabled}
     runtime._flush_history_block(device_id)
     runtime.set_training_state(device_id, "unknown")
+    before = groups.definitions(runtime)[2]
     device["recording_enabled"] = enabled
+    # Area groups list only recording radars, so pausing can change room membership.
+    membership.membership_changed(runtime, before)
     runtime._auto_runtime.pop(device_id, None)
     runtime._source_runtime.pop(device_id, None)
     auto = device.get("auto", {})
@@ -86,8 +89,10 @@ async def _persist(runtime, *, values=None, clean=False, target=None):
 
 async def _prepare_and_save(runtime, values, clean, target):
     for _attempt in range(3):
-        original = deepcopy(runtime.data)
+        # A consistent snapshot taken on the event loop; blocks are shared (budget.copy_data).
+        original = budget.copy_data(runtime.data)
         candidate = original if values is None else {**original, "storage_settings": values}
+        candidate = _with_open_runs(runtime, candidate)
         pending = {
             key: list(value.get("samples", [])) for key, value in runtime._history_runtime.items()
         }
@@ -109,6 +114,18 @@ async def _prepare_and_save(runtime, values, clean, target):
     )
 
 
+def _with_open_runs(runtime, data):
+    """``data`` with each radar's runs not yet stored (the open one) added to its chunks, so
+    what is saved, and measured against the ceiling, loses none at a restart. ``data`` itself
+    and the live chunks are left as they are."""
+    devices = dict(data["devices"])
+    for key, state in runtime._history_runtime.items():
+        if key in devices and state.get("runs"):
+            runs = guesses.upsert(devices[key].get("guess_runs", []), state["runs"])
+            devices[key] = {**devices[key], "guess_runs": runs}
+    return {**data, "devices": devices}
+
+
 def _unchanged(runtime, original, pending, changes):
     if runtime.data.get("storage_settings") != original.get("storage_settings"):
         return False
@@ -117,7 +134,7 @@ def _unchanged(runtime, original, pending, changes):
         before = original["devices"][key]
         if device is None or any(device.get(field) != before.get(field) for field in GUARDED):
             return False
-        if runtime._history_runtime.get(key, {}).get("samples", []) != pending.get(key, []):
+        if recording.pending_samples(runtime, key) != pending.get(key, []):
             return False
     return True
 
@@ -127,7 +144,9 @@ def _accept(runtime, prepared, changes, values):
         runtime.data["storage_settings"] = dict(values)
     for key, (updated, _stats) in changes.items():
         device, saved = runtime.data["devices"][key], prepared["devices"][key]
-        device.update(updated)
+        # Live data gets its own copy: ``prepared`` is about to be written while recording
+        # goes on appending to the live history and histograms.
+        device.update(deepcopy(updated, budget.history_memo([updated])))
         for field in ("history_cleanup", "label_revision", "last_learning"):
             if field in saved:
                 device[field] = saved[field]

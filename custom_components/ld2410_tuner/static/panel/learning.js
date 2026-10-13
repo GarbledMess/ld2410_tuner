@@ -64,7 +64,11 @@ export const panelLearning = {
     const deferred = inferred.deferred_samples
       ? ` ${inferred.deferred_samples} newer estimates await later human-labelled validation.`
       : "";
-    return `<div class="notice">Automatic evidence: ${inferred.samples?.present || 0} present / ${inferred.samples?.not_present || 0} empty estimates. Mean confidence: ${presentConfidence} / ${absentConfidence}. Legacy weighted sample totals (diagnostics only): ${(inferred.effective_weight?.present || 0).toFixed(1)} / ${(inferred.effective_weight?.not_present || 0).toFixed(1)}. Human-labelled results always take priority.${deferred}</div>`;
+    return `<div class="notice">Automatic evidence: ${inferred.samples?.present || 0} present / ${inferred.samples?.not_present || 0} empty estimates. Mean confidence: ${presentConfidence} / ${absentConfidence}. Automatic evidence counts at ${this._percentText(inferred.share?.present)} / ${this._percentText(inferred.share?.not_present)} of the human evidence (occupied / empty).${deferred}</div>`;
+  },
+
+  _percentText(share) {
+    return `${Number((100 * (share || 0)).toFixed(2))}%`;
   },
 
   _missedPresenceText(measured) {
@@ -412,10 +416,22 @@ export const panelLearning = {
   _recommendationsHtml(d, id) {
     const learning = d.last_learning;
     const outcome = this._applyOutcome(learning, d.timing_configuration);
-    return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}${this._comparisonHtml(id, d)}${this._deviceApplySettingsHtml(d)}<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
-      <div class="muted">Apply writes the selected values to the radar. You can apply a result even when its targets are not met.</div>
-      ${this._timingHtml(learning, d.timing_configuration)}${this._validationHtml(learning, d.timing_configuration)}
+    const set = this._setOfDevice(id);
+    // A grouped radar's joint result is reviewed with its set, not here.
+    const validation =
+      set && learning?.joint
+        ? ""
+        : this._validationHtml(learning, d.timing_configuration);
+    return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}${this._comparisonHtml(id, d)}${this._deviceApplySettingsHtml(d)}${this._learnApplyHtml(id, d, outcome, set)}
+      ${this._timingHtml(learning, d.timing_configuration)}${validation}
       <details class="gate-results"><summary>Gate thresholds and sample counts</summary>${this._detailsHtml(d)}</details>`;
+  },
+
+  // Radars in a learning set learn and apply with it (room_learning.js).
+  _learnApplyHtml(id, d, outcome, set) {
+    if (set) return this._learnedWithHtml(id, d, set);
+    return `<div class="controls"><button class="primary" data-action="learn">Learn thresholds</button><button class="apply-${outcome.level}" data-action="apply" ${outcome.enabled ? "" : "disabled"}>Apply learned thresholds · ${outcome.label}</button></div>
+      <div class="muted">Apply writes the selected values to the radar. You can apply a result even when its targets are not met.</div>`;
   },
 
   _dataActionsHtml() {

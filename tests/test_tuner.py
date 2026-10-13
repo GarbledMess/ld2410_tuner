@@ -70,9 +70,65 @@ def load_runtime():
 
 mod = load_runtime()
 constants = sys.modules["tuner_under_test.const"]
+calibration_constants = sys.modules["tuner_under_test.calibration.constants"]
 training = sys.modules["tuner_under_test.history.labels"]
 ws = sys.modules["tuner_under_test.runtime.websocket"]
 fit = sys.modules["tuner_under_test.calibration.fitting"].fit_thresholds
+guesses = sys.modules["tuner_under_test.history.guesses"]
+
+
+def split_guesses(records):
+    """Split test samples ``(time, row)`` whose rows end in a recorded guess ``(code, percent)``
+    into ``(energy samples, guess runs)``: what the integration keeps since guesses became
+    runs. Rows without a guess (18 energies) carry none."""
+    samples = [(ts, row[:18]) for ts, row in records]
+    guess = (guesses.from_code(*row[18:20]) if len(row) > 18 else None for _, row in records)
+    return samples, guesses.from_samples(zip((ts for ts, _ in records), guess, strict=True))
+
+
+def guessed(records):
+    """``split_guesses`` with the runs as stored chunks."""
+    samples, runs = split_guesses(records)
+    return samples, guesses.encode(runs)
+
+
+def pending(records):
+    """The ``_history_runtime`` entry of a radar whose unstored ``records`` carry guesses."""
+    samples, runs = split_guesses(records)
+    return {"samples": samples, "runs": [list(run) for run in runs]}
+
+
+def columns_of(samples):
+    """A history view's ``_history_columns`` over ``samples`` ``(time, row)``: one batch."""
+    energies = len(constants.HISTORY_KEYS)
+
+    def read(*args, **kwargs):
+        rows = [bytes(row[:energies]).ljust(energies, bytes([255])) for _, row in samples]
+        times = [ts for ts, _ in samples]
+        joined = b"".join(rows)
+        return iter([(times, [joined[c::energies] for c in range(energies)])] if rows else [])
+
+    return read
+
+
+def set_records(view, device_id, records):
+    """Make a ``stub_view`` read ``records`` instead (rows may end in a recorded guess)."""
+    samples, chunks = guessed(records)
+    view._iter_history_samples = lambda *a, **kw: iter(samples)
+    view._history_columns = columns_of(samples)
+    view.data["devices"][device_id]["guess_runs"] = chunks
+
+
+def stub_view(device_id, device, records):
+    """A minimal history view (what assessments and the room estimate read) of one radar whose
+    ``records`` rows may end in a recorded guess (``guessed``)."""
+    samples, chunks = guessed(records)
+    return types.SimpleNamespace(
+        data={"devices": {device_id: {**device, "guess_runs": chunks}}},
+        _history_runtime={},
+        _iter_history_samples=lambda *a, **kw: iter(samples),
+        _history_columns=columns_of(samples),
+    )
 
 
 def row_samples(present, negative, count=100):
@@ -146,45 +202,6 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(result["training"]["false_positives"], 0)
         self.assertEqual(result["training"]["false_negatives"], 0)
         self.assertTrue(all(p["threshold"] < 100 for p in result["proposals"].values()))
-
-    def test_fast_search_constraints_match_public_validation(self):
-        import random
-
-        learning = sys.modules["tuner_under_test.calibration.fitting"]
-        rng = random.Random(42)
-        for _case in range(30):
-            timestamp = 0
-            rows = []
-            for i in range(160):
-                timestamp += rng.choice([1, 6, 6, 20])
-                rows.append(
-                    (
-                        timestamp,
-                        {"g0_move": rng.randrange(31)},
-                        "present" if (i // 20) % 2 else "not_present",
-                    )
-                )
-            positive = [row for row in rows if row[2] == "present"]
-            negative = [row for row in rows if row[2] == "not_present"]
-            threshold = rng.randrange(31)
-            detected = learning.threshold_masks(positive, "g0_move")[threshold]
-            false = learning.threshold_masks(negative, "g0_move")[threshold]
-            score = learning._human_ranker(positive, negative)(detected, false)
-            all_metrics = learning.metrics(positive + negative, {"g0_move": threshold})
-            recent = learning.metrics(
-                positive[int(0.8 * len(positive)) :] + negative[int(0.8 * len(negative)) :],
-                {"g0_move": threshold},
-            )
-            failures = learning._human_failures(all_metrics) + learning._human_failures(recent)
-            self.assertEqual(any(score[:5]), bool(failures))
-            self.assertEqual(
-                score[5:],
-                (
-                    all_metrics["false_negatives"],
-                    all_metrics["false_positives"],
-                    all_metrics["false_trigger_bursts"],
-                ),
-            )
 
     def test_redundant_useful_gates_are_not_disabled(self):
         keys = list(constants.HISTORY_KEYS)
@@ -303,24 +320,26 @@ class LearningTests(unittest.TestCase):
         rows = row_samples({keys[0]: 30, keys[1]: 5}, dict.fromkeys(keys, 5))
         guesses = [(-100 + i, {keys[0]: 5, keys[1]: 6}, "present", 0.6) for i in range(100)]
         manual_only = fit(rows, keys)
-        assisted = fit(rows, keys, automatic=guesses)
+        # Reported share: 0.2 x cap 0.25 x confidence mass ratio (0.6 x 100 / 100).
+        assisted = fit(rows, keys, automatic=guesses, automatic_weight=0.2)
         self.assertEqual(manual_only["proposals"][keys[1]]["threshold"], 7)
         self.assertLess(assisted["proposals"][keys[1]]["threshold"], 6)
         self.assertTrue(assisted["automatic_evidence"]["used"])
-        self.assertAlmostEqual(assisted["automatic_evidence"]["effective_weight"]["present"], 12)
+        self.assertAlmostEqual(assisted["automatic_evidence"]["share"]["present"], 0.03)
         self.assertEqual(assisted["validation"], manual_only["validation"])
 
-    def test_confidence_changes_effective_weight_and_volume_is_capped(self):
+    def test_confidence_changes_the_share_and_volume_is_capped(self):
         rows = row_samples({"g0_move": 30}, {"g0_move": 5})
 
         def weighted(count, confidence):
             guesses = [(-count + i, {"g0_move": 25}, "present", confidence) for i in range(count)]
-            return fit(rows, ["g0_move"], automatic=guesses)["automatic_evidence"][
-                "effective_weight"
-            ]["present"]
+            return fit(rows, ["g0_move"], automatic=guesses, automatic_weight=0.2)[
+                "automatic_evidence"
+            ]["share"]["present"]
 
         self.assertGreater(weighted(50, 0.9), weighted(50, 0.6))
-        self.assertAlmostEqual(weighted(1000, 0.99), 25)
+        # Plentiful guesses: the mass ratio caps at 1, so the share is 0.2 x 0.25.
+        self.assertAlmostEqual(weighted(1000, 0.99), 0.05)
 
     def test_automatic_only_recommendation_is_usable_but_identified_as_estimated(self):
         guesses = [
@@ -402,7 +421,7 @@ class HistoryCleanupTests(unittest.TestCase):
             "data": base64.b64encode(zlib.compress(raw)).decode(),
         }
 
-    def test_migration_preserves_timestamps_and_unknown_confidence(self):
+    def test_migration_preserves_timestamps_and_turns_old_guesses_into_runs(self):
         from tuner_under_test.history.cleanup import clean_history
 
         first = self.block(100.25, [(0, [5] * 18), (6, [7] * 18)])
@@ -414,9 +433,13 @@ class HistoryCleanupTests(unittest.TestCase):
         updated, stats = clean_history(device, [], 130, 1000)
         runtime = mod.TunerRuntime(None, None, {"devices": {"a": updated}})
         with patch.object(time, "time", return_value=130):
-            rows = list(runtime._iter_history_samples(updated, include_auto=True))
+            rows = list(runtime._iter_history_samples(updated))
         self.assertEqual([ts for ts, row in rows], [100.25, 106.25, 112.75])
-        self.assertEqual([row[-2:] for ts, row in rows], [bytes(2), bytes(2), bytes([1, 80])])
+        self.assertEqual([row[:1] for ts, row in rows], [bytes([5]), bytes([7]), bytes([9])])
+        # Version 1 rows held no guess; the third row's (present, 80 % = 16 steps) is a run
+        # over its cell: from the midpoint with the row before to the row itself.
+        runs = [run for chunk in updated["guess_runs"] for run in guesses.decode(chunk)]
+        self.assertEqual(runs, [(109.5, 112.75, "present", 16, 0)])
         self.assertEqual(stats["migrated_blocks"], 2)
         self.assertEqual(sum(updated["histograms"]["g0_move"]["present"]), 3)
         again, _ = clean_history(updated, [], 130, 1000)
@@ -517,11 +540,58 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
         await self.commands[f"{mod.DOMAIN}/{name}"](self.hass, self.connection, {"id": 7, **fields})
 
     async def test_commands_remain_admin_only_and_lookup_live_runtime(self):
-        self.assertEqual(len(self.commands), 25)
+        # 29 before learning sets, plus learn_set and apply_set, plus refresh_references (P1),
+        # plus configure_automatic_weight (P2b), less the learn_room and apply_room aliases (P5).
+        self.assertEqual(len(self.commands), 31)
         self.assertTrue(all(command.admin_only for command in self.commands.values()))
         self.hass.data[mod.DOMAIN] = types.SimpleNamespace(snapshot=lambda: {"reloaded": True})
         await self.call("snapshot")
         self.connection.send_result.assert_called_once_with(7, {"reloaded": True})
+
+    async def test_automatic_weight_command_configures_and_reports_invalid_values(self):
+        settings = sys.modules["tuner_under_test.calibration.settings"]
+        runtime = types.SimpleNamespace(data={}, _schedule_save=unittest.mock.Mock())
+        runtime.configure_automatic_weight = lambda weight: settings.configure(runtime, weight)
+        self.hass.data[mod.DOMAIN] = runtime
+        await self.call("configure_automatic_weight", weight=0.4)
+        self.connection.send_result.assert_called_with(
+            7,
+            {
+                "automatic_weight": 0.4,
+                "default_automatic_weight": settings.DEFAULT_AUTOMATIC_WEIGHT,
+            },
+        )
+        await self.call("configure_automatic_weight", weight=1.5)
+        self.connection.send_error.assert_called_with(
+            7, "invalid_request", "Automatic evidence weight must be a number from 0 to 1"
+        )
+        self.assertEqual(runtime.data["learning_schedule"]["automatic_weight"], 0.4)
+
+    async def test_learning_set_commands_learn_and_apply_the_whole_set(self):
+        self.runtime.learn_set = unittest.mock.Mock(return_value={"status": "running"})
+        self.runtime.apply_set = AsyncMock(return_value={"applied": {}, "skipped": {}})
+        await self.call("learn_set", set_id="zone:a+zone:b")
+        self.runtime.learn_set.assert_called_once_with("zone:a+zone:b")
+        self.connection.send_result.assert_called_with(7, {"status": "running"})
+        await self.call("apply_set", set_id="zone:a+zone:b", result_id="r1", source="user")
+        self.runtime.apply_set.assert_awaited_once_with("zone:a+zone:b", "r1", "user")
+        self.connection.send_result.assert_called_with(7, {"applied": {}, "skipped": {}})
+        self.runtime.learn_set.side_effect = ValueError("This zone no longer exists")
+        await self.call("learn_set", set_id="gone")
+        self.connection.send_error.assert_called_with(
+            7, "invalid_request", "This zone no longer exists"
+        )
+
+    async def test_refresh_references_command_targets_one_radar_or_every_stale_one(self):
+        self.runtime.refresh_references = AsyncMock(return_value={"queued": ["a"]})
+        await self.call("refresh_references", device_id="a")
+        self.runtime.refresh_references.assert_awaited_once_with("a")
+        self.connection.send_result.assert_called_with(7, {"queued": ["a"]})
+        await self.call("refresh_references")
+        self.runtime.refresh_references.assert_awaited_with(None)
+        self.runtime.refresh_references.side_effect = ValueError("Unknown device")
+        await self.call("refresh_references", device_id="gone")
+        self.connection.send_error.assert_called_with(7, "invalid_request", "Unknown device")
 
     async def test_start_learning_acknowledges_without_waiting_or_applying(self):
         await self.call("start_learning", device_id="a")
@@ -545,6 +615,36 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
         for name in self.commands:
             await self.commands[name](self.hass, self.connection, {"id": 7})
         self.connection.send_error.assert_called_with(7, "not_loaded", "LD2410 Tuner is not loaded")
+
+    async def test_room_label_commands_report_invalid_request(self):
+        self.runtime.label_room_range = unittest.mock.Mock(side_effect=ValueError("Bad group"))
+        await self.call("label_room_range", group_id="zone:x", start=1.0, end=2.0, state="present")
+        self.runtime.label_room_range.assert_called_once_with("zone:x", 1.0, 2.0, "present")
+        self.connection.send_error.assert_called_with(7, "invalid_request", "Bad group")
+        self.runtime.edit_room_label = unittest.mock.Mock(return_value={"ok": True})
+        fields = {
+            "label_start": 1.0,
+            "label_end": 2.0,
+            "start": 1.0,
+            "end": 3.0,
+            "state": "unlabelled",
+        }
+        await self.call("edit_room_label", group_id="zone:x", revision=4, **fields)
+        self.runtime.edit_room_label.assert_called_once_with(
+            "zone:x", 1.0, 2.0, 1.0, 3.0, "unlabelled", 4
+        )
+
+    async def test_room_estimate_feedback_command_reports_invalid_request(self):
+        self.runtime.room_estimate_feedback = unittest.mock.Mock(side_effect=ValueError("No"))
+        await self.call("room_estimate_feedback", group_id="zone:x", correct=True)
+        self.runtime.room_estimate_feedback.assert_called_once_with("zone:x", True)
+        self.connection.send_error.assert_called_with(7, "invalid_request", "No")
+
+    async def test_configure_room_sources_command_reports_invalid_request(self):
+        self.runtime.configure_room_sources = unittest.mock.Mock(side_effect=ValueError("Bad"))
+        await self.call("configure_room_sources", group_id="zone:x", settings={"sources": []})
+        self.runtime.configure_room_sources.assert_called_once_with("zone:x", {"sources": []})
+        self.connection.send_error.assert_called_with(7, "invalid_request", "Bad")
 
     async def test_zero_timeout_still_means_no_timeout(self):
         await self.call("set_training_state", device_id="a", state="present", timeout_seconds=0)
@@ -718,6 +818,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             states=types.SimpleNamespace(get=self.states.get),
             services=types.SimpleNamespace(async_call=AsyncMock(side_effect=self.report_write)),
             async_create_task=asyncio.create_task,
+            async_create_background_task=lambda target, name: asyncio.create_task(target),
         )
         self.device = {
             "entities": {"sensor.radar_g0_move_energy": {"gate": 0, "kind": "move"}},
@@ -1016,6 +1117,37 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(result["applied"]), set(keys))
         self.assertEqual(result["skipped"], {})
 
+    async def test_device_learn_job_reads_float_threshold_states(self):
+        self.configuration()
+        for state in self.states.values():
+            state.state = f"{float(state.state)}"
+        keys = list(self.device["last_learning"]["entities"])
+        samples = []
+        start = self.now - 1200
+        for i in range(200):
+            values = dict.fromkeys(keys, 5)
+            if i < 100:
+                values["g0_move" if i % 2 else "g2_still"] = 30
+            row = bytes(values.get(key, 255) for key in constants.HISTORY_KEYS)
+            samples.append((start + i * 6, row))
+        self.runtime._history_runtime["a"] = {"samples": samples}
+        self.device["history_labels"] = [
+            {"start": start, "end": start + 600, "state": "present"},
+            {"start": start + 600, "end": self.now, "state": "not_present"},
+        ]
+        self.device.pop("last_learning")
+        report = self.runtime.start_learning("a")
+        assert report["status"] == "running"
+        saved = await self.runtime._learning_jobs["a"]
+        job = self.device["learning_job"]
+        assert job["status"] == "completed", job.get("error")
+        learned = saved["user"]
+        assert learned["status"] == "ok"
+        assert all(type(value) is int for value in learned["configuration"].values())
+        result = await self.runtime.apply("a", "user", learned["id"], learned["configuration"])
+        assert set(result["applied"]) == set(keys)
+        assert result["skipped"] == {}
+
     async def test_changed_labels_discard_inflight_learning(self):
         self.configuration()
 
@@ -1066,16 +1198,18 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             states.append(self.device["auto"]["last_classification"]["state"])
         self.assertNotIn("present", states)
 
-    def test_confidence_survives_history_flush_and_old_blocks_still_read(self):
+    def test_guess_survives_history_flush_as_a_quantised_run_and_old_blocks_still_read(self):
         self.device["auto"] = {
             "last_classification": {"state": "present", "confidence": 0.73, "timestamp": self.now}
         }
         self.runtime._record_history_sample("a", {"g0_move": 20}, self.now)
         self.runtime._flush_history_block("a")
-        self.assertEqual(self.device["history"][0]["version"], 3)
-        row = list(self.runtime._iter_history_samples(self.device, include_auto=True))[0][1]
-        self.assertEqual(tuple(row[-2:]), (1, 73))
+        self.assertEqual(self.device["history"][0]["version"], 4)
         self.assertEqual(len(list(self.runtime._iter_history_samples(self.device))[0][1]), 18)
+        # 73 % is stored in steps of 5 %: 15 steps.
+        known = guesses.of(self.runtime, "a")
+        self.assertEqual(known.of_sample(self.now)[2:], ("present", 15, guesses.REFERENCE))
+        self.assertEqual(known.sample_guess(self.now), ("present", "automatic", 0.75))
         old_raw = struct.pack(">H", 0) + bytes([5] * 18)
         self.device["history"].append(
             {
@@ -1084,25 +1218,45 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "data": base64.b64encode(zlib.compress(old_raw)).decode(),
             }
         )
-        rows = list(self.runtime._iter_history_samples(self.device, include_auto=True))
+        rows = list(self.runtime._iter_history_samples(self.device))
         self.assertEqual(len(rows[-1][1]), 18)
 
     def test_manual_corrections_and_explicit_unknown_override_guesses(self):
         self.configuration()
         keys = list(self.device["last_learning"]["entities"])
         values = bytes(30 if key in keys else 255 for key in constants.HISTORY_KEYS)
-        self.runtime._history_runtime["a"] = {
-            "samples": [
-                (self.now - 12, values + bytes((1, 90))),
-                (self.now - 6, values + bytes((1, 90))),
-            ]
-        }
+        self.runtime._history_runtime["a"] = pending(
+            [(self.now - 12, values + bytes((1, 90))), (self.now - 6, values + bytes((1, 90)))]
+        )
         self.runtime.label_history_range("a", self.now - 15, self.now - 9, "not_present")
         self.runtime.label_history_range("a", self.now - 9, self.now - 1, "unknown")
         entities, current = self.runtime._threshold_configuration("a")
         result = self.runtime._fit_history("a", entities, current)
         self.assertEqual(result["counts"]["not_present"], 1)
         self.assertEqual(result["automatic_evidence"]["samples"]["present"], 0)
+
+    def test_ungrouped_radar_collect_samples_unchanged(self):
+        # Equals the characterisation ``device_fit`` input rows: an ungrouped radar's
+        # evidence is its own labels only, whatever room attribution exists elsewhere.
+        evidence = sys.modules["tuner_under_test.calibration.evidence"]
+        row = {40: bytes([40] + [255] * 17), 5: bytes([5] + [255] * 17)}
+        self.runtime._history_runtime["a"] = {
+            "samples": [(i, row[40 if i < 100 else 5]) for i in range(200)]
+        }
+        self.device["history_labels"] = [
+            {"start": 0, "end": 100, "state": "present"},
+            {"start": 100, "end": 200, "state": "not_present"},
+        ]
+        with patch.object(time, "time", return_value=1000):
+            rows, guesses = evidence.collect_samples(self.runtime, "a", ["g0_move"])
+            view_rows, _ = evidence.collect_samples(
+                self.runtime._history_view("a"), "a", ["g0_move"]
+            )
+        expected = row_samples({"g0_move": 40}, {"g0_move": 5})
+        self.assertEqual(rows, expected)
+        self.assertEqual(view_rows, expected)
+        self.assertEqual(guesses, [])
+        self.assertIsNone(self.runtime._history_view("a").data["room_snapshot"])
 
     async def test_persisted_guesses_reach_learner_with_confidence(self):
         self.configuration()
@@ -1113,8 +1267,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             if i < 100:
                 values["g0_move"] = 30
             row = bytes(values.get(key, 255) for key in constants.HISTORY_KEYS)
-            samples.append((self.now - 1200 + i * 6, row + bytes((1 if i < 100 else 2, 65))))
-        self.runtime._history_runtime["a"] = {"samples": samples}
+            samples.append((self.now - 1200 + i * 6, row + bytes((1 if i < 100 else 2, 100))))
+        self.runtime._history_runtime["a"] = pending(samples)
         self.runtime._flush_history_block("a")
         result = await self.runtime.async_learn("a")
         self.assertEqual(result["status"], "ok")
@@ -1122,7 +1276,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["automatic_evidence"]["samples"], {"present": 100, "not_present": 100}
         )
-        self.assertAlmostEqual(result["automatic_evidence"]["mean_confidence"]["present"], 0.65)
+        self.assertAlmostEqual(
+            result["automatic_evidence"]["mean_confidence"]["present"],
+            calibration_constants.TRUST_PRESENT[-1][1],
+        )
         applied = await self.runtime.apply("a")
         self.assertEqual(set(applied["applied"]), set(keys))
 

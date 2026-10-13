@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import base64
 import heapq
 import math
 import struct
 import zlib
 from copy import deepcopy
+
+from . import guesses
+from .codec import ROW, SPAN, STRIDES, VERSION, decode_payload, encode_payload
 
 KEYS = [f"g{gate}_{kind}" for gate in range(9) for kind in ("move", "still")]
 
@@ -76,33 +78,6 @@ def _append_label(result, label):
         result.append(label)
 
 
-def encode_payload(raw, stride=22):
-    """Delta-code each byte column before zlib; values and timestamps are lossless."""
-    columns = bytearray()
-    for column in range(stride):
-        previous = 0
-        for value in raw[column::stride]:
-            columns.append((value - previous) % 256)
-            previous = value
-    return base64.b64encode(zlib.compress(bytes(columns), 6)).decode("ascii")
-
-
-def decode_payload(encoded, version, count):
-    raw = zlib.decompress(base64.b64decode(encoded, validate=True))
-    stride = 20 if version == 1 else 22
-    if version not in (1, 2, 3) or count < 0 or len(raw) != count * stride:
-        raise ValueError("Invalid history block length or version")
-    if version != 3:
-        return raw
-    restored = bytearray(len(raw))
-    for column in range(stride):
-        value = 0
-        for index in range(count):
-            value = (value + raw[column * count + index]) % 256
-            restored[index * stride + column] = value
-    return bytes(restored)
-
-
 def _encode(samples):
     blocks = []
     group = []
@@ -114,11 +89,11 @@ def _encode(samples):
         raw = b"".join(struct.pack(">H", round(ts - start)) + row for ts, row in group)
         blocks.append(
             {
-                "version": 3,
+                "version": VERSION,
                 "start": start,
                 "end": group[-1][0],
                 "count": len(group),
-                "data": encode_payload(raw),
+                "data": encode_payload(raw, ROW),
             }
         )
 
@@ -126,7 +101,7 @@ def _encode(samples):
         if group:
             offset = ts - group[0][0]
             # Preserve the original timestamps exactly across block boundaries.
-            if len(group) >= 60 or offset > 65535 or abs(offset - round(offset)) > 1e-6:
+            if len(group) >= 60 or offset > SPAN or abs(offset - round(offset)) > 1e-6:
                 flush()
                 group = []
         group.append((ts, row))
@@ -137,12 +112,14 @@ def _encode(samples):
 def clean_history(device, pending, now, retention_seconds, policy=None):
     """Return normalized data without altering the caller's live objects.
 
-    Later duplicate rows win; missing energies remain missing. Version 1 did
-    not record confidence, so its new confidence fields are explicitly zero.
-    Untimed legacy histograms remain separate and are never assigned timestamps.
+    Later duplicate rows win; missing energies remain missing. Blocks older than version 4
+    held the radar's guess in every row: it becomes guess runs here (``guesses``), the one
+    conversion of the old layout. Runs are kept while a retained row lies in them, so they
+    follow the rows' retention and thinning. Untimed legacy histograms remain separate and
+    are never assigned timestamps.
     """
     cutoff = now - retention_seconds
-    rows = {}
+    rows, coded = {}, {}
     stats = {
         "migrated_blocks": 0,
         "invalid_blocks": 0,
@@ -151,8 +128,9 @@ def clean_history(device, pending, now, retention_seconds, policy=None):
         "repaired_samples": 0,
         "discarded_samples": 0,
     }
-    _clean_blocks(device, cutoff, now, stats, rows)
+    _clean_blocks(device, cutoff, now, stats, rows, coded)
     samples = sorted(rows.items())
+    runs = guesses.Guesses(_guess_runs(device, samples, coded))
     labels = _labels(device.get("history_labels", []), cutoff)
     active_start = device.get("training_label_start")
     active_end = device.get("training_expires_at") or now + 1
@@ -164,7 +142,7 @@ def clean_history(device, pending, now, retention_seconds, policy=None):
             cutoff,
         )
     if policy is not None:
-        retained = _retain_by_confidence(samples, histogram_labels, now, policy)
+        retained = _retain_by_confidence(samples, histogram_labels, now, policy, runs)
         stats["discarded_samples"] += len(samples) - len(retained)
         samples = retained
     # Keep untimed evidence if this is a legacy histogram-only device.
@@ -177,6 +155,7 @@ def clean_history(device, pending, now, retention_seconds, policy=None):
     _accumulate_histograms(histograms, samples, pending, cutoff, histogram_labels)
     result = {
         "history": _encode(samples),
+        "guess_runs": guesses.encode(guesses.kept(runs.runs, [ts for ts, _ in samples])),
         "history_labels": labels,
         "histograms": histograms,
         "history_legacy_histograms": deepcopy(legacy),
@@ -186,17 +165,26 @@ def clean_history(device, pending, now, retention_seconds, policy=None):
     return result, stats
 
 
-def _clean_blocks(device, cutoff, now, stats, rows):
+def _guess_runs(device, samples, coded):
+    """The device's stored guess runs, with those of its old-layout rows (``coded``: the guess
+    each held, by sample time) added."""
+    runs = [run for chunk in device.get("guess_runs", []) for run in guesses.decode(chunk)]
+    if coded:
+        runs += guesses.from_samples((ts, coded.get(ts)) for ts, _ in samples)
+    return runs
+
+
+def _clean_blocks(device, cutoff, now, stats, rows, coded):
     for block in device.get("history", []):
         try:
             start, version, raw, stride = _read_clean_block(block)
         except (KeyError, TypeError, ValueError, zlib.error):
             stats["invalid_blocks"] += 1
             continue
-        stats["migrated_blocks"] += version < 3
+        stats["migrated_blocks"] += version < VERSION
         for pos in range(0, len(raw), stride):
             timestamp = start + struct.unpack(">H", raw[pos : pos + 2])[0]
-            _retain_row(timestamp, raw[pos + 2 : pos + stride], version, rows, stats, cutoff, now)
+            _retain_row(timestamp, raw[pos + 2 : pos + stride], (rows, coded), stats, cutoff, now)
 
 
 def _read_clean_block(block):
@@ -204,20 +192,23 @@ def _read_clean_block(block):
         raise ValueError("Invalid block")
     version, start, count = block.get("version", 1), float(block["start"]), block["count"]
     if (
-        version not in (1, 2, 3)
+        version not in STRIDES
         or not math.isfinite(start)
         or not isinstance(count, int)
         or count < 0
     ):
         raise ValueError("Invalid block header")
     raw = decode_payload(block["data"], version, count)
-    stride = 20 if version == 1 else 22
+    stride = STRIDES[version]
     if len(raw) != count * stride:
         raise ValueError("Invalid block length")
     return start, version, raw, stride
 
 
-def _retain_row(timestamp, original, version, rows, stats, cutoff, now):
+def _retain_row(timestamp, original, found, stats, cutoff, now):
+    """Keep one stored row's energies in ``rows`` (and, in ``coded``, the guess an old-layout
+    row also held) unless it is expired, from the future or empty."""
+    rows, coded = found
     if timestamp < cutoff:
         stats["expired_samples"] += 1
         return
@@ -228,13 +219,14 @@ def _retain_row(timestamp, original, version, rows, stats, cutoff, now):
     if all(value == 255 for value in row):
         stats["discarded_samples"] += 1
         return
-    automatic = original[18:20] if version >= 2 else bytes(2)
-    if automatic[0] not in (1, 2) or not 1 <= automatic[1] <= 100:
-        automatic = bytes(2)
-    normalized = row + automatic
-    stats["repaired_samples"] += row != original[:18] or (version >= 2 and normalized != original)
+    stats["repaired_samples"] += row != original[:18]
     stats["duplicate_samples"] += timestamp in rows
-    rows[timestamp] = normalized
+    rows[timestamp] = row
+    old_guess = guesses.from_code(*original[18:20]) if len(original) > 18 else None
+    if old_guess:
+        coded[timestamp] = old_guess
+    else:
+        coded.pop(timestamp, None)  # A later duplicate replaces the earlier row's guess too.
 
 
 def _legacy_histograms(legacy):
@@ -281,18 +273,19 @@ def _advance_label(labels, index, timestamp):
     return index
 
 
-def _retain_by_confidence(samples, labels, now, policy):
+def _retain_by_confidence(samples, labels, now, policy, runs):
     from .policy import keep_automatic
 
     retained, index = [], 0
-    for timestamp, row in samples:
+    percents = runs.percents(timestamp for timestamp, _ in samples)
+    for (timestamp, row), percent in zip(samples, percents, strict=True):
         index = _advance_label(labels, index, timestamp)
         human = (
             index < len(labels)
             and labels[index]["start"] <= timestamp
             and labels[index]["state"] in {"present", "not_present"}
         )
-        if human or keep_automatic(timestamp, row, now, policy):
+        if human or keep_automatic(timestamp, percent, now, policy):
             retained.append((timestamp, row))
     return retained
 

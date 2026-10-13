@@ -4,14 +4,19 @@ Usage: python tools/replay_autolabels.py STORE --baseline OLD_INFERENCE.py
        [--labels EXPORT] [--output REPORT.json]
 The latest 20% of each labelled class is evaluation-only in every scenario.
 Stored six-second observations cannot reconstruct intervening live readings.
+A model that classifies only when something notably changes (``reclassify``) is replayed
+as the integration runs it, and the report counts how many readings it classified.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import json
 import struct
+import sys
+import types
 from bisect import bisect_right
 from collections import Counter
 from pathlib import Path
@@ -29,9 +34,19 @@ def load_module(path):
     return module
 
 
+def load_history():
+    """The integration's ``history.cleanup``, imported without Home Assistant: its package is
+    stood in for by an empty module whose path is the integration's folder."""
+    if "ld2410_tuner_package" not in sys.modules:
+        package = types.ModuleType("ld2410_tuner_package")
+        package.__path__ = [str(PACKAGE)]
+        sys.modules["ld2410_tuner_package"] = package
+    return importlib.import_module("ld2410_tuner_package.history.cleanup")
+
+
 def decode_rows(device):
     """Normalize label overlaps with the same rules as the integration."""
-    history = load_module(PACKAGE / "history" / "cleanup.py")
+    history = load_history()
     labels = history._labels(device.get("history_labels", []), float("-inf"))
     starts = [label["start"] for label in labels]
     rows = []
@@ -113,29 +128,63 @@ class Metrics:
         }
 
 
+class Replay:
+    """The model fed one reading at a time, as the integration feeds it: a model with
+    event-driven classification (``reclassify``) reuses its last result for readings that
+    changed nothing notable, as the live code does."""
+
+    def __init__(self, model, expected):
+        self.model, self.expected = model, expected
+        self.references, self.background, self.temporal = {}, {}, {}
+        self.confirmation, self.cadence = {}, {}
+        self.confirm = getattr(model, "confirm_estimate", confirm_legacy)
+        self.event_driven = hasattr(model, "reclassify")
+        self.classifications, self.last = 0, (0.0, "unknown")
+
+    def step(self, timestamp, values):
+        """``(confidence, predicted)`` for the reading ``values`` at ``timestamp``."""
+        model, cadence = self.model, self.cadence
+        before = self.temporal.get("probability", 0.5)
+        if self.event_driven and not model.reclassify(cadence, values, timestamp):
+            model.hold(self.temporal, self.confirmation, timestamp)
+            # A reused reading joins the baseline as read, as when classified.
+            update_background(self.background, values, {"presence_probability": before})
+            return self.last
+        result = model.estimate_presence(
+            values, self.references, self.background, self.temporal, timestamp, self.expected, {}
+        )
+        update_background(self.background, values, result)
+        predicted = self.confirm(result, self.confirmation, timestamp)
+        if self.event_driven:
+            rest = model.at_rest(before, result, self.temporal, predicted, timestamp)
+            model.classified(cadence, values, timestamp, rest)
+        self.classifications += 1
+        self.last = (result["confidence"], predicted)
+        return self.last
+
+
 def evaluate(rows, expected, model, mode):
     counts = Counter(row[2] for row in rows)
     seen = Counter()
-    references, background, temporal, confirmation = {}, {}, {}, {}
     metrics = {name: Metrics() for name in ("development", "validation", "all")}
-    confirm = getattr(model, "confirm_estimate", confirm_legacy)
+    replay = Replay(model, expected)
     last_label = max((index for index, row in enumerate(rows) if row[2] in LABELS), default=-1)
     for index, (timestamp, values, truth) in enumerate(rows[: last_label + 1]):
-        result = model.estimate_presence(
-            values, references, background, temporal, timestamp, expected, {}
-        )
-        update_background(background, values, result)
-        predicted = confirm(result, confirmation, timestamp)
+        confidence, predicted = replay.step(timestamp, values)
         if truth not in LABELS:
             continue
         seen[truth] += 1
         development = seen[truth] <= int(counts[truth] * 0.8)
         split = "development" if development else "validation"
         for group in ("all", split):
-            metrics[group].add(timestamp, truth, predicted, result["confidence"])
+            metrics[group].add(timestamp, truth, predicted, confidence)
         if _should_train(mode, index, len(rows), development):
-            update_references(references, values, truth)
-    return {name: metric.summary() for name, metric in metrics.items()}
+            update_references(replay.references, values, truth)
+    return {
+        **{name: metric.summary() for name, metric in metrics.items()},
+        "classifications": replay.classifications,
+        "readings": last_label + 1,
+    }
 
 
 def run(args):
@@ -202,7 +251,7 @@ def _write_progress(args, reports, result, models):
 
 
 def _encoded_samples(device):
-    history = load_module(PACKAGE / "history" / "cleanup.py")
+    history = load_history()
     for block in device.get("history", []):
         _, _, raw, stride = history._read_clean_block(block)
         for offset in range(0, len(raw), stride):

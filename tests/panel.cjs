@@ -15,10 +15,13 @@ const testActivity = require("./browser/activity.cjs");
 const testJobs = require("./browser/jobs.cjs");
 const testSources = require("./browser/sources.cjs");
 const testRooms = require("./browser/rooms.cjs");
+const testRoomLabels = require("./browser/room_labels.cjs");
 const testStorage = require("./browser/storage.cjs");
 const testTimeline = require("./browser/timeline.cjs");
 const testHistoryGraph = require("./browser/history_graph.cjs");
 const testSavedResults = require("./browser/saved_results.cjs");
+const testAutomaticWeight = require("./browser/automatic_weight.cjs");
+const testLayout = require("./browser/layout.cjs");
 const { execFileSync } = require("node:child_process");
 (async () => {
   const registration = JSON.parse(
@@ -106,7 +109,7 @@ const { execFileSync } = require("node:child_process");
                 automatic_evidence: {
                   samples: { present: 10, not_present: 20 },
                   mean_confidence: { present: 0.73, not_present: 0.85 },
-                  effective_weight: { present: 1.46, not_present: 3.4 },
+                  share: { present: 0.05, not_present: 0.125 },
                   deferred_samples: 0,
                 },
                 proposals: {
@@ -274,7 +277,7 @@ const { execFileSync } = require("node:child_process");
         .first()
         .locator('[data-section="details"] .subsection-body')
         .innerText(),
-      /Legacy weighted sample totals \(diagnostics only\): 1.5 \/ 3.4/,
+      /Automatic evidence counts at 5% \/ 12.5% of the human evidence \(occupied \/ empty\)/,
     );
     await page.evaluate(() => {
       fixture.devices.b.last_learning.status = "ok";
@@ -701,10 +704,13 @@ const { execFileSync } = require("node:child_process");
     await testTimeline(page);
     await testHistoryGraph(page, screenshotDir);
     await testSavedResults(page, screenshotDir);
+    await testAutomaticWeight(page);
     await testJobs(page, screenshotDir);
     await testStorage(page, screenshotDir);
     await testRooms(page);
+    await testRoomLabels(page);
     await testSources(page, screenshotDir);
+    await testLayout(page, screenshotDir);
     await page.setViewportSize({ width: 390, height: 844 });
     await cards
       .first()

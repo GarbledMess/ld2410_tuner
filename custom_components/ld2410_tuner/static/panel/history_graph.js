@@ -65,12 +65,15 @@ export const panelHistoryGraph = {
   _observeHistoryPlot(id, canvas) {
     const cs = this._chartState.get(id);
     cs.plotObserver?.disconnect();
-    // Resolve the card each time: polling moves this canvas into a new card.
-    cs.plotObserver = new ResizeObserver(() => {
-      const card = canvas.closest("[data-device-id]");
-      if (card) this._syncHistoryTimeline(card, id);
+    // Resolve the card each time: polling moves a canvas into a new card.
+    cs.plotObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const card = entry.target.closest("[data-device-id]");
+        if (card) this._syncHistoryTimeline(card, id);
+      }
     });
-    cs.plotObserver.observe(canvas);
+    // One observer per radar watches the canvas in every copy.
+    for (const copy of this._chartCanvases(id)) cs.plotObserver.observe(copy);
     this._syncHistoryTimeline(canvas.closest("[data-device-id]"), id);
   },
 
@@ -84,11 +87,8 @@ export const panelHistoryGraph = {
     cs.selection = selection;
     cs.panelOpen = false;
     this._setSectionCollapsed(id, "chart", false);
-    const chart = card.querySelector('.subsection[data-section="chart"]');
-    chart.classList.remove("collapsed");
-    chart.querySelector(".sub-toggle").textContent = "▾";
-    chart.querySelector(".sub-toggle").setAttribute("aria-expanded", "true");
-    this._placeHistoryGraph(card, id);
+    for (const copy of this._showSection(card, id, "chart", false))
+      this._placeHistoryGraph(copy, id);
     if (end <= bounds.start) {
       // Invalidate older in-flight responses when navigating to a future day.
       cs.request = (cs.request || 0) + 1;
@@ -101,10 +101,15 @@ export const panelHistoryGraph = {
     this._fetchChartData(id);
   },
 
-  _reviewHistoryRange(id, start, end, state = "present", gateKey = "") {
-    const card = this.shadowRoot.querySelector(
-      `[data-device-id="${CSS.escape(id)}"]`,
-    );
+  _reviewHistoryRange(
+    id,
+    start,
+    end,
+    state = "present",
+    gateKey = "",
+    origin = null,
+  ) {
+    const card = origin || this._placements(id)[0];
     if (
       !card ||
       !Number.isFinite(start) ||
@@ -113,15 +118,14 @@ export const panelHistoryGraph = {
     )
       return;
     this._setSectionCollapsed(id, "history", false);
-    const section = card.querySelector('.subsection[data-section="history"]');
-    section.classList.remove("collapsed");
-    section.querySelector(".sub-toggle").textContent = "▾";
-    section.querySelector(".sub-toggle").setAttribute("aria-expanded", "true");
+    const copies = this._showSection(card, id, "history", false);
     this._historyStateFor(id).day = this._toLocalInputValue(start).slice(0, 10);
     this._historyStateFor(id).month = this._historyStateFor(id).day.slice(0, 7);
-    this._setHistoryRange(card, id, { start, end }, true);
-    card.querySelector('[data-action="history-state"]').value = state;
-    this._captureDrafts(this.shadowRoot.querySelector("#grid"));
+    for (const copy of copies) {
+      this._setHistoryRange(copy, id, { start, end }, true);
+      copy.querySelector('[data-action="history-state"]').value = state;
+    }
+    this._captureDrafts();
     const focus = /^g([0-8])_(move|still)$/.exec(gateKey);
     if (focus)
       Object.assign(this._chartState.get(id), {
@@ -153,10 +157,7 @@ export const panelHistoryGraph = {
   },
 
   _useGraphSelection(id, selection) {
-    const card = this.shadowRoot.querySelector(
-      `[data-device-id="${CSS.escape(id)}"]`,
-    );
-    if (!card) return;
-    this._setHistoryRange(card, id, selection);
+    for (const card of this._placements(id))
+      this._setHistoryRange(card, id, selection);
   },
 };

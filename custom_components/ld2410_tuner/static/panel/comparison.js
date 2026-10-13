@@ -112,12 +112,12 @@ export const panelComparison = {
   },
 
   _wireComparison(card, id) {
-    card.querySelector('[data-action="review-comparison"]').onclick = (
-      event,
-    ) => {
-      event.stopPropagation();
-      this._openRecommendations(card, id);
-    };
+    const review = card.querySelector('[data-action="review-comparison"]');
+    if (review)
+      review.onclick = (event) => {
+        event.stopPropagation();
+        this._openRecommendations(card, id);
+      };
     const refresh = card.querySelector('[data-action="refresh-comparison"]');
     refresh.onclick = () => {
       refresh.disabled = true;

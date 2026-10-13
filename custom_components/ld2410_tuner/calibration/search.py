@@ -6,7 +6,8 @@ from math import floor
 
 from .constants import MAX_FPR, MIN_CLASS_SAMPLES
 from .duration import DurationReplay
-from .metrics import _weight, _weighted_masks, threshold_masks
+from .metrics import threshold_masks
+from .scoring import automatic_share, blended_cost, mass
 from .separation import gate_preference
 from .timing import TimingReplay
 
@@ -24,16 +25,15 @@ def _union_masks(selected, excluded=()):
 class _ThresholdSearch:
     """One deterministic search; keeps bit tables and ranking context together."""
 
-    def __init__(self, positives, negatives, automatic, keys, current, timing=None):
+    def __init__(self, positives, negatives, automatic, keys, current, timing, weight):
         self.positives, self.negatives, self.keys = positives, negatives, keys
         self.human_calibration = bool(positives and negatives)
         self.ap, self.an = automatic["present"], automatic["not_present"]
-        self.pw, self.pmass = _weighted_masks(self.ap, len(positives))
-        self.nw, self.nmass = _weighted_masks(self.an, len(negatives))
+        self.shares = tuple(
+            automatic_share(weight, len(human), sum(map(mass, rows)))
+            for human, rows in ((positives, self.ap), (negatives, self.an))
+        )
         self.human_timing = TimingReplay(positives, negatives, timing)
-        self.auto_timing = TimingReplay(self.ap, self.an, timing)
-        self.pmass = _weight(self.auto_timing.positive.eligible, self.pw)
-        self.nmass = _weight(self.auto_timing.negative.eligible, self.nw)
         self.human_duration = DurationReplay(positives, negatives, timing)
         self.auto_duration = DurationReplay(self.ap, self.an, timing)
         self.human_rank = self.human_duration.rank
@@ -63,8 +63,12 @@ class _ThresholdSearch:
     def rank(self, bits, gate_false=0, distance=(0, 0)):
         detected, false, auto_detected, auto_false = bits
         automatic = self.auto_duration.automatic_rank(auto_detected, auto_false)
+        human = self.human_rank(detected, false)
+        # Automatic evidence counts in the primary cost; at weight 0 the first two entries
+        # are equal and the remaining lexicographic tie-breaks are unchanged.
         return (
-            *self.human_rank(detected, false),
+            round(blended_cost(human[0], self.shares, automatic[1:]), 10),
+            *human,
             gate_false if self.human_calibration else 0,
             distance[0],
             *automatic,
@@ -226,8 +230,8 @@ class _ThresholdSearch:
 
     def _needs_refinement(self, score):
         # With no human presence reference, preserve the established inferred
-        # fitting balance rather than pursuing ever quieter settings.
-        return bool(score[0])
+        # fitting balance rather than pursuing ever quieter settings. score[1] is the human cost.
+        return bool(score[1])
 
     def run(self):
         thresholds, score = self.optimize(self.preferred)
@@ -240,8 +244,8 @@ class _ThresholdSearch:
             if repaired is None:
                 break
             thresholds, score = self.optimize(repaired)
-        return thresholds, {"present": self.pmass, "not_present": self.nmass}
+        return thresholds, dict(zip(("present", "not_present"), self.shares, strict=True))
 
 
-def _search(positives, negatives, auto_groups, keys, current=None, timing=None):
-    return _ThresholdSearch(positives, negatives, auto_groups, keys, current, timing).run()
+def _search(positives, negatives, auto_groups, keys, current, timing, weight):
+    return _ThresholdSearch(positives, negatives, auto_groups, keys, current, timing, weight).run()

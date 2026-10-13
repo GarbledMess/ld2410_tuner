@@ -21,6 +21,7 @@ replay = importlib.import_module("replay_autolabels")
 release = importlib.import_module("release")
 validator = importlib.import_module("validate_package")
 complexity = importlib.import_module("check_complexity")
+updater = importlib.import_module("update_characterisation")
 
 
 def block(count=100):
@@ -234,3 +235,28 @@ class TransportTests(unittest.TestCase):
             release.main()
             build.assert_not_called()
             publish.assert_not_called()
+
+
+class CharacterisationUpdaterTests(unittest.TestCase):
+    def test_generate_writes_every_case_and_main_reports_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "nested"
+            names = updater.generate(target)
+            self.assertEqual(sorted(path.stem for path in target.glob("*.json")), names)
+            self.assertEqual(len(names), 5)
+            self.assertNotIn(b"\r", (target / f"{names[0]}.json").read_bytes())
+            self.assertEqual(updater.generate(target), names)
+        with (
+            patch.object(updater, "generate", return_value=["one"]),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
+            self.assertEqual(updater.main(), 0)
+        self.assertEqual(out.getvalue(), "wrote one.json\n")
+
+    def test_committed_fixtures_match_a_fresh_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            names = updater.generate(Path(directory))
+            for name in names:
+                fresh = (Path(directory) / f"{name}.json").read_text(encoding="utf-8")
+                committed = (updater.FIXTURES / f"{name}.json").read_text(encoding="utf-8")
+                self.assertEqual(fresh, committed)

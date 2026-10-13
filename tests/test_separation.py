@@ -102,7 +102,7 @@ class SeparationTests(unittest.TestCase):
             (10000 + i * 6, dict(zip(keys, (20, 5, 5), strict=True)), "not_present")
             for i in range(500)
         ]
-        context = _ThresholdSearch(positives, negatives, EMPTY, keys, None)
+        context = _ThresholdSearch(positives, negatives, EMPTY, keys, None, None, 0.0)
         seed = dict(zip(keys, (9, 17, 17), strict=True))
         selected = {key: context.tables[key][value] for key, value in seed.items()}
         score = context.rank(_union_masks(selected), 500, context._distance(seed))
@@ -117,7 +117,7 @@ class SeparationTests(unittest.TestCase):
             "present": [(200 + i, {"g0_still": 30}, "present", 0.9) for i in range(100)],
             "not_present": [],
         }
-        context = _ThresholdSearch([], negatives, automatic, ["g0_still"], None)
+        context = _ThresholdSearch([], negatives, automatic, ["g0_still"], None, None, 0.0)
         bits = context.tables["g0_still"][22]
         self.assertEqual(context.preferred["g0_still"], 22)
         self.assertEqual(context.rank(bits, gate_false=0), context.rank(bits, gate_false=20))

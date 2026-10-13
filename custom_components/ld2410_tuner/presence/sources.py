@@ -95,10 +95,12 @@ def source_state(hass, source):
 
 
 def _read_sources(runtime, device):
-    config = settings(device)
-    readings = [
-        {**source, "present": source_state(runtime.hass, source)} for source in config["sources"]
-    ]
+    return read(runtime.hass, settings(device))
+
+
+def read(hass, config):
+    """Read every configured source and reduce them to one present/not_present/unknown state."""
+    readings = [{**source, "present": source_state(hass, source)} for source in config["sources"]]
     states = [reading["present"] for reading in readings]
     label = "unknown"
     if True in states:

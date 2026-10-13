@@ -4,7 +4,9 @@ from ..const import HISTORY_SAMPLE_INTERVAL
 from ..history.source_labels import confirm_presence
 
 
-def observe(runtime, device_id, positive, config, now):
+def observe(runtime, device_id, positive, config, now, confirm=confirm_presence):
+    """Trim a positive period's boundaries; ``confirm(runtime, key, start, end, percent)``
+    receives each newly settled span (device history by default, room labels for rooms)."""
     states = runtime._source_runtime
     period = states.get(device_id)
     if period and now - period["last_seen"] > HISTORY_SAMPLE_INTERVAL * 2:
@@ -12,7 +14,7 @@ def observe(runtime, device_id, positive, config, now):
         period = None  # Never bridge telemetry outages or an integration restart.
     if period:
         cutoff = now - config["end_buffer_seconds"]
-        confirm_presence(runtime, device_id, period["cursor"], cutoff, round(config["confidence"]))
+        confirm(runtime, device_id, period["cursor"], cutoff, round(config["confidence"]))
         period["cursor"] = max(period["cursor"], cutoff)
         period["last_seen"] = now
     if not positive:

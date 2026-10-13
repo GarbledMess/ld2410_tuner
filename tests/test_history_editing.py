@@ -30,8 +30,9 @@ class HistoryEditingTests(unittest.IsolatedAsyncioTestCase):
         self.configuration()
         keys = list(self.device["last_learning"]["entities"])
         row = bytes(30 if key in keys else 255 for key in harness.constants.HISTORY_KEYS)
-        samples = [(self.now - 12, row + bytes((1, 90)))]
-        self.runtime._history_runtime["a"] = {"samples": samples}
+        state = harness.pending([(self.now - 12, row + bytes((1, 100)))])
+        samples = state["samples"]
+        self.runtime._history_runtime["a"] = state
         self.runtime.label_history_range("a", self.now - 20, self.now - 1, "unknown")
         entities, current = self.runtime._threshold_configuration("a")
         before = self.runtime._fit_history("a", entities, current)

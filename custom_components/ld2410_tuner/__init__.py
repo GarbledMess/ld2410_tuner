@@ -23,10 +23,12 @@ from .const import (
     HISTORY_RETENTION_CHECK_INTERVAL,
     INTEGRATION_VERSION,
     STORAGE_KEY,
+    STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
 )
 from .history.budget import prepare
-from .presence import reference_training
+from .history.migration import convert_guesses
+from .presence import rebuilds, reference_training
 from .runtime import engineering, schedule
 from .runtime.coordinator import TunerRuntime
 from .runtime.websocket import _register_websocket_commands
@@ -43,14 +45,18 @@ class TunerStore(Store):
     the stored file's version doesn't match STORAGE_VERSION, even if
     the caller never intended Store itself to do the migration. This
     override also enforces the file ceiling before Home Assistant writes
-    migrated data. Runtime cleanup handles the remaining normalization.
+    migrated data. Runtime cleanup handles the remaining normalization. Files from before
+    minor version 2 also have each row's guess turned into guess runs (history/migration.py),
+    in the executor: a file that is not saved yet is converted again, harmlessly.
     """
 
     async def _async_migrate_func(self, old_major_version, old_minor_version, old_data):
-        prepared, _changes, _report = await self.hass.async_add_executor_job(
-            prepare, old_data, {}, time.time()
-        )
-        return prepared
+        return await self.hass.async_add_executor_job(_migrated, old_data)
+
+
+def _migrated(old_data):
+    prepared, _changes, _report = prepare(convert_guesses(old_data), {}, time.time())
+    return prepared
 
 
 async def async_setup_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
@@ -60,7 +66,13 @@ async def async_setup_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
 
 
 async def _start_runtime(hass):
-    store = TunerStore(hass, STORAGE_VERSION, STORAGE_KEY, encoder=json.JSONEncoder)
+    store = TunerStore(
+        hass,
+        STORAGE_VERSION,
+        STORAGE_KEY,
+        encoder=json.JSONEncoder,
+        minor_version=STORAGE_MINOR_VERSION,
+    )
     data = await store.async_load() or {"devices": {}, "training": {}}
     runtime = TunerRuntime(hass, store, data)
     schedule.restore(runtime)
@@ -147,6 +159,7 @@ async def _shutdown(runtime):
     for task in runtime._timeout_tasks.values():
         task.cancel()
     runtime._timeout_tasks.clear()
+    await rebuilds.stop(runtime)  # Drop queued reference rebuilds; stale marks are saved.
     if runtime._save_task:
         runtime._save_task.cancel()
         await asyncio.gather(runtime._save_task, return_exceptions=True)

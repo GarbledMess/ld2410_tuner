@@ -2,6 +2,7 @@
 
 import math
 
+from ..rooms import attribution
 from .constants import MIN_CLASS_SAMPLES, MIN_RECALL, MISSED_TIME_COST
 from .duration import DurationReplay
 from .evidence import collect_samples
@@ -24,6 +25,7 @@ def _groups(rows, keys):
 def calculate(view, device_id, context):
     keys, timing = context["keys"], context["timing"]
     rows, guesses = collect_samples(view, device_id, keys)
+    attribution.release([view])
     human, automatic = _groups(rows, keys), _groups(guesses, keys)
     incomplete = (
         len(rows) + len(guesses) - sum(len(g) for g in (*human.values(), *automatic.values()))
@@ -59,7 +61,8 @@ def best_slots(patterns):
 
 
 def _rank(item):
-    # Match the learner: automatic evidence only breaks ties in supported human evidence.
+    # A deliberate safety gate, independent of the automatic evidence weight setting:
+    # automatic evidence only breaks ties here, so Automatic Apply needs a human-label gain.
     return tuple(item["ranking"])
 
 

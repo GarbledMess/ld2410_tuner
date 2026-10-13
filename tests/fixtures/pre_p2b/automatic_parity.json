@@ -1,0 +1,1640 @@
+{
+ "device": {
+  "conflict_10": {
+   "rank": [
+    0.0,
+    0,
+    0.0,
+    0.0,
+    0.0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    100.0,
+    0.0,
+    1.0,
+    0
+   ],
+   "result": {
+    "automatic_evidence": {
+     "base_weight": 0.2,
+     "class_weight_cap": 0.25,
+     "deferred_samples": 0,
+     "effective_weight": {
+      "not_present": 18.000000000000004,
+      "present": 0
+     },
+     "mean_confidence": {
+      "not_present": 0.9,
+      "present": null
+     },
+     "priority": "human_first",
+     "samples": {
+      "not_present": 100,
+      "present": 0
+     },
+     "used": true
+    },
+    "counts": {
+     "not_present": 100,
+     "present": 100
+    },
+    "estimated_training": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 99.0,
+      "error_cost": 100.0,
+      "false_positive_percent": 100.0,
+      "false_positive_score": -100.0,
+      "false_positive_seconds": 99.0,
+      "false_trigger_events": 1,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 0,
+      "presence_recall": null,
+      "presence_recall_lower": null,
+      "present_seconds": 0.0,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 1.0,
+     "false_positives": 100,
+     "false_trigger_bursts": 1,
+     "false_trigger_bursts_per_hour": 34.285714285714285,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 0,
+     "present_samples": 0,
+     "sensitivity": 0.0
+    },
+    "evidence_basis": "mixed",
+    "feasibility": {
+     "reason": "Sample-count feasibility does not establish duration-based feasibility",
+     "status": "not_assessed",
+     "windows": []
+    },
+    "keys": [
+     "g0_move"
+    ],
+    "method": "human_priority_v10",
+    "outlier_filter": {
+     "automatic": {
+      "excluded": {
+       "not_present": 0,
+       "present": 0
+      },
+      "gate_limits": {},
+      "period_count": 0,
+      "periods": [],
+      "retained": {
+       "not_present": 100,
+       "present": 0
+      }
+     },
+     "human": {
+      "excluded": {
+       "not_present": 0,
+       "present": 0
+      },
+      "gate_limits": {},
+      "period_count": 0,
+      "periods": [],
+      "retained": {
+       "not_present": 100,
+       "present": 100
+      }
+     },
+     "method": "separated_temporal_dips_v2"
+    },
+    "proposals": {
+     "g0_move": {
+      "auto_used": true,
+      "evidence_basis": "mixed",
+      "exclusive_presence_samples": 100,
+      "false_negative_rate": 0.0,
+      "false_negatives": 0,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "false_trigger_bursts": 0,
+      "false_trigger_bursts_per_hour": 0.0,
+      "longest_missed_run_samples": 0,
+      "message": "",
+      "missed_presence_episodes": 0,
+      "noise_ceiling": 5,
+      "noise_floor_p99": 5,
+      "noise_source": "manual",
+      "not_present_samples": 100,
+      "observed_absent_seconds": 105.0,
+      "presence_episodes": 1,
+      "present_samples": 100,
+      "role": "detection",
+      "safety_margin": 12,
+      "sensitivity": 1.0,
+      "separation": {
+       "human_supported": true,
+       "noise_ceiling": 5,
+       "preferred_threshold": 17,
+       "presence_reference": 30,
+       "separated": true
+      },
+      "specificity": 1.0,
+      "status": "tradeoff",
+      "threshold": 17,
+      "weakest_exclusive_presence_energy": 25
+     }
+    },
+    "raw_audit": {
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 1,
+     "present_samples": 100,
+     "sensitivity": 1.0
+    },
+    "raw_training": {
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 1,
+     "present_samples": 100,
+     "sensitivity": 1.0
+    },
+    "recent_training": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 19.80000000000001,
+      "error_cost": 0.0,
+      "false_positive_percent": 0.0,
+      "false_positive_score": -0.0,
+      "false_positive_seconds": 0.0,
+      "false_trigger_events": 0,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 1,
+      "presence_recall": 1.0,
+      "presence_recall_lower": 1.0,
+      "present_seconds": 19.799999999999997,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 20,
+     "observed_absent_seconds": 25.0,
+     "presence_episodes": 1,
+     "present_samples": 20,
+     "sensitivity": 1.0
+    },
+    "review": {
+     "excluded_automatically": false,
+     "influence": [],
+     "period_count": 0,
+     "periods": [],
+     "sessions": [
+      {
+       "end": 105.0,
+       "errors": 0,
+       "samples": 100,
+       "start": 0,
+       "state": "present"
+      },
+      {
+       "end": 205.0,
+       "errors": 0,
+       "samples": 100,
+       "start": 100,
+       "state": "not_present"
+      }
+     ]
+    },
+    "status": "tradeoff",
+    "targets": {
+     "false_positive_score": "negative_percent_of_observed_empty_time",
+     "missed_presence_episodes": 0,
+     "missed_time_cost": 5.0,
+     "scoring": "weighted_post_timing_error",
+     "sensitivity": 0.999
+    },
+    "timing": {
+     "active": false,
+     "configuration": {},
+     "model": "sampled_timing_estimate_v2",
+     "sample_interval_seconds": 1,
+     "scope": "raw"
+    },
+    "training": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 99.0,
+      "error_cost": 0.0,
+      "false_positive_percent": 0.0,
+      "false_positive_score": -0.0,
+      "false_positive_seconds": 0.0,
+      "false_trigger_events": 0,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 1,
+      "presence_recall": 1.0,
+      "presence_recall_lower": 1.0,
+      "present_seconds": 99.0,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 1,
+     "present_samples": 100,
+     "sensitivity": 1.0
+    },
+    "validation": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 19.0,
+      "error_cost": 0.0,
+      "false_positive_percent": 0.0,
+      "false_positive_score": -0.0,
+      "false_positive_seconds": 0.0,
+      "false_trigger_events": 0,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 1,
+      "presence_recall": 1.0,
+      "presence_recall_lower": 1.0,
+      "present_seconds": 19.0,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 20,
+     "observed_absent_seconds": 25.0,
+     "presence_episodes": 1,
+     "present_samples": 20,
+     "sensitivity": 1.0
+    },
+    "validation_outliers": {
+     "excluded": {
+      "not_present": 0,
+      "present": 0
+     },
+     "gate_limits": {},
+     "period_count": 0,
+     "periods": [],
+     "retained": {
+      "not_present": 20,
+      "present": 20
+     }
+    },
+    "validation_scope": "earlier_data_backtest",
+    "warnings": [
+     "Inferred observations contribute with lower confidence; their proportion does not block Apply. Human-labelled results always take priority.",
+     "These are observed training results, not proof of field accuracy. Automatic confidence is heuristic; verify quiet presence and empty-room behaviour.",
+     "Presence-time target met; false-positive time is reported as a penalty, not a failed learning job."
+    ]
+   }
+  },
+  "conflict_4": {
+   "rank": [
+    0.0,
+    0,
+    0.0,
+    0.0,
+    0.0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    100.0,
+    0.0,
+    1.0,
+    0
+   ],
+   "result": {
+    "automatic_evidence": {
+     "base_weight": 0.2,
+     "class_weight_cap": 0.25,
+     "deferred_samples": 0,
+     "effective_weight": {
+      "not_present": 18.000000000000004,
+      "present": 0
+     },
+     "mean_confidence": {
+      "not_present": 0.9,
+      "present": null
+     },
+     "priority": "human_first",
+     "samples": {
+      "not_present": 100,
+      "present": 0
+     },
+     "used": true
+    },
+    "counts": {
+     "not_present": 100,
+     "present": 100
+    },
+    "estimated_training": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 99.0,
+      "error_cost": 100.0,
+      "false_positive_percent": 100.0,
+      "false_positive_score": -100.0,
+      "false_positive_seconds": 99.0,
+      "false_trigger_events": 1,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 0,
+      "presence_recall": null,
+      "presence_recall_lower": null,
+      "present_seconds": 0.0,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 1.0,
+     "false_positives": 100,
+     "false_trigger_bursts": 1,
+     "false_trigger_bursts_per_hour": 34.285714285714285,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 0,
+     "present_samples": 0,
+     "sensitivity": 0.0
+    },
+    "evidence_basis": "mixed",
+    "feasibility": {
+     "reason": "Sample-count feasibility does not establish duration-based feasibility",
+     "status": "not_assessed",
+     "windows": []
+    },
+    "keys": [
+     "g0_move"
+    ],
+    "method": "human_priority_v10",
+    "outlier_filter": {
+     "automatic": {
+      "excluded": {
+       "not_present": 0,
+       "present": 0
+      },
+      "gate_limits": {},
+      "period_count": 0,
+      "periods": [],
+      "retained": {
+       "not_present": 100,
+       "present": 0
+      }
+     },
+     "human": {
+      "excluded": {
+       "not_present": 0,
+       "present": 0
+      },
+      "gate_limits": {},
+      "period_count": 0,
+      "periods": [],
+      "retained": {
+       "not_present": 100,
+       "present": 100
+      }
+     },
+     "method": "separated_temporal_dips_v2"
+    },
+    "proposals": {
+     "g0_move": {
+      "auto_used": true,
+      "evidence_basis": "mixed",
+      "exclusive_presence_samples": 100,
+      "false_negative_rate": 0.0,
+      "false_negatives": 0,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "false_trigger_bursts": 0,
+      "false_trigger_bursts_per_hour": 0.0,
+      "longest_missed_run_samples": 0,
+      "message": "",
+      "missed_presence_episodes": 0,
+      "noise_ceiling": 5,
+      "noise_floor_p99": 5,
+      "noise_source": "manual",
+      "not_present_samples": 100,
+      "observed_absent_seconds": 105.0,
+      "presence_episodes": 1,
+      "present_samples": 100,
+      "role": "detection",
+      "safety_margin": 12,
+      "sensitivity": 1.0,
+      "separation": {
+       "human_supported": true,
+       "noise_ceiling": 5,
+       "preferred_threshold": 17,
+       "presence_reference": 30,
+       "separated": true
+      },
+      "specificity": 1.0,
+      "status": "tradeoff",
+      "threshold": 17,
+      "weakest_exclusive_presence_energy": 25
+     }
+    },
+    "raw_audit": {
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 1,
+     "present_samples": 100,
+     "sensitivity": 1.0
+    },
+    "raw_training": {
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 1,
+     "present_samples": 100,
+     "sensitivity": 1.0
+    },
+    "recent_training": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 19.80000000000001,
+      "error_cost": 0.0,
+      "false_positive_percent": 0.0,
+      "false_positive_score": -0.0,
+      "false_positive_seconds": 0.0,
+      "false_trigger_events": 0,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 1,
+      "presence_recall": 1.0,
+      "presence_recall_lower": 1.0,
+      "present_seconds": 19.799999999999997,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 20,
+     "observed_absent_seconds": 25.0,
+     "presence_episodes": 1,
+     "present_samples": 20,
+     "sensitivity": 1.0
+    },
+    "review": {
+     "excluded_automatically": false,
+     "influence": [],
+     "period_count": 0,
+     "periods": [],
+     "sessions": [
+      {
+       "end": 105.0,
+       "errors": 0,
+       "samples": 100,
+       "start": 0,
+       "state": "present"
+      },
+      {
+       "end": 205.0,
+       "errors": 0,
+       "samples": 100,
+       "start": 100,
+       "state": "not_present"
+      }
+     ]
+    },
+    "status": "tradeoff",
+    "targets": {
+     "false_positive_score": "negative_percent_of_observed_empty_time",
+     "missed_presence_episodes": 0,
+     "missed_time_cost": 5.0,
+     "scoring": "weighted_post_timing_error",
+     "sensitivity": 0.999
+    },
+    "timing": {
+     "active": false,
+     "configuration": {},
+     "model": "sampled_timing_estimate_v2",
+     "sample_interval_seconds": 1,
+     "scope": "raw"
+    },
+    "training": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 99.0,
+      "error_cost": 0.0,
+      "false_positive_percent": 0.0,
+      "false_positive_score": -0.0,
+      "false_positive_seconds": 0.0,
+      "false_trigger_events": 0,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 1,
+      "presence_recall": 1.0,
+      "presence_recall_lower": 1.0,
+      "present_seconds": 99.0,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 1,
+     "present_samples": 100,
+     "sensitivity": 1.0
+    },
+    "validation": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 19.0,
+      "error_cost": 0.0,
+      "false_positive_percent": 0.0,
+      "false_positive_score": -0.0,
+      "false_positive_seconds": 0.0,
+      "false_trigger_events": 0,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 1,
+      "presence_recall": 1.0,
+      "presence_recall_lower": 1.0,
+      "present_seconds": 19.0,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 20,
+     "observed_absent_seconds": 25.0,
+     "presence_episodes": 1,
+     "present_samples": 20,
+     "sensitivity": 1.0
+    },
+    "validation_outliers": {
+     "excluded": {
+      "not_present": 0,
+      "present": 0
+     },
+     "gate_limits": {},
+     "period_count": 0,
+     "periods": [],
+     "retained": {
+      "not_present": 20,
+      "present": 20
+     }
+    },
+    "validation_scope": "earlier_data_backtest",
+    "warnings": [
+     "Inferred observations contribute with lower confidence; their proportion does not block Apply. Human-labelled results always take priority.",
+     "These are observed training results, not proof of field accuracy. Automatic confidence is heuristic; verify quiet presence and empty-room behaviour.",
+     "Presence-time target met; false-positive time is reported as a penalty, not a failed learning job."
+    ]
+   }
+  },
+  "mixed": {
+   "rank": [
+    0.0,
+    0,
+    0.0,
+    0.0,
+    0.0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0.0,
+    0.0,
+    0.0,
+    2
+   ],
+   "result": {
+    "automatic_evidence": {
+     "base_weight": 0.2,
+     "class_weight_cap": 0.25,
+     "deferred_samples": 0,
+     "effective_weight": {
+      "not_present": 0,
+      "present": 12.0
+     },
+     "mean_confidence": {
+      "not_present": null,
+      "present": 0.6
+     },
+     "priority": "human_first",
+     "samples": {
+      "not_present": 0,
+      "present": 100
+     },
+     "used": true
+    },
+    "counts": {
+     "not_present": 100,
+     "present": 100
+    },
+    "estimated_training": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 0.0,
+      "error_cost": 0.0,
+      "false_positive_percent": null,
+      "false_positive_score": null,
+      "false_positive_seconds": 0.0,
+      "false_trigger_events": 0,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 1,
+      "presence_recall": 1.0,
+      "presence_recall_lower": 1.0,
+      "present_seconds": 99.0,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 0,
+     "observed_absent_seconds": 0.0,
+     "presence_episodes": 1,
+     "present_samples": 100,
+     "sensitivity": 1.0
+    },
+    "evidence_basis": "mixed",
+    "feasibility": {
+     "reason": "Sample-count feasibility does not establish duration-based feasibility",
+     "status": "not_assessed",
+     "windows": []
+    },
+    "keys": [
+     "g0_move",
+     "g1_still"
+    ],
+    "method": "human_priority_v10",
+    "outlier_filter": {
+     "automatic": {
+      "excluded": {
+       "not_present": 0,
+       "present": 0
+      },
+      "gate_limits": {},
+      "period_count": 0,
+      "periods": [],
+      "retained": {
+       "not_present": 0,
+       "present": 100
+      }
+     },
+     "human": {
+      "excluded": {
+       "not_present": 0,
+       "present": 0
+      },
+      "gate_limits": {},
+      "period_count": 0,
+      "periods": [],
+      "retained": {
+       "not_present": 100,
+       "present": 100
+      }
+     },
+     "method": "separated_temporal_dips_v2"
+    },
+    "proposals": {
+     "g0_move": {
+      "auto_used": true,
+      "evidence_basis": "mixed",
+      "exclusive_presence_samples": 100,
+      "false_negative_rate": 0.0,
+      "false_negatives": 0,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "false_trigger_bursts": 0,
+      "false_trigger_bursts_per_hour": 0.0,
+      "longest_missed_run_samples": 0,
+      "message": "",
+      "missed_presence_episodes": 0,
+      "noise_ceiling": 5,
+      "noise_floor_p99": 5,
+      "noise_source": "manual",
+      "not_present_samples": 100,
+      "observed_absent_seconds": 105.0,
+      "presence_episodes": 1,
+      "present_samples": 100,
+      "role": "detection",
+      "safety_margin": 12,
+      "sensitivity": 1.0,
+      "separation": {
+       "human_supported": true,
+       "noise_ceiling": 5,
+       "preferred_threshold": 17,
+       "presence_reference": 30,
+       "separated": true
+      },
+      "specificity": 1.0,
+      "status": "ok",
+      "threshold": 17,
+      "weakest_exclusive_presence_energy": 30
+     },
+     "g1_still": {
+      "auto_used": true,
+      "evidence_basis": "mixed",
+      "exclusive_presence_samples": 0,
+      "false_negative_rate": 1.0,
+      "false_negatives": 100,
+      "false_positive_rate": 0.0,
+      "false_positives": 0,
+      "false_trigger_bursts": 0,
+      "false_trigger_bursts_per_hour": 0.0,
+      "longest_missed_run_samples": 100,
+      "message": "",
+      "missed_presence_episodes": 1,
+      "noise_ceiling": 5,
+      "noise_floor_p99": 5,
+      "noise_source": "manual",
+      "not_present_samples": 100,
+      "observed_absent_seconds": 105.0,
+      "presence_episodes": 1,
+      "present_samples": 100,
+      "role": "detection",
+      "safety_margin": 0,
+      "sensitivity": 0.0,
+      "separation": {
+       "human_supported": false,
+       "noise_ceiling": 5,
+       "preferred_threshold": 7,
+       "presence_reference": 5,
+       "separated": false
+      },
+      "specificity": 1.0,
+      "status": "ok",
+      "threshold": 5,
+      "weakest_exclusive_presence_energy": null
+     }
+    },
+    "raw_audit": {
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 1,
+     "present_samples": 100,
+     "sensitivity": 1.0
+    },
+    "raw_training": {
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 1,
+     "present_samples": 100,
+     "sensitivity": 1.0
+    },
+    "recent_training": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 19.80000000000001,
+      "error_cost": 0.0,
+      "false_positive_percent": 0.0,
+      "false_positive_score": -0.0,
+      "false_positive_seconds": 0.0,
+      "false_trigger_events": 0,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 1,
+      "presence_recall": 1.0,
+      "presence_recall_lower": 1.0,
+      "present_seconds": 19.799999999999997,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 20,
+     "observed_absent_seconds": 25.0,
+     "presence_episodes": 1,
+     "present_samples": 20,
+     "sensitivity": 1.0
+    },
+    "review": {
+     "excluded_automatically": false,
+     "influence": [],
+     "period_count": 0,
+     "periods": [],
+     "sessions": [
+      {
+       "end": 105.0,
+       "errors": 0,
+       "samples": 100,
+       "start": 0,
+       "state": "present"
+      },
+      {
+       "end": 205.0,
+       "errors": 0,
+       "samples": 100,
+       "start": 100,
+       "state": "not_present"
+      }
+     ]
+    },
+    "status": "ok",
+    "targets": {
+     "false_positive_score": "negative_percent_of_observed_empty_time",
+     "missed_presence_episodes": 0,
+     "missed_time_cost": 5.0,
+     "scoring": "weighted_post_timing_error",
+     "sensitivity": 0.999
+    },
+    "timing": {
+     "active": false,
+     "configuration": {},
+     "model": "sampled_timing_estimate_v2",
+     "sample_interval_seconds": 1,
+     "scope": "raw"
+    },
+    "training": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 99.0,
+      "error_cost": 0.0,
+      "false_positive_percent": 0.0,
+      "false_positive_score": -0.0,
+      "false_positive_seconds": 0.0,
+      "false_trigger_events": 0,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 1,
+      "presence_recall": 1.0,
+      "presence_recall_lower": 1.0,
+      "present_seconds": 99.0,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 100,
+     "observed_absent_seconds": 105.0,
+     "presence_episodes": 1,
+     "present_samples": 100,
+     "sensitivity": 1.0
+    },
+    "validation": {
+     "duration": {
+      "basis": "observed_session_time_estimate",
+      "empty_seconds": 19.0,
+      "error_cost": 0.0,
+      "false_positive_percent": 0.0,
+      "false_positive_score": -0.0,
+      "false_positive_seconds": 0.0,
+      "false_trigger_events": 0,
+      "longest_missed_seconds": 0.0,
+      "longest_missed_seconds_upper": 0.0,
+      "missed_presence_episodes": 0,
+      "missed_seconds": 0.0,
+      "missed_seconds_upper": 0.0,
+      "missed_time_cost": 5.0,
+      "presence_episodes": 1,
+      "presence_recall": 1.0,
+      "presence_recall_lower": 1.0,
+      "present_seconds": 19.0,
+      "unscored_empty_samples": 0,
+      "unscored_presence_samples": 0
+     },
+     "false_negatives": 0,
+     "false_positive_rate": 0.0,
+     "false_positives": 0,
+     "false_trigger_bursts": 0,
+     "false_trigger_bursts_per_hour": 0.0,
+     "longest_missed_run_samples": 0,
+     "missed_presence_episodes": 0,
+     "not_present_samples": 20,
+     "observed_absent_seconds": 25.0,
+     "presence_episodes": 1,
+     "present_samples": 20,
+     "sensitivity": 1.0
+    },
+    "validation_outliers": {
+     "excluded": {
+      "not_present": 0,
+      "present": 0
+     },
+     "gate_limits": {},
+     "period_count": 0,
+     "periods": [],
+     "retained": {
+      "not_present": 20,
+      "present": 20
+     }
+    },
+    "validation_scope": "earlier_data_backtest",
+    "warnings": [
+     "Inferred observations contribute with lower confidence; their proportion does not block Apply. Human-labelled results always take priority.",
+     "These are observed training results, not proof of field accuracy. Automatic confidence is heuristic; verify quiet presence and empty-room behaviour."
+    ]
+   }
+  }
+ },
+ "room": {
+  "conflict_2": {
+   "rank": [
+    3.5,
+    100.0,
+    20,
+    0,
+    0
+   ],
+   "result": {
+    "after": {
+     "devices": {
+      "a": {
+       "basis": "human",
+       "empty_seconds": 594.0,
+       "exclusive_presence_seconds": 597.0,
+       "false_active_seconds": 297.0,
+       "false_positive_percent": 1.0,
+       "missed_seen_automatic_seconds": 0.0,
+       "missed_seen_inferred_seconds": 0.0,
+       "missed_seen_seconds": 0.0,
+       "missed_time_cost": 5.0,
+       "occupied_seconds": 600.0,
+       "outcomes": {
+        "automatic": {
+         "not_present": {
+          "active_seconds": 294.0,
+          "hits": 49,
+          "possible_seconds": 294.0,
+          "samples": 49,
+          "seconds": 294.0,
+          "weighted_active_seconds": 279.3,
+          "weighted_seconds": 279.3
+         },
+         "present": {
+          "active_seconds": 0.0,
+          "hits": 0,
+          "possible_seconds": 0.0,
+          "samples": 0,
+          "seconds": 0.0,
+          "weighted_active_seconds": 0.0,
+          "weighted_seconds": 0.0
+         }
+        },
+        "human": {
+         "not_present": {
+          "active_seconds": 3.0,
+          "hits": 0,
+          "possible_seconds": 3.0,
+          "samples": 50,
+          "seconds": 300.0,
+          "weighted_active_seconds": 3.0,
+          "weighted_seconds": 300.0
+         },
+         "present": {
+          "active_seconds": 597.0,
+          "hits": 100,
+          "possible_seconds": 597.0,
+          "samples": 100,
+          "seconds": 600.0,
+          "weighted_active_seconds": 597.0,
+          "weighted_seconds": 600.0
+         }
+        }
+       },
+       "presence_recall": 0.995,
+       "score": 96.5,
+       "sources": {
+        "not_present": "human",
+        "present": "human"
+       },
+       "target_met": false
+      }
+     },
+     "end": 1200,
+     "excluded": {
+      "no_shared_recording_seconds": 6,
+      "unlabelled_seconds": 0.0
+     },
+     "label_basis": "Any member labelled present; empty requires every member labelled empty. Human labels override estimates on the same member.",
+     "room": {
+      "basis": "human",
+      "false_positive_percent": 1.0,
+      "missed_time_cost": 5.0,
+      "outcomes": {
+       "automatic": {
+        "not_present": {
+         "active_seconds": 294.0,
+         "hits": 49,
+         "possible_seconds": 294.0,
+         "samples": 49,
+         "seconds": 294.0,
+         "weighted_active_seconds": 279.3,
+         "weighted_seconds": 279.3
+        },
+        "present": {
+         "active_seconds": 0.0,
+         "hits": 0,
+         "possible_seconds": 0.0,
+         "samples": 0,
+         "seconds": 0.0,
+         "weighted_active_seconds": 0.0,
+         "weighted_seconds": 0.0
+        }
+       },
+       "human": {
+        "not_present": {
+         "active_seconds": 3.0,
+         "hits": 0,
+         "possible_seconds": 3.0,
+         "samples": 50,
+         "seconds": 300.0,
+         "weighted_active_seconds": 3.0,
+         "weighted_seconds": 300.0
+        },
+        "present": {
+         "active_seconds": 597.0,
+         "hits": 100,
+         "possible_seconds": 597.0,
+         "samples": 100,
+         "seconds": 600.0,
+         "weighted_active_seconds": 597.0,
+         "weighted_seconds": 600.0
+        }
+       }
+      },
+      "presence_recall": 0.995,
+      "score": 96.5,
+      "sources": {
+       "not_present": "human",
+       "present": "human"
+      },
+      "target_met": false
+     },
+     "sample_basis": "Unique observation timestamps within shared recording coverage",
+     "scorer_version": 1,
+     "shared_recording_seconds": 1194,
+     "start": 0,
+     "timing": {
+      "a": {}
+     }
+    },
+    "before": {
+     "devices": {
+      "a": {
+       "basis": "human",
+       "empty_seconds": 594.0,
+       "exclusive_presence_seconds": 597.0,
+       "false_active_seconds": 297.0,
+       "false_positive_percent": 1.0,
+       "missed_seen_automatic_seconds": 0.0,
+       "missed_seen_inferred_seconds": 0.0,
+       "missed_seen_seconds": 0.0,
+       "missed_time_cost": 5.0,
+       "occupied_seconds": 600.0,
+       "outcomes": {
+        "automatic": {
+         "not_present": {
+          "active_seconds": 294.0,
+          "hits": 49,
+          "possible_seconds": 294.0,
+          "samples": 49,
+          "seconds": 294.0,
+          "weighted_active_seconds": 279.3,
+          "weighted_seconds": 279.3
+         },
+         "present": {
+          "active_seconds": 0.0,
+          "hits": 0,
+          "possible_seconds": 0.0,
+          "samples": 0,
+          "seconds": 0.0,
+          "weighted_active_seconds": 0.0,
+          "weighted_seconds": 0.0
+         }
+        },
+        "human": {
+         "not_present": {
+          "active_seconds": 3.0,
+          "hits": 0,
+          "possible_seconds": 3.0,
+          "samples": 50,
+          "seconds": 300.0,
+          "weighted_active_seconds": 3.0,
+          "weighted_seconds": 300.0
+         },
+         "present": {
+          "active_seconds": 597.0,
+          "hits": 100,
+          "possible_seconds": 597.0,
+          "samples": 100,
+          "seconds": 600.0,
+          "weighted_active_seconds": 597.0,
+          "weighted_seconds": 600.0
+         }
+        }
+       },
+       "presence_recall": 0.995,
+       "score": 96.5,
+       "sources": {
+        "not_present": "human",
+        "present": "human"
+       },
+       "target_met": false
+      }
+     },
+     "end": 1200,
+     "excluded": {
+      "no_shared_recording_seconds": 6,
+      "unlabelled_seconds": 0.0
+     },
+     "label_basis": "Any member labelled present; empty requires every member labelled empty. Human labels override estimates on the same member.",
+     "room": {
+      "basis": "human",
+      "false_positive_percent": 1.0,
+      "missed_time_cost": 5.0,
+      "outcomes": {
+       "automatic": {
+        "not_present": {
+         "active_seconds": 294.0,
+         "hits": 49,
+         "possible_seconds": 294.0,
+         "samples": 49,
+         "seconds": 294.0,
+         "weighted_active_seconds": 279.3,
+         "weighted_seconds": 279.3
+        },
+        "present": {
+         "active_seconds": 0.0,
+         "hits": 0,
+         "possible_seconds": 0.0,
+         "samples": 0,
+         "seconds": 0.0,
+         "weighted_active_seconds": 0.0,
+         "weighted_seconds": 0.0
+        }
+       },
+       "human": {
+        "not_present": {
+         "active_seconds": 3.0,
+         "hits": 0,
+         "possible_seconds": 3.0,
+         "samples": 50,
+         "seconds": 300.0,
+         "weighted_active_seconds": 3.0,
+         "weighted_seconds": 300.0
+        },
+        "present": {
+         "active_seconds": 597.0,
+         "hits": 100,
+         "possible_seconds": 597.0,
+         "samples": 100,
+         "seconds": 600.0,
+         "weighted_active_seconds": 597.0,
+         "weighted_seconds": 600.0
+        }
+       }
+      },
+      "presence_recall": 0.995,
+      "score": 96.5,
+      "sources": {
+       "not_present": "human",
+       "present": "human"
+      },
+      "target_met": false
+     },
+     "sample_basis": "Unique observation timestamps within shared recording coverage",
+     "scorer_version": 1,
+     "shared_recording_seconds": 1194,
+     "start": 0,
+     "timing": {
+      "a": {}
+     }
+    },
+    "cost_after": 3.500000000000002,
+    "cost_before": 3.500000000000002,
+    "method": "joint_room_v1",
+    "status": "unsafe",
+    "thresholds": {
+     "a": {
+      "g0_move": 20
+     }
+    },
+    "validation_scope": "training_replay_not_independent_validation"
+   }
+  },
+  "conflict_6": {
+   "rank": [
+    3.5,
+    100.0,
+    20,
+    0,
+    0
+   ],
+   "result": {
+    "after": {
+     "devices": {
+      "a": {
+       "basis": "human",
+       "empty_seconds": 594.0,
+       "exclusive_presence_seconds": 597.0,
+       "false_active_seconds": 297.0,
+       "false_positive_percent": 1.0,
+       "missed_seen_automatic_seconds": 0.0,
+       "missed_seen_inferred_seconds": 0.0,
+       "missed_seen_seconds": 0.0,
+       "missed_time_cost": 5.0,
+       "occupied_seconds": 600.0,
+       "outcomes": {
+        "automatic": {
+         "not_present": {
+          "active_seconds": 294.0,
+          "hits": 49,
+          "possible_seconds": 294.0,
+          "samples": 49,
+          "seconds": 294.0,
+          "weighted_active_seconds": 279.3,
+          "weighted_seconds": 279.3
+         },
+         "present": {
+          "active_seconds": 0.0,
+          "hits": 0,
+          "possible_seconds": 0.0,
+          "samples": 0,
+          "seconds": 0.0,
+          "weighted_active_seconds": 0.0,
+          "weighted_seconds": 0.0
+         }
+        },
+        "human": {
+         "not_present": {
+          "active_seconds": 3.0,
+          "hits": 0,
+          "possible_seconds": 3.0,
+          "samples": 50,
+          "seconds": 300.0,
+          "weighted_active_seconds": 3.0,
+          "weighted_seconds": 300.0
+         },
+         "present": {
+          "active_seconds": 597.0,
+          "hits": 100,
+          "possible_seconds": 597.0,
+          "samples": 100,
+          "seconds": 600.0,
+          "weighted_active_seconds": 597.0,
+          "weighted_seconds": 600.0
+         }
+        }
+       },
+       "presence_recall": 0.995,
+       "score": 96.5,
+       "sources": {
+        "not_present": "human",
+        "present": "human"
+       },
+       "target_met": false
+      }
+     },
+     "end": 1200,
+     "excluded": {
+      "no_shared_recording_seconds": 6,
+      "unlabelled_seconds": 0.0
+     },
+     "label_basis": "Any member labelled present; empty requires every member labelled empty. Human labels override estimates on the same member.",
+     "room": {
+      "basis": "human",
+      "false_positive_percent": 1.0,
+      "missed_time_cost": 5.0,
+      "outcomes": {
+       "automatic": {
+        "not_present": {
+         "active_seconds": 294.0,
+         "hits": 49,
+         "possible_seconds": 294.0,
+         "samples": 49,
+         "seconds": 294.0,
+         "weighted_active_seconds": 279.3,
+         "weighted_seconds": 279.3
+        },
+        "present": {
+         "active_seconds": 0.0,
+         "hits": 0,
+         "possible_seconds": 0.0,
+         "samples": 0,
+         "seconds": 0.0,
+         "weighted_active_seconds": 0.0,
+         "weighted_seconds": 0.0
+        }
+       },
+       "human": {
+        "not_present": {
+         "active_seconds": 3.0,
+         "hits": 0,
+         "possible_seconds": 3.0,
+         "samples": 50,
+         "seconds": 300.0,
+         "weighted_active_seconds": 3.0,
+         "weighted_seconds": 300.0
+        },
+        "present": {
+         "active_seconds": 597.0,
+         "hits": 100,
+         "possible_seconds": 597.0,
+         "samples": 100,
+         "seconds": 600.0,
+         "weighted_active_seconds": 597.0,
+         "weighted_seconds": 600.0
+        }
+       }
+      },
+      "presence_recall": 0.995,
+      "score": 96.5,
+      "sources": {
+       "not_present": "human",
+       "present": "human"
+      },
+      "target_met": false
+     },
+     "sample_basis": "Unique observation timestamps within shared recording coverage",
+     "scorer_version": 1,
+     "shared_recording_seconds": 1194,
+     "start": 0,
+     "timing": {
+      "a": {}
+     }
+    },
+    "before": {
+     "devices": {
+      "a": {
+       "basis": "human",
+       "empty_seconds": 594.0,
+       "exclusive_presence_seconds": 597.0,
+       "false_active_seconds": 297.0,
+       "false_positive_percent": 1.0,
+       "missed_seen_automatic_seconds": 0.0,
+       "missed_seen_inferred_seconds": 0.0,
+       "missed_seen_seconds": 0.0,
+       "missed_time_cost": 5.0,
+       "occupied_seconds": 600.0,
+       "outcomes": {
+        "automatic": {
+         "not_present": {
+          "active_seconds": 294.0,
+          "hits": 49,
+          "possible_seconds": 294.0,
+          "samples": 49,
+          "seconds": 294.0,
+          "weighted_active_seconds": 279.3,
+          "weighted_seconds": 279.3
+         },
+         "present": {
+          "active_seconds": 0.0,
+          "hits": 0,
+          "possible_seconds": 0.0,
+          "samples": 0,
+          "seconds": 0.0,
+          "weighted_active_seconds": 0.0,
+          "weighted_seconds": 0.0
+         }
+        },
+        "human": {
+         "not_present": {
+          "active_seconds": 3.0,
+          "hits": 0,
+          "possible_seconds": 3.0,
+          "samples": 50,
+          "seconds": 300.0,
+          "weighted_active_seconds": 3.0,
+          "weighted_seconds": 300.0
+         },
+         "present": {
+          "active_seconds": 597.0,
+          "hits": 100,
+          "possible_seconds": 597.0,
+          "samples": 100,
+          "seconds": 600.0,
+          "weighted_active_seconds": 597.0,
+          "weighted_seconds": 600.0
+         }
+        }
+       },
+       "presence_recall": 0.995,
+       "score": 96.5,
+       "sources": {
+        "not_present": "human",
+        "present": "human"
+       },
+       "target_met": false
+      }
+     },
+     "end": 1200,
+     "excluded": {
+      "no_shared_recording_seconds": 6,
+      "unlabelled_seconds": 0.0
+     },
+     "label_basis": "Any member labelled present; empty requires every member labelled empty. Human labels override estimates on the same member.",
+     "room": {
+      "basis": "human",
+      "false_positive_percent": 1.0,
+      "missed_time_cost": 5.0,
+      "outcomes": {
+       "automatic": {
+        "not_present": {
+         "active_seconds": 294.0,
+         "hits": 49,
+         "possible_seconds": 294.0,
+         "samples": 49,
+         "seconds": 294.0,
+         "weighted_active_seconds": 279.3,
+         "weighted_seconds": 279.3
+        },
+        "present": {
+         "active_seconds": 0.0,
+         "hits": 0,
+         "possible_seconds": 0.0,
+         "samples": 0,
+         "seconds": 0.0,
+         "weighted_active_seconds": 0.0,
+         "weighted_seconds": 0.0
+        }
+       },
+       "human": {
+        "not_present": {
+         "active_seconds": 3.0,
+         "hits": 0,
+         "possible_seconds": 3.0,
+         "samples": 50,
+         "seconds": 300.0,
+         "weighted_active_seconds": 3.0,
+         "weighted_seconds": 300.0
+        },
+        "present": {
+         "active_seconds": 597.0,
+         "hits": 100,
+         "possible_seconds": 597.0,
+         "samples": 100,
+         "seconds": 600.0,
+         "weighted_active_seconds": 597.0,
+         "weighted_seconds": 600.0
+        }
+       }
+      },
+      "presence_recall": 0.995,
+      "score": 96.5,
+      "sources": {
+       "not_present": "human",
+       "present": "human"
+      },
+      "target_met": false
+     },
+     "sample_basis": "Unique observation timestamps within shared recording coverage",
+     "scorer_version": 1,
+     "shared_recording_seconds": 1194,
+     "start": 0,
+     "timing": {
+      "a": {}
+     }
+    },
+    "cost_after": 3.500000000000002,
+    "cost_before": 3.500000000000002,
+    "method": "joint_room_v1",
+    "status": "unsafe",
+    "thresholds": {
+     "a": {
+      "g0_move": 20
+     }
+    },
+    "validation_scope": "training_replay_not_independent_validation"
+   }
+  }
+ }
+}

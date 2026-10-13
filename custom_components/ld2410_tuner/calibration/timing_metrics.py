@@ -1,11 +1,25 @@
 """Report the same bounded timing replay used by threshold search."""
 
+from functools import reduce
+from operator import or_
+
 from .duration import DurationReplay
-from .metrics import measure_observations
+from .metrics import above, measure_observations
 from .timing import TimingReplay
 
 
 def hit_mask(rows, thresholds):
+    if hasattr(rows, "planes_of"):  # Readings kept as columns: compared a bit at a time.
+        everything = (1 << len(rows)) - 1
+        return reduce(
+            or_,
+            (
+                above(rows.planes_of(key), value, everything)
+                for key, value in thresholds.items()
+                if key in rows.layout
+            ),
+            0,
+        )
     return sum(
         1 << i
         for i, row in enumerate(rows)

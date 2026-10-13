@@ -1,0 +1,323 @@
+{
+ "automatic_evidence": {
+  "base_weight": 0.2,
+  "class_weight_cap": 0.25,
+  "deferred_samples": 0,
+  "effective_weight": {
+   "not_present": 0,
+   "present": 0
+  },
+  "mean_confidence": {
+   "not_present": null,
+   "present": null
+  },
+  "priority": "human_first",
+  "samples": {
+   "not_present": 0,
+   "present": 0
+  },
+  "used": false
+ },
+ "counts": {
+  "not_present": 100,
+  "present": 100
+ },
+ "estimated_training": {
+  "duration": {
+   "basis": "observed_session_time_estimate",
+   "empty_seconds": 0.0,
+   "error_cost": 0.0,
+   "false_positive_percent": null,
+   "false_positive_score": null,
+   "false_positive_seconds": 0.0,
+   "false_trigger_events": 0,
+   "longest_missed_seconds": 0.0,
+   "longest_missed_seconds_upper": 0.0,
+   "missed_presence_episodes": 0,
+   "missed_seconds": 0.0,
+   "missed_seconds_upper": 0.0,
+   "missed_time_cost": 5.0,
+   "presence_episodes": 0,
+   "presence_recall": null,
+   "presence_recall_lower": null,
+   "present_seconds": 0.0,
+   "unscored_empty_samples": 0,
+   "unscored_presence_samples": 0
+  },
+  "false_negatives": 0,
+  "false_positive_rate": 0.0,
+  "false_positives": 0,
+  "false_trigger_bursts": 0,
+  "false_trigger_bursts_per_hour": 0.0,
+  "longest_missed_run_samples": 0,
+  "missed_presence_episodes": 0,
+  "not_present_samples": 0,
+  "observed_absent_seconds": 0.0,
+  "presence_episodes": 0,
+  "present_samples": 0,
+  "sensitivity": 0.0
+ },
+ "evidence_basis": "human",
+ "feasibility": {
+  "reason": "Sample-count feasibility does not establish duration-based feasibility",
+  "status": "not_assessed",
+  "windows": []
+ },
+ "keys": [
+  "g0_move"
+ ],
+ "method": "human_priority_v10",
+ "outlier_filter": {
+  "automatic": {
+   "excluded": {
+    "not_present": 0,
+    "present": 0
+   },
+   "gate_limits": {},
+   "period_count": 0,
+   "periods": [],
+   "retained": {
+    "not_present": 0,
+    "present": 0
+   }
+  },
+  "human": {
+   "excluded": {
+    "not_present": 0,
+    "present": 0
+   },
+   "gate_limits": {},
+   "period_count": 0,
+   "periods": [],
+   "retained": {
+    "not_present": 100,
+    "present": 100
+   }
+  },
+  "method": "separated_temporal_dips_v2"
+ },
+ "proposals": {
+  "g0_move": {
+   "auto_used": false,
+   "evidence_basis": "human",
+   "exclusive_presence_samples": 100,
+   "false_negative_rate": 0.0,
+   "false_negatives": 0,
+   "false_positive_rate": 0.0,
+   "false_positives": 0,
+   "false_trigger_bursts": 0,
+   "false_trigger_bursts_per_hour": 0.0,
+   "longest_missed_run_samples": 0,
+   "message": "",
+   "missed_presence_episodes": 0,
+   "noise_ceiling": 5,
+   "noise_floor_p99": 5,
+   "noise_source": "manual",
+   "not_present_samples": 100,
+   "observed_absent_seconds": 105.0,
+   "presence_episodes": 1,
+   "present_samples": 100,
+   "role": "detection",
+   "safety_margin": 17,
+   "sensitivity": 1.0,
+   "separation": {
+    "human_supported": true,
+    "noise_ceiling": 5,
+    "preferred_threshold": 22,
+    "presence_reference": 40,
+    "separated": true
+   },
+   "specificity": 1.0,
+   "status": "ok",
+   "threshold": 22,
+   "weakest_exclusive_presence_energy": 40
+  }
+ },
+ "raw_audit": {
+  "false_negatives": 0,
+  "false_positive_rate": 0.0,
+  "false_positives": 0,
+  "false_trigger_bursts": 0,
+  "false_trigger_bursts_per_hour": 0.0,
+  "longest_missed_run_samples": 0,
+  "missed_presence_episodes": 0,
+  "not_present_samples": 100,
+  "observed_absent_seconds": 105.0,
+  "presence_episodes": 1,
+  "present_samples": 100,
+  "sensitivity": 1.0
+ },
+ "raw_training": {
+  "false_negatives": 0,
+  "false_positive_rate": 0.0,
+  "false_positives": 0,
+  "false_trigger_bursts": 0,
+  "false_trigger_bursts_per_hour": 0.0,
+  "longest_missed_run_samples": 0,
+  "missed_presence_episodes": 0,
+  "not_present_samples": 100,
+  "observed_absent_seconds": 105.0,
+  "presence_episodes": 1,
+  "present_samples": 100,
+  "sensitivity": 1.0
+ },
+ "recent_training": {
+  "duration": {
+   "basis": "observed_session_time_estimate",
+   "empty_seconds": 19.8,
+   "error_cost": 0.0,
+   "false_positive_percent": 0.0,
+   "false_positive_score": -0.0,
+   "false_positive_seconds": 0.0,
+   "false_trigger_events": 0,
+   "longest_missed_seconds": 0.0,
+   "longest_missed_seconds_upper": 0.0,
+   "missed_presence_episodes": 0,
+   "missed_seconds": 0.0,
+   "missed_seconds_upper": 0.0,
+   "missed_time_cost": 5.0,
+   "presence_episodes": 1,
+   "presence_recall": 1.0,
+   "presence_recall_lower": 1.0,
+   "present_seconds": 19.8,
+   "unscored_empty_samples": 0,
+   "unscored_presence_samples": 0
+  },
+  "false_negatives": 0,
+  "false_positive_rate": 0.0,
+  "false_positives": 0,
+  "false_trigger_bursts": 0,
+  "false_trigger_bursts_per_hour": 0.0,
+  "longest_missed_run_samples": 0,
+  "missed_presence_episodes": 0,
+  "not_present_samples": 20,
+  "observed_absent_seconds": 25.0,
+  "presence_episodes": 1,
+  "present_samples": 20,
+  "sensitivity": 1.0
+ },
+ "review": {
+  "excluded_automatically": false,
+  "influence": [],
+  "period_count": 0,
+  "periods": [],
+  "sessions": [
+   {
+    "end": 105.0,
+    "errors": 0,
+    "samples": 100,
+    "start": 0,
+    "state": "present"
+   },
+   {
+    "end": 205.0,
+    "errors": 0,
+    "samples": 100,
+    "start": 100,
+    "state": "not_present"
+   }
+  ]
+ },
+ "status": "ok",
+ "targets": {
+  "false_positive_score": "negative_percent_of_observed_empty_time",
+  "missed_presence_episodes": 0,
+  "missed_time_cost": 5.0,
+  "scoring": "weighted_post_timing_error",
+  "sensitivity": 0.999
+ },
+ "timing": {
+  "active": false,
+  "configuration": {},
+  "model": "sampled_timing_estimate_v2",
+  "sample_interval_seconds": 1,
+  "scope": "raw"
+ },
+ "training": {
+  "duration": {
+   "basis": "observed_session_time_estimate",
+   "empty_seconds": 99.0,
+   "error_cost": 0.0,
+   "false_positive_percent": 0.0,
+   "false_positive_score": -0.0,
+   "false_positive_seconds": 0.0,
+   "false_trigger_events": 0,
+   "longest_missed_seconds": 0.0,
+   "longest_missed_seconds_upper": 0.0,
+   "missed_presence_episodes": 0,
+   "missed_seconds": 0.0,
+   "missed_seconds_upper": 0.0,
+   "missed_time_cost": 5.0,
+   "presence_episodes": 1,
+   "presence_recall": 1.0,
+   "presence_recall_lower": 1.0,
+   "present_seconds": 99.0,
+   "unscored_empty_samples": 0,
+   "unscored_presence_samples": 0
+  },
+  "false_negatives": 0,
+  "false_positive_rate": 0.0,
+  "false_positives": 0,
+  "false_trigger_bursts": 0,
+  "false_trigger_bursts_per_hour": 0.0,
+  "longest_missed_run_samples": 0,
+  "missed_presence_episodes": 0,
+  "not_present_samples": 100,
+  "observed_absent_seconds": 105.0,
+  "presence_episodes": 1,
+  "present_samples": 100,
+  "sensitivity": 1.0
+ },
+ "validation": {
+  "duration": {
+   "basis": "observed_session_time_estimate",
+   "empty_seconds": 19.0,
+   "error_cost": 0.0,
+   "false_positive_percent": 0.0,
+   "false_positive_score": -0.0,
+   "false_positive_seconds": 0.0,
+   "false_trigger_events": 0,
+   "longest_missed_seconds": 0.0,
+   "longest_missed_seconds_upper": 0.0,
+   "missed_presence_episodes": 0,
+   "missed_seconds": 0.0,
+   "missed_seconds_upper": 0.0,
+   "missed_time_cost": 5.0,
+   "presence_episodes": 1,
+   "presence_recall": 1.0,
+   "presence_recall_lower": 1.0,
+   "present_seconds": 19.0,
+   "unscored_empty_samples": 0,
+   "unscored_presence_samples": 0
+  },
+  "false_negatives": 0,
+  "false_positive_rate": 0.0,
+  "false_positives": 0,
+  "false_trigger_bursts": 0,
+  "false_trigger_bursts_per_hour": 0.0,
+  "longest_missed_run_samples": 0,
+  "missed_presence_episodes": 0,
+  "not_present_samples": 20,
+  "observed_absent_seconds": 25.0,
+  "presence_episodes": 1,
+  "present_samples": 20,
+  "sensitivity": 1.0
+ },
+ "validation_outliers": {
+  "excluded": {
+   "not_present": 0,
+   "present": 0
+  },
+  "gate_limits": {},
+  "period_count": 0,
+  "periods": [],
+  "retained": {
+   "not_present": 20,
+   "present": 20
+  }
+ },
+ "validation_scope": "earlier_data_backtest",
+ "warnings": [
+  "These are observed training results, not proof of field accuracy. Automatic confidence is heuristic; verify quiet presence and empty-room behaviour."
+ ]
+}

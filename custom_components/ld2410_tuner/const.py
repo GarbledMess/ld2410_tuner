@@ -10,11 +10,14 @@ from pathlib import Path
 DOMAIN = "ld2410_tuner"
 INTEGRATION_VERSION = json.loads(Path(__file__).with_name("manifest.json").read_text())["version"]
 STORAGE_VERSION = 2
+STORAGE_MINOR_VERSION = 2  # 2: guesses are stored as runs (history/guesses.py), not in rows.
 STORAGE_KEY = f"{DOMAIN}.data"
 GATE_RE = re.compile(
     r"^(?P<prefix>.+)_g(?P<gate>[0-8])_(?P<kind>move|still)_(?P<metric>energy|threshold)$"
 )
 TRAINING_STATES = {"present", "not_present", "unknown"}
+# A radar's live training label: its state, start and expiry.
+TRAINING_FIELDS = ("training_state", "training_label_start", "training_expires_at")
 MIN_SAMPLES = 20
 MAX_HISTOGRAM_COUNT = 5000
 HISTOGRAM_BINS = 101

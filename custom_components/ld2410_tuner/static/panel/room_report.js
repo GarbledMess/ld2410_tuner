@@ -25,6 +25,72 @@ export const panelRoomReport = {
     </div>`;
   },
 
+  // ---- Scoreboard (spec 6) ----------------------------------------------
+  // A card under a group shows this radar's role in that group's latest
+  // assessment; the individual learner score moves into "Radar on its own".
+
+  // The group whose role line this card shows: only when the radar is one of
+  // its members, so a leaf's fallback radars keep the individual headline.
+  _memberGroup(id, groupId) {
+    const group = this._roomsData().groups[groupId];
+    return group?.device_ids?.includes(id) ? group : null;
+  },
+
+  _roomRoleHtml(id, group) {
+    const role = group.assessment?.devices?.[id];
+    const figures = role
+      ? [
+          `Covers alone ${this._shareText(role.exclusive_presence_seconds, role.occupied_seconds)}`,
+          `False-active ${this._shareText(role.false_active_seconds, role.empty_seconds)}`,
+          `Missed what it saw ${this._missedSeenText(role)}`,
+        ].join(" · ")
+      : "Not assessed yet";
+    return `<div class="room-role"><b>${this._esc(group.name)}</b> · ${this._esc(figures)}</div>`;
+  },
+
+  _ownScoreHtml(d) {
+    return `<details class="own-score" data-detail="own-score"><summary>Radar on its own</summary><p class="muted">Individual learner score on this radar's own labels: a different measure, not comparable with room scores.</p>${this._comparisonHeaderHtml(d)}</details>`;
+  },
+
+  // One decimal throughout, trailing ".0" dropped (71%, 0.4%). Only exactly
+  // 100% shows "100%"; non-zero shares under 0.1% show "<0.1%".
+  _shareText(part, whole) {
+    if (!(whole > 0)) return "—";
+    const percent = (100 * part) / whole;
+    if (percent > 0 && percent < 0.1) return "<0.1%";
+    const shown = percent < 100 ? Math.min(percent, 99.9) : percent;
+    return `${Number(shown.toFixed(1))}%`;
+  },
+
+  _missedSeenText(role) {
+    const missed = role.missed_seen_seconds;
+    if (missed == null) return "—";
+    const parts = [
+      [role.missed_seen_inferred_seconds, "inferred"],
+      [role.missed_seen_automatic_seconds, "automatic"],
+    ]
+      .filter(([seconds]) => seconds > 0)
+      .map(([seconds, kind]) => `${this._shortDuration(seconds)} ${kind}`);
+    const breakdown = parts.length ? ` (incl. ${parts.join(", ")})` : "";
+    return `${this._shortDuration(missed)}${breakdown}`;
+  },
+
+  // 130 → "2m 10s", 60 → "1m", 3720 → "1h 2m"; under a second → "<1s".
+  _shortDuration(seconds) {
+    const total = Math.round(Number(seconds) || 0);
+    if (seconds > 0 && total < 1) return "<1s";
+    const [big, small, units] =
+      total < 3600
+        ? [Math.floor(total / 60), total % 60, ["m", "s"]]
+        : [
+            Math.floor(total / 3600),
+            Math.floor((total % 3600) / 60),
+            ["h", "m"],
+          ];
+    if (!big) return `${small}s`;
+    return `${big}${units[0]}${small ? ` ${small}${units[1]}` : ""}`;
+  },
+
   _roomOutcomeHtml(result) {
     const metrics = this._roomMetricsText(result);
     const outcomes = Object.entries(result.outcomes || {})

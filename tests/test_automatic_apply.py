@@ -91,6 +91,22 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
         assert self.hass.services.async_call.await_count == 6
         assert saved["previous"] == previous
 
+    async def test_the_comparison_runs_on_an_attribution_prepared_view(self):
+        """Regression: unprepared, the job attributed its radar twice and kept nothing."""
+        views = []
+
+        async def execute(fn, *args):
+            views.append(args[0])
+            return fn(*args)
+
+        self.hass.async_add_executor_job = execute
+        with patch.object(
+            automatic.attribution, "remember", wraps=automatic.attribution.remember
+        ) as keep:
+            await self.run_apply()
+        assert getattr(views[0], "_attribution_slots", None) is not None
+        keep.assert_called_once_with(self.runtime, views[0])
+
     async def test_disabled_policy_or_paused_recording_prevents_writes(self):
         for flag in (False, True):
             self.runtime.configure_learning_schedule(True, "03:00", flag)

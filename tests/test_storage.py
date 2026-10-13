@@ -3,6 +3,7 @@
 import json
 import random
 import sys
+import types
 import unittest
 from copy import deepcopy
 from unittest.mock import AsyncMock, patch
@@ -19,7 +20,30 @@ NOW = 2_000_000_000
 
 
 def row(confidence=80, value=20):
+    """A sample's energies and its recorded guess (present, ``confidence`` percent)."""
     return bytes([value] * 18 + [1, confidence])
+
+
+def stored(records, **device):
+    """A device holding ``records`` (rows ending in a recorded guess) as blocks and guess runs."""
+    samples, runs = harness.split_guesses(records)
+    return {
+        "history": cleanup._encode(samples),
+        "guess_runs": harness.guesses.encode(runs),
+        **device,
+    }
+
+
+def guess_percents(device):
+    """The recorded guess confidence (percent) of each retained sample, oldest first."""
+    known = harness.guesses.of(
+        types.SimpleNamespace(data={"devices": {"d": device}}, _history_runtime={}), "d"
+    )
+    return [
+        percent
+        for block in device["history"]
+        for percent in known.percents(ts for ts, _ in budget._rows(block))
+    ]
 
 
 @pytest.mark.parametrize(
@@ -36,10 +60,7 @@ def row(confidence=80, value=20):
     ],
 )
 def test_confidence_cutoff_rises_continuously_to_expiry(days, confidence, keep):
-    assert (
-        policy.keep_automatic(NOW - days * policy.DAY, row(confidence), NOW, policy.DEFAULTS)
-        == keep
-    )
+    assert policy.keep_automatic(NOW - days * policy.DAY, confidence, NOW, policy.DEFAULTS) == keep
 
 
 def test_age_cleanup_keeps_human_labels_ahead_of_automatic_confidence():
@@ -47,13 +68,23 @@ def test_age_cleanup_keeps_human_labels_ahead_of_automatic_confidence():
         (NOW - d * policy.DAY, row(c)) for d, c in ((31, 100), (20, 10), (19, 100), (8, 40), (2, 0))
     ]
     human_ts = samples[1][0]
-    device = {
-        "history": cleanup._encode(sorted(samples)),
-        "history_labels": [{"start": human_ts, "end": human_ts + 1, "state": "present"}],
-    }
+    device = stored(
+        sorted(samples),
+        history_labels=[{"start": human_ts, "end": human_ts + 1, "state": "present"}],
+    )
     data, stats = cleanup.clean_history(device, [], NOW, 30 * policy.DAY, policy.DEFAULTS)
     retained = [ts for block in data["history"] for ts, _ in budget._rows(block)]
     assert retained == [samples[i][0] for i in (1, 2, 4)]
+    # A guess run lives while a sample it covers does.
+    assert guess_percents(data) == [10, 100, 0]
+    assert (
+        len(
+            harness.guesses.of(
+                types.SimpleNamespace(data={"devices": {"d": data}}, _history_runtime={}), "d"
+            ).runs
+        )
+        == 2
+    )
     assert sum(data["histograms"]["g0_move"]["present"]) == 1
     assert stats["expired_samples"] == 1
     assert stats["discarded_samples"] == 1
@@ -67,18 +98,18 @@ def populated():
     for name in ("a", "b"):
         samples = []
         for index in range(1800):
-            confidence = 20 if index < 600 else 90
+            confidence = 20 if 600 <= index < 1200 else 90  # Newer unlabelled guesses are weak.
             samples.append(
                 (
                     NOW - 12000 + index * 6,
                     bytes([rng.randrange(101) for _ in range(18)] + [1, confidence]),
                 )
             )
-        devices[name] = {
-            "history": cleanup._encode(samples),
-            "history_legacy_histograms": {},
-            "history_labels": [{"start": NOW - 4800, "end": NOW, "state": "present"}],
-        }
+        devices[name] = stored(
+            samples,
+            history_legacy_histograms={},
+            history_labels=[{"start": NOW - 4800, "end": NOW, "state": "present"}],
+        )
     return {"devices": devices}
 
 
@@ -93,12 +124,7 @@ def test_total_size_trim_discards_low_confidence_globally_before_human():
     assert report["removed_human"] == 0
     assert original == original_copy
     assert changes
-    remaining = [
-        row[19]
-        for device in prepared["devices"].values()
-        for block in device["history"]
-        for _, row in budget._rows(block)
-    ]
+    remaining = [p for device in prepared["devices"].values() for p in guess_percents(device)]
     assert remaining.count(90) == 2400
     # Strong automatic readings are also removed before any human-labelled ones.
     human_only = deepcopy(normalized)
@@ -116,22 +142,101 @@ def test_total_size_trim_discards_low_confidence_globally_before_human():
     assert report["removed_automatic"] == 2400
     assert report["removed_human"] > 0
     assert all(
-        sample[19] == 90
+        percent == 90
         for device in prepared["devices"].values()
-        for block in device["history"]
-        for _, sample in budget._rows(block)
+        for percent in guess_percents(device)
     )
 
 
 def test_budget_counts_non_ascii_metadata_and_refuses_impossible_floor():
     data = {"devices": {}, "metadata": "雷达" * 1000}
     prepared, changes, report = budget.prepare(data, {}, NOW)
-    envelope = {"version": 2, "minor_version": 1, "key": "ld2410_tuner.data", "data": prepared}
+    envelope = {
+        "version": 2,
+        "minor_version": harness.constants.STORAGE_MINOR_VERSION,
+        "key": "ld2410_tuner.data",
+        "data": prepared,
+    }
     assert report["used_bytes"] == len(json.dumps(envelope, indent=2).encode("utf-8"))
     assert not changes
     with pytest.raises(ValueError, match="remaining settings"):
         budget.prepare(data, {}, NOW, target=100)
     assert data["metadata"] == "雷达" * 1000
+
+
+def full_storage_bytes(data):
+    """The previous ``storage_bytes``: the whole indented store encoded on every save."""
+    envelope = {
+        "version": 2,
+        "minor_version": harness.constants.STORAGE_MINOR_VERSION,
+        "key": "ld2410_tuner.data",
+        "data": data,
+    }
+    return len(json.dumps(envelope, indent=2).encode("utf-8"))
+
+
+def random_store(rng):
+    """Random stores: encoded and odd history items (nested, non-dict, unicode), devices
+    without or with empty histories, and non-dict entries."""
+    devices = {}
+    for index in range(rng.randrange(0, 5)):
+        samples = [
+            (NOW - 9000 + i * 6 + rng.random(), rng.randbytes(20))
+            for i in range(rng.randrange(200))
+        ]
+        history = cleanup._encode(samples)
+        if rng.random() < 0.3:
+            history.append({"nested": {"a": [1, {"b": "é"}], "c": None}, "n": rng.random()})
+        if rng.random() < 0.2:
+            history.append(rng.choice(["text", 7, None, [1, [2, []]], {}]))
+        device = {"name": "雷达" * rng.randrange(3), "history": history, "after": [rng.random()]}
+        if rng.random() < 0.2:
+            device["history"] = []
+        if rng.random() < 0.1:
+            del device["history"]
+        devices[f"d{index}"] = device
+    if rng.random() < 0.1:
+        devices["broken"] = ["not", "a", "device"]
+    data = {"devices": devices, "room_labels": {"x": [{"start": 1.5, "state": "é"}]}}
+    if rng.random() < 0.05:
+        data["devices"] = "not devices"
+    return data
+
+
+def test_storage_bytes_matches_the_full_indented_encoding():
+    """Equivalence: cached block sizes give exactly the full encoding's byte count, also on
+    repeated calls and after blocks are appended, replaced or removed."""
+    rng = random.Random(4110)
+    for _ in range(60):
+        data = random_store(rng)
+        assert budget.storage_bytes(data) == full_storage_bytes(data)
+        assert budget.storage_bytes(data) == full_storage_bytes(data)
+        for device in data["devices"].values() if isinstance(data["devices"], dict) else ():
+            history = device.get("history") if isinstance(device, dict) else None
+            if history:
+                history.append(dict(history[0]) if isinstance(history[0], dict) else 3)
+                history[0] = {"replaced": rng.random()}
+                del history[-2:-1]
+        assert budget.storage_bytes(data) == full_storage_bytes(data)
+    assert budget.storage_bytes(populated()) == full_storage_bytes(populated())
+
+
+def test_copy_data_is_a_deep_copy_sharing_only_history_blocks():
+    data = populated()
+    data["devices"]["a"]["history_labels"].append({"start": 1, "end": 2, "state": "present"})
+    copied = budget.copy_data(data)
+    assert copied == data
+    for key, device in data["devices"].items():
+        twin = copied["devices"][key]
+        assert twin["history"] is not device["history"]
+        assert all(a is b for a, b in zip(twin["history"], device["history"], strict=True))
+        assert twin["history_labels"] is not device["history_labels"]
+        assert twin["history_labels"][0] is not device["history_labels"][0]
+    snapshot = deepcopy(copied)
+    data["devices"]["a"]["history"].append({"start": 0})
+    data["devices"]["a"]["history"][0] = {"start": 1}
+    data["devices"]["a"]["history_labels"][0]["state"] = "not_present"
+    assert copied == snapshot
 
 
 @pytest.mark.parametrize(
@@ -304,6 +409,51 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
         assert self.runtime.store.async_save.await_count == 2
         assert self.runtime.store.async_save.call_args.args[0]["new_setting"]
 
+    async def test_save_snapshot_is_taken_on_the_loop_without_copying_blocks(self):
+        """The saved data is the data at the start of the save, whatever the event loop
+        changes while the executor prepares it; the loop-side snapshot shares the blocks."""
+        self.runtime.data = populated()
+        live = self.runtime.data["devices"]["a"]
+        live["histograms"] = {"g0_move": {"present": [0] * 101, "not_present": [0] * 101}}
+        blocks = list(live["history"])
+        expected = deepcopy(self.runtime.data)
+        execute = self.hass.async_add_executor_job
+        seen = {}
+
+        async def concurrent(fn, *args):
+            if fn is budget.prepare:
+                seen["candidate"] = args[0]
+                live["history"].append(dict(blocks[-1], start=NOW))
+                live["history"][0] = dict(blocks[0])
+                live["histograms"]["g0_move"]["present"][3] += 7
+                live["history_labels"].append({"start": 1, "end": 2, "state": "present"})
+            return await execute(fn, *args)
+
+        self.hass.async_add_executor_job = concurrent
+        with patch("tuner_under_test.history.storage.time.time", return_value=NOW):
+            await self.runtime.async_save()
+        saved = self.runtime.store.async_save.call_args.args[0]
+        assert saved == expected
+        assert all(
+            a is b
+            for a, b in zip(seen["candidate"]["devices"]["a"]["history"], blocks, strict=True)
+        )
+
+    async def test_live_data_never_aliases_a_trimmed_save(self):
+        """After a cleaning save, recording keeps changing live lists; the written data must
+        not change with them."""
+        self.sample(self.now - 10 * policy.DAY)
+        self.sample(self.now - 6)
+        self.runtime._flush_history_block("a")
+        self.device["histograms"] = {"g0_move": {"present": [0] * 101, "not_present": [0] * 101}}
+        await self.runtime.trim_storage()
+        saved = self.runtime.store.async_save.call_args.args[0]
+        written = deepcopy(saved)
+        self.device["history"].append({"start": self.now})
+        self.device["history_labels"].append({"start": 1, "end": 2, "state": "present"})
+        self.device["histograms"]["g0_move"]["present"][5] += 1
+        assert saved == written
+
     async def test_overnight_skips_paused_devices(self):
         self.device["recording_enabled"] = False
         self.runtime.data["learning_schedule"] = {"enabled": True}
@@ -328,3 +478,16 @@ def test_untimed_legacy_summaries_expire_without_inventing_original_sample_dates
     assert not expired["history_legacy_histograms"]
     assert sum(expired["histograms"]["g0_move"]["present"]) == 0
     assert stats["expired_legacy"] == 1
+
+
+def test_trim_order_uses_each_samples_recorded_guess_and_ignores_unknown_ranges():
+    rows = [(NOW - 100 + 6 * i, row(90 if i < 5 else 30)) for i in range(10)]
+    samples, runs = harness.split_guesses(rows)
+    known = harness.guesses.Guesses(runs)
+    taken = [(ts, bytes(18)) for ts, _ in samples]
+    always = lambda timestamp: None  # noqa: E731
+    unknown = lambda timestamp: "unknown"  # noqa: E731
+    assert budget._mean_confidence(taken[:5], always, known) == 90
+    assert budget._mean_confidence(taken[5:], always, known) == 30
+    assert budget._mean_confidence(taken, always, known) == 60
+    assert budget._mean_confidence(taken, unknown, known) == 0

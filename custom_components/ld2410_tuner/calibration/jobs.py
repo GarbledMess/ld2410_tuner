@@ -21,9 +21,9 @@ def start(runtime, device_id, source="user"):
         raise ValueError("Unknown device")
     from ..rooms import groups, learning
 
-    group_id = groups.for_device(runtime, device_id)
-    if group_id:
-        return learning.start_device(runtime, device_id, source, group_id)
+    set_id = groups.for_device(runtime, device_id)
+    if set_id:
+        return learning.start_device(runtime, device_id, source, set_id)
     task = runtime._learning_jobs.get(device_id)
     if task is None:
         report = {

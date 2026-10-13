@@ -177,7 +177,7 @@ def test_pair_repair_preserves_presence_supported_by_alternating_gates():
     ]
     absent = [(100 + i, {keys[0]: 25, keys[1]: 0}, "not_present") for i in range(20)]
     search = search_class(
-        present, absent, {"present": [], "not_present": []}, keys, None, config(0, 3, 0)
+        present, absent, {"present": [], "not_present": []}, keys, None, config(0, 3, 0), 0.0
     )
     thresholds = {keys[0]: 10, keys[1]: 15}
     selected = {key: search.tables[key][value] for key, value in thresholds.items()}

@@ -160,11 +160,18 @@ export const panelChart = {
     }
   },
 
+  _chartCanvases(id) {
+    return [
+      ...(this.shadowRoot?.querySelectorAll(
+        `[data-chart-canvas="${CSS.escape(id)}"]`,
+      ) || []),
+    ];
+  },
+
+  // Chart data is fetched once per radar and drawn into every copy.
   _renderChartCanvas(id, force = false) {
-    const el = this.shadowRoot?.querySelector(
-      `[data-chart-canvas="${CSS.escape(id)}"]`,
-    );
-    if (!el) return;
+    const canvases = this._chartCanvases(id);
+    if (!canvases.length) return;
     if (this._busyCards.has(id)) {
       this._redrawPending = true;
       return;
@@ -172,14 +179,17 @@ export const panelChart = {
     const cs = this._chartState.get(id);
     const d = this._learningView(id, this._data?.devices?.[id]);
     if (!cs || !d) {
-      el.innerHTML = `<div class="muted">Unavailable</div>`;
+      for (const el of canvases)
+        el.innerHTML = `<div class="muted">Unavailable</div>`;
       return;
     }
+    if (this._dragging) return;
+    for (const el of canvases) this._renderChartCopy(id, el, cs, d, force);
+  },
+
+  _renderChartCopy(id, el, cs, d, force) {
     const active = this.shadowRoot.activeElement;
-    if (
-      this._dragging ||
-      (cs.panelOpen && el.contains(active) && active?.tagName === "INPUT")
-    )
+    if (cs.panelOpen && el.contains(active) && active?.tagName === "INPUT")
       return;
     const card = el.closest("[data-device-id]");
     this._syncChartControls(card, cs);
@@ -218,9 +228,7 @@ export const panelChart = {
       cs.loadedKind === cs.kind &&
       cs.loadedHours === cs.hours &&
       (cs.end == null || cs.data.end === cs.end);
-    const status = this.shadowRoot.querySelector(
-      `[data-chart-status="${CSS.escape(id)}"]`,
-    );
+    const status = card.querySelector("[data-chart-status]");
     if (status) {
       status.textContent = this._chartStatusText(cs, matches);
       status.classList.toggle("is-busy", !!cs.loading);

@@ -43,7 +43,15 @@ export const panelView = {
         .gate-results summary { padding:10px 0; cursor:pointer; font-weight:600; }
         .data-clear { border-top:1px solid var(--divider-color); padding-top:12px; margin-top:12px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
         .subtitle { color:var(--secondary-text-color); font-size:14px; margin-bottom:14px; }
-        .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(500px,1fr)); gap:14px; }
+        .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(500px,100%),1fr)); gap:14px; min-width:0; }
+        #layout { display:flex; flex-direction:column; gap:14px; min-width:0; }
+        .layout-node, .layout-leaf, .layout-direct { min-width:0; }
+        .layout-node > summary, .layout-leaf > summary { cursor:pointer; min-height:44px; align-content:center; }
+        .layout-node > summary h2 { display:inline; margin:0; font-size:20px; }
+        .layout-leaf > summary h3 { display:inline; margin:0; font-size:16px; }
+        .layout-node > .layout-leaf, .layout-node > .layout-direct { margin:8px 0 0; }
+        .layout-note { margin:4px 0 8px; }
+        .pill.not-recording { color:var(--warning-color,#a66b00); }
         .card,.panel-card { min-width:0; align-self:start; background:var(--ha-card-background,var(--card-background-color,#fff)); border-radius:12px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 2px 8px rgba(0,0,0,.12)); }
         .panel-card { margin-bottom:14px; }
         .panel-intro .subtitle { margin:0; line-height:1.5; }
@@ -77,7 +85,6 @@ export const panelView = {
         .training label { color:var(--secondary-text-color); font-size:13px; }
         .duration { display:flex; align-items:center; gap:4px; }
         .duration input { width:82px; min-height:44px; padding:8px; border:1px solid var(--divider-color); border-radius:9px; background:var(--card-background-color); color:var(--primary-text-color); box-sizing:border-box; }
-        .section-title { font-weight:600; margin-bottom:5px; }
         .history-fields { display:grid; grid-template-columns:1fr 1fr 180px; gap:8px; margin:10px 0; }
         .history-fields label { color:var(--secondary-text-color); font-size:12px; }
         .history-fields input,.history-fields select { display:block; width:100%; margin-top:4px; min-height:44px; padding:8px; border:1px solid var(--divider-color); border-radius:9px; background:var(--card-background-color); color:var(--primary-text-color); box-sizing:border-box; }
@@ -157,6 +164,7 @@ export const panelView = {
         .auto-details div { background:var(--secondary-background-color); padding:7px; border-radius:7px; }
         .auto-details span { display:block; color:var(--secondary-text-color); font-size:11px; }
         .feedback-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:9px; }
+        .reference-actions { margin-top:7px; }
         .fb-btn { min-height:36px; padding:5px 10px; font-size:12px; }
         .fb-btn.correct:not(:disabled):hover { border-color:var(--state-active-color,#2e7d32); }
         .fb-btn.incorrect:not(:disabled):hover { border-color:var(--error-color,#c62828); }
@@ -247,6 +255,10 @@ export const panelView = {
           .chart-controls select { flex:1 1 45%; min-width:0; }
         }
               .comparison-header { margin-top:8px; font-size:12px; text-align:left; white-space:normal; }
+        .room-role { margin-top:8px; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+        .own-score { margin:8px 0 0; font-size:12px; overflow-wrap:anywhere; }
+        .own-score summary { cursor:pointer; }
+        .own-score p { margin:6px 0 0; }
         .comparison-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
         .pattern-comparison { margin:14px 0; padding:12px; border:1px solid var(--divider-color,#444); border-radius:10px; }
         .comparison-table { width:100%; min-width:0; font-size:12px; }
@@ -265,10 +277,34 @@ export const panelView = {
           .comparison-table td:nth-child(n+3) { grid-column:1 / -1; }
         }
         .room-members { display:flex; flex-direction:column; gap:10px; margin:10px 0; }
-        #rooms { margin-bottom:14px; }
-        #rooms > summary { cursor:pointer; }
-        #rooms h2 { display:inline; }
-        #rooms .table-scroll { display:block; }
+        .layout-help > summary { cursor:pointer; }
+        .layout-help h2 { display:inline; }
+        .group-header { margin:6px 0 10px; padding:8px 12px; border:1px solid var(--divider-color,#444); border-radius:10px; min-width:0; }
+        .group-summary { cursor:pointer; min-height:28px; align-content:center; overflow-wrap:anywhere; }
+        .group-body { min-width:0; }
+        .group-body p { line-height:1.5; }
+        .group-header .table-scroll { display:block; }
+        .linked-set { margin:6px 0 10px; padding:8px 12px; border:1px solid var(--divider-color,#444); border-left:4px solid var(--primary-color,#1976d2); border-radius:10px; min-width:0; overflow-wrap:anywhere; }
+        .linked-set h3 { margin:4px 0 8px; font-size:15px; }
+        .linked-set p,.linked-zone p,.learned-with p { line-height:1.5; }
+        .learned-with { margin:10px 0; overflow-wrap:anywhere; }
+        .learned-with ul,.linked-zones { margin:6px 0; padding-left:20px; }
+        .link-button { all:unset; cursor:pointer; color:var(--primary-color,#1976d2); text-decoration:underline; overflow-wrap:anywhere; }
+        .link-button:focus-visible { outline:2px solid var(--primary-color,#1976d2); outline-offset:2px; }
+        .layout-footer { display:flex; flex-direction:column; align-items:flex-start; gap:8px; min-width:0; }
+        .layout-footer .room-editor { align-self:stretch; }
+        .room-labels { margin-top:12px; border-top:1px solid var(--divider-color); padding-top:8px; min-width:0; }
+        .room-labels h4 { margin:4px 0; font-size:15px; }
+        .room-sensor-labels { margin:4px 0 8px; }
+        .room-sensor-labels .history-timeline { height:14px; margin-top:4px; }
+        .history-segment.sensor:not(.unlabelled) { opacity:.6; background-image:repeating-linear-gradient(90deg,transparent,transparent 3px,rgba(255,255,255,.45) 3px,rgba(255,255,255,.45) 5px); }
+        .seen-by-list { margin-top:12px; }
+        .seen-by { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:6px 0; border-bottom:1px solid var(--divider-color); }
+        .seen-by-chip { min-height:36px; padding:4px 10px; font-size:12px; border-radius:999px; white-space:normal; overflow-wrap:anywhere; text-align:left; }
+        .seen-by-chip.seen { border-color:var(--state-active-color,#2e7d32); color:var(--state-active-color,#2e7d32); font-weight:600; }
+        .room-estimate { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+        .room-conflicts ul { margin:6px 0 0; }
+        .room-conflicts li span { overflow-wrap:anywhere; }
       </style>
       <div class="wrap">
         <div id="error" role="alert" class="notice warn" hidden></div>
@@ -286,14 +322,14 @@ export const panelView = {
           <div class="settings-section"><div id="timing-controls" class="global-settings"></div></div>
           <div class="settings-section"><div id="storage-controls" class="global-settings"></div></div>
         </details>
-        <details class="panel-card" id="rooms"><summary><h2>Rooms and zones</h2></summary>
-          <p>Assess complementary radar coverage using current thresholds. An area can contain independent zones; an occupied zone does not make its neighbours occupied. Whole-area assessment combines the selected area radars.</p>
-          <p class="muted">Each member's labels describe its coverage: any Present label establishes group occupancy; Empty requires every member labelled empty. Human labels override estimates on that member. No labels are copied between zones. Review older labels if they described a wider area.</p>
-          <div class="room-list"></div><button data-room-action="add">Add zone / manual group</button><div class="room-editor"></div>
-          <p class="muted">Learn together fits all radars in a zone. Areas with independent zones are assessed as a whole but learned by zone. Device Learn and overnight jobs use the most specific unambiguous group. Results are stored until you assess again; new recordings do not continuously recalculate them. Scores use elapsed time: each 1% missed occupied time costs 5 points, each 1% false-active empty time costs 1 point, on a 0–100 scale. This is a recording comparison, not an accuracy guarantee. Human-labelled durations take priority for each occupancy state; confidence-weighted estimates fill missing evidence. All valid readings are included, without the individual learner's outlier filtering. Counts refer to estimated detection at unique observation times; they do not determine the score.</p>
-        </details>
         <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
-        <div class="grid" id="grid"></div>
+        <details class="panel-card layout-help"><summary><h2>How rooms and zones work</h2></summary>
+          <p>Assess complementary radar coverage using current thresholds. An area can contain zones, each with its own occupancy: an occupied zone does not make its neighbours occupied. Whole-area assessment combines the selected area radars.</p>
+          <p class="muted">Room labels describe the whole room: open a group and label when it was occupied or empty on its timeline. A zone labelled Present makes its area Present; an area labelled Empty makes every zone in it Empty. Where a room has no label of its own, its members' radar labels decide (any Present means occupied; Empty needs every member empty), then room presence sources (cameras, on/off entities, Bermuda), then the room estimate from the radars' own guesses. Human labels always outrank automatic evidence.</p>
+          <p class="muted">A radar's own label means "should this radar detect here". For each occupied period the group shows "Seen by" chips: which radars saw it (high, low or unknown confidence). Tap a chip to correct it; that saves a label on that radar. A radar is only taught to detect what it saw, and to stay quiet when every room it covers is empty. Conflicting labels are listed in the group for review.</p>
+          <p class="muted">Learning works on learning sets: a group with its radars, plus every overlapping zone linked to it by a shared radar. Linked zones learn together, so a shared radar gets one value that serves every zone it covers; zones that share no radar learn on their own. An area with zones is assessed as a whole but learned by its zones. Device Learn and overnight learning resolve a radar to its learning set. Results are stored until you assess again; new recordings do not continuously recalculate them. Scores use elapsed time: each 1% missed occupied time costs 5 points, each 1% false-active empty time costs 1 point, on a 0–100 scale. This is a recording comparison, not an accuracy guarantee. Human-labelled durations take priority for each occupancy state; confidence-weighted estimates fill missing evidence. All valid readings are included, without the individual learner's outlier filtering. Counts refer to estimated detection at unique observation times; they do not determine the score.</p>
+        </details>
+        <div id="layout"></div>
       </div>`;
     // If a poll landed while a field was focused, it's queued instead of
     // applied (see _load). Once focus leaves the panel, catch up on that
@@ -312,9 +348,11 @@ export const panelView = {
             `${card.dataset.deviceId}:gate-table`,
             event.target.open,
           );
+        if (card) this._mirrorDetails(card, event.target);
       },
       true,
     );
+    this._wireLayoutEvents(this.shadowRoot);
     this.shadowRoot.addEventListener("focusout", () => {
       setTimeout(() => {
         if (this._redrawPending && !this._isEditing()) {
@@ -348,39 +386,38 @@ export const panelView = {
     this._drawLearningSchedule();
     this._drawStorage();
     this._drawTimingSettings();
-    this._drawRooms();
-    const grid = this.shadowRoot.querySelector("#grid");
-    this._captureDrafts(grid);
-    const cards = new Map(
-      Array.from(grid.querySelectorAll("[data-device-id]"), (card) => [
-        card.dataset.deviceId,
-        card,
-      ]),
-    );
-    const devices = this._data?.devices || {};
-    if (!Object.keys(devices).length) {
-      this._updateHtml(
-        grid,
-        '<div class="card">No LD2410 gate energy entities were discovered.</div>',
-      );
-      return;
-    }
-    // Removing cards mutates this live collection.
-    const children = [...grid.children];
-    for (const child of children) {
-      if (!(child.dataset.deviceId in devices)) child.remove();
-    }
-    for (const [index, [id, device]] of Object.entries(devices).entries()) {
-      const card = this._createCard(id, device, cards.get(id));
-      if (grid.children[index] !== card)
-        grid.insertBefore(card, grid.children[index] || null);
-    }
-    for (const [id, device] of Object.entries(devices))
-      this._maybeFetchChart(id, device);
+    this._drawLayout();
   },
 
-  _captureDrafts(grid) {
-    for (const card of grid.querySelectorAll("[data-device-id]")) {
+  // Shared per-radar disclosure state is mirrored into every copy.
+  _mirrorDetails(card, details) {
+    const selector = details.dataset.detail
+      ? `details[data-detail="${CSS.escape(details.dataset.detail)}"]`
+      : details.matches(".gate-results")
+        ? ".gate-results"
+        : null;
+    if (!selector) return;
+    for (const copy of this._placements(card.dataset.deviceId)) {
+      const twin = copy !== card && copy.querySelector(selector);
+      if (twin && twin.open !== details.open) twin.open = details.open;
+    }
+  },
+
+  _draftSources(root) {
+    const sources = new Map();
+    for (const card of root.querySelectorAll("[data-device-id]")) {
+      const id = card.dataset.deviceId;
+      if (
+        !sources.has(id) ||
+        card.dataset.placement === this._lastEditedPlacement.get(id)
+      )
+        sources.set(id, card);
+    }
+    return sources.values();
+  },
+
+  _captureDrafts(root = this.shadowRoot.querySelector("#layout")) {
+    for (const card of this._draftSources(root)) {
       for (const detail of card.querySelectorAll("details[data-detail]"))
         this._sectionState.set(
           `${card.dataset.deviceId}:detail-${detail.dataset.detail}`,

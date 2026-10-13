@@ -17,3 +17,9 @@ coverage.xml
 node_modules/
 playwright-report/
 test-results/
+
+
+# test data
+tests/data/
+
+docs/superpowers/

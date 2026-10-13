@@ -131,13 +131,15 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             async_load=AsyncMock(return_value={"devices": {}}), async_save=AsyncMock()
         )
         with (
-            patch.object(mod, "TunerStore", return_value=store),
+            patch.object(mod, "TunerStore", return_value=store) as made,
             patch.object(mod, "StaticPathConfig", Mock()),
             patch.object(mod, "_register_websocket_commands") as register,
             patch.object(mod.frontend, "async_panel_exists", return_value=False, create=True),
             patch.object(mod.frontend, "async_register_built_in_panel", create=True) as panel,
         ):
             self.assertTrue(await mod.async_setup_entry(self.hass, None))
+            # The store's version is what makes Home Assistant run the guess-run migration.
+            self.assertEqual(made.call_args.kwargs["minor_version"], mod.STORAGE_MINOR_VERSION)
             self.assertTrue(await mod.async_setup_entry(self.hass, None))
             register.assert_called_once()
             self.assertTrue(panel.call_args.kwargs["require_admin"])

@@ -1,0 +1,182 @@
+{
+ "devices": {
+  "a": {
+   "basis": "human",
+   "exclusive_presence_seconds": 597.0,
+   "false_positive_percent": 0.0,
+   "missed_time_cost": 5.0,
+   "outcomes": {
+    "automatic": {
+     "not_present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 0,
+      "seconds": 0.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 0.0
+     },
+     "present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 0,
+      "seconds": 0.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 0.0
+     }
+    },
+    "human": {
+     "not_present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 99,
+      "seconds": 594.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 594.0
+     },
+     "present": {
+      "active_seconds": 597.0,
+      "hits": 100,
+      "possible_seconds": 597.0,
+      "samples": 100,
+      "seconds": 600.0,
+      "weighted_active_seconds": 597.0,
+      "weighted_seconds": 600.0
+     }
+    }
+   },
+   "presence_recall": 0.995,
+   "score": 97.5,
+   "sources": {
+    "not_present": "human",
+    "present": "human"
+   },
+   "target_met": false
+  },
+  "b": {
+   "basis": "human",
+   "exclusive_presence_seconds": 0.0,
+   "false_positive_percent": 0.0,
+   "missed_time_cost": 5.0,
+   "outcomes": {
+    "automatic": {
+     "not_present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 0,
+      "seconds": 0.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 0.0
+     },
+     "present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 0,
+      "seconds": 0.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 0.0
+     }
+    },
+    "human": {
+     "not_present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 99,
+      "seconds": 594.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 594.0
+     },
+     "present": {
+      "active_seconds": 0.0,
+      "hits": 0,
+      "possible_seconds": 0.0,
+      "samples": 100,
+      "seconds": 600.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 600.0
+     }
+    }
+   },
+   "presence_recall": 0.0,
+   "score": 0.0,
+   "sources": {
+    "not_present": "human",
+    "present": "human"
+   },
+   "target_met": false
+  }
+ },
+ "end": 1200,
+ "excluded": {
+  "no_shared_recording_seconds": 6,
+  "unlabelled_seconds": 0.0
+ },
+ "label_basis": "Any member labelled present; empty requires every member labelled empty. Human labels override estimates on the same member.",
+ "room": {
+  "basis": "human",
+  "false_positive_percent": 0.0,
+  "missed_time_cost": 5.0,
+  "outcomes": {
+   "automatic": {
+    "not_present": {
+     "active_seconds": 0.0,
+     "hits": 0,
+     "possible_seconds": 0.0,
+     "samples": 0,
+     "seconds": 0.0,
+     "weighted_active_seconds": 0.0,
+     "weighted_seconds": 0.0
+    },
+    "present": {
+     "active_seconds": 0.0,
+     "hits": 0,
+     "possible_seconds": 0.0,
+     "samples": 0,
+     "seconds": 0.0,
+     "weighted_active_seconds": 0.0,
+     "weighted_seconds": 0.0
+    }
+   },
+   "human": {
+    "not_present": {
+     "active_seconds": 0.0,
+     "hits": 0,
+     "possible_seconds": 0.0,
+     "samples": 99,
+     "seconds": 594.0,
+     "weighted_active_seconds": 0.0,
+     "weighted_seconds": 594.0
+    },
+    "present": {
+     "active_seconds": 597.0,
+     "hits": 100,
+     "possible_seconds": 597.0,
+     "samples": 100,
+     "seconds": 600.0,
+     "weighted_active_seconds": 597.0,
+     "weighted_seconds": 600.0
+    }
+   }
+  },
+  "presence_recall": 0.995,
+  "score": 97.5,
+  "sources": {
+   "not_present": "human",
+   "present": "human"
+  },
+  "target_met": false
+ },
+ "sample_basis": "Unique observation timestamps within shared recording coverage",
+ "scorer_version": 1,
+ "shared_recording_seconds": 1194,
+ "start": 0,
+ "timing": {
+  "a": {},
+  "b": {}
+ }
+}

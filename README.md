@@ -14,6 +14,18 @@ that folder. Existing stored training/history are preserved; earlier recommendat
 must be learned again before Apply. Local brand icons are supported by Home Assistant
 2026.3+.
 
+### Back up before upgrading (history format change)
+
+**Upgrading from 1.22 or earlier changes the stored history, and the change cannot be
+undone by installing the older version again.** The first start after the upgrade converts
+every stored history block to the new layout (version 4, with automatic guesses kept as
+runs). The older integration does not read that layout and discards history blocks it does
+not recognise at its next startup or hourly cleanup, so **downgrading afterwards deletes
+your recorded history** (labels, settings and saved results stay, the recordings do not).
+Before upgrading, copy Home Assistant's `.storage/ld2410_tuner.data` file (or take a Home
+Assistant backup) and keep it for as long as you may want to go back. To downgrade, stop
+Home Assistant, restore that copy, then install the older version.
+
 ### HACS custom repository (requires a public GitHub repository)
 
 This project uses the HACS-compatible folder layout but is not being submitted to
@@ -26,30 +38,105 @@ in HACS under **Custom repositories** using
 **LD2410 Tuner**, restart Home Assistant, and add the integration as above.
 Adding a custom repository does not require submitting it to the default catalogue.
 
-## Rooms and independent zones
+## Rooms, zones and shared radars
 
-The **Rooms and zones** card assesses multiple radars together using their current
-thresholds. Home Assistant areas supply default groups containing the area's
-recording-enabled radars. **Edit members** overrides that selection; **Restore
-area default** restores it. **Add zone / manual group** creates an independently
-assessed selection, optionally organized under an area. These settings do not
-change Home Assistant's registry or require the optional ESPHome package.
+The **Rooms and zones** card is organized as a layout tree: each Home Assistant
+area, the zones you define inside it, **Elsewhere in <area>** for the area's radars
+that no zone claims, area-less groups, and finally **Unassigned** radars. Areas
+supply default groups containing the area's recording-enabled radars. **Edit
+members** overrides that selection; **Restore area default** restores it. **Add
+zone / manual group** creates an independently assessed selection, optionally
+organized under an area. These settings do not change Home Assistant's registry or
+require the optional ESPHome package.
 
 For example, **Office** can contain **Desk** and **Sofa** zones, each with its own
-radar selection. The Office assessment can cover both, while the two zone
-assessments stay separate. A person at the desk does not count as sofa occupancy,
-and a desk detection cannot hide a sofa miss. A radar selected in multiple zones
-contributes to each; grouping cannot locate a person within that radar's coverage.
-Area membership for manual zones is organizational: the whole-area default still
-uses the actual device areas, unless you explicitly edit its members.
+radar selection; radars in Office that neither zone uses appear under **Elsewhere
+in Office**. The Office assessment can cover both zones, while the zone
+assessments stay separate: a person at the desk does not count as sofa
+occupancy, and a desk detection cannot hide a sofa miss. Zones that share a radar
+still keep their own room truth and cost. A radar that covers both the desk and the sofa can be
+selected in both zones and then appears under each; it is learned once, together
+with the linked zones (see Learning sets below). Grouping cannot locate a person
+within a radar's coverage. You can label a room or zone directly, and each radar is
+credited with what it saw, as described next. Area membership for manual zones is
+organizational: the whole-area default still uses the actual device areas, unless
+you explicitly edit its members.
 
-Each member's existing labels are interpreted as occupancy within its coverage:
-any Present label establishes group occupancy; Empty requires every member to be
-labelled empty. Human labels override estimates on that same member. An explicit
-Unknown suppresses automatic fallback. No labels are propagated from a whole area
-into its zones. Review old labels that described a wider area before using them
-for a narrower zone. Automatic evidence remains confidence-weighted and is clearly
-identified as an estimate, not independent validation of the detector.
+Review old labels that described a wider area before using them for a narrower
+zone. No labels are propagated from an area into its zones except by the
+implications below.
+
+### Room labels and how a room's truth is decided
+
+Each group header in the tree holds that group's controls and a **How rooms and
+zones work** help.
+
+You can label a room or zone Present, Empty or Unknown directly on its timeline.
+These manual room labels are a separate record from each radar's own labels.
+Sensor-derived room labels come from optional room presence sources (camera,
+boolean entity or Bermuda) and are stored separately; a sensor label change only
+marks the members' references out of date (see below). Editing a manual label
+detects stale edits through its own revision, independent of the sensor revision.
+
+For any group, truth is decided in this order, first match wins:
+
+1. A human label on that room or zone itself. An explicit Unknown suppresses
+   automatic fallback.
+2. Implied truth: a Present zone makes its area Present; an Empty area makes its
+   zones Empty.
+3. Truth derived from member groups.
+4. Automatic evidence: sensor labels, then the room estimate.
+
+The room estimate combines members with a noisy-OR of their calibrated guesses
+(see **Which automatic guesses count**). A present estimate needs two members to say
+present (every member of a group of one); a lone radar's guess is not a room's. Its
+**Was this right?**
+feedback is handled on the server and affects at most one hour per answer.
+
+### Which radar saw it
+
+Each radar is credited with a room's occupied time by one function, shared by the
+learner and the **Seen by** chips:
+
+- If the radar has its own human label, that label decides.
+- Otherwise the radar is credited when its energy stays above its own empty
+  baseline (99th percentile of its empty-labelled energy plus a margin of 3) for
+  at least 30 seconds. This is an automatic guess, ignored below a confidence of
+  0.55, that reaches full strength with 100 baseline samples. The 30 second
+  sustain was chosen over 18 seconds on recorded data to reduce false attribution
+  on empty periods.
+
+All automatic evidence, including a radar's own guesses, the room estimate, sensor
+room labels and these attributions, trains at its confidence times the **Automatic
+evidence weight** setting (default WEIGHT_DEFAULT, up to a quarter of the human evidence at 1).
+Human labels have weight 1. Automatic evidence is therefore used but stays clearly
+down-weighted, and it is not independent validation of the detector.
+
+### Which automatic guesses count
+
+A radar's recorded confidence is the age of its newest reference, not a probability.
+On the supplied recordings every `not_present` guess was right (45,000+ labelled
+samples on four radars) while `present` guesses were right 6-88% of the time, almost
+only wrong in long stretches at the energy of an empty room. Every consumer of
+guesses (the learner, the room estimate, Seen by, the assessment and the radar's own
+reference training) therefore reads them through one function, `guesses.evidence`:
+
+- A `not_present` guess counts at a fixed calibrated confidence of 0.95.
+- A `present` guess counts only when its recorded confidence says the reference was
+  fresh (under about six hours old) or absent; between 0.70 and 0.975 it counts for
+  nothing. Its calibrated confidence is 0.95.
+- A `present` guess does not count where every gate reads within the ceiling of the
+  radar's own Empty-labelled readings (their 99.9th percentile plus 3). A radar with no
+  Empty labels has no ceiling and nothing to veto with.
+- A room is present on automatic evidence only when two members say so.
+- A radar's own guesses still count: they train its references and its learner
+  evidence under the same rules. Sources outside the radar (entities, room sensors)
+  keep the confidence they were given.
+
+The role report shows per radar: **Covers alone**, **False-active** and **Missed
+what it saw** (occupied time attributed to the radar but not detected, split into
+inferred and automatic parts). **Radar on its own** keeps the individual learner
+score, a different measure that is not comparable with the room figures.
 
 **Assess current settings** replays 24 hours, 3 days or 7 days of recordings.
 Each radar's own timeout and configured delay policy are replayed first; detections
@@ -75,15 +162,15 @@ not recalculate it. Changed membership, labels, thresholds, timing or scorer
 version mark it for reassessment; use Assess again to refresh the evidence. An
 integration restart cancels unfinished jobs, which can be requested again.
 
-### Joint learning within a zone
+### Learning sets
 
-**Learn together** fits all selected radars against the last seven days of shared
-recordings. Device Learn and overnight learning use the most specific unambiguous
-multi-radar zone, or the area when it has no independent zones. Single-radar zones
-keep individual learning. Overlapping manual groups require selecting the intended
-group explicitly; a whole area containing independent zones cannot be learned as
-one zone. Overnight learning handles each joint group once and shares its outcome
-with all members.
+**Learn together** fits all radars of a learning set against the last seven days of
+shared recordings. A set is a group of linked zones (its `set_id` is the sorted
+group ids joined with `+`; a single-group set is just that group). Radars shared
+between zones get one threshold value. Zones that cannot be scored are skipped and
+reported. Device Learn, set-level jobs, Apply and overnight learning operate on
+whole sets; overnight learning visits each set once and shares its outcome with
+all members.
 
 A miss counts only when no member detects presence after its own timing filters.
 Every member's false activity counts against the group. Strong overlapping
@@ -102,8 +189,8 @@ Results appear in each member's existing User learnt / Autolearnt slot, with joi
 outcomes clearly identified. Apply on a device opens the group review. The group
 shows every proposed threshold and applies the complete recommendation. Automatic
 Apply requires every member to permit the learning source and a lower joint time
-penalty on the same fresh evidence. A disabled member blocks automatic application
-for the whole group.
+penalty on the same fresh evidence, and is refused when any zone was skipped or
+would get worse. A disabled member blocks automatic application for the whole set.
 
 Membership, labels, active gates, timing, current thresholds and saved results are
 checked before and during writes. Lower thresholds establish replacement coverage
@@ -429,7 +516,8 @@ Before human references exist, it warms up a background estimate and starts maki
 tentative guesses. Its background stops adapting during likely occupancy so a
 stationary person is less likely to become the baseline. Bootstrap confidence is
 capped at 65%; partially human-guided estimates at 80%; fully guided estimates at
-98%. These scores are **heuristic**, not empirically calibrated probabilities.
+98%. These scores are **heuristic**, not empirically calibrated probabilities; evidence
+uses the calibrated confidence described under **Which automatic guesses count**.
 A completely flat startup stays UNKNOWN until observed variation or a human
 empty-room reference supplies more evidence. Empty-room p90 energy provides the
 baseline for elevation, and contradictory gates reduce weak positive evidence.
@@ -678,16 +766,47 @@ live Home Assistant compatibility.
 ## Automatic history maintenance
 
 At startup and hourly, the integration normalizes history in Home Assistant's
-executor. Valid version-1/2 blocks become version 3; version-1 observations retain unknown automatic labels
-and confidence; confidence is never invented for older observations. Recorded
-energies, timestamps, missing values, and human-label precedence are preserved.
+executor. Valid older blocks become version 4; version-1 observations carried no
+automatic guess, and none is invented for them. Recorded energies, timestamps, missing
+values, and human-label precedence are preserved.
 
-Version 3 uses lossless byte-column delta encoding before zlib compression. It keeps
-every recorded timestamp, energy value, missing-value marker, automatic label and
-confidence value. Existing history migrates during startup/hourly cleanup; newly
-recorded blocks use the same format. It does not downsample older history. Earlier
-integration versions cannot read version-3 blocks; retain a pre-upgrade storage
-backup if you need to downgrade.
+Version 4 uses lossless byte-column delta encoding before zlib compression. It keeps
+every recorded timestamp, energy value and missing-value marker, and does not downsample
+older history. A history row holds energies only. The radar's automatic guess is stored
+beside the blocks as **guess runs** (`guess_runs` per device): one record per stretch of
+time with the same guess, not one per five-second sample. A run has a start, an end, a
+state (present or not present), a confidence and where the guess came from (the
+references, an external source, or unknown for migrated rows). Confidence is kept in
+steps of 5 %, and a new run starts when the state changes, the source changes, the
+recording has a gap, or a sample's confidence is 10 points or more from the run's (a
+confidence hovering on a step edge stays one run). A run's confidence is that of its first
+sample, and a run whose first sample is under the 55 % training floor is under it. On real
+recordings that is about twenty times fewer records than samples. The run that is still
+growing is kept in memory and added to what is saved, so closing a run is the only time
+stored chunks change; a flush costs no more than it did when rows held the guess. Runs
+are retained and thinned with the history rows: a run lives while a retained row lies
+inside it.
+
+Learning reads the whole retained history of automatic guesses without expanding it to a
+record per sample: a stretch of one guess is read as snippets of ten consecutive samples,
+spaced so that the history yields at most about 10,000 of them per radar (a history that
+small is read in full), each standing for the samples between it and the next, and the
+newest 5,000 of each state are kept.
+
+The guess itself is not recomputed on every two-second tick. A radar's readings are
+classified again only when a channel has stayed 3 energy units or more from the readings
+last classified for 5 seconds, its references, calibration or external source changed, the
+filter has not settled, or a minute has passed (about half the ticks on recorded radars);
+otherwise the last classification stands (and stays
+current for the panel and the Correct/Incorrect feedback), and the temporal filter and
+confirmation continue over the elapsed time.
+
+Stores written by earlier versions (storage minor version 1, a guess in every row) are
+converted once, in Home Assistant's executor, when the integration first starts: each
+row's guess becomes runs and the rows are rewritten as version 4. The conversion works
+on a copy and Home Assistant saves only the finished result, so an interruption leaves
+the old file to convert again. Earlier integration versions cannot read the converted
+store; retain a pre-upgrade storage backup if you need to downgrade.
 
 Recording is controlled per device with **Record data**, including on collapsed
 cards. Newly discovered devices start disabled. Existing devices keep recording
@@ -874,8 +993,9 @@ Learn and Apply work as before and no thresholds are applied automatically.
   human 1, entity 0.5 and inferred 0.1. Each period's influence is capped, so one
   long recording cannot supply unlimited independent evidence. Recent entity
   evidence can outweigh an old human distribution.
-- Radar-derived references require a confirmed estimate of at least 80%
-  confidence and existing independent reference evidence. They cannot create
+- Radar-derived references require a guess that counts as evidence (calibrated
+  confidence of at least 55%, a present one not vetoed as quiet) and existing
+  independent reference evidence. They cannot create
   independent support or raise its confidence cap. A continuously occupied room
   is not deliberately reclassified as empty simply because readings are steady.
 - Unfamiliar channel energies reduce estimated confidence and show a review
@@ -894,10 +1014,19 @@ observation age; its timestamp is the import age, not an invented recording date
 Historical automatic
 labels have no reliable source provenance and are not imported as entity truth.
 
-Editing a past human period rebuilds the retained human references. Any entity
-or inferred summary overlapping the edit is removed in full, since its aggregate
-cannot be precisely unlearned one sample at a time. Older, expired human summaries
-remain age-weighted references. Changing the entity source configuration resets
+Editing a past human period removes any entity or inferred summary overlapping
+the edit in full, since its aggregate cannot be precisely unlearned one sample at
+a time. Rebuilding the retained human and room references reads the radar's whole
+history, which takes seconds on a small host, so edits never do it: device and
+room label edits, Seen by taps, membership, recording and registry changes and
+room sensor labels only mark the radar's references out of date. The automatic
+card then shows "References out of date since …". Out-of-date references rebuild
+in the background once a day at the learning schedule time: at the start of the
+overnight learning pass, or on their own when overnight learning is off. Use
+**Refresh references** on that card to rebuild at once; the card shows "Refreshing
+references…" until it finishes. Learn does not read references, so it does not
+wait for them. Older, expired human summaries remain age-weighted
+references. Changing the entity source configuration resets
 its entity and inferred reference contributions while preserving human references.
 Pausing recording pauses reference training too. Profile summaries and unfamiliar
 readings appear inside the existing automatic-analysis card.

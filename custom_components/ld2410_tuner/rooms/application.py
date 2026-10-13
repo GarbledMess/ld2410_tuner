@@ -8,21 +8,32 @@ from time import time
 from ..calibration import automatic as policy
 from ..calibration import device_io, results
 from ..calibration.scoring import improves
-from . import fitting, groups, jobs
+from . import fitting, groups, jobs, truth
 from .objective import Objective
 
+WORSE = "A zone would get worse"
+# Costs are sums of floats; differences below this are integration noise, not change.
+NOISE = 1e-9
 
-def selected(runtime, group_id, result_id, source):
-    learned = runtime.data.get("room_learning", {}).get(group_id, {}).get("slots", {}).get(source)
+
+def _group_ids(learned):
+    # Results stored before learning sets were one group, keyed by that group's id.
+    return learned.get("group_ids", [learned["group_id"]])
+
+
+def selected(runtime, set_id, result_id, source):
+    set_id = groups.set_id_for(runtime, set_id)
+    learned = runtime.data.get("room_learning", {}).get(set_id, {}).get("slots", {}).get(source)
     if not learned or learned["id"] != result_id or learned["method"] != fitting.METHOD:
         raise ValueError("Joint result was replaced or removed; learn the zone again")
     return learned
 
 
 def guard(runtime, learned, applied, source=None):
-    group_id = learned["group_id"]
-    groups.learning_group(runtime, group_id)
-    current = jobs._context(runtime, group_id)[1]
+    # Resolve through a member zone: the set's id changes when another zone joins it.
+    if list(groups.learning_set(runtime, _group_ids(learned)[0])[2]) != _group_ids(learned):
+        raise ValueError("The learning set's zones or membership changed; learn again")
+    current = jobs.set_context(runtime, _group_ids(learned))[1]
     expected = deepcopy(learned["signature"])
     for key, thresholds in applied.items():
         expected[key]["thresholds"].update(thresholds)
@@ -89,9 +100,10 @@ def _remember(runtime, learned):
         device["last_applied"] = dict(learned["thresholds"][key])
 
 
-async def apply(runtime, group_id, result_id, source="user", automatic_source=None):
-    learned = selected(runtime, group_id, result_id, source)
-    stored = runtime.data["room_learning"][group_id]
+async def apply(runtime, set_id, result_id, source="user", automatic_source=None):
+    """Apply a learning set's result; ``set_id`` may also be one of its group ids."""
+    learned = selected(runtime, set_id, result_id, source)
+    stored = runtime.data["room_learning"][learned["group_id"]]
     report = {"status": "applying", "result_id": result_id}
     stored["application"] = report
     try:
@@ -114,10 +126,11 @@ async def apply(runtime, group_id, result_id, source="user", automatic_source=No
         runtime._schedule_save()
 
 
-def compare(members, thresholds, start, end):
-    objective = Objective(members, start, end)
-    current = fitting.measure(members, objective.current, start, end)
-    candidate = fitting.measure(members, thresholds, start, end)
+def compare(members, thresholds, start, end, room=None):
+    """Live and candidate room results for one zone on the same recordings."""
+    objective = Objective(members, start, end, room)
+    current = fitting.measure(members, objective.current, start, end, room)
+    candidate = fitting.measure(members, thresholds, start, end, room)
     return {
         "live": {**current["room"], "error_cost": objective.costs(objective.current)[0]},
         "candidate": {**candidate["room"], "error_cost": objective.costs(thresholds)[0]},
@@ -133,20 +146,12 @@ async def automatic(runtime, learned, report, source):
     report.update(status="skipped", source=source, result_id=learned["id"])
     try:
         guard(runtime, learned, {}, source)
-        members, _signature = jobs._context(runtime, learned["group_id"])
-        for key, item in members.items():
-            item["view"] = runtime._history_view(key)
-        end = time()
+        _zones_permit(learned)
         report["status"] = "comparing"
-        async with runtime._comparison_semaphore:
-            patterns = await runtime.hass.async_add_executor_job(
-                compare, members, learned["thresholds"], end - 7 * 86400, end
-            )
-        report["assessment"] = {
-            "patterns": {"live": patterns["live"], source: patterns["candidate"]}
-        }
+        zones = await _compare_zones(runtime, learned)
+        report["assessment"] = _assessment(zones, source)
         guard(runtime, learned, {}, source)
-        _improvement(patterns)
+        _improvement(zones)
         report["status"] = "applying"
         writes = await apply(runtime, learned["group_id"], learned["id"], source, source)
         report.update(
@@ -164,9 +169,73 @@ async def automatic(runtime, learned, report, source):
         runtime._schedule_save()
 
 
-def _improvement(patterns):
-    if any(item.get("score") is None for item in patterns.values()):
+def _zones_permit(learned):
+    """Spec 5: automatic Apply needs every zone scored and none worse after the fit."""
+    found = learned.get("groups", {}).values()
+    if reason := next((item["skipped"] for item in found if "skipped" in item), None):
+        raise ValueError(f"A zone has no usable labels: {reason}")
+    if any(item["cost_after"] > item["cost_before"] + NOISE for item in found):
+        raise ValueError(WORSE)
+
+
+async def _compare_zones(runtime, learned):
+    """Fresh live-versus-candidate results for every zone of the set, on the same recordings."""
+    group_ids = _group_ids(learned)
+    members, _signature = jobs.set_context(runtime, group_ids)
+    jobs.set_views(runtime, members)
+    rooms = {group_id: truth.view(runtime, group_id) for group_id in group_ids}
+    end = time()
+    async with runtime._comparison_semaphore:
+        return await jobs.on_views(
+            runtime,
+            members,
+            _compare_all,
+            members,
+            learned["thresholds"],
+            end - 7 * 86400,
+            end,
+            rooms,
+        )
+
+
+def _compare_all(members, thresholds, start, end, rooms):
+    return {
+        group_id: compare(found, thresholds, start, end, rooms[group_id])
+        for group_id, found in members.items()
+    }
+
+
+def _assessment(zones, source):
+    if len(zones) == 1:
+        patterns = next(iter(zones.values()))
+        return {"patterns": {"live": patterns["live"], source: patterns["candidate"]}}
+    total = _total(zones)
+    return {
+        "patterns": {"live": total["live"], source: total["candidate"]},
+        "zones": {
+            group_id: {"live": item["live"], source: item["candidate"]}
+            for group_id, item in zones.items()
+        },
+    }
+
+
+def _total(zones):
+    """Summed penalties of a linked set; no single room score spans its zones."""
+    return {
+        side: {"error_cost": sum(item[side]["error_cost"] for item in zones.values())}
+        for side in ("live", "candidate")
+    }
+
+
+def _improvement(zones):
+    if any(item.get("score") is None for zone in zones.values() for item in zone.values()):
         raise ValueError("Not enough shared occupied and empty evidence for automatic Apply")
+    if len(zones) > 1 and any(
+        item["candidate"]["error_cost"] > item["live"]["error_cost"] + NOISE
+        for item in zones.values()
+    ):
+        raise ValueError(WORSE)
+    patterns = next(iter(zones.values())) if len(zones) == 1 else _total(zones)
     if not improves(patterns["live"], patterns["candidate"]):
         raise ValueError(
             "Joint recommendation does not reduce the weighted missed-time and false-active penalty"

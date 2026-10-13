@@ -9,7 +9,7 @@ from typing import Any
 
 from homeassistant.core import callback
 
-from ..calibration.fitting import AUTO_WEIGHT
+from ..calibration.settings import DEFAULT_AUTOMATIC_WEIGHT
 from ..const import (
     ABSENT_BIAS_MAX,
     ABSENT_BIAS_MIN,
@@ -22,15 +22,28 @@ from ..const import (
     PRESENT_BIAS_MIN,
 )
 from . import references, sources
-from .inference import HUMAN_REFERENCE, MODEL, confirm_estimate, estimate_presence
+from .inference import (
+    HUMAN_REFERENCE,
+    MODEL,
+    at_rest,
+    classified,
+    confirm_estimate,
+    estimate_presence,
+    hold,
+    reclassify,
+)
 
 
 @callback
 def sample_devices(runtime, _now=None) -> None:
+    from ..rooms import room_sources
+
     _sample_devices(runtime)
+    room_sources.sample_rooms(runtime, time.time())
 
 
 def _classify_auto(runtime, device: dict[str, Any], values: dict[str, float]) -> dict[str, Any]:
+    """Classify the readings ``values``."""
     auto = device.setdefault("auto", {})
     if auto.get("model") != MODEL:
         auto.update(model=MODEL, all_histograms={}, filter={}, calibration={})
@@ -48,14 +61,20 @@ def _classify_auto(runtime, device: dict[str, Any], values: dict[str, float]) ->
         auto.get("calibration", {}),
     )
     _reference_confidence(result, profile, reference, values, cap)
-    # Warm up from observations, then freeze the unlabelled baseline during
-    # likely occupancy so a stationary person does not become background.
+    _observe_baseline(runtime, hist, values, 1, result["presence_probability"])
+    return result
+
+
+def _observe_baseline(runtime, hist, values, count, probability):
+    """Warm up from observations, then freeze the unlabelled baseline during likely occupancy
+    so a stationary person does not become background."""
+    if not count:
+        return
     for key, value in values.items():
         h = hist.setdefault(key, [0] * HISTOGRAM_BINS)
-        if sum(h) < MIN_SAMPLES or result["presence_probability"] < 0.7:
-            h[int(round(value))] += 1
+        if sum(h) < MIN_SAMPLES or probability < 0.7:
+            h[int(round(value))] += count
             runtime._compress_histogram(h)
-    return result
 
 
 def _reference_confidence(result, profile, reference, values, cap):
@@ -134,7 +153,9 @@ def _confirmed_label(runtime, device_id, result, now):
     return old, confirm_estimate(result, state, now)
 
 
-def auto_learning_summary(device: dict[str, Any]) -> dict[str, Any]:
+def auto_learning_summary(
+    device: dict[str, Any], weight: float = DEFAULT_AUTOMATIC_WEIGHT
+) -> dict[str, Any]:
     auto = device.get("auto", {})
     observation_counts = sum(auto.get("observations", {}).values())
     segments = auto.get("segments", [])
@@ -156,17 +177,26 @@ def auto_learning_summary(device: dict[str, Any]) -> dict[str, Any]:
     return {
         "enabled": device.get("recording_enabled", True),
         "profile": references.summary(device.get("reference_profile", {}), time.time()),
+        "stale_since": device.get(references.STALE),
         "observations": observation_counts,
         "observations_by_state": dict(auto.get("observations", {})),
         "segments": len(segments),
         "segments_by_state": dict(counts),
         "last": last,
         "role": "confidence_weighted_training",
-        "weight": AUTO_WEIGHT,
+        "weight": weight,
         "feedback": feedback_summary,
         "calibration": dict(auto.get("calibration", {"present_bias": 0.0, "absent_bias": 0.0})),
-        "note": "Automatic estimates contribute at 20% × confidence. Human labels always take priority; inferred proportions do not block Apply.",
+        "note": _weight_note(weight),
     }
+
+
+def _weight_note(weight):
+    return (
+        f"Automatic evidence weight {weight:g}, scaled by confidence (0 = automatic evidence "
+        "only breaks ties; 1 = automatic evidence counts up to a quarter of the human evidence). "
+        "Automatic Apply still requires an improvement on human labels."
+    )
 
 
 def record_auto_feedback(runtime, device_id: str, correct: bool) -> dict[str, Any]:
@@ -243,12 +273,70 @@ def _sample_devices(runtime):
             continue
         now = time.time()
         runtime._migrate_device_samples(device)
-        result = sources.estimate(runtime, device, device_id, now) or runtime._classify_auto(
-            device, values
-        )
-        runtime._update_auto_state(device_id, device, result, now)
+        _classify_tick(runtime, device_id, device, values, now)
         runtime._record_history_sample(device_id, values, now)
         runtime._schedule_save()
+
+
+def _classify_tick(runtime, device_id, device, values, now) -> None:
+    """Bring the device's last classification up to ``now``: an external source decides when
+    it reports (its model replaces the confirmation state, and with it the cadence); otherwise
+    the radar's readings are classified, or the last result reused."""
+    result = sources.estimate(runtime, device, device_id, now)
+    if result is not None:
+        runtime._update_auto_state(device_id, device, result, now)
+    elif not _reuse(runtime, device_id, device, values, now):
+        _classify_radar(runtime, device_id, device, values, now)
+
+
+def _inputs(device):
+    """What a classification of the radar's readings also depends on, besides the readings:
+    the filter and the reference periods (replaced by rebuilds, resets and corrections),
+    how many periods there are (a new one starts) and the feedback calibration."""
+    auto = device.get("auto", {})
+    periods = device.get("reference_profile", {}).get("periods")
+    return (
+        auto.get("filter"),
+        periods,
+        len(periods or ()),
+        tuple(sorted(auto.get("calibration", {}).items())),
+    )
+
+
+def _cadence(runtime, device_id, device):
+    """The state of the radar's last classification; empty when its inputs have changed."""
+    cadence = runtime._auto_runtime.get(device_id, {}).get("cadence", {})
+    known, now = cadence.get("inputs", ()), _inputs(device)
+    same = known and all(a is b for a, b in zip(known[:2], now[:2], strict=True))
+    return cadence if same and known[2:] == now[2:] else {}
+
+
+def _reuse(runtime, device_id, device, values, now) -> bool:
+    """Reuse the last classification for readings that changed nothing notable (see
+    ``inference.reclassify``): it stays current, and the filter and confirmation, which
+    integrate over elapsed time, see no gap."""
+    cadence = _cadence(runtime, device_id, device)
+    auto = device.get("auto", {})
+    last = auto.get("last_classification")
+    if not cadence or not last or reclassify(cadence, values, now):
+        return False
+    hold(auto["filter"], runtime._auto_runtime[device_id], now)
+    # The reading joins the baseline as read, as when classified, so it stays proportional to time.
+    _observe_baseline(runtime, auto["all_histograms"], values, 1, auto["filter"]["probability"])
+    last["timestamp"] = now
+    return True
+
+
+def _classify_radar(runtime, device_id, device, values, now) -> None:
+    auto = device.setdefault("auto", {})
+    before = auto.get("filter", {}).get("probability", 0.5)
+    result = runtime._classify_auto(device, values)
+    runtime._update_auto_state(device_id, device, result, now)
+    confirmed = auto["last_classification"]["state"]
+    rest = at_rest(before, result, auto["filter"], confirmed, now)
+    cadence = runtime._auto_runtime[device_id].setdefault("cadence", {})
+    classified(cadence, values, now, rest)
+    cadence["inputs"] = _inputs(device)
 
 
 def _read_energies(runtime, device):
