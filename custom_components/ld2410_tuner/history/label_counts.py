@@ -20,7 +20,7 @@ from bisect import bisect_left, bisect_right, insort
 
 from ..calibration.constants import SAMPLE_SECONDS
 from ..const import HISTOGRAM_BINS, HISTORY_KEYS, MAX_HISTOGRAM_COUNT
-from . import daystore, label_lookup, recording, summaries
+from . import daystore, label_lookup, pace, recording, summaries
 from .policy import retention_seconds
 
 STATES = ("present", "not_present")
@@ -226,6 +226,7 @@ def count(history, cutoff, index, live=None):
     counts = Counts(index, cutoff)
     read = label_lookup.index_reader(index)
     for block in history:
+        pace.rest()
         counts.add_block(block, read, cutoff)
     counts.count_live(live, read, cutoff, 1)
     counts.live = live
@@ -290,6 +291,7 @@ def _worker_count(history, cutoff, index, live):
     counts = Counts(index, cutoff)
     read = label_lookup.index_reader(index)
     for block in history:
+        pace.rest()
         summary = block["days"].summary(block["device_id"], block["date"])
         counts.add_block(block, read, cutoff, summary)
     counts.count_live(live, read, cutoff, 1)

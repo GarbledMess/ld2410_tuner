@@ -63,9 +63,8 @@ def test_human_labelled_time_protected_until_human_days(tmp_path):
     }
     rules = {**policy.DEFAULTS, "human_days": 60}
     plan = budget.plan(store, data, START + 31 * policy.DAY, rules)
-    assert plan == [
-        ("arbitrary radar", DATE, [(START, START + 40), (START + 80, START + policy.DAY)])
-    ]
+    # The recording ends at START + 120: the empty rest of the day is not cut (nothing to cut).
+    assert plan == [("arbitrary radar", DATE, [(START, START + 40), (START + 80, START + 120)])]
 
 
 def test_live_day_is_never_rewritten(tmp_path):
@@ -303,3 +302,69 @@ def test_ceiling_planning_encodes_each_changed_day_once_per_cut(tmp_path):
         budget.plan(store, data, START + days * policy.DAY, policy.DEFAULTS, target=target)
     candidates = days * 10
     assert encoded.call_count <= 2 * days + candidates
+
+
+def test_cleanup_settles_after_the_first_run(tmp_path):
+    """A second cleanup must change nothing: ranges already cut are gaps, not new cuts."""
+    store = daystore.DayStore(tmp_path / "history")
+    store.open(now=START)
+    for record in (
+        dayfile.Change(START, {0: 10}),
+        dayfile.Guess(START, "present", 20, 0),  # 100 % confident: kept for 30 days.
+        dayfile.Guess(START + 3600, None, 0, 0),  # Unguessed: thinned after 7 days.
+        dayfile.Change(START + 3601, {0: 30}),
+        dayfile.End(START + 7200),
+    ):
+        store.append("radar", record)
+    store.append("radar", dayfile.Change(START + policy.DAY + 1, {0: 1}))
+    store.flush(now=START + policy.DAY + 2)
+    data = {"devices": {"radar": {}}}
+    now = START + 10 * policy.DAY
+    prepared, changes, _report = budget.prepare_days(store, data, now, clean=True)
+    assert [date for _key, date, _day in changes] == [DATE]
+    store.commit(store.stage(changes))
+    assert store.day("radar", DATE).ends[-1] == START + 3600  # The unguessed hour is gone.
+    _prepared, again, report = budget.prepare_days(store, prepared, now + 3600, clean=True)
+    assert again == []
+    assert report["removed_automatic_seconds"] == 0
+
+
+def test_an_ordinary_save_serialises_the_store_once(tmp_path, monkeypatch):
+    """Saves measured the JSON store three times and copied it again: on a small machine
+    that alone took longer than the recording interval."""
+    from tuner_under_test.history import storage
+
+    store = daystore.DayStore(tmp_path / "history")
+    data = {"devices": {"radar": {"histograms": {"g0_move": {"present": [1.0] * 101}}}}}
+    measured = []
+    real = budget.storage_bytes
+    monkeypatch.setattr(budget, "storage_bytes", lambda d: measured.append(1) or real(d))
+    monkeypatch.setattr(budget, "copy_data", lambda d: (_ for _ in ()).throw(AssertionError))
+    prepared, changes, report, staged = storage._prepare_day_save(store, data, START, False, None)
+    assert (prepared, changes, staged) == (data, [], [])
+    assert report["used_bytes"] == report["before_bytes"] == store.size() + real(data)
+    assert len(measured) == 1
+
+
+def test_hourly_planning_reads_no_unchanged_day(tmp_path, monkeypatch):
+    from tuner_under_test.history import day_results
+
+    day_results.clear()
+    store = daystore.DayStore(tmp_path / "history")
+    store.open(now=START)
+    for record in (
+        dayfile.Change(START, {0: 10}),
+        dayfile.Guess(START, "present", 20, 0),
+        dayfile.Guess(START + 3600, None, 0, 0),
+        dayfile.Change(START + 3601, {0: 30}),
+        dayfile.End(START + 7200),
+    ):
+        store.append("radar", record)
+    store.append("radar", dayfile.Change(START + policy.DAY + 1, {0: 1}))
+    store.flush(now=START + policy.DAY + 2)
+    data = {"devices": {"radar": {}}}
+    now = START + 10 * policy.DAY
+    first = budget.plan(store, data, now, policy.DEFAULTS)
+    store._cache.clear()
+    monkeypatch.setattr(store, "day", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    assert budget.plan(store, data, now + 3600, policy.DEFAULTS) == first

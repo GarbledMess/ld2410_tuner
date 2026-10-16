@@ -8,6 +8,7 @@ from itertools import pairwise
 
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
 from ..const import HISTORY_KEYS
+from ..history import pace
 from . import references
 
 
@@ -272,6 +273,7 @@ def _fold_native(runtime, device_id, label_at, room, automatic, profiles, cutoff
     readers = [read for read in (label_at, room, automatic) if read is not None]
     edges = _native_edges(readers)
     for date in spans._store_days(runtime, device_id, cutoff, end):
+        pace.rest()
         summary = summaries.of(runtime, device_id, date)
         if summary is not None:
             _fold_summary(summary, cutoff, end, edges, (label_at, room, automatic), native)
@@ -304,12 +306,19 @@ def _fold_summary_piece(summary, start, end, found, native):
 def observe_span(
     runtime, device, start, end, values, label=None, confidence=0.0, *, external=False
 ):
-    """Causal native reference evidence; automatic confidence is raw, in0..1.
+    """Causal native reference evidence for one span (see ``observe_spans``)."""
+    observe_spans(runtime, device, [(start, end, values, label, confidence, external)])
 
-    Call only for newly observed physical coverage. This adapter applies the same
-    fixed recording/display trust and quiet veto as observe(), once, after the raw
-    admission floor. Own inferred guesses cannot bootstrap independent references.
-    ``values`` is a complete HISTORY_KEYS vector; missing gates are None.
+
+def observe_spans(runtime, device, items):
+    """Causal native reference evidence; automatic confidence is raw, in 0..1.
+
+    ``items`` are ``(start, end, values, label, confidence, external)`` of newly observed
+    physical coverage, in time order; one fold takes them all, so a batch decodes and encodes
+    the open period once. This adapter applies the same fixed recording/display trust and
+    quiet veto as observe(), once, after the raw admission floor. Own inferred guesses cannot
+    bootstrap independent references. ``values`` is a complete HISTORY_KEYS vector; missing
+    gates are None.
     """
     from ..history.label_lookup import _history_label_reader
     from ..history.spans import Span
@@ -318,11 +327,12 @@ def observe_span(
     # edges; attributed Present enters through ``rebuild_human``, never per poll.
     edges = sorted({*_native_edges([_history_label_reader(device)]), *_room_edges(runtime)})
     fold = None  # Made on the first evidence: no evidence leaves the profile untouched.
-    for low, high in _native_pieces(Span(start, end, tuple(values), "event"), edges):
-        found = _native_piece(runtime, device, low, values, label, confidence, external)
-        if found is not None:
-            fold = fold or references.SpanFold(profile(device))
-            fold.add(low, high, _native_values(values), *found)
+    for start, end, values, label, confidence, external in items:
+        for low, high in _native_pieces(Span(start, end, tuple(values), "event"), edges):
+            found = _native_piece(runtime, device, low, values, label, confidence, external)
+            if found is not None:
+                fold = fold or references.SpanFold(profile(device))
+                fold.add(low, high, _native_values(values), *found)
     if fold is not None:
         fold.close()
 

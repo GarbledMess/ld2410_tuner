@@ -22,7 +22,9 @@ def fixture():
         0,
         86400,
     )
-    store = SimpleNamespace(days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day)
+    store = SimpleNamespace(
+        days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day, live_date=lambda *a: None
+    )
     return SimpleNamespace(_days=store)
 
 
@@ -82,7 +84,9 @@ def test_malformed_selection_is_rejected(window):
 def test_narrow_windows_bisect_large_day_without_replaying_excluded_vectors():
     records = [dayfile.Change(i, {0: i % 100}) for i in range(20000)] + [dayfile.End(20000)]
     day = dayfile.day_from_log(records, None, 0, 86400)
-    store = SimpleNamespace(days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day)
+    store = SimpleNamespace(
+        days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day, live_date=lambda *a: None
+    )
     view = SimpleNamespace(
         _days=store, _learning_windows={"a": [(50.25, 52.5), (19000.5, 19001.5)]}
     )
@@ -107,7 +111,9 @@ def test_carry_is_clipped_to_selected_context_without_filling_gap():
         [dayfile.End(5), dayfile.Change(12, {0: 8}), dayfile.End(20)], carry, 0, 86400
     )
     view = SimpleNamespace(
-        _days=SimpleNamespace(days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day),
+        _days=SimpleNamespace(
+            days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day, live_date=lambda *a: None
+        ),
         _learning_windows={"a": [(3, 14)]},
     )
     found = list(spans.events(view, "a"))
@@ -127,7 +133,7 @@ def test_day_loading_skips_dates_outside_selected_windows():
         return days[date]
 
     view = SimpleNamespace(
-        _days=SimpleNamespace(days=lambda key: list(days), day=load),
+        _days=SimpleNamespace(days=lambda key: list(days), day=load, live_date=lambda *a: None),
         _learning_windows={"a": [(86405, 86415)]},
     )
     found = list(spans.events(view, "a"))
@@ -174,7 +180,9 @@ def test_column_bounds_honor_all_snapshot_limits_without_vectors():
 def test_column_bounds_skip_zero_duration_boundary_rows():
     day = SimpleNamespace(times=[0, 5, 10, 15], ends=[0, 10, 15, 15])
     view = SimpleNamespace(
-        _days=SimpleNamespace(days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day)
+        _days=SimpleNamespace(
+            days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day, live_date=lambda *a: None
+        )
     )
     assert spans.bounds(view, "a", 0, 20) == (5, 15)
     assert spans.bounds(view, "a", 10, 10) == (0, 0)

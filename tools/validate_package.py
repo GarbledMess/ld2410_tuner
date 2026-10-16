@@ -64,6 +64,7 @@ RUNTIME_FILES = (
     "history/recording.py",
     "history/dayfile.py",
     "history/day_results.py",
+    "history/pace.py",
     "history/daystore.py",
     "history/ingest.py",
     "history/convert.py",

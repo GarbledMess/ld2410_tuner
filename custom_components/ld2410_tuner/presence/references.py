@@ -157,20 +157,40 @@ def freshness(age):
     return 0.8 * 2 ** (-days / 7) + 0.2 * 2 ** (-days / 60)
 
 
+# Freshness halves over days: periods are re-weighed every 15 minutes (about 0.1 % of a
+# weight), not every minute, and each radar at its own moment, so the radars' references are
+# never all re-folded on the same tick of the event loop.
+FRESHNESS_STEP = 900
+
+
 def distributions(profile, now):
-    signature = tuple(
+    signature = _signature(profile)
+    return _distributions(signature, _moment(signature, now))
+
+
+def moment(profile, now):
+    """The time ``profile``'s periods are weighed at for a reading at ``now``."""
+    return _moment(_signature(profile), now)
+
+
+def _signature(profile):
+    return tuple(
         (p["source"], p["state"], p["end"], p["confidence"], p["data"])
         for p in profile.get("periods", [])
     )
-    return _distributions(signature, int(now // 60))
+
+
+def _moment(signature, now):
+    phase = zlib.crc32(repr(signature[:1]).encode()) % FRESHNESS_STEP  # Per radar.
+    return floor((now + phase) / FRESHNESS_STEP) * FRESHNESS_STEP - phase
 
 
 @lru_cache(maxsize=64)
-def _distributions(signature, minute):
-    now = minute * 60
+def _distributions(signature, moment):
+    now = moment
     pools, latest, available = {}, {}, {}
     for source in SOURCE_WEIGHT:
-        pools[source], seen, counted = _pool(tuple(e for e in signature if e[0] == source), minute)
+        pools[source], seen, counted = _pool(tuple(e for e in signature if e[0] == source), moment)
         latest.update(seen)  # Keyed by source: disjoint.
         for slot, total in counted.items():
             available[slot] = available.get(slot, 0) + total
@@ -186,27 +206,27 @@ def _distributions(signature, minute):
     return reference, _confidence_cap(periods, now)
 
 
-def _pool(entries, minute):
+def _pool(entries, moment):
     """One source's histograms ``(pool, latest, available)`` from its periods, oldest first.
     Only the newest period of a source grows (every sample), so the rest are folded once
     (``_folded``) and the newest is added to a copy of that: the same additions in the same
     order, hence identical sums."""
     if not entries:
         return {}, {}, {}
-    pool, latest, available = _folded(entries[:-1], minute)
+    pool, latest, available = _folded(entries[:-1], moment)
     pool = {
         key: {state: list(bins) for state, bins in states.items()} for key, states in pool.items()
     }
     latest, available = dict(latest), dict(available)
-    _fold(pool, latest, available, entries[-1], minute * 60)
+    _fold(pool, latest, available, entries[-1], moment)
     return pool, latest, available
 
 
 @lru_cache(maxsize=32)
-def _folded(entries, minute):
+def _folded(entries, moment):
     pool, latest, available = {}, {}, {}
     for entry in entries:
-        _fold(pool, latest, available, entry, minute * 60)
+        _fold(pool, latest, available, entry, moment)
     return pool, latest, available
 
 

@@ -33,12 +33,33 @@ def _recording_device(runtime, device_id):
     return device
 
 
+CLEAN_EVERY = 86_400  # Seconds between age thinnings: by age, a day late loses nothing.
+
+
 @callback
 def _enforce_history_retention(runtime, *_args) -> None:
+    """Hourly (and at startup): thin history when the last cleanup is a day old, else only
+    keep label counts ready. Runs in the background; never every hour or every restart."""
     if runtime._cleanup_task is None or runtime._cleanup_task.done():
         runtime._cleanup_task = runtime.hass.async_create_background_task(
-            runtime.async_clean_history(), "ld2410_tuner history cleanup"
+            _retain(runtime), "ld2410_tuner history cleanup"
         )
+
+
+async def _retain(runtime):
+    if _cleanup_due(runtime, time.time()):
+        await runtime.async_clean_history()
+        return
+    for device_id in list(runtime.data["devices"]):
+        await label_counts.ensure(runtime, device_id)
+
+
+def _cleanup_due(runtime, now):
+    """Whether any radar's last cleanup (``history_cleanup``) is missing or a day old."""
+    return any(
+        now - device.get("history_cleanup", {}).get("timestamp", -CLEAN_EVERY) >= CLEAN_EVERY
+        for device in runtime.data["devices"].values()
+    )
 
 
 async def async_clean_history(runtime, *, persist=True):

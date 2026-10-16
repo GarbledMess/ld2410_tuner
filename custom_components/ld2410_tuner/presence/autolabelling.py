@@ -279,7 +279,8 @@ def _sample_devices(runtime):
         now = time.time()
         _classify_tick(runtime, device_id, device, values, now)
         runtime._record_history_sample(device_id, values, now)
-        runtime._schedule_save()
+        runtime._schedule_flush()
+        runtime._schedule_state_save(now)
 
 
 def _classify_tick(runtime, device_id, device, values, now) -> None:

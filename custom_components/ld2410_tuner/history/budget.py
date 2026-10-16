@@ -4,7 +4,7 @@ import json
 from copy import deepcopy
 
 from ..const import STORAGE_KEY, STORAGE_MINOR_VERSION, STORAGE_VERSION
-from . import guesses
+from . import guesses, pace
 from .label_lookup import _history_label_reader
 from .policy import DAY, MIB, settings
 
@@ -38,30 +38,73 @@ def _finished_dates(store, key):
     return [date for date in store.days(key) if date != live]
 
 
-def _finished_days(store, data):
-    for key, device in data.get("devices", {}).items():
-        for date in _finished_dates(store, key):
-            day = store.day(key, date)
-            if day is not None:
-                yield key, device, date, day
-
-
 def plan(store, data, now, policy, target=None):
-    """Plan finished-day range cuts; live days are immutable to maintenance."""
+    """Plan finished-day range cuts; live days are immutable to maintenance. Each day's
+    ranges are kept until the day or its labels change (``_retention``), so an hourly plan
+    reads no unchanged day."""
     from .cleanup import _cut_union
 
     cuts = {}
-    for key, device, date, day in _finished_days(store, data):
-        ranges = []
-        for low, high, human, confidence in _day_ranges(day, device):
-            cutoff = _cutoff(now, human, confidence, policy)
-            if low < cutoff:
-                ranges.append((low, min(high, cutoff)))
-        if ranges:
-            cuts[key, date] = _cut_union(ranges)
+    for key, date, _bounds, ranges in _finished_retention(store, data):
+        expired = _expired(ranges, now, policy)
+        if expired:
+            cuts[key, date] = _cut_union(expired)
     if target is not None:
         _ceiling_plan(store, data, cuts, target)
     return [(key, date, ranges) for (key, date), ranges in cuts.items()]
+
+
+def _finished_retention(store, data):
+    """``(key, date, bounds, ranges)`` of every finished day, from ``_retention``."""
+    for key, device in data.get("devices", {}).items():
+        for date in _finished_dates(store, key):
+            pace.rest()
+            yield key, date, *_retention(store, key, date, device)
+
+
+def _expired(ranges, now, policy):
+    """The parts of ``ranges`` older than their cutoff that still hold something: time
+    already cut is a gap, and cutting it again would rewrite the day for nothing."""
+    found = []
+    for low, high, human, confidence, earliest in ranges:
+        cutoff = min(high, _cutoff(now, human, confidence, policy))
+        if low < cutoff and earliest is not None and earliest < cutoff:
+            found.append((low, cutoff))
+    return found
+
+
+def _retention(store, key, date, device):
+    """The finished ``date``'s recorded bounds and its ranges ``(low, high, human, confidence,
+    earliest)``, ``earliest`` being the first time a reading or guess is held in the range
+    (None: nothing left there). Kept while the day and its labels are unchanged."""
+    from . import day_results, daystore
+
+    read = _history_label_reader(device)
+    labels = day_results.fingerprint(read, *daystore.bounds(date))
+
+    def derive():
+        day = store.day(key, date)
+        if day is None:
+            return None, ()
+        bounds = (day.times[0], day.ends[-1]) if len(day.times) else None
+        return bounds, tuple(_held_ranges(day, device))
+
+    return day_results.remembered(store, key, date, "retention", (labels,), derive)
+
+
+def _held_ranges(day, device):
+    from bisect import bisect_left, bisect_right
+
+    guess_ends = [run[1] for run in day.guesses]
+    for low, high, human, confidence in _day_ranges(day, device):
+        held = []
+        first = bisect_right(day.ends, low)
+        if first < bisect_left(day.times, high):
+            held.append(max(day.times[first], low))
+        index = bisect_right(guess_ends, low)
+        if index < len(day.guesses) and day.guesses[index][0] < high:
+            held.append(max(day.guesses[index][0], low))
+        yield low, high, human, confidence, min(held, default=None)
 
 
 def _cutoff(now, human, confidence, policy):
@@ -88,11 +131,12 @@ def _day_ranges(day, device):
             *(t for run in day.guesses for t in run[:2] if day.start < t < day.end),
         }
     )
-    for low, high in zip(edges, edges[1:], strict=False):
+    pieces = list(zip(edges, edges[1:], strict=False))
+    confidences = runs.percents([low for low, _high in pieces])  # One walk over the runs.
+    for (low, high), confidence in zip(pieces, confidences, strict=True):
         label = read(low)
         human = label in ("present", "not_present")
-        confidence = next(runs.percents([low])) if label != "unknown" else 0
-        yield low, high, human, confidence
+        yield low, high, human, confidence if label != "unknown" else 0
 
 
 class _Planned:
@@ -109,6 +153,7 @@ class _Planned:
         from . import dayfile
         from .cleanup import cut
 
+        pace.rest()
         day = self.store.day(*token)
         if token not in self.original:
             self.original[token] = len(dayfile.encode_day(day))
@@ -126,11 +171,11 @@ def _planned_bytes(store, data, cuts):
 
 
 def _day_candidates(store, data):
-    for key, device, date, day in _finished_days(store, data):
-        if not len(day.times):
+    for key, date, bounds, ranges in _finished_retention(store, data):
+        if bounds is None:
             continue
-        for low, high, human, confidence in _day_ranges(day, device):
-            low, high = max(low, day.times[0]), min(high, day.ends[-1])
+        for low, high, human, confidence, _earliest in ranges:
+            low, high = max(low, bounds[0]), min(high, bounds[1])
             if high > low:
                 yield human, confidence, low, key, date, high
 
@@ -153,6 +198,7 @@ def _replacement_days(store, data, cuts):
 
     changes, automatic, human = [], 0.0, 0.0
     for (key, date), ranges in cuts.items():
+        pace.rest()
         original = store.day(key, date)
         updated = cut(original, ranges)
         old = _day_seconds(original, data["devices"][key])
@@ -195,23 +241,35 @@ def _expire_labels(data, cutoff):
             device["history_labels"] = expired_labels(device["history_labels"], cutoff)
 
 
-def prepare_days(store, data, now, clean=False, target=None):
-    """Prepare immutable replacements and a seconds report; mutate no files or live state."""
+def prepare_days(store, data, now, clean=False, target=None, before=None):
+    """Prepare immutable replacements and a seconds report; mutate no files or live state.
+    ``before`` is the current total size when the caller measured it already. A save that
+    cleans nothing and fits returns ``data`` as it is (callers pass their own snapshot)."""
     ceiling = int(settings(data)["max_mib"] * MIB)
     target = ceiling if target is None else min(ceiling, target)
-    before = store.size() + storage_bytes(data)
+    before = store.size() + storage_bytes(data) if before is None else before
+    if not clean and before <= target:
+        return data, [], _report(before, before, ceiling, now, 0.0, 0.0)
     if clean:
-        data = copy_data(data)
-        for device in data.get("devices", {}).values():
-            device["history_cleanup"] = {"history_basis": "observed_seconds", "timestamp": now}
-    planned = (
-        plan(store, data, now, settings(data), target=target) if clean or before > target else []
-    )
+        data = _marked_clean(data, now)
+    # Cuts only shrink the store: the ceiling needs planning only when it is exceeded already.
+    planned = plan(store, data, now, settings(data), target=target if before > target else None)
     cuts = {(key, date): ranges for key, date, ranges in planned}
     prepared, changes, automatic, human, used = _bounded_days(store, data, cuts, now, target)
     if clean:  # After planning: the removed time is reported under the labels it had.
         _expire_labels(prepared, now - settings(data)["human_days"] * DAY)
-    report = {
+    return prepared, changes, _report(before, used, ceiling, now, automatic, human)
+
+
+def _marked_clean(data, now):
+    data = copy_data(data)
+    for device in data.get("devices", {}).values():
+        device["history_cleanup"] = {"history_basis": "observed_seconds", "timestamp": now}
+    return data
+
+
+def _report(before, used, ceiling, now, automatic, human):
+    return {
         "before_bytes": before,
         "used_bytes": used,
         "limit_bytes": ceiling,
@@ -222,7 +280,6 @@ def prepare_days(store, data, now, clean=False, target=None):
         "removed_human_seconds": human,
         "history_basis": "observed_seconds",
     }
-    return prepared, changes, report
 
 
 def _day_seconds(day, device):
@@ -247,6 +304,7 @@ def _day_histograms(store, key, device, replacements, now, cutoff):
     raw = label_counts.empty()
     read = _history_label_reader(device)
     for date in store.days(key):
+        pace.rest()
         day = replacements.get((key, date))
         if day is None:
             day = store.day(key, date, until=now)

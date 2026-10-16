@@ -160,8 +160,9 @@ async def _shutdown(runtime):
         task.cancel()
     runtime._timeout_tasks.clear()
     await rebuilds.stop(runtime)  # Drop queued reference rebuilds; stale marks are saved.
-    if runtime._save_task:
-        runtime._save_task.cancel()
-        await asyncio.gather(runtime._save_task, return_exceptions=True)
+    for task in (runtime._save_task, runtime._flush_task):
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
     ingest.stop(runtime, time.time())  # Nothing is observed while stopped.
     await runtime.async_save()

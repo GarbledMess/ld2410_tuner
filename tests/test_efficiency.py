@@ -208,7 +208,7 @@ def old_distributions(profile, now):
     from tuner_under_test.presence import references as refs
 
     periods = profile.get("periods", [])
-    now = int(now // 60) * 60
+    now = refs.moment(profile, now)  # Periods are re-weighed every FRESHNESS_STEP, per radar.
     pools = {source: {} for source in refs.SOURCE_WEIGHT}
     latest, available = {}, {}
     for period in periods:

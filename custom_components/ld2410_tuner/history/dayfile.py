@@ -342,9 +342,15 @@ class DayBuilder:
         default ``until``). The builder stays open."""
         recorded = until if recorded is None else recorded
         count = bisect_right(self.times, until)
-        ends = array("d", (min(end, until) for end in self.ends[:count]))
-        if count and count == len(self.times) and self.current is not None:
-            ends[-1] = until
+        # A row ends where the next begins (or earlier), so only the last row up to ``until``
+        # can reach past it: one copy, no step per row (the live day is viewed every poll).
+        ends = self.ends[:count]
+        if count:
+            ends[-1] = (
+                until
+                if count == len(self.times) and self.current is not None
+                else min(ends[-1], until)
+            )
         runs = [
             (start, min(end, until), *rest)
             for start, end, *rest in _joined(

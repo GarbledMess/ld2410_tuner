@@ -229,7 +229,11 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
         self.hass.http = types.SimpleNamespace(async_register_static_paths=AsyncMock())
         self.hass.async_create_background_task = lambda target, name: asyncio.create_task(target)
         store = types.SimpleNamespace(
-            async_load=AsyncMock(return_value={"devices": {}}), async_save=AsyncMock()
+            # A converted radar never cleaned yet: its first cleanup is due.
+            async_load=AsyncMock(
+                return_value={"devices": {"radar": {"reference_profile": {"version": 1}}}}
+            ),
+            async_save=AsyncMock(),
         )
         started, release = asyncio.Event(), asyncio.Event()
 
@@ -254,6 +258,40 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             await runtime._cleanup_task
             await mod.async_unload_entry(self.hass, None)
+
+    def test_recording_appends_day_logs_and_saves_state_only_every_few_minutes(self):
+        """Every 2 s tick asked for a full JSON save (a deep copy on the event loop and two
+        serialisations of the store), saturating small machines. History needs only its day
+        log appended; the recording state is saved every few minutes."""
+        coordinator = sys.modules["tuner_under_test.runtime.coordinator"]
+        self.add_entity("sensor.radar_g0_move_energy")
+        self.registry.async_get = self.registry.entities.get
+        self.runtime.refresh_devices(self.registry)
+        saves, flushes = Mock(), Mock()
+        self.runtime._schedule_save, self.runtime._schedule_flush = saves, flushes
+        start = self.now
+        for tick in range(300):  # Ten minutes of 2-second ticks.
+            self.sample(start + 2 * tick, value=tick % 30)
+        self.assertEqual(flushes.call_count, 300)
+        self.assertEqual(saves.call_count, 598 // coordinator.STATE_SAVE_SECONDS)
+
+    async def test_a_scheduled_flush_appends_recorded_changes_to_the_day_log(self):
+        from tuner_under_test.history import dayfile
+        from tuner_under_test.history.daystore import DayStore
+
+        coordinator = sys.modules["tuner_under_test.runtime.coordinator"]
+        del self.runtime._schedule_flush  # The harness stubs it; this is the real one.
+        self.hass.async_create_background_task = lambda target, name: asyncio.create_task(target)
+        self.hass.async_add_executor_job = lambda fn, *args: asyncio.to_thread(fn, *args)
+        days = self.runtime._days = DayStore(Path(self.hass.config.path("history-flush")))
+        days.append("a", dayfile.Change(self.now, {0: 12}))
+        with patch.object(coordinator, "STORE_DELAY", 0):
+            self.runtime._schedule_flush()
+            first = self.runtime._flush_task
+            self.runtime._schedule_flush()  # One pending flush is shared.
+            self.assertIs(self.runtime._flush_task, first)
+            await first
+        self.assertTrue(list(days.folder("a").glob("*.log")))
 
     async def test_config_flow_single_instance_and_explicit_creation(self):
         class Flow:

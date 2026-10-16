@@ -270,6 +270,12 @@ class DayStore:
             live = self._live.get(device_id)
             return None if live is None else live.builder.run
 
+    def live_date(self, device_id):
+        """The date being recorded (None: nothing recorded since startup)."""
+        with self._lock:
+            live = self._live.get(device_id)
+            return None if live is None else live.date
+
     def last(self, device_id):
         """The time of the newest record (None: nothing recorded since startup)."""
         with self._lock:

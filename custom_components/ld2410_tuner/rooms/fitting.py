@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 from ..calibration.settings import DEFAULT_AUTOMATIC_WEIGHT
+from ..history import pace
 from . import assessment
 from .objective import LinkedObjective, Objective
 
@@ -110,6 +111,7 @@ class _Gate:
                 # Every candidate between two alike ones is alike: only its tail differs.
                 self.keep(index, (*self.scores[low][:-TAIL], *self.tails[index]))
             else:
+                pace.rest()
                 self.keep(index, self.objective.rank(self.at[index]))
                 self.replayed.add(index)
         return self.holder if self.holder >= 0 else None

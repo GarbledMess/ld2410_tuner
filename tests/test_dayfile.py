@@ -171,3 +171,25 @@ def test_a_guess_span_reaching_past_its_own_time_is_rejected():
         dayfile.encode_records(
             [dayfile.GuessSpan(START + 10, START + 5, START + 11, "present", 18, 2)], START
         )
+
+
+def test_live_views_clip_only_what_reaches_past_their_time():
+    """A view at any time equals clipping every row's end, without a step per row."""
+    import random
+
+    rng = random.Random(41)
+    builder = dayfile.DayBuilder(0, 86400)
+    t = 0.0
+    for _ in range(600):
+        t += rng.choice((0.5, 1, 3, 7))
+        if rng.random() < 0.08:
+            builder.add(dayfile.End(t))
+        else:
+            builder.add(dayfile.Change(t, {rng.randrange(18): rng.choice((None, 3, 40, 99))}))
+        until = t + rng.choice((0, 0.25, 2))
+        view = builder.view(until)
+        count = len(view.times)
+        expected = [min(end, until) for end in builder.ends[:count]]
+        if count and count == len(builder.times) and builder.current is not None:
+            expected[-1] = until
+        assert list(view.ends) == expected

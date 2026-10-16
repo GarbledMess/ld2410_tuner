@@ -308,8 +308,8 @@ class ReferenceRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def test_source_reconfiguration_drops_entity_models_and_clear_drops_all_models(self):
         self.configure()
         self.entity("binary_sensor.camera_person", "on")
-        self.sample(self.now, 70)
-        self.sample(self.now + 6, 70)
+        for i in range(12):  # Live reference evidence is folded once a minute.
+            self.sample(self.now + i * 6, 70)
         assert self.device["reference_profile"]["periods"]
         self.configure(negative=True)
         assert not self.device["reference_profile"]["periods"]

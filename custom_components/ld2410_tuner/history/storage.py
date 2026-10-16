@@ -62,6 +62,9 @@ async def async_save(runtime):
 
 
 async def _persist(runtime, *, values=None, clean=False, target=None, persist=True):
+    from . import live
+
+    live.settle(runtime)  # Saved references include the evidence waiting for its batch.
     async with runtime._storage_lock:
         if runtime._days is not None:
             await runtime.hass.async_add_executor_job(runtime._days.flush)
@@ -88,17 +91,17 @@ async def _prepare_and_save(runtime, values, clean, target, persist=True):
 def _prepare_day_save(store, candidate, now, clean, target):
     ceiling = int(policy.settings(candidate)["max_mib"] * policy.MIB)
     limit = ceiling if target is None else min(ceiling, target)
-    if store.size() + budget.storage_bytes(candidate) > limit:
+    json_bytes = budget.storage_bytes(candidate)  # Measured once per save: it is the costly part.
+    if store.size() + json_bytes > limit:
         summary_cache.prune(store.root, max_bytes=0)
-        if (
-            summary_cache.disk_bytes(store.root)
-            and store.size() + budget.storage_bytes(candidate) > limit
-        ):
+        if summary_cache.disk_bytes(store.root) and store.size() + json_bytes > limit:
             raise budget.BudgetExceeded(
                 "Optional history indexes could not be removed. Retry when their files are "
                 "available; recorded history was not trimmed to make room for the indexes."
             )
-    prepared, changes, report = budget.prepare_days(store, candidate, now, clean, target)
+    prepared, changes, report = budget.prepare_days(
+        store, candidate, now, clean, target, before=store.size() + json_bytes
+    )
     return prepared, changes, report, store.stage(changes)
 
 

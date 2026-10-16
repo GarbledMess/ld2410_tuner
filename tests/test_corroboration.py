@@ -21,7 +21,7 @@ import room_scenes
 import test_tuner as harness
 from tuner_under_test.calibration import constants
 from tuner_under_test.const import HISTORY_KEYS
-from tuner_under_test.history import guesses, trust
+from tuner_under_test.history import guesses, live, trust
 from tuner_under_test.rooms import truth
 
 references = sys.modules["tuner_under_test.presence.references"]
@@ -467,6 +467,7 @@ class LiveRecordingTests(unittest.IsolatedAsyncioTestCase):
     def test_a_loud_present_guess_from_a_fresh_reference_does(self):
         for index in range(20):
             self.record(index * 6, "present", 0.99, 40)
+        live.settle(self.runtime)  # Apply the evidence waiting for its batch.
         # 20 polls 6 s apart observe 114 s: 19 six-second units.
         self.assertAlmostEqual(sum(p["count"] for p in self.radar_periods("present")), 19, places=3)
 
@@ -478,6 +479,7 @@ class LiveRecordingTests(unittest.IsolatedAsyncioTestCase):
     def test_a_not_present_guess_trains_at_its_calibrated_confidence(self):
         for index in range(20):
             self.record(index * 6, "not_present", 0.65, 5)
+        live.settle(self.runtime)  # Apply the evidence waiting for its batch.
         periods = self.radar_periods("not_present")
         self.assertAlmostEqual(sum(p["count"] for p in periods), 19, places=3)  # 114 s observed.
         self.assertAlmostEqual(periods[0]["confidence"], constants.TRUST_NOT_PRESENT)

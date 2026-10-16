@@ -469,3 +469,22 @@ def test_startup_removes_interrupted_root_day_publication_only(tmp_path):
     assert not abandoned.exists()
     assert staged_trim.read_bytes() == b"unrelated staged trim"
     assert recovered.days("radar") == []
+
+
+def test_a_window_inside_the_live_day_needs_no_folder_listing(tmp_path, monkeypatch):
+    """The poll asks for the last few seconds every tick: blocking disk I/O on the event loop."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from tuner_under_test.history import spans
+
+    store = daystore.DayStore(tmp_path / "history")
+    store.open(now=START)
+    store.append("radar", dayfile.Change(START + 10, {0: 5}))
+    store.append("radar", dayfile.Change(START + 86_400 + 10, {0: 6}))
+    store.flush(now=START + 86_400 + 15)  # Yesterday finished: the folder has files.
+    view = SimpleNamespace(_days=store)
+    listed = spans._store_days(view, "radar", START + 86_400 + 20, START + 86_400 + 25)
+    monkeypatch.setattr(Path, "iterdir", lambda self: (_ for _ in ()).throw(AssertionError))
+    assert spans._store_days(view, "radar", START + 86_400 + 20, START + 86_400 + 25) == listed
+    assert listed == [daystore.date_of(START + 86_400)]

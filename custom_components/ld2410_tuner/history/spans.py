@@ -27,6 +27,9 @@ def _store_days(view, device_id, start, end):
     days = getattr(view, "_days", None)
     if days is None:
         return []
+    live = days.live_date(device_id)
+    if live is not None and daystore.bounds(live)[0] <= start and end <= daystore.bounds(live)[1]:
+        return [live]  # Inside the live day (the poll's last seconds): no folder listing.
     return [
         date
         for date in days.days(device_id)

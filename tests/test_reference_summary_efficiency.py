@@ -25,7 +25,9 @@ def fixture():
         dayfile.End(1810),
     ]
     day = dayfile.day_from_log(events, None, 0, 86400)
-    store = SimpleNamespace(days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day)
+    store = SimpleNamespace(
+        days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day, live_date=lambda *a: None
+    )
     view = SimpleNamespace(_days=store, _history_until=1810)
     own = index_reader(
         ([1798, 1799.75, 1800.25, 1803.5, 1806], ["present", "unknown", None, "not_present", None])
@@ -139,7 +141,9 @@ def test_irregular_millisecond_histograms_have_bounded_rounding_only():
     ] + [dayfile.End(20)]
     day = dayfile.day_from_log(events, None, 0, 86400)
     view = SimpleNamespace(
-        _days=SimpleNamespace(days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day),
+        _days=SimpleNamespace(
+            days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day, live_date=lambda *a: None
+        ),
         _history_until=20,
     )
     own = index_reader(([0], ["present"]))

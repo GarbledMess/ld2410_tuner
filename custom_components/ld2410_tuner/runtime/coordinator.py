@@ -26,6 +26,8 @@ from ..rooms import learning as room_learning
 from ..rooms import room_labels, room_sources
 from . import discovery, schedule
 
+STATE_SAVE_SECONDS = 300  # Recording state saves; history goes to the day logs.
+
 
 class TunerRuntime:
     """Own state and expose a stable API; feature modules receive it explicitly."""
@@ -93,6 +95,32 @@ class TunerRuntime:
         self._storage_lock = asyncio.Lock()
         self._storage_status = {}
         self._save_dirty = False
+        self._flush_task = None
+        self._state_saved = None
+
+    def _schedule_flush(self) -> None:
+        """Append recorded changes to the day logs shortly (executor): recording needs no JSON
+        save, only its log appended."""
+        if self._flush_task and not self._flush_task.done():
+            return
+        self._flush_task = self.hass.async_create_background_task(
+            self._delayed_flush(), "ld2410_tuner history flush"
+        )
+
+    async def _delayed_flush(self) -> None:
+        await asyncio.sleep(STORE_DELAY)
+        if self._days is not None:
+            async with self._storage_lock:
+                await self.hass.async_add_executor_job(self._days.flush)
+
+    def _schedule_state_save(self, now) -> None:
+        """Recording state in the JSON store (classifications, live histograms) is saved at
+        most every ``STATE_SAVE_SECONDS``: it is rebuilt from history after a crash."""
+        if self._state_saved is None:
+            self._state_saved = now
+        elif now - self._state_saved >= STATE_SAVE_SECONDS:
+            self._state_saved = now
+            self._schedule_save()
 
     def _schedule_save(self) -> None:
         self._save_dirty = True

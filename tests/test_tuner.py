@@ -895,6 +895,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             {"devices": {"a": self.device}},
         )
         self.runtime._schedule_save = lambda: None
+        self.runtime._schedule_flush = lambda: None  # Day-log appends: the same boundary.
         self.now = time.time()
         from tuner_under_test.history.daystore import DayStore
 

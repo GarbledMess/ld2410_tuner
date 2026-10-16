@@ -199,3 +199,66 @@ class AcquisitionTests(unittest.IsolatedAsyncioTestCase):
         assert len(day.times) == 4000
         assert sum(e - t for t, e in zip(day.times, day.ends, strict=True)) == 4000
         assert day.vector(3999)[0] == 99.5
+
+
+class ReferenceBatchTests(AcquisitionTests):
+    def test_live_reference_evidence_is_applied_once_a_minute(self):
+        """Folding every 5 s re-encoded the open period and invalidated the classifier's
+        reference pool each time; references are long-term, so a minute's batch is enough."""
+        from tuner_under_test.history import live
+
+        self.device["history_labels"] = [{"start": START, "end": START + 600, "state": "present"}]
+        for offset in range(0, 52, 2):
+            self.tick(offset, 30 + offset % 7)
+        before = repr(self.device.get("reference_profile", {}).get("periods"))
+        self.tick(52, 31)
+        self.tick(56, 32)
+        assert repr(self.device.get("reference_profile", {}).get("periods")) == before
+        for offset in range(58, 70, 2):
+            self.tick(offset, 33)
+        periods = self.device["reference_profile"]["periods"]
+        human = [p for p in periods if p["source"] == "human"]
+        assert human and human[-1]["end"] - human[0]["start"] >= live.REFERENCE_BATCH_SECONDS - 6
+
+
+def test_radars_apply_their_reference_batches_on_different_ticks():
+    """All radars started together would fold a minute of evidence on the same tick: one tick
+    of the event loop then carried every radar's work."""
+    from types import SimpleNamespace
+
+    from tuner_under_test.history import live
+
+    applied = []
+    runtime = SimpleNamespace(_history_runtime={}, data={"devices": {}})
+    pending = {f"r{i}": [(SimpleNamespace(start=0.0), ("present", 90, 1))] for i in range(4)}
+    for key, spans in pending.items():
+        runtime._history_runtime[key] = {"reference_spans": list(spans)}
+        runtime.data["devices"][key] = {}
+    with patch.object(live, "_references", lambda rt, device, pending: applied.append(device)):
+        ticks = []
+        for now in (61.0, 63.0, 65.0, 67.0):
+            before = len(applied)
+            for key in pending:
+                live._apply_batch(runtime, key, runtime.data["devices"][key], now)
+            ticks.append(len(applied) - before)
+    assert ticks == [1, 1, 1, 1]
+
+
+class ReferenceBatchFoldTests(AcquisitionTests):
+    def test_a_batch_is_folded_once_with_the_same_result_as_one_by_one(self):
+        from copy import deepcopy
+
+        from tuner_under_test.presence import reference_training, references
+
+        self.device["history_labels"] = [{"start": START, "end": START + 600, "state": "present"}]
+        values = [30 if key == "g0_move" else None for key in HISTORY_KEYS]
+        items = [(START + 5 * i, START + 5 * i + 5, values, None, 0.0, False) for i in range(40)]
+        single = deepcopy(self.device)
+        for item in items:
+            reference_training.observe_span(self.runtime, single, *item[:3])
+        with patch.object(references, "encode", wraps=references.encode) as encoded:
+            reference_training.observe_spans(self.runtime, self.device, items)
+        assert self.device["reference_profile"] == single["reference_profile"]
+        # One encode of the batch's evidence (a new period also starts as an encoded {}).
+        assert [call for call in encoded.call_args_list if call.args[0]] != []
+        assert len([call for call in encoded.call_args_list if call.args[0]]) == 1

@@ -17,7 +17,10 @@ def fixture(count=4000, step=1):
     records.append(dayfile.End(count * step))
     day = dayfile.day_from_log(records, None, 0, 86400)
     store = SimpleNamespace(
-        days=lambda key: [date(1970, 1, 1)], day=lambda *a, **kw: day, identity=lambda *a: None
+        days=lambda key: [date(1970, 1, 1)],
+        day=lambda *a, **kw: day,
+        identity=lambda *a: None,
+        live_date=lambda *a: None,
     )
     view = SimpleNamespace(_days=store, _history_until=count * step)
     read = index_reader(
@@ -207,7 +210,12 @@ def test_planning_does_not_retain_all_decoded_days_outside_store_cache():
         return current
 
     view = SimpleNamespace(
-        _days=SimpleNamespace(days=lambda key: list(encoded), day=load, identity=lambda *a: None),
+        _days=SimpleNamespace(
+            days=lambda key: list(encoded),
+            day=load,
+            identity=lambda *a: None,
+            live_date=lambda *a: None,
+        ),
         _history_until=4 * 86400,
     )
     read = index_reader(([0], [("present", "human")]))

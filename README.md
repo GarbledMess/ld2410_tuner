@@ -813,12 +813,20 @@ integration provides the entities).
 
 ## Automatic history maintenance
 
-At startup and hourly, the integration applies the retention policy below in Home
-Assistant's executor. Thinning removes whole **time ranges** from finished days (the cut
+Once a day (checked hourly and at startup; the time of the last cleanup is saved, so a
+restart does not repeat it), the integration applies the retention policy below in the
+background. Thinning removes whole **time ranges** from finished days (the cut
 time becomes an explicit gap), never single changes; today's file is never thinned. Human
 labels decide which policy applies to a stretch of time; otherwise its automatic guess run
 and confidence do. A label edit, thinning or **Trim now** recounts only the time that
 changed.
+
+Background work is kept light so it never burdens Home Assistant: recording appends only the
+changed readings to today's log every few seconds and saves the integration's own state every
+five minutes; live reference evidence is folded once a minute per radar, and radars take
+turns; heavy jobs (the first cleanup after an upgrade, label recounts after a restart,
+reference rebuilds and learning) rest between steps so they use at most about half of one
+CPU core. On a dozen radars, steady recording costs well under 1% of one core on a desktop.
 
 The radar's guess is not recomputed on every two-second tick. A radar's readings are
 classified again only when a channel has stayed 3 energy units or more from the readings
