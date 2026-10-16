@@ -221,6 +221,40 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(await store._async_migrate_func(1, 0, original), original)
 
+    async def test_setup_does_not_wait_for_the_startup_history_cleanup(self):
+        """Bootstrap stage 2 timed out while a first cleanup after the 1.24 upgrade thinned
+        every converted day: setup commits the conversion and cleans in the background."""
+        self.hass.data = {}
+        self.hass.bus = types.SimpleNamespace(async_listen=Mock(return_value=Mock()))
+        self.hass.http = types.SimpleNamespace(async_register_static_paths=AsyncMock())
+        self.hass.async_create_background_task = lambda target, name: asyncio.create_task(target)
+        store = types.SimpleNamespace(
+            async_load=AsyncMock(return_value={"devices": {}}), async_save=AsyncMock()
+        )
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_cleanup(runtime, *, persist=True):
+            started.set()
+            await release.wait()
+
+        coordinator = sys.modules["tuner_under_test.runtime.coordinator"]
+        with (
+            patch.object(mod, "TunerStore", return_value=store),
+            patch.object(mod, "StaticPathConfig", Mock()),
+            patch.object(mod, "_register_websocket_commands"),
+            patch.object(mod.frontend, "async_panel_exists", return_value=True, create=True),
+            patch.object(coordinator.TunerRuntime, "async_clean_history", slow_cleanup),
+            patch.object(mod.frontend, "async_remove_panel", create=True),
+        ):
+            self.assertTrue(await asyncio.wait_for(mod.async_setup_entry(self.hass, None), 5))
+            store.async_save.assert_awaited_once()  # The conversion is committed at once.
+            await asyncio.wait_for(started.wait(), 5)  # The cleanup runs, after setup.
+            runtime = self.hass.data[mod.DOMAIN]
+            self.assertFalse(runtime._cleanup_task.done())
+            release.set()
+            await runtime._cleanup_task
+            await mod.async_unload_entry(self.hass, None)
+
     async def test_config_flow_single_instance_and_explicit_creation(self):
         class Flow:
             def __init_subclass__(cls, **kwargs):

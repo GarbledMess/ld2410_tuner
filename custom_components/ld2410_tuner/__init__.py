@@ -73,7 +73,6 @@ async def _start_runtime(hass):
     runtime._days = DayStore(Path(hass.config.path(".storage", DOMAIN, "history")))
     await hass.async_add_executor_job(_open_history, runtime)
     schedule.restore(runtime)
-    await runtime.async_clean_history(persist=False)
     await reference_training.initialize(runtime)
     try:
         await runtime.async_save()
@@ -98,6 +97,10 @@ async def _start_runtime(hass):
     runtime.unsub_retention = async_track_time_interval(
         hass, runtime._enforce_history_retention, HISTORY_RETENTION_CHECK_INTERVAL
     )
+    # The first cleanup after an upgrade can thin every converted day: minutes on a small
+    # machine. Setup never waits for it (Home Assistant cancels a slow setup); it runs now in
+    # the background, like the hourly one.
+    runtime._enforce_history_retention()
 
     static_path = Path(__file__).parent / "static"
     if not hass.data.get(f"{DOMAIN}_static_registered"):

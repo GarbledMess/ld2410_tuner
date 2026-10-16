@@ -36,7 +36,9 @@ def _recording_device(runtime, device_id):
 @callback
 def _enforce_history_retention(runtime, *_args) -> None:
     if runtime._cleanup_task is None or runtime._cleanup_task.done():
-        runtime._cleanup_task = runtime.hass.async_create_task(runtime.async_clean_history())
+        runtime._cleanup_task = runtime.hass.async_create_background_task(
+            runtime.async_clean_history(), "ld2410_tuner history cleanup"
+        )
 
 
 async def async_clean_history(runtime, *, persist=True):
