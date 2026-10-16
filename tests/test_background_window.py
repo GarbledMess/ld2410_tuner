@@ -95,3 +95,8 @@ class BackgroundWindowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[-1]["devices"]["a"]["confidence"], 1.0)
         self.assertFalse(rows[-1]["devices"]["a"].get("inferred", False))
         self.assertEqual(device["history_labels"], stored)
+
+
+def test_seen_by_attributes_recent_history_by_default():
+    assert seen_by.SEEN_BY_HISTORY_HOURS is not None
+    assert seen_by.SEEN_BY_HISTORY_HOURS <= 7 * 24

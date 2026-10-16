@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
 
 from homeassistant.components import frontend
@@ -26,12 +28,15 @@ from .const import (
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
 )
-from .history import convert, ingest
+from .history import convert, ingest, pace
 from .history.daystore import DayStore
 from .presence import rebuilds, reference_training
 from .runtime import engineering, schedule
 from .runtime.coordinator import TunerRuntime
 from .runtime.websocket import _register_websocket_commands
+
+_LOGGER = logging.getLogger(__name__)
+_STARTUP = f"{DOMAIN}_startup"
 
 
 class TunerStore(Store):
@@ -47,6 +52,7 @@ class TunerStore(Store):
         return old_data
 
 
+@pace.background
 def _open_history(runtime):
     """Recover the day store, then move any history still in the JSON store into it, once."""
     now = time.time()
@@ -55,9 +61,21 @@ def _open_history(runtime):
 
 
 async def async_setup_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
-    if DOMAIN not in hass.data:
-        await _start_runtime(hass)
+    if DOMAIN not in hass.data and _STARTUP not in hass.data:
+        task = hass.async_create_background_task(_start_runtime(hass), "ld2410_tuner startup")
+        hass.data[_STARTUP] = task
+        task.add_done_callback(partial(_startup_finished, hass))
     return True
+
+
+def _startup_finished(hass, task):
+    if hass.data.get(_STARTUP) is task:
+        hass.data.pop(_STARTUP)
+    if not task.cancelled() and (error := task.exception()) is not None:
+        _LOGGER.error(
+            "LD2410 Tuner initialization failed; reload the integration to retry",
+            exc_info=(type(error), error, error.__traceback__),
+        )
 
 
 async def _start_runtime(hass):
@@ -71,7 +89,7 @@ async def _start_runtime(hass):
     data = await store.async_load() or {"devices": {}, "training": {}}
     runtime = TunerRuntime(hass, store, data)
     runtime._days = DayStore(Path(hass.config.path(".storage", DOMAIN, "history")))
-    await hass.async_add_executor_job(_open_history, runtime)
+    await pace.run(hass, _open_history, runtime)
     schedule.restore(runtime)
     await reference_training.initialize(runtime)
     try:
@@ -85,7 +103,7 @@ async def _start_runtime(hass):
     runtime.subscribe_state_changes()
     engineering.start(runtime)
     runtime.unsub_sampling = async_track_time_interval(
-        hass, runtime.sample_devices, timedelta(seconds=AUTO_SAMPLE_INTERVAL)
+        hass, runtime.async_sample_devices, timedelta(seconds=AUTO_SAMPLE_INTERVAL)
     )
     runtime.unsub_nightly = async_track_time_interval(
         hass, runtime.nightly_tick, timedelta(minutes=1)
@@ -130,6 +148,11 @@ async def _start_runtime(hass):
 
 
 async def async_unload_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
+    startup = hass.data.pop(_STARTUP, None)
+    if startup is not None:
+        pace.stop()
+        startup.cancel()
+        await asyncio.gather(startup, return_exceptions=True)
     runtime = hass.data.pop(DOMAIN, None)
     await _stop_runtime(runtime)
     if frontend.async_panel_exists(hass, "ld2410-tuner"):
@@ -143,6 +166,8 @@ async def _stop_runtime(runtime):
 
 
 async def _shutdown(runtime):
+    runtime._sampling_stopped = True
+    pace.stop()  # Background work is abandoned at its next step, never awaited to the end.
     await engineering.stop(runtime)
     await schedule.stop(runtime)
     if runtime.unsub:

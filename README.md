@@ -40,6 +40,12 @@ references and saved results stay in the JSON store unchanged.
 
 This applies when upgrading from any earlier version, including 1.22.
 
+History preparation runs at low priority after integration setup returns, so a large
+conversion does not hold up Home Assistant's startup. The panel appears and recording
+starts when preparation finishes; no manual migration step is needed. Expensive work
+shares one paced worker, and periodic polling yields between radars. This reduces
+competition with Home Assistant; it is cooperative pacing, not a hard CPU or memory limit.
+
 ### HACS custom repository (requires a public GitHub repository)
 
 This project uses the HACS-compatible folder layout but is not being submitted to

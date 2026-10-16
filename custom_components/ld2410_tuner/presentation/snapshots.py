@@ -15,7 +15,7 @@ from ..calibration import settings as learning_settings
 from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
-from ..history import dayfile, policy, recording, storage
+from ..history import dayfile, pace, policy, recording, storage
 from ..presence import rebuilds, sources
 from ..rooms import jobs as room_jobs
 from ..rooms import layout, seen_by
@@ -23,6 +23,24 @@ from ..runtime.schedule import settings
 
 
 def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
+    exported = _export_metadata(runtime, device_id)
+    if device_id in exported["devices"]:
+        exported["devices"][device_id]["history"]["day_files"] = _recorded_days(runtime, device_id)
+    return exported
+
+
+async def async_export_data(runtime, device_id=None):
+    """Resolve HA registry metadata on the loop, encode recorded history on our worker."""
+    exported = _export_metadata(runtime, device_id)
+    if device_id in exported["devices"]:
+        view = runtime._history_view(device_id, members=False)
+        exported["devices"][device_id]["history"]["day_files"] = await pace.run(
+            runtime.hass, _recorded_days, view, device_id
+        )
+    return exported
+
+
+def _export_metadata(runtime, device_id):
     registry = er.async_get(runtime.hass)
     runtime.refresh_devices(registry)
     devices = [device_id] if device_id else list(runtime.data.get("devices", {}))
@@ -30,11 +48,10 @@ def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
     exported["timing_settings"] = timing_config.settings(runtime)
     devreg = dr.async_get(runtime.hass)
     _export_devices(runtime, devices, devreg, registry, exported)
-    if device_id in exported["devices"]:  # One radar: its recorded days too.
-        exported["devices"][device_id]["history"]["day_files"] = _recorded_days(runtime, device_id)
     return exported
 
 
+@pace.background
 def _recorded_days(runtime, device_id):
     """``{date: base64 day file}`` of the radar's recorded days, the day being recorded as it
     stands: the stored format, compressed and lossless (``history.dayfile.decode_day``)."""
@@ -43,6 +60,7 @@ def _recorded_days(runtime, device_id):
         return {}
     found = {}
     for date in days.days(device_id):
+        pace.rest()
         day = days.day(device_id, date)
         if day is not None:
             found[date.isoformat()] = base64.b64encode(dayfile.encode_day(day)).decode("ascii")

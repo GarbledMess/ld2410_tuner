@@ -4,7 +4,7 @@ import math
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
-from . import daystore
+from . import daystore, pace
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +48,7 @@ def _selected_days(view, device_id, start, end):
     until = getattr(view, "_history_until", None)
     windows = _read_windows(view, device_id, start, end)
     for date in _store_days(view, device_id, start, end):
+        pace.rest()
         low, high = daystore.bounds(date)
         selected = [(max(a, low), min(b, high)) for a, b in windows if a < high and b > low]
         if selected:
@@ -131,6 +132,7 @@ def _merged_windows(windows):
 
 def day_spans(day, start=-math.inf, end=math.inf):
     for index in range(bisect_right(day.ends, start), len(day.times)):
+        pace.rest()
         if day.times[index] >= end:
             return
         low, high = max(start, day.times[index]), min(end, day.ends[index])

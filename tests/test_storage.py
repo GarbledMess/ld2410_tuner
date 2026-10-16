@@ -257,11 +257,11 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
         async def race(fn, *args):
             nonlocal calls
             result = await execute(fn, *args)
-            if fn is storage._prepare_day_save and calls == 0:
+            if getattr(fn, "__wrapped__", fn) is storage._prepare_day_save and calls == 0:
                 self.runtime.label_history_range(
                     "a", self.now - 11 * policy.DAY, self.now, "present"
                 )
-            if fn is storage._prepare_day_save:
+            if getattr(fn, "__wrapped__", fn) is storage._prepare_day_save:
                 calls += 1
             return result
 
@@ -277,7 +277,7 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         async def race(fn, *args):
             result = await execute(fn, *args)
-            if fn is storage._prepare_day_save:
+            if getattr(fn, "__wrapped__", fn) is storage._prepare_day_save:
                 self.device["label_revision"] = self.device.get("label_revision", 0) + 1
             return result
 
@@ -318,7 +318,7 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         async def concurrent(fn, *args):
             result = await execute(fn, *args)
-            if fn is storage._prepare_day_save and not seen:
+            if getattr(fn, "__wrapped__", fn) is storage._prepare_day_save and not seen:
                 seen["candidate"] = args[1]
                 date = self.runtime._days.days("a")[-1]
                 seen["day"] = self.runtime._days.day("a", date, until=NOW)

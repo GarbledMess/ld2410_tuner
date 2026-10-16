@@ -151,7 +151,7 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         calls = []
 
         async def execute(fn, *args):
-            if fn is comparison.calculate:
+            if getattr(fn, "__wrapped__", fn) is comparison.calculate:
                 calls.append(copy.deepcopy(args[-1]))
                 return assessment(args[-1])
             return await asyncio.to_thread(fn, *args)
@@ -182,7 +182,7 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         views = []
 
         async def execute(fn, *args):
-            if fn is comparison.calculate:
+            if getattr(fn, "__wrapped__", fn) is comparison.calculate:
                 views.append(args[0])
                 return assessment(args[-1])
             return await asyncio.to_thread(fn, *args)

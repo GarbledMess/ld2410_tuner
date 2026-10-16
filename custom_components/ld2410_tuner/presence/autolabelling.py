@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from collections import defaultdict
@@ -258,29 +259,53 @@ def _feedback_reading(auto):
     return last
 
 
-def _sample_devices(runtime):
-    for device_id, device in runtime.data["devices"].items():
-        if device.get("configuration_recovery", {}).get("status") == "running":
-            runtime._source_runtime.pop(device_id, None)
-            ingest.end(runtime, device_id, time.time())
-            continue
-        values = _read_energies(runtime, device)
-        runtime._live[device_id] = values  # Drop unavailable readings, never carry them forward.
-        if not values:
-            runtime._auto_runtime.pop(device_id, None)
-            runtime._source_runtime.pop(device_id, None)
-            device.get("auto", {}).pop("last_classification", None)
-            ingest.change(runtime, device_id, dict.fromkeys(HISTORY_KEYS), time.time())
-            continue
-        if not device.get("recording_enabled", True) or runtime._storage_status.get("blocked"):
-            runtime._source_runtime.pop(device_id, None)
-            ingest.end(runtime, device_id, time.time())
-            continue
-        now = time.time()
-        _classify_tick(runtime, device_id, device, values, now)
-        runtime._record_history_sample(device_id, values, now)
-        runtime._schedule_flush()
-        runtime._schedule_state_save(now)
+async def async_sample_devices(runtime, _now=None):
+    """The periodic poll yields between radars and never overlaps another periodic poll."""
+    from ..rooms import room_sources
+
+    if getattr(runtime, "_sampling_active", False) or getattr(runtime, "_sampling_stopped", False):
+        return
+    runtime._sampling_active = True
+    try:
+        for device_id in list(runtime.data["devices"]):
+            if getattr(runtime, "_sampling_stopped", False):
+                return
+            _sample_devices(runtime, (device_id,))
+            await asyncio.sleep(0)
+        room_sources.sample_rooms(runtime, time.time())
+    finally:
+        runtime._sampling_active = False
+
+
+def _sample_devices(runtime, device_ids=None):
+    for device_id in runtime.data["devices"] if device_ids is None else device_ids:
+        device = runtime.data["devices"].get(device_id)
+        if device is not None:
+            _sample_device(runtime, device_id, device)
+
+
+def _sample_device(runtime, device_id, device):
+    if device.get("configuration_recovery", {}).get("status") == "running":
+        runtime._source_runtime.pop(device_id, None)
+        ingest.end(runtime, device_id, time.time())
+        return
+    values = _read_energies(runtime, device)
+    runtime._live[device_id] = values  # Drop unavailable readings, never carry them forward.
+    if not values:
+        runtime._auto_runtime.pop(device_id, None)
+        runtime._source_runtime.pop(device_id, None)
+        device.get("auto", {}).pop("last_classification", None)
+        ingest.change(runtime, device_id, dict.fromkeys(HISTORY_KEYS), time.time())
+        return
+    if not device.get("recording_enabled", True) or runtime._storage_status.get("blocked"):
+        runtime._source_runtime.pop(device_id, None)
+        ingest.end(runtime, device_id, time.time())
+        return
+    now = time.time()
+    _classify_tick(runtime, device_id, device, values, now)
+    runtime._record_history_sample(device_id, values, now)
+    runtime._schedule_flush()
+    runtime._schedule_state_save(now)
 
 
 def _classify_tick(runtime, device_id, device, values, now) -> None:

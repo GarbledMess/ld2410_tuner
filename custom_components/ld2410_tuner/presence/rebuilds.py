@@ -35,7 +35,7 @@ import logging
 import time
 from copy import deepcopy
 
-from ..history import recording
+from ..history import pace, recording
 from ..rooms import attribution, truth
 from . import reference_training
 from .references import STALE
@@ -133,8 +133,8 @@ async def _pass(runtime, device_ids):
         for key in device_ids:
             if (job := _prepare(runtime, key, shared)) is not None:
                 jobs.append(job)
-        results = await runtime.hass.async_add_executor_job(compute, jobs)
-    except asyncio.CancelledError:
+        results = await pace.run(runtime.hass, compute, jobs)
+    except (asyncio.CancelledError, pace.Stopped):
         _restore_all(runtime, jobs)
         raise
     except Exception:
@@ -179,6 +179,7 @@ def _restore_all(runtime, jobs):
             _mark(device, job["stale"])
 
 
+@pace.background
 def compute(jobs):
     """In the executor: each radar's rebuilt periods."""
     results = []

@@ -116,7 +116,7 @@ class TimingPolicyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         captured = []
 
         async def fit(fn, *args):
-            captured.append(copy.deepcopy(fn.__self__._fit_timing))
+            captured.append(copy.deepcopy(fn.__wrapped__.__self__._fit_timing))
             return {
                 "status": "ok",
                 "proposals": {},
@@ -145,7 +145,7 @@ class TimingPolicyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.configuration()
 
         async def fit(fn, *args):
-            timing = fn.__self__._fit_timing
+            timing = fn.__wrapped__.__self__._fit_timing
             assert timing["on_delay"] is None
             return {
                 "status": "uncertain",

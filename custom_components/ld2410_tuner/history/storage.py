@@ -6,7 +6,7 @@ from copy import deepcopy
 
 from ..const import TRAINING_FIELDS
 from ..rooms import groups, membership
-from . import budget, ingest, policy, summary_cache
+from . import budget, ingest, pace, policy, summary_cache
 
 _LOGGER = logging.getLogger(__name__)
 GUARDED = ("history_labels", "label_revision", *TRAINING_FIELDS)
@@ -88,7 +88,19 @@ async def _prepare_and_save(runtime, values, clean, target, persist=True):
     return await _save_days(runtime, values, clean, target, persist)
 
 
+@pace.background
 def _prepare_day_save(store, candidate, now, clean, target):
+    """A save's day replacements (executor); a cleanup is low-priority background work."""
+    prepare = _prepare_cleanup if clean else _prepare_save
+    return prepare(store, candidate, now, clean, target)
+
+
+@pace.background
+def _prepare_cleanup(store, candidate, now, clean, target):
+    return _prepare_save(store, candidate, now, clean, target)
+
+
+def _prepare_save(store, candidate, now, clean, target):
     ceiling = int(policy.settings(candidate)["max_mib"] * policy.MIB)
     limit = ceiling if target is None else min(ceiling, target)
     json_bytes = budget.storage_bytes(candidate)  # Measured once per save: it is the costly part.
@@ -105,13 +117,21 @@ def _prepare_day_save(store, candidate, now, clean, target):
     return prepared, changes, report, store.stage(changes)
 
 
+async def _prepare_for_save(runtime, candidate, clean, target):
+    args = (runtime._days, candidate, time.time(), clean, target)
+    if getattr(runtime, "_sampling_stopped", False) and not clean:
+        # Unload's final state save cannot wait behind work that is being abandoned.
+        return await runtime.hass.async_add_executor_job(_prepare_save, *args)
+    return await pace.run(runtime.hass, _prepare_day_save, *args)
+
+
 async def _save_days(runtime, values, clean, target, persist=True):
     for _attempt in range(3):
         original = budget.copy_data(runtime.data)
         marks = {key: _observation_mark(runtime, key) for key in original["devices"]}
         candidate = original if values is None else {**original, "storage_settings": values}
-        prepared, changes, report, staged = await runtime.hass.async_add_executor_job(
-            _prepare_day_save, runtime._days, candidate, time.time(), clean, target
+        prepared, changes, report, staged = await _prepare_for_save(
+            runtime, candidate, clean, target
         )
         relabelled = _relabelled(original, prepared)
         touched = {key for key, _date, _day in changes} | relabelled

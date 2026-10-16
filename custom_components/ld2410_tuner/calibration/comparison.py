@@ -2,6 +2,7 @@
 
 import math
 
+from ..history import pace
 from .constants import MIN_CLASS_SAMPLES
 
 SCORE_MODEL = "weighted_time_v1"
@@ -9,6 +10,7 @@ SCORE_MODEL = "weighted_time_v1"
 SCORER_VERSION = 2
 
 
+@pace.background
 def calculate(view, device_id, context):
     from .event_fitting import compare
 

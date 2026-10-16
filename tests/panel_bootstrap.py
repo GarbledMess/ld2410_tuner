@@ -41,6 +41,9 @@ async def panel_registration():
             )
             await mod.async_setup_entry(hass, None)
             try:
+                startup = hass.data.get(f"{mod.DOMAIN}_startup")
+                if startup is not None:
+                    await startup
                 paths = hass.http.async_register_static_paths.call_args.args[0]
                 return {
                     "panel": register.call_args.kwargs["config"]["_panel_custom"],

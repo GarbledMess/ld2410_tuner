@@ -286,6 +286,7 @@ def _live_day(runtime, device_id):
 EDITS = ("label_history_range", "edit_history_label")  # Runtime methods that rebuild.
 
 
+@pace.background
 def _worker_count(history, cutoff, index, live):
     """Load optional finished indexes only in the executor, then count each day once."""
     counts = Counts(index, cutoff)
@@ -309,7 +310,7 @@ async def ensure(runtime, device_id):
     history, live = _day_blocks(runtime, device_id), _live_day(runtime, device_id)
     cutoff = max(0, time.time() - retention_seconds(runtime.data))
     index = label_lookup.label_index(device)
-    counts = await runtime.hass.async_add_executor_job(_worker_count, history, cutoff, index, live)
+    counts = await pace.run(runtime.hass, _worker_count, history, cutoff, index, live)
     if device_id not in runtime._label_counts:
         runtime._label_counts[device_id] = counts
 

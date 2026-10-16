@@ -12,7 +12,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .. import entity_index
 from ..const import GATE_RE, HISTORY_KEYS
-from ..history import policy
+from ..history import pace, policy
 from ..rooms import attribution, truth
 from . import device_io, jobs, ownership, recovery, results, settings
 from . import thresholds as threshold_domain
@@ -74,9 +74,7 @@ async def _learn_once(runtime, device_id):
     device = runtime.data["devices"][device_id]
     revision = device.get("label_revision", 0)
     jobs.stage(runtime, device_id, "fitting")
-    learned = await runtime.hass.async_add_executor_job(
-        view._fit_history, device_id, entities, current
-    )
+    learned = await pace.run(runtime.hass, view._fit_history, device_id, entities, current)
     if revision != device.get("label_revision", 0):
         raise LearningEvidenceChanged("Training labels changed while learning; learn again")
     if timing_signature(read_timing(runtime, device_id)) != timing_signature(timing):
@@ -124,6 +122,7 @@ def _learning_sources(runtime, device_id):
     )
 
 
+@pace.background
 def _fit_history(runtime, device_id, entities, current):
     constraints = getattr(runtime, "_fit_constraints", None)
     if constraints is None:

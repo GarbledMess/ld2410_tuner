@@ -331,7 +331,7 @@ class TimingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         captured = []
 
         async def execute(fn, *args):
-            captured.append(fn.__self__._fit_timing)
+            captured.append(fn.__wrapped__.__self__._fit_timing)
             return {"status": "insufficient", "proposals": {}}
 
         self.hass.async_add_executor_job = execute

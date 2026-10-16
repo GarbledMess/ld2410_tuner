@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from ..calibration import ownership, recovery, results, settings
 from ..calibration.constants import METHOD
+from ..history import pace
 from ..runtime.tasks import finish_task
 from . import adaptive, fitting, groups, jobs, truth
 
@@ -116,7 +117,7 @@ async def _run(runtime, set_id, chosen, report):
                 rooms,
                 settings.automatic_weight(runtime.data),
             )
-            await runtime.hass.async_add_executor_job(_check_history, runtime, members)
+            await pace.run(runtime.hass, _check_history, runtime, members)
         _unchanged(runtime, list(chosen), signature)
         learned.update(
             id=report["id"],
@@ -152,6 +153,7 @@ def _fit_set(members, start, end, rooms, weight):
     return fitting.fit_set(members, start, end, rooms, weight, quality_contexts=contexts)
 
 
+@pace.background
 def _check_history(runtime, groups):
     members = {key: item for found in groups.values() for key, item in found.items()}
     if not all(ownership.intact(item["view"], runtime, [key]) for key, item in members.items()):

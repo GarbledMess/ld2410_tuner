@@ -18,7 +18,7 @@ from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import quote, unquote
 
-from . import dayfile, summaries, summary_cache
+from . import dayfile, pace, summaries, summary_cache
 
 DAY = datetime.timedelta(days=1)
 MIB = 1024 * 1024
@@ -97,9 +97,11 @@ class DayStore:
         for leftover in self.root.glob("*.tmp"):
             leftover.unlink()  # Interrupted finished-day publication, never physical history.
         for folder in sorted(path for path in self.root.iterdir() if path.is_dir()):
+            pace.rest()
             for leftover in (*folder.glob("*.tmp"), *folder.glob("*.trim")):
                 leftover.unlink()
             for log in sorted(folder.glob("*.log")):
+                pace.rest()
                 self._recover(unquote(folder.name), log, date_of(now))
 
     def _recover(self, device_id, log, today):

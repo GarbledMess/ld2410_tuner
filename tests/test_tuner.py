@@ -68,6 +68,8 @@ def load_runtime():
 
 
 mod = load_runtime()
+# Tests run background work unthrottled; tests/test_pace.py checks the throttle itself.
+sys.modules["tuner_under_test.history.pace"].SHARE = 1.0
 constants = sys.modules["tuner_under_test.const"]
 calibration_constants = sys.modules["tuner_under_test.calibration.constants"]
 training = sys.modules["tuner_under_test.history.labels"]

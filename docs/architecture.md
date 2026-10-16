@@ -85,8 +85,24 @@ replay tools use the same grouped module paths as the installed integration.
   radar's Empty-labelled histograms). A room is present on automatic evidence only when
   `AGREEING_MEMBERS` members say so (`evidence.agreed`, `truth.estimate`).
 - The one-time conversion of JSON-held history (`history/convert.run`) runs in the executor
-  at startup before anything reads history; the JSON is then saved without it. It is
+  after setup returns, before recording or panel registration; the JSON is then saved without it. It is
   one-way; re-running after an interruption rewrites the same day files.
+  The startup task is tracked separately until the runtime is published; unload stops its
+  work generation and cancels it without persisting partially prepared state. Initialization
+  failures are logged with a reload instruction.
+- Expensive work uses `history/pace.run`: admission waits asynchronously, so queued jobs
+  do not occupy Home Assistant's shared executor. The `background` decorator executes on
+  one integration-owned worker, where OS priority can be lowered without affecting an HA
+  worker reused later. Cooperative checkpoints target 20% CPU, with a 5 ms work slice;
+  this is a target, not a hard CPU or memory limit. Conversion, reference imports and
+  rebuilds, recounts, save preparation, learning, comparisons, charts and recorded-history
+  exports share this lane. Unload's final small state save bypasses the lane so it cannot
+  wait behind abandoned work. Cancelling a caller keeps admission occupied until its worker
+  actually finishes; unloading invalidates queued jobs and stops active work at its next
+  checkpoint. Short log flushes remain separate. Periodic sampling yields between radars,
+  skips overlapping ticks and stops between radars on unload. Registry access and live
+  state changes remain on HA's event loop. Seen-by attribution uses the latest 72 hours;
+  this display window does not remove stored history or change learning evidence.
 - Learning replays physical spans exactly. When a radar's recorded rows exceed the learning
   budget, `calibration/evidence_budget.select` keeps the most valuable recorded time whole
   (newest per class, quietest presence, loudest empty noise, then stretches beside label

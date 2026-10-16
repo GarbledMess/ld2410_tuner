@@ -1021,8 +1021,8 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
 
         views = []
 
-        def prepared(runtime, key, shared=None, real=attribution.prepared_view):
-            views.append(real(runtime, key, shared))
+        def prepared(runtime, key, shared=None, real=attribution.prepared_view, **kwargs):
+            views.append(real(runtime, key, shared, **kwargs))
             return views[-1]
 
         self.office()
@@ -1040,8 +1040,8 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         entities, current = {"g0_move": "number.a_g0_move"}, {"g0_move": 20}
         views = []
 
-        def prepared(runtime, key, shared=None, real=attribution.prepared_view):
-            views.append(real(runtime, key, shared))
+        def prepared(runtime, key, shared=None, real=attribution.prepared_view, **kwargs):
+            views.append(real(runtime, key, shared, **kwargs))
             return views[-1]
 
         with (

@@ -468,7 +468,7 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
         async def executor(fn, *args):
             nonlocal preparations, injected
             result = await real(fn, *args)
-            if fn is storage._prepare_day_save:
+            if getattr(fn, "__wrapped__", fn) is storage._prepare_day_save:
                 preparations += 1
                 if not injected:
                     self.runtime._record_history_sample("a", {"g0_move": 9}, self.now)

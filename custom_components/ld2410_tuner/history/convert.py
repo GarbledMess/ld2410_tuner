@@ -17,7 +17,7 @@ import zlib
 from itertools import accumulate
 
 from ..calibration.constants import SAMPLE_SECONDS
-from . import dayfile, guesses
+from . import dayfile, guesses, pace
 from .guesses import GAP
 
 STORED = ("history", "guess_runs", "open_event_history")
@@ -37,6 +37,7 @@ def run(data, days, now):
     """Convert every device still holding JSON history; True when anything was converted."""
     converted = False
     for device_id, device in data.get("devices", {}).items():
+        pace.rest()
         if any(key in device for key in (*STORED, *UNTIMED)):
             _convert(device_id, device, days, now)
             converted = True
@@ -48,6 +49,7 @@ def _convert(device_id, device, days, now):
     stats = {"invalid_blocks": 0}
     records = sorted(_records(device, stats), key=lambda record: (record.time, ORDER[type(record)]))
     for index, record in enumerate(records, 1):
+        pace.rest()
         days.append(device_id, record)
         if index % BATCH == 0:
             days.flush(record.time)  # As of the history so far: later records follow.
@@ -70,6 +72,7 @@ def _invalidate(device, stats):
 def _records(device, stats):
     rows = {}
     for block in device.get("history", []):
+        pace.rest()
         try:
             rows.update(_block_rows(block))  # A later row at the same time replaces it.
         except UNREADABLE:
@@ -91,6 +94,7 @@ def _block_rows(block):
     raw = _payload(block["data"], stride, count, version in DELTA_CODED)
     found = {}
     for position in range(0, count * stride, stride):
+        pace.rest()
         timestamp = start + (raw[position] << 8 | raw[position + 1])
         energies = raw[position + 2 : position + 20]
         guess = _from_code(*raw[position + 20 : position + 22]) if stride == 22 else None
@@ -112,6 +116,7 @@ def _payload(encoded, stride, count, delta):
         return raw
     restored = bytearray(count * stride)
     for column in range(stride):
+        pace.rest()
         deltas = raw[column * count : (column + 1) * count]
         restored[column::stride] = bytes(value & 255 for value in accumulate(deltas))
     return bytes(restored)
@@ -133,6 +138,7 @@ def _sampled(rows):
     """Energies held from each row to the next and, from old-layout rows, their guesses."""
     previous, guess, last = None, None, None
     for timestamp, (energies, row_guess) in rows:
+        pace.rest()
         if last is not None and timestamp - last > GAP:
             yield dayfile.End(last + SAMPLE_SECONDS / 2)
             previous, guess = None, None
@@ -157,6 +163,7 @@ def _guess_fields(sample_guess):
 def _chunk_runs(chunks, stats):
     runs = []
     for chunk in chunks:
+        pace.rest()
         try:
             raw = _payload(chunk["data"], RUN.size, int(chunk["count"]), True)
         except UNREADABLE:

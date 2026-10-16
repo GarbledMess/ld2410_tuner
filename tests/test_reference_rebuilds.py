@@ -112,7 +112,7 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
             await self.started()
             from tuner_under_test.presence import rebuilds
 
-            assert [fn for fn, _ in self.calls] == [rebuilds.compute]
+            assert [fn.__wrapped__ for fn, _ in self.calls] == [rebuilds.compute]
             self.release.set()
             await self.finish()
             assert spy.called

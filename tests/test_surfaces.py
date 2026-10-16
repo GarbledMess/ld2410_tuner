@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import sys
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -19,6 +20,53 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
     asyncTearDown = harness.RuntimeTests.asyncTearDown
     sample = harness.RuntimeTests.sample
     configuration = harness.RuntimeTests.configuration
+
+    async def initialization(self):
+        task = self.hass.data.get(f"{mod.DOMAIN}_startup")
+        if task is not None:
+            await task
+
+    async def test_setup_returns_while_history_initializes_and_unload_cancels_it(self):
+        self.hass.data = {}
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def initialize(hass):
+            started.set()
+            await release.wait()
+
+        with (
+            patch.object(mod, "_start_runtime", side_effect=initialize),
+            patch.object(mod.frontend, "async_panel_exists", return_value=False, create=True),
+        ):
+            try:
+                self.assertTrue(await asyncio.wait_for(mod.async_setup_entry(self.hass, None), 1))
+                await started.wait()
+                task = self.hass.data[f"{mod.DOMAIN}_startup"]
+                await mod.async_setup_entry(self.hass, None)
+                self.assertIs(self.hass.data[f"{mod.DOMAIN}_startup"], task)
+                await mod.async_unload_entry(self.hass, None)
+                self.assertTrue(task.cancelled())
+                self.assertNotIn(mod.DOMAIN, self.hass.data)
+            finally:
+                release.set()
+
+    async def test_failed_initialization_is_reported_and_can_be_retried(self):
+        self.hass.data = {}
+        with (
+            patch.object(mod, "_start_runtime", side_effect=RuntimeError("synthetic failure")),
+            self.assertLogs(mod.__name__, level="ERROR") as logs,
+        ):
+            await mod.async_setup_entry(self.hass, None)
+            task = self.hass.data[f"{mod.DOMAIN}_startup"]
+            with self.assertRaisesRegex(RuntimeError, "synthetic failure"):
+                await task
+            await asyncio.sleep(0)
+        self.assertIn("reload the integration", logs.output[0])
+        self.assertNotIn(f"{mod.DOMAIN}_startup", self.hass.data)
+        with patch.object(mod, "_start_runtime", new=AsyncMock()) as initialize:
+            await mod.async_setup_entry(self.hass, None)
+            await self.initialization()
+            initialize.assert_awaited_once()
 
     def add_entity(self, entity_id, device_id="a"):
         entity = types.SimpleNamespace(
@@ -67,6 +115,63 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
                 name_by_user="Synthetic room", name="Radar", area_id="test_area"
             )
         )
+
+    async def test_export_builds_recorded_days_off_the_event_loop(self):
+        from tuner_under_test.history import pace
+        from tuner_under_test.presentation import snapshots
+
+        self.registry_device()
+        loop_thread = threading.get_ident()
+
+        def encoded_days(view, device_id):
+            self.assertNotEqual(threading.get_ident(), loop_thread)
+            self.assertTrue(pace._active())
+            return {"2026-01-01": "synthetic"}
+
+        with patch.object(snapshots, "_recorded_days", pace.background(encoded_days)):
+            exported = await self.runtime.async_export_data("a")
+        self.assertEqual(
+            exported["devices"]["a"]["history"]["day_files"], {"2026-01-01": "synthetic"}
+        )
+        self.assertEqual((await self.runtime.async_export_data("missing"))["devices"], {})
+        self.assertNotIn(
+            "day_files", (await self.runtime.async_export_data())["devices"]["a"]["history"]
+        )
+
+    async def test_periodic_sampling_yields_to_home_assistant_between_radars(self):
+        from copy import deepcopy
+
+        self.runtime.data["devices"].update({key: deepcopy(self.device) for key in ("b", "c")})
+        self.states["sensor.radar_g0_move_energy"] = types.SimpleNamespace(state="20")
+        trace = []
+
+        def recorded(device_id, *args):
+            trace.append(device_id)
+            asyncio.get_running_loop().call_soon(trace.append, "yield")
+
+        self.runtime._record_history_sample = recorded
+        await self.runtime.async_sample_devices()
+        self.assertEqual(trace, ["a", "yield", "b", "yield", "c", "yield"])
+
+    async def test_periodic_sampling_does_not_overlap_and_stops_between_radars(self):
+        from copy import deepcopy
+
+        self.runtime.data["devices"]["b"] = deepcopy(self.device)
+        self.states["sensor.radar_g0_move_energy"] = types.SimpleNamespace(state="20")
+        seen, duplicates = [], []
+
+        def recorded(device_id, *args):
+            seen.append(device_id)
+            duplicates.append(asyncio.create_task(self.runtime.async_sample_devices()))
+            asyncio.get_running_loop().call_soon(setattr, self.runtime, "_sampling_stopped", True)
+
+        self.runtime._record_history_sample = recorded
+        await self.runtime.async_sample_devices()
+        await asyncio.gather(*duplicates)
+        self.assertEqual(seen, ["a"])
+        self.assertFalse(self.runtime._sampling_active)
+        await self.runtime.async_sample_devices()
+        self.assertEqual(seen, ["a"])
 
     def test_export_contains_day_history_for_selected_device(self):
         import base64
@@ -180,6 +285,7 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             patch.object(mod.frontend, "async_register_built_in_panel", create=True) as panel,
         ):
             self.assertTrue(await mod.async_setup_entry(self.hass, None))
+            await self.initialization()
             # The store's version is what makes Home Assistant run the guess-run migration.
             self.assertEqual(made.call_args.kwargs["minor_version"], mod.STORAGE_MINOR_VERSION)
             self.assertTrue(await mod.async_setup_entry(self.hass, None))
@@ -206,6 +312,7 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(runtime._timeout_tasks, {})
             self.assertNotIn(mod.DOMAIN, self.hass.data)
             await mod.async_setup_entry(self.hass, None)
+            await self.initialization()
             self.assertEqual(self.hass.http.async_register_static_paths.await_count, 1)
             await mod.async_unload_entry(self.hass, None)
         with (
@@ -251,6 +358,7 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             patch.object(mod.frontend, "async_remove_panel", create=True),
         ):
             self.assertTrue(await asyncio.wait_for(mod.async_setup_entry(self.hass, None), 5))
+            await self.initialization()
             store.async_save.assert_awaited_once()  # The conversion is committed at once.
             await asyncio.wait_for(started.wait(), 5)  # The cleanup runs, after setup.
             runtime = self.hass.data[mod.DOMAIN]

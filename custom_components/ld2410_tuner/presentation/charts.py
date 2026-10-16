@@ -9,10 +9,11 @@ from typing import Any
 
 from ..calibration.constants import SAMPLE_SECONDS
 from ..const import HISTORY_KEYS
-from ..history import spans
+from ..history import pace, spans
 from ..history.policy import settings
 
 
+@pace.background
 def history_series_multi(
     runtime,
     device_id: str,
@@ -100,8 +101,8 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
 
         async def build():
             try:
-                result = await runtime.hass.async_add_executor_job(
-                    view.history_series_multi, device_id, keys, hours, max_points, end
+                result = await pace.run(
+                    runtime.hass, view.history_series_multi, device_id, keys, hours, max_points, end
                 )
                 runtime._history_cache[cache_key] = result
                 while len(runtime._history_cache) > 16:
@@ -145,6 +146,7 @@ def _native_chart(runtime, device_id, indices, start, end, bucket_span, max_poin
     series = {key: _NativeSeries(start, end, bucket_span, max_points) for key in indices}
     modes = set()
     for cell in spans.events(runtime, device_id, start=start, end=end):
+        pace.rest()
         modes.add(cell.mode)
         for key, position in indices.items():
             value = cell.values[position]

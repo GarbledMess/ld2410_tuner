@@ -228,10 +228,11 @@ async def initialize(runtime):
         snapshot = deepcopy(device)
         view = runtime._history_view(device_id)
         view.data["devices"][device_id] = snapshot
-        await runtime.hass.async_add_executor_job(_import_history, view, snapshot)
+        await pace.run(runtime.hass, _import_history, view, snapshot)
         device["reference_profile"] = snapshot["reference_profile"]
 
 
+@pace.background
 def _import_history(runtime, device):
     rebuild_human(runtime, device)
 

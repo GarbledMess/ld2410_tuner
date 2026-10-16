@@ -5,7 +5,7 @@ import time
 from copy import deepcopy
 
 from ..const import TRAINING_FIELDS
-from ..history import policy
+from ..history import pace, policy
 from ..rooms import attribution
 from ..runtime.tasks import finish_task
 from . import comparison, comparison_cache, results, settings
@@ -113,8 +113,8 @@ async def _run(runtime, device_id, context, signature, wanted):
         started = time.time()
         try:
             view = attribution.prepared_view(runtime, device_id)
-            report = await runtime.hass.async_add_executor_job(
-                comparison.calculate, view, device_id, {**context, "patterns": wanted}
+            report = await pace.run(
+                runtime.hass, comparison.calculate, view, device_id, {**context, "patterns": wanted}
             )
             report.update(state="ready", evaluated_at=started)
         except asyncio.CancelledError:

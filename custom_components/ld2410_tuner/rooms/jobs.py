@@ -9,7 +9,7 @@ from ..calibration import settings
 from ..calibration import thresholds as threshold_domain
 from ..calibration.timing_config import read_timing, timing_signature
 from ..const import TRAINING_FIELDS
-from ..history import policy
+from ..history import pace, policy
 from ..runtime.tasks import finish_task
 from . import assessment, attribution, groups, room_labels, room_sources, sets, truth
 
@@ -117,13 +117,14 @@ async def on_views(runtime, members, job, *args):
     """Run ``job(*args)`` in the executor on ``set_views`` views."""
     views = [item["view"] for found in members.values() for item in found.values()]
 
+    @pace.background
     def run():
         try:
             return job(*args)
         finally:
             attribution.release(views)
 
-    return await runtime.hass.async_add_executor_job(run)
+    return await pace.run(runtime.hass, run)
 
 
 def summary(runtime, group_id):

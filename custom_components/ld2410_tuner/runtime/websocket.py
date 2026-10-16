@@ -177,7 +177,14 @@ def _websocket_routes():
             "invalid_request",
             False,
         ),
-        ("export", {vol.Optional("device_id"): str}, "export_data", ("device_id",), None, False),
+        (
+            "export",
+            {vol.Optional("device_id"): str},
+            "async_export_data",
+            ("device_id",),
+            None,
+            False,
+        ),
         ("clear", device, "clear_samples", ("device_id",), None, True),
         (
             "label_history",

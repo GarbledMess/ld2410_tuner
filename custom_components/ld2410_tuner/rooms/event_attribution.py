@@ -13,7 +13,7 @@ from ..calibration.constants import (
     SAMPLE_SECONDS,
 )
 from ..const import HISTORY_KEYS
-from ..history import spans
+from ..history import pace, spans
 from ..history.label_lookup import _history_label_reader
 from ..presence.inference import MIN_REFERENCE
 
@@ -33,6 +33,7 @@ class Quiet:
 
 def _cells(physical, edges):
     for cell in physical:
+        pace.rest()  # Background work: Seen by and learning share the CPU politely.
         cuts = [
             cell.start,
             *edges[bisect_right(edges, cell.start) : bisect_left(edges, cell.end)],
@@ -45,6 +46,7 @@ def _cells(physical, edges):
 def _baseline(cells, quiet):
     bins = [[0.0] * 101 for _ in HISTORY_KEYS]
     for low, high, values in cells:
+        pace.rest()
         if quiet(low):
             for histogram, value in zip(bins, values, strict=True):
                 if value is not None:
@@ -59,6 +61,7 @@ def _baseline(cells, quiet):
 def _episodes(cells, read):
     current = []
     for cell in cells:
+        pace.rest()
         low, high, values = cell
         label = read(low)
         usable = any(value is not None for value in values)

@@ -30,7 +30,7 @@ from copy import deepcopy
 from math import inf, nextafter
 
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
-from ..history import recording
+from ..history import pace, recording
 from ..runtime.tasks import finish_task
 from . import attribution, truth
 
@@ -41,7 +41,9 @@ EPISODE_LIMIT = 50
 # number bounds both occupied episodes and their quiet baseline. Older chips disappear,
 # ownership/confidence can change, and a cutoff-crossing episode is clipped. Stored human
 # labels, references, assessments and learning remain independent of this display policy.
-SEEN_BY_HISTORY_HOURS = None
+# Seen-by shows the latest episodes: it attributes recent history only (a whole history cost
+# minutes of CPU on small machines after every room change).
+SEEN_BY_HISTORY_HOURS = 72
 # Minimum time between rebuilds caused by new or pruned history alone.
 HISTORY_REBUILD_SECONDS = 300
 _clock = time.monotonic  # Injectable for tests.
@@ -200,6 +202,7 @@ def _merge(members):
     return rows
 
 
+@pace.background
 def build(views, definitions, group_id):
     """The latest ``EPISODE_LIMIT`` occupied episodes of a group with each member's result
     from ``attribution.radar_attribution`` (what the learner uses). Radars in no multi-radar
@@ -222,7 +225,7 @@ def build(views, definitions, group_id):
 async def _run(runtime, definitions, group_id, current, view, started):
     try:
         async with runtime._room_attribution_semaphore:
-            episodes = await runtime.hass.async_add_executor_job(build, view, definitions, group_id)
+            episodes = await pace.run(runtime.hass, build, view, definitions, group_id)
     except asyncio.CancelledError:
         raise
     except Exception:  # A failing build must not be retried on every poll.

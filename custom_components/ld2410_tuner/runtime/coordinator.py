@@ -163,6 +163,7 @@ class TunerRuntime:
     refresh_devices = discovery.refresh_devices
     handle_state_change = discovery.handle_state_change
     sample_devices = autolabelling.sample_devices
+    async_sample_devices = autolabelling.async_sample_devices
     _record_history_sample = recording._record_history_sample
     _enforce_history_retention = recording._enforce_history_retention
     async_clean_history = recording.async_clean_history
@@ -198,4 +199,5 @@ class TunerRuntime:
     apply = calibration.apply
     _apply_validated = calibration._apply_validated
     export_data = presentation.export_data
+    async_export_data = presentation.async_export_data
     snapshot = presentation.snapshot
