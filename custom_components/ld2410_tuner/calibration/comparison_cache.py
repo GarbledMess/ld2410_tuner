@@ -7,7 +7,12 @@ from copy import deepcopy
 from . import comparison
 
 FIELD = "comparison_scores"
-METADATA = ("timing", "counts", "outliers", "incomplete_samples", "evaluated_at")
+METADATA = ("timing", "counts", "outliers", "incomplete_samples", "evaluated_at", "quality")
+POLICY_FIELDS = ("automatic_weight", "quality_version", "learner_method", "threshold_constraints")
+
+
+def _policy(context):
+    return {key: context[key] for key in POLICY_FIELDS if key in context}
 
 
 def pattern_key(context, pattern):
@@ -16,7 +21,10 @@ def pattern_key(context, pattern):
         key: float(value) if type(value) in (int, float) else value
         for key, value in pattern["thresholds"].items()
     }
-    payload = json.dumps({"entities": context["entities"], "thresholds": values}, sort_keys=True)
+    payload = json.dumps(
+        {"entities": context["entities"], "thresholds": values, "learner_policy": _policy(context)},
+        sort_keys=True,
+    )
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -25,6 +33,8 @@ def stored(device, context, pattern):
     if not isinstance(record, dict) or record.get("scorer_version") != comparison.SCORER_VERSION:
         return None
     if "score" not in record:
+        return None
+    if record.get("learner_policy") != _policy(context):
         return None
     return record
 
@@ -58,6 +68,7 @@ def report(device, context):
         "state": "pending" if missing(device, context) else "ready",
         "model": comparison.SCORE_MODEL,
         "scorer_version": comparison.SCORER_VERSION,
+        **_policy(context),
         "patterns": patterns,
         "best_slots": comparison.best_slots(patterns),
         "mixed_evidence": len(dates) > 1,
@@ -104,6 +115,8 @@ def remember(device, context, calculated):
                     **item,
                     **metadata,
                     "scorer_version": comparison.SCORER_VERSION,
+                    "learner_policy": _policy(context),
+                    **_policy(context),
                 }
             )
     active = {

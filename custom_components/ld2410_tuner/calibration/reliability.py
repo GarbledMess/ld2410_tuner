@@ -112,20 +112,3 @@ def _report(groups, retained, periods, model):
         "period_count": len(periods),
         "gate_limits": model["limits"],
     }
-
-
-def prepare_evidence(groups, automatic, keys, models=None):
-    """Build one filtered evidence set for search, metrics, feasibility and Apply."""
-    if models is None:
-        models = {
-            "human": fit_outlier_model(groups, keys),
-            "automatic": fit_outlier_model(automatic, keys),
-        }
-    human, human_report = filter_groups(groups, models["human"])
-    inferred, auto_report = filter_groups(automatic, models["automatic"])
-    report = {
-        "method": "separated_temporal_dips_v2",
-        "human": human_report,
-        "automatic": auto_report,
-    }
-    return human, inferred, report, models

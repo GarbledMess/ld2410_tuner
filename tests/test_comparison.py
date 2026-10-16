@@ -44,12 +44,13 @@ def context():
 
 
 def calculate(rows=None, automatic=None, settings=None):
-    with patch.object(
-        comparison,
-        "collect_samples",
-        return_value=(recordings() if rows is None else rows, automatic or []),
-    ):
-        return comparison.calculate(None, "a", settings or context())
+    """The comparison on a radar whose recorded history is ``rows`` (labelled samples,
+    default ``recordings``) and ``automatic`` guessed samples (``harness.record_samples``)."""
+    view = harness.types.SimpleNamespace(
+        data={"devices": {"a": {}}, "room_snapshot": None}, _history_runtime={}
+    )
+    harness.record_samples(view, "a", recordings() if rows is None else rows, automatic or [])
+    return comparison.calculate(view, "a", settings or context())
 
 
 def test_score_boundaries_and_weighting():
@@ -113,10 +114,12 @@ def test_auto_only_scores_are_estimates_and_humans_override_conflicting_guesses(
 def test_current_timing_is_used_for_every_candidate():
     settings = context()
     settings["timing"] = {"timeout": 1, "on_delay": 0.5, "off_delay": 1, "mode": "fallback"}
-    with patch.object(comparison, "evaluate", wraps=comparison.evaluate) as evaluate:
+    fitting = sys.modules["tuner_under_test.calibration.event_fitting"]
+    with patch.object(fitting, "_objective", wraps=fitting._objective) as objective:
         report = calculate(settings=settings)
-    assert len(evaluate.call_args_list) == 10
-    assert all(call.args[2] == settings["timing"] for call in evaluate.call_args_list)
+    # Every candidate is measured on the one objective, built with the current timing.
+    assert len(objective.call_args_list) == 1
+    assert objective.call_args.args[4] == settings["timing"]
     assert report["timing"] == settings["timing"]
 
 
@@ -185,20 +188,19 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
             return await asyncio.to_thread(fn, *args)
 
         self.hass.async_add_executor_job = execute
-        with patch.object(jobs.attribution, "remember", wraps=jobs.attribution.remember) as keep:
-            await self.runtime.compare_results("a")
-        assert getattr(views[0], "_attribution_slots", None) is not None
-        keep.assert_called_once_with(self.runtime, views[0])
+        await self.runtime.compare_results("a")
+        # Prepared: its members' guesses are built once for the job (``attribution.prepare``).
+        assert getattr(views[0], "_attribution_guesses", None) is not None
 
     async def test_scoring_frees_the_views_attribution_once_the_evidence_is_collected(self):
         """Regression: the view's guesses and truth readers were freed on the event loop
         after the job."""
         self.configuration()
         view = jobs.attribution.prepared_view(self.runtime, "a")
-        view._attribution_both["a"] = {"others": {"a": object()}, "found": {"kept": True}}
+        view._attribution_guesses["a"] = object()
         context, _ = jobs._context(self.runtime, "a")
         comparison.calculate(view, "a", context)
-        assert view._attribution_both["a"] == {"found": {"kept": True}}
+        assert view._attribution_guesses == {}
 
     async def test_comparison_job_reads_float_threshold_states(self):
         self.configuration()
@@ -217,7 +219,7 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.configuration()
         calls = self.scoring_executor()
         first = await self.runtime.compare_results("a")
-        self.runtime._history_runtime["a"] = {"samples": [(1, [5] * 18)]}
+        harness.record_rows(self.runtime, "a", [(1, [5] * 18)])
         self.device["label_revision"] = 12
         self.device["training_state"] = "present"
         self.device["training_label_start"] = self.now
@@ -233,12 +235,12 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.configuration()
         calls = self.scoring_executor()
         await self.runtime.compare_results("a")
-        with patch.object(comparison, "SCORER_VERSION", 2):
+        with patch.object(comparison, "SCORER_VERSION", 3):
             assert jobs.summary(self.runtime, "a")["state"] == "pending"
             report = await self.runtime.compare_results("a")
-            assert report["scorer_version"] == 2
+            assert report["scorer_version"] == 3
             assert all(
-                item["scorer_version"] == 2 for item in self.device["comparison_scores"].values()
+                item["scorer_version"] == 3 for item in self.device["comparison_scores"].values()
             )
             await self.runtime.compare_results("a")
         assert len(calls) == 2

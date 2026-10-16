@@ -1,14 +1,17 @@
 """Integration-wide "Automatic evidence weight", stored beside the learning schedule.
 
 Learning jobs read it once through ``automatic_weight`` and pass it down; pure fitting code
-takes it as a parameter. Each automatic observation counts this weight x its confidence of a
-human one (``scoring.automatic_share``).
+takes it as a ceiling. Episode support sets the blend share, and learner reliability corrects
+automatic confidence without changing the raw admission floor.
 """
 
 import math
 
+from .constants import METHOD
+from .quality import QUALITY_VERSION
+
 KEY = "automatic_weight"
-# Chosen by the held-out blended sweep (eval/auto-weight-blend-report.md).
+# Current checkpoint; positive activation requires the adaptive held-out acceptance experiment.
 DEFAULT_AUTOMATIC_WEIGHT = 0.0
 
 
@@ -18,9 +21,12 @@ def automatic_weight(data):
 
 
 def signature(data):
-    """Learn-signature entry, empty at the default so earlier signatures stay identical."""
-    value = automatic_weight(data)
-    return {} if value == DEFAULT_AUTOMATIC_WEIGHT else {KEY: value}
+    """Explicit policy identity; older unversioned learning results are incompatible."""
+    return {
+        KEY: automatic_weight(data),
+        "quality_version": QUALITY_VERSION,
+        "learner_method": METHOD,
+    }
 
 
 def summary(data):

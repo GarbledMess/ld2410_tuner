@@ -2,209 +2,85 @@
 the plain ones they replace, and guards that event-driven work never walks all history."""
 
 import random
-import struct
 import time
 import unittest
-import zlib
-from array import array
-from copy import deepcopy
 from unittest.mock import patch
 
+import pytest
 import test_tuner as harness
 from tuner_under_test.const import HISTORY_KEYS
-from tuner_under_test.history import cleanup, codec, guesses, policy, recording
+from tuner_under_test.history import guesses, label_lookup
 
 NOW = 2_000_000_000.0
 DAY = 86400
-# Byte -> gate value 0-100, or 255 (a missing gate) for one byte in 256.
-VALUES = (bytes(range(101)) * 3)[:255] + bytes((255,))
-
-
-def old_block_samples(block, cutoff):
-    """``recording._block_samples`` before the block index (reference)."""
-    start = float(block["start"])
-    if float(block.get("end", start + 65535)) < cutoff:
-        return
-    count, version = int(block["count"]), block.get("version", 1)
-    raw = codec.decode_payload(block["data"], version, count)
-    if version not in codec.STRIDES:
-        return
-    stride = codec.STRIDES[version]
-    if len(raw) < count * stride:
-        return
-    for index in range(count):
-        pos = index * stride
-        timestamp = start + struct.unpack(">H", raw[pos : pos + 2])[0]
-        if timestamp >= cutoff:
-            yield timestamp, raw[pos + 2 : pos + 2 + len(HISTORY_KEYS)]
-
-
-def old_samples(runtime, device_id, since=0):
-    """``_iter_history_samples`` before the block index: every block is visited (reference)."""
-    device = runtime.data["devices"][device_id]
-    cutoff = max(since, time.time() - policy.retention_seconds(runtime.data))
-    for block in device.get("history", []):
-        try:
-            yield from old_block_samples(block, cutoff)
-        except (KeyError, TypeError, ValueError, zlib.error, struct.error):
-            continue
-    for timestamp, row in recording.pending_samples(runtime, device_id):
-        if timestamp >= cutoff:
-            yield timestamp, row
-
-
-def random_blocks(rng, start, count):
-    samples = []
-    t = start
-    for _ in range(count):
-        t += rng.choice((6, 6, 6, 7, 3600))
-        samples.append((t + rng.random(), rng.randbytes(18)))
-    return cleanup._encode(samples)
-
-
-def odd_blocks(rng, blocks):
-    """Unsorted, corrupt, NaN-ended, end-less and inconsistent blocks among good ones."""
-    good = blocks[rng.randrange(len(blocks))] if blocks else {"start": NOW, "count": 0}
-    odd = [
-        {"start": "x"},
-        {"start": NOW - DAY},
-        "junk",
-        None,
-        {**good, "end": float("nan")},
-        {key: value for key, value in good.items() if key != "end"},
-        {**good, "end": good["start"] - 10 * DAY},
-        {**good, "version": 9},
-    ]
-    return rng.sample(odd, rng.randrange(len(odd)))
-
-
-class BlockIndexTests(unittest.TestCase):
-    def runtime(self, history, pending=()):
-        runtime = harness.mod.TunerRuntime(None, None, {"devices": {"a": {"history": history}}})
-        runtime._history_runtime["a"] = {"samples": list(pending)}
-        return runtime
-
-    def test_indexed_reads_match_reading_every_block(self):
-        """Equivalence: random histories (sorted or not, with damaged blocks), random
-        cutoffs, before and after blocks are appended or replaced in place."""
-        rng = random.Random(4120)
-        with patch.object(time, "time", return_value=NOW):
-            for _ in range(80):
-                blocks = random_blocks(rng, NOW - 31 * DAY + rng.random() * DAY, rng.randrange(400))
-                history = blocks + odd_blocks(rng, blocks)
-                if rng.random() < 0.5:
-                    rng.shuffle(history)
-                pending = [(NOW - 5 + i, rng.randbytes(18)) for i in range(rng.randrange(3))]
-                runtime = self.runtime(history, pending)
-                device = runtime.data["devices"]["a"]
-                for _ in range(4):
-                    since = rng.choice((0, NOW - 3600, NOW - rng.random() * 40 * DAY, NOW + 1))
-                    self.assertEqual(
-                        list(runtime._iter_history_samples(device, since)),
-                        list(old_samples(runtime, "a", since)),
-                    )
-                    history.extend(random_blocks(rng, NOW - rng.random() * 2 * DAY, 70))
-                    if history and isinstance(history[0], dict) and "data" in history[0]:
-                        history[0] = dict(history[0])  # Replaced in place, same times.
-
-    def test_history_summary_matches_the_snapshot_expressions(self):
-        rng = random.Random(4121)
-        for _ in range(40):
-            history = random_blocks(rng, NOW - 20 * DAY, rng.randrange(300))
-            rng.shuffle(history)
-            runtime = self.runtime(history)
-            for _ in range(3):
-                expected = (
-                    len(history),
-                    sum(int(b.get("count", 0)) for b in history),
-                    min((float(b.get("start", 0)) for b in history), default=None),
-                    max((float(b.get("start", 0)) for b in history), default=None),
-                )
-                self.assertEqual(recording.history_summary(runtime, "a"), expected)
-                history.extend(random_blocks(rng, NOW - rng.random() * 30 * DAY, 90))
-            runtime.data["devices"]["a"]["history"] = history[:5]
-            self.assertEqual(
-                recording.history_summary(runtime, "a")[:2],
-                (5, sum(b["count"] for b in history[:5])),
-            )
-
-    def test_a_recent_read_visits_only_recent_blocks(self):
-        """Regression guard: the room estimate's one-hour read (every poll) must not visit
-        every stored block of 30 days of history."""
-        rng = random.Random(4122)
-        samples = [(NOW - 30 * DAY + i * 60, rng.randbytes(18)) for i in range(30 * 24 * 60)]
-        history = cleanup._encode(samples)
-        runtime = self.runtime(history)
-        device = runtime.data["devices"]["a"]
-        with (
-            patch.object(time, "time", return_value=NOW),
-            patch.object(recording, "_block_samples", wraps=recording._block_samples) as spy,
-        ):
-            rows = list(runtime._iter_history_samples(device, since=NOW - 3600))
-            self.assertTrue(rows)
-            self.assertLess(spy.call_count, 50)
-
-
-def confident(rows):
-    """``(history blocks, guess run chunks)`` of ``rows`` carrying a confident recorded guess
-    (kept by cleanup's thinning)."""
-    samples, runs = harness.split_guesses([(ts, row + b"\x01d") for ts, row in rows])
-    return cleanup._encode(samples), guesses.encode(runs)
-
-
-def thirty_days(rng, now, step=60):
-    """History blocks and guess runs every ``step`` seconds over 30 days."""
-    return confident(
-        [
-            (now - 30 * DAY + 600 + i * step, bytes(rng.randrange(101) for _ in range(18)))
-            for i in range(int((30 * DAY - 1200) // step))
-        ]
-    )
 
 
 class LabelEditTests(unittest.IsolatedAsyncioTestCase):
     setUp = harness.RuntimeTests.setUp
     asyncTearDown = harness.RuntimeTests.asyncTearDown
 
-    async def test_device_label_edit_reads_only_the_blocks_it_relabels(self):
+    @patch.object(time, "time", return_value=NOW)
+    async def test_device_label_edit_reads_only_the_blocks_it_relabels(self, _clock):
         """Regression guard: a device label edit (and a Seen by chip tap, which is one) runs
         on the event loop; after cleanup it must not walk all 30 days of history."""
-        rng = random.Random(4130)
-        self.device["history"], self.device["guess_runs"] = thirty_days(rng, self.now)
+        from tuner_under_test.history import dayfile, spans, summaries
+
+        self.now = NOW
+        for index in range(30):
+            timestamp = self.now - 30 * DAY + 6 + index * DAY
+            self.runtime._days.append("a", dayfile.Change(timestamp, {0: index % 10 + 1}))
+            self.runtime._days.append(
+                "a", dayfile.Guess(timestamp, "present", 20, guesses.EXTERNAL)
+            )
+        self.runtime._days.append("a", dayfile.End(self.now))
         self.device["history_labels"] = [
             {"start": self.now - 20 * DAY, "end": self.now - 19 * DAY, "state": "present"}
         ]
         await self.runtime.async_clean_history(persist=False)
         start = self.now - 10 * DAY
-        with patch.object(recording, "_block_samples", wraps=recording._block_samples) as spy:
+        with (
+            patch.object(spans, "day_spans", side_effect=AssertionError("row replay on loop")),
+            patch.object(
+                summaries.Summary,
+                "histograms",
+                autospec=True,
+                side_effect=summaries.Summary.histograms,
+            ) as spy,
+        ):
             result = self.runtime.label_history_range("a", start, start + 3600, "not_present")
-        self.assertEqual(result["labelled_samples"], 60)
-        self.assertLess(spy.call_count, 40, "blocks read on the event loop")
+        self.assertEqual(result["observed_seconds"], 3600)
+        self.assertEqual(
+            sum(self.runtime._label_counts["a"].raw["g0_move"]["not_present"]), 3600 / 6
+        )
+        self.assertGreater(spy.call_count, 0, "the edited native day is recounted from its summary")
+        self.assertLess(spy.call_count, 40, "bounded summary queries on the event loop")
 
 
 def old_rebuild(runtime, device):
-    """``labels._rebuild_histograms`` before kept counts: every retained sample (reference)."""
-    from tuner_under_test.const import HISTOGRAM_BINS
-    from tuner_under_test.history import labels
+    """``labels._rebuild_histograms`` counted from scratch (no kept counts) over the same
+    recorded days and the day being recorded (reference)."""
+    from tuner_under_test.history import label_counts
+    from tuner_under_test.history.policy import retention_seconds
 
-    rebuilt = {
-        key: {"present": [0] * HISTOGRAM_BINS, "not_present": [0] * HISTOGRAM_BINS}
-        for key in HISTORY_KEYS
-    }
-    label_at = labels._history_label_reader(device)
     device_id = next(key for key, item in runtime.data["devices"].items() if item is device)
-    samples = list(old_samples(runtime, device_id))
-    for timestamp, row in samples:
-        label = label_at(timestamp)
-        if label in {"present", "not_present"}:
-            for index, key in enumerate(HISTORY_KEYS):
-                if row[index] <= 100:
-                    rebuilt[key][label][row[index]] += 1
-    labels._restore_legacy_histograms(device, rebuilt)
-    for series in rebuilt.values():
-        runtime._compress_histogram(series["present"])
-        runtime._compress_histogram(series["not_present"])
+    cutoff = max(0, time.time() - retention_seconds(runtime.data))
+    raw = label_counts.count(
+        label_counts._day_blocks(runtime, device_id),
+        cutoff,
+        label_lookup.label_index(device),
+        label_counts._live_day(runtime, device_id),
+    ).raw
+    rebuilt = label_counts.stored({key: raw[key] for key in HISTORY_KEYS})
     return rebuilt
+
+
+def assert_counts_equal(found, expected):
+    """Native counts are durations in floating point, stored to 0.001 of a sample: kept and
+    recounted sums may differ by float noise that rounds to neighbouring steps."""
+    assert found.keys() == expected.keys()
+    for key in found:
+        for state in ("present", "not_present"):
+            assert found[key][state] == pytest.approx(expected[key][state], abs=1e-3), (key, state)
 
 
 class Clock:
@@ -220,14 +96,13 @@ class LabelCountTests(unittest.IsolatedAsyncioTestCase):
     asyncTearDown = harness.RuntimeTests.asyncTearDown
 
     def history(self, rng):
-        """4 days every ~2 minutes with fractional times, so rounded block offsets put some
-        samples just past their block's end and the retention edge cuts through blocks."""
+        """Record 4 days every ~2 minutes with fractional times and gaps, so the retention
+        edge cuts through recorded days and spans; some gates do not read."""
         rows, t = [], self.clock.now - 4 * DAY
         while t < self.clock.now - 60:
-            rows.append((t, rng.randbytes(18).translate(VALUES)))
-            t += rng.choice((119.6, 120.4, 121.3, 3000.7))
-        blocks = cleanup._encode(rows)
-        return blocks
+            rows.append((t, bytes(rng.choice((rng.randrange(101), 255)) for _ in range(18))))
+            t += rng.choice((5.6, 6.4, 11.3, 3000.7))
+        harness.record_rows(self.runtime, "a", rows)
 
     def random_range(self, rng):
         start = self.clock.now - rng.random() * 5 * DAY
@@ -271,20 +146,32 @@ class LabelCountTests(unittest.IsolatedAsyncioTestCase):
         elif action == 9:
             days = rng.choice((3, 4, 5))
             runtime.data["storage_settings"] = {"human_days": days, "automatic_days": 3}
-        elif action == 10 and device.get("history"):
-            block = dict(rng.choice(device["history"]))
-            block.update(rng.choice(({"end": float("nan")}, {"end": block["start"] - 50}, {})))
-            device["history"] = [*device["history"], block]
+        elif action == 10:  # A finished day is thinned: it is rewritten without its first hour.
+            self._rewrite_a_day(rng)
         elif action == 11 and (forced is not None or rng.random() < 0.15):
             runtime.clear_samples("a")
-            device["history"] = self.history(rng)
-        elif action == 12:  # A trim or prune: the oldest blocks go.
-            device["history"] = device["history"][len(device["history"]) // 4 :]
+            self.history(rng)
+        elif action == 12:  # A trim or retention: the oldest recorded day goes.
+            days = runtime._days
+            finished = days.days("a")[:-1]
+            if finished:
+                days.delete("a", finished[:1])
+
+    def _rewrite_a_day(self, rng):
+        from tuner_under_test.history import cleanup
+
+        days = self.runtime._days
+        finished = days.days("a")[:-1]
+        if finished:
+            date = rng.choice(finished)
+            day = days.day("a", date)
+            days.replace("a", date, cleanup.cut(day, [(day.start, day.start + 3600)]))
 
     async def test_kept_counts_rebuild_exactly_what_counting_everything_does(self):
         """Equivalence: every histogram rebuild from kept counts equals the old full rebuild,
-        over random edits, live labels, recording, the retention edge moving through blocks,
-        cleanups, confirmations, retention changes, odd blocks and clears."""
+        over random edits, live labels, recording, the retention edge moving through recorded
+        days, cleanups, confirmations, retention changes, rewritten and deleted days and
+        clears."""
         from tuner_under_test.history import labels
 
         checked = []
@@ -292,7 +179,7 @@ class LabelCountTests(unittest.IsolatedAsyncioTestCase):
 
         def compare(runtime, device):
             rebuilt = real(runtime, device)
-            self.assertEqual(rebuilt, old_rebuild(runtime, device))
+            assert_counts_equal(rebuilt, old_rebuild(runtime, device))
             checked.append(bool(runtime._label_counts))
             return rebuilt
 
@@ -303,7 +190,8 @@ class LabelCountTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(time, "time", self.clock),
                 patch.object(labels, "_rebuild_histograms", side_effect=compare),
             ):
-                self.device["history"] = self.history(rng)
+                self.runtime.clear_samples("a")
+                self.history(rng)
                 self.device["history_labels"] = []
                 self.runtime.data["storage_settings"] = {"human_days": 3, "automatic_days": 3}
                 for index in range(52):  # Every kind of step first, then random ones.
@@ -468,72 +356,17 @@ class ReferenceTests(unittest.TestCase):
 # --- Room truth memo. ---
 
 
-class RoomTruthTests(unittest.TestCase):
-    def test_memo_answers_like_the_reader_and_reads_each_sample_once(self):
-        from tuner_under_test.rooms import attribution
-
-        rng = random.Random(4161)
-        times = sorted({NOW + rng.randrange(5000) * 6 + rng.choice((0, 0.5)) for _ in range(2000)})
-        answers = [None, ("present", "human", 1.0), ("not_present", "automatic", 0.7)]
-        truth = {t: rng.choice(answers) for t in times}
-        reads = []
-
-        def expected(t):
-            return truth.get(t, ("present", "estimate", 0.9))
-
-        def read(t):
-            reads.append(t)
-            return expected(t)
-
-        memo = attribution.Memo(read, array("d", times))
-        elsewhere = {NOW - 5, NOW + 1e6, times[3] + 0.25}
-        queries = [rng.choice(times) for _ in range(3000)] + list(elsewhere)
-        for _ in range(2):
-            for t in queries + times + times[::-1]:
-                self.assertEqual(memo(t), expected(t))
-        sample_reads = [t for t in reads if t in truth]
-        self.assertEqual(len(sample_reads), len(set(sample_reads)), "each sample is read once")
-        self.assertEqual(set(reads), set(times) | elsewhere, "and every other time once")
-        self.assertEqual(len(reads), len(set(reads)))
-
-    def test_memo_keeps_a_few_bytes_per_sample(self):
-        """Regression guard: 430k samples (30 days at 6 s) must not cost a dict entry each."""
-        import tracemalloc
-
-        from tuner_under_test.rooms import attribution
-
-        times = array("d", (NOW + i * 6.0 for i in range(200_000)))
-        label = ("present", "human", 1.0)
-        memo = attribution.Memo(lambda t: label, times)
-        tracemalloc.start()
-        try:
-            for t in times:
-                memo(t)
-            kept = tracemalloc.get_traced_memory()[0]
-        finally:
-            tracemalloc.stop()
-        self.assertLess(kept / len(times), 8, "bytes kept per sample")
-
-
 class EditCostTests(unittest.IsolatedAsyncioTestCase):
     setUp = harness.RuntimeTests.setUp
     asyncTearDown = harness.RuntimeTests.asyncTearDown
 
-    def test_an_edit_copies_the_legacy_histograms_once(self):
-        """Regression: every edit deep-copied the histograms for a ``setdefault`` that only
-        the first edit needed."""
-        from tuner_under_test.history import labels
-
+    def test_edits_never_copy_derived_histograms_back_into_history(self):
+        """A label edit uses recorded duration directly, without retaining a histogram copy."""
         self.runtime._ensure_histograms(self.device)
-        before = deepcopy(self.device["histograms"])
         start = self.now - 7200
         self.runtime.label_history_range("a", start, start + 600, "present")
-        self.assertEqual(self.device["history_legacy_histograms"], before)
-        kept = self.device["history_legacy_histograms"]
-        with patch.object(labels, "deepcopy", wraps=labels.deepcopy) as copy:
-            self.runtime.label_history_range("a", start + 900, start + 1500, "not_present")
-        copy.assert_not_called()
-        self.assertIs(self.device["history_legacy_histograms"], kept)
+        self.runtime.label_history_range("a", start + 900, start + 1500, "not_present")
+        self.assertNotIn("history_legacy_histograms", self.device)
 
 
 class TimingFieldTests(unittest.TestCase):
@@ -574,11 +407,13 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
     asyncTearDown = harness.RuntimeTests.asyncTearDown
 
     def history(self, days=3):
+        """A reading every minute for ``days``, each with a confident present guess."""
         rng = random.Random(4190)
         rows = [
-            (self.now - days * DAY + 600 + i * 60, rng.randbytes(18)) for i in range(days * 1380)
+            (self.now - days * DAY + 600 + i * 60, rng.randbytes(18) + b"\x01d")
+            for i in range(days * 1380)
         ]
-        self.device["history"], self.device["guess_runs"] = confident(rows)
+        harness.record_rows(self.runtime, "a", rows)
 
     async def edit(self):
         websocket = harness.sys.modules["tuner_under_test.runtime.websocket"]
@@ -598,91 +433,53 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
 
         self.history()
         loop_thread, where = threading.current_thread(), []
-        real = label_counts.count
+        real = label_counts._worker_count
 
         def spy(*args):
             where.append(threading.current_thread() is loop_thread)
             return real(*args)
 
-        with patch.object(label_counts, "count", spy):
+        with patch.object(label_counts, "_worker_count", spy):
             result = await self.edit()
             await self.edit()
-        self.assertEqual(result["labelled_samples"], 60)
+        # Readings a minute apart are separate observations of half a sample (3 s) each:
+        # the hour holds 60 of them, 180 recorded seconds, 30 six-second units.
+        self.assertEqual(result["labelled_samples"], 30)
         self.assertEqual(where, [False], "counted once, off the loop")
 
-    async def test_cleanup_discarded_by_new_samples_still_keeps_the_counts(self):
+    @patch.object(time, "time", return_value=NOW)
+    async def test_cleanup_discarded_by_new_samples_still_keeps_the_counts(self, clock):
         """Regression: a cleanup result dropped because a sample arrived meanwhile also
         dropped the counts it had made."""
-        self.history()
+        from tuner_under_test.history import dayfile, spans, storage
+
+        self.now = NOW
+        store = self.runtime._days
+        store.append("a", dayfile.Change(NOW - 10 * DAY, {0: 1}))
+        store.append("a", dayfile.End(NOW - 10 * DAY + 6))
+        store.append("a", dayfile.Change(NOW - 3 * DAY, {0: 5}))
+        store.append("a", dayfile.Guess(NOW - 3 * DAY, "present", 20, guesses.EXTERNAL))
+        self.device["history_labels"] = [
+            {"start": NOW - 3 * DAY, "end": NOW + 60, "state": "present"}
+        ]
         real = self.hass.async_add_executor_job
+        preparations, injected = 0, False
 
         async def executor(fn, *args):
+            nonlocal preparations, injected
             result = await real(fn, *args)
-            if fn.__name__ == "_clean_and_count":
-                self.runtime._record_history_sample("a", {"g0_move": 5}, self.now)
+            if fn is storage._prepare_day_save:
+                preparations += 1
+                if not injected:
+                    self.runtime._record_history_sample("a", {"g0_move": 9}, self.now)
+                    clock.return_value = NOW + 6
+                    injected = True
             return result
 
         self.hass.async_add_executor_job = executor
         await self.runtime.async_clean_history(persist=False)
+        self.assertTrue(injected, "arrival races the actual staged native cleanup")
+        self.assertEqual(preparations, 2, "changed history discards the first cleanup plan")
         self.assertIn("a", self.runtime._label_counts)
-
-
-class MemoNanTests(unittest.TestCase):
-    def test_answers_with_nan_share_one_entry(self):
-        """Regression: NaN never equals itself, so each sample added another distinct answer
-        (unbounded); the answers now stay as few as the distinct ones."""
-        from tuner_under_test.rooms import attribution
-
-        times = array("d", (NOW + i * 6.0 for i in range(500)))
-        memo = attribution.Memo(lambda t: ("present", "automatic", float("nan")), times)
-        for t in times:
-            self.assertEqual(memo(t)[:2], ("present", "automatic"))
-        self.assertEqual(len(memo.answers), 1)
-
-
-class FrozenBlock(dict):
-    """A stored history block that refuses to change: blocks are shared between the live data,
-    saved snapshots and the kept counts, so they must only ever be replaced."""
-
-    def _refuse(self, *args, **kwargs):
-        raise AssertionError("a stored history block was changed in place")
-
-    __setitem__ = __delitem__ = update = pop = popitem = setdefault = clear = _refuse
-
-    def __deepcopy__(self, memo):
-        return deepcopy(dict(self), memo)
-
-
-class StoredBlocksAreImmutableTests(unittest.IsolatedAsyncioTestCase):
-    setUp = harness.RuntimeTests.setUp
-    asyncTearDown = harness.RuntimeTests.asyncTearDown
-
-    async def test_no_operation_changes_a_stored_block_in_place(self):
-        rng = random.Random(4195)
-        rows = [(self.now - 3 * DAY + 600 + i * 60, rng.randbytes(18)) for i in range(3000)]
-        history, runs = confident(rows)
-        self.device["history"] = [FrozenBlock(block) for block in history]
-        self.device["guess_runs"] = [FrozenBlock(chunk) for chunk in runs]
-        runtime, start = self.runtime, self.now - 2 * DAY
-        for step in range(70):  # Pending samples that flush into a new block.
-            runtime._record_history_sample("a", {"g0_move": step % 90}, self.now - 600 + step * 6)
-        runtime._flush_history_block("a")
-        runtime.label_history_range("a", start, start + 7200, "present")
-        label = self.device["history_labels"][0]
-        runtime.edit_history_label(
-            "a",
-            label["start"],
-            label["end"],
-            start,
-            start + 3600,
-            "not_present",
-            self.device["label_revision"],
-        )
-        harness.sys.modules["tuner_under_test.history.source_labels"].confirm_presence(
-            runtime, "a", start + 7200, start + 9000, 77
-        )
-        await runtime.async_clean_history(persist=False)
-        runtime.label_history_range("a", start, start + 600, "unknown")
-        storage = harness.sys.modules["tuner_under_test.history.storage"]
-        await storage.async_save(runtime)
-        self.assertTrue(self.device["history"])
+        self.assertEqual(list(spans.events(self.runtime, "a"))[-1].values[0], 9)
+        self.assertEqual(self.runtime._label_counts["a"].raw["g0_move"]["present"][9], 1)

@@ -1,9 +1,11 @@
 """Replay private recordings without emitting identifiers or modifying the input.
 
 Usage: python tools/replay_autolabels.py STORE --baseline OLD_INFERENCE.py
-       [--labels EXPORT] [--output REPORT.json]
-The latest 20% of each labelled class is evaluation-only in every scenario.
-Stored six-second observations cannot reconstruct intervening live readings.
+       [--history DIR] [--labels EXPORT] [--output REPORT.json]
+STORE is the integration's saved data; its recorded day files are read from DIR (default: the
+``ld2410_tuner/history`` folder beside STORE). Each recorded value is replayed as a reading
+every six seconds while it held. The latest 20% of each labelled class is evaluation-only in
+every scenario.
 A model that classifies only when something notably changes (``reclassify``) is replayed
 as the integration runs it, and the report counts how many readings it classified.
 """
@@ -11,13 +13,12 @@ as the integration runs it, and the report counts how many readings it classifie
 from __future__ import annotations
 
 import argparse
+import datetime
 import importlib
 import importlib.util
 import json
-import struct
 import sys
 import types
-from bisect import bisect_right
 from collections import Counter
 from pathlib import Path
 
@@ -25,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "custom_components" / "ld2410_tuner"
 KEYS = [f"g{gate}_{kind}" for gate in range(9) for kind in ("move", "still")]
 LABELS = {"present", "not_present"}
+READING_SECONDS = 6
 
 
 def load_module(path):
@@ -34,27 +36,59 @@ def load_module(path):
     return module
 
 
-def load_history():
-    """The integration's ``history.cleanup``, imported without Home Assistant: its package is
-    stood in for by an empty module whose path is the integration's folder."""
+def load(name):
+    """A module of the integration (``history.dayfile``), imported without Home Assistant: its
+    package is stood in for by an empty module whose path is the integration's folder."""
     if "ld2410_tuner_package" not in sys.modules:
         package = types.ModuleType("ld2410_tuner_package")
         package.__path__ = [str(PACKAGE)]
         sys.modules["ld2410_tuner_package"] = package
-    return importlib.import_module("ld2410_tuner_package.history.cleanup")
+    return importlib.import_module(f"ld2410_tuner_package.{name}")
 
 
-def decode_rows(device):
-    """Normalize label overlaps with the same rules as the integration."""
-    history = load_history()
-    labels = history._labels(device.get("history_labels", []), float("-inf"))
-    starts = [label["start"] for label in labels]
+def recorded_days(history, device_id):
+    """The radar's recorded days, oldest first, read without changing any file: finished day
+    files, and a log (a day still being recorded) continued from the day before and ended at
+    its last record, as the integration recovers it."""
+    dayfile, daystore = load("history.dayfile"), load("history.daystore")
+    folder = Path(history) / daystore._folder_name(device_id)
+    dates = sorted(
+        {path.stem for path in folder.glob("*.day")} | {p.stem for p in folder.glob("*.log")}
+    )
+    days, carry = [], None
+    for date in dates:
+        finished = folder / f"{date}.day"
+        if finished.exists():
+            day = dayfile.decode_day(finished.read_bytes())
+        else:
+            start, end = daystore.bounds(datetime.date.fromisoformat(date))
+            builder, last = dayfile.DayBuilder(start, end, carry), start
+            for record in dayfile.decode_log((folder / f"{date}.log").read_bytes(), start):
+                builder.add(record)
+                last = record.time
+            day = builder.view(last)
+        days.append(day)
+        carry = dayfile.carry_of(day)
+    return days
+
+
+def decode_rows(device, days):
+    """A reading every six seconds while each recorded value held, with the label then
+    applying (the integration's last-label-wins rules)."""
+    read = load("history.label_lookup")._history_label_reader(device)
     rows = []
-    for timestamp, values in _encoded_samples(device):
-        index = bisect_right(starts, timestamp) - 1
-        truth = labels[index]["state"] if index >= 0 and timestamp < labels[index]["end"] else None
-        rows.append((timestamp, values, truth))
-    return sorted(rows, key=lambda row: row[0])
+    for day in days:
+        for index, (start, end) in enumerate(zip(day.times, day.ends, strict=True)):
+            values = {
+                key: round(value)
+                for key, value in zip(KEYS, day.vector(index), strict=True)
+                if value is not None
+            }
+            timestamp = start
+            while timestamp < end:
+                rows.append((timestamp, dict(values), read(timestamp)))
+                timestamp += READING_SECONDS
+    return rows
 
 
 def compress(histogram):
@@ -190,6 +224,7 @@ def evaluate(rows, expected, model, mode):
 def run(args):
     payload = json.loads(args.store.read_text())
     devices = payload.get("data", payload)["devices"]
+    history = args.history or args.store.parent / "ld2410_tuner" / "history"
     labels = json.loads(args.labels.read_text())["devices"] if args.labels else {}
     models = {
         "before": load_module(args.baseline),
@@ -197,12 +232,13 @@ def run(args):
     }
     reports = []
     for index, (device_id, original) in enumerate(devices.items()):
-        if not original.get("history"):
+        days = recorded_days(history, device_id)
+        if not days:
             continue
         device = dict(original)
         if device_id in labels:
             device["history_labels"] = labels[device_id]["history"]["labels"]
-        rows = decode_rows(device)
+        rows = decode_rows(device, days)
         expected = [
             f"g{item['gate']}_{item['kind']}" for item in device.get("entities", {}).values()
         ]
@@ -215,6 +251,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("store", type=Path)
+    parser.add_argument("--history", type=Path)
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--labels", type=Path)
     parser.add_argument("--output", type=Path)
@@ -248,20 +285,6 @@ def _write_progress(args, reports, result, models):
     )
     if args.output:
         args.output.write_text(json.dumps(reports, indent=2) + "\n")
-
-
-def _encoded_samples(device):
-    history = load_history()
-    for block in device.get("history", []):
-        _, _, raw, stride = history._read_clean_block(block)
-        for offset in range(0, len(raw), stride):
-            timestamp = block["start"] + struct.unpack(">H", raw[offset : offset + 2])[0]
-            values = {
-                key: value
-                for key, value in zip(KEYS, raw[offset + 2 : offset + 20], strict=False)
-                if value <= 100
-            }
-            yield timestamp, values
 
 
 def _compare_device(index, rows, expected, models):

@@ -7,7 +7,9 @@ import math
 import time
 from typing import Any
 
+from ..calibration.constants import SAMPLE_SECONDS
 from ..const import HISTORY_KEYS
+from ..history import spans
 from ..history.policy import settings
 
 
@@ -46,8 +48,6 @@ def history_series_multi(
     start = end - hours * 3600
     span = end - start
 
-    buckets = {key: {} for key in keys}
-    counts = dict.fromkeys(keys, 0)
     bucket_span = next(
         (
             seconds
@@ -71,32 +71,7 @@ def history_series_multi(
         ),
         86400,
     )
-    _aggregate_buckets(runtime, device, start, end, bucket_span, indices, counts, buckets)
-    series = {
-        key: {
-            "sample_count": counts[key],
-            "points": [
-                {
-                    "t": round((acc[4] + acc[5]) / 2, 3),
-                    "min": acc[0],
-                    "max": acc[1],
-                    "avg": round(acc[2] / acc[3], 3),
-                    "count": acc[3],
-                }
-                for index, acc in sorted(buckets[key].items())
-            ],
-        }
-        for key in keys
-    }
-
-    labels = _chart_labels(device, start, end)
-    return {
-        "start": start,
-        "end": end,
-        "bucket_seconds": bucket_span,
-        "series": series,
-        "labels": labels,
-    }
+    return _native_chart(runtime, device_id, indices, start, end, bucket_span, max_points)
 
 
 async def async_history_series(runtime, device_id, keys, hours, max_points, end=None):
@@ -139,23 +114,6 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
     return await asyncio.shield(runtime._history_jobs[cache_key])
 
 
-def _aggregate_buckets(runtime, device, start, end, bucket_span, indices, counts, buckets):
-    for ts, row in runtime._iter_history_samples(device, start):
-        if ts < start or ts > end:
-            continue
-        bucket = math.floor(ts / bucket_span)
-        for key, index in indices.items():
-            value = row[index]
-            if value > 100:
-                continue
-            counts[key] += 1
-            acc = buckets[key].setdefault(bucket, [value, value, 0, 0, ts, ts])
-            acc[0], acc[1] = min(acc[0], value), max(acc[1], value)
-            acc[2] += value
-            acc[3] += 1
-            acc[4], acc[5] = min(acc[4], ts), max(acc[5], ts)
-
-
 def _chart_labels(device, start, end):
     labels = [
         {
@@ -179,3 +137,162 @@ def _chart_labels(device, start, end):
                 }
             )
     return labels
+
+
+def _native_chart(runtime, device_id, indices, start, end, bucket_span, max_points):
+    while 2 * (math.ceil(end / bucket_span) - math.floor(start / bucket_span)) > max_points:
+        bucket_span *= 2
+    series = {key: _NativeSeries(start, end, bucket_span, max_points) for key in indices}
+    modes = set()
+    for cell in spans.events(runtime, device_id, start=start, end=end):
+        modes.add(cell.mode)
+        for key, position in indices.items():
+            value = cell.values[position]
+            if value is not None:
+                series[key].add(cell.start, cell.end, value)
+    return {
+        "start": start,
+        "end": end,
+        "bucket_seconds": bucket_span,
+        "series": {key: value.finish() for key, value in series.items()},
+        "labels": _chart_labels(runtime.data["devices"][device_id], start, end),
+        "basis": "physical_span_duration",
+        "modes": sorted(modes),
+    }
+
+
+class _NativeSeries:
+    """Bounded native plot segments; an overfull bucket is omitted, never bridged."""
+
+    def __init__(self, start, end, bucket_span, limit):
+        self.start, self.end, self.bucket_span, self.limit = start, end, bucket_span, limit
+        self.points, self.gaps, self.omitted = [], [], []
+        self.gaps_truncated = False
+        self.observed, self.last_end = 0.0, start
+        self.bucket, self.segments, self.overfull = None, [], False
+
+    def add(self, start, end, value):
+        while start < end:
+            bucket = math.floor(start / self.bucket_span)
+            high = min(end, (bucket + 1) * self.bucket_span)
+            if self.bucket != bucket:
+                self._flush()
+                self.bucket = bucket
+                self.segments, self.overfull = [], False
+            self._piece(start, high, value)
+            start = high
+
+    def _piece(self, start, end, value):
+        self._gap(self.last_end, start)
+        self.last_end = end
+        self.observed += end - start
+        if self.overfull:
+            return
+        if not self.segments or self.segments[-1]["end"] < start:
+            self.segments.append(_new_accumulator(start, end, value))
+        else:
+            _extend_accumulator(self.segments[-1], start, end, value)
+        if len(self.points) + 2 * len(self.segments) > self.limit:
+            self.segments, self.overfull = [], True
+
+    def _flush(self):
+        if self.bucket is None:
+            return
+        if self.overfull:
+            low = max(self.start, self.bucket * self.bucket_span)
+            high = min(self.end, (self.bucket + 1) * self.bucket_span)
+            _append_range(self.omitted, low, high)
+            return
+        for acc in self.segments:
+            self._anchors(acc)
+
+    def _anchors(self, acc):
+        point = {
+            key: value
+            for key, value in acc.items()
+            if key != "integral" and not key.startswith("_")
+        }
+        point["avg"] = acc["integral"] / acc["observed_seconds"]
+        point["count"] = acc["observed_seconds"] / SAMPLE_SECONDS
+        point["t"] = acc["start"]
+        point["break_before"] = bool(self.points and acc["start"] > self.points[-1]["end"])
+        self.points.append(point)
+        self.points.append(
+            {
+                **point,
+                "t": acc["end"],
+                "observed_seconds": 0.0,
+                "count": 0.0,
+                "anchor": True,
+                "break_before": False,
+            }
+        )
+
+    def _gap(self, start, end):
+        if end <= start:
+            return
+        if len(self.gaps) < self.limit:
+            _append_range(self.gaps, start, end)
+        else:
+            self.gaps_truncated = True
+
+    def finish(self):
+        self._flush()
+        self._gap(self.last_end, self.end)
+        return {
+            "sample_count": self.observed / SAMPLE_SECONDS,
+            "observed_seconds": self.observed,
+            "basis": "physical_span_duration",
+            "count_basis": "six_second_equivalent_duration",
+            "points": self.points,
+            "gaps": self.gaps,
+            "gaps_truncated": self.gaps_truncated,
+            "omitted_ranges": self.omitted,
+        }
+
+
+def _new_accumulator(start, end, value):
+    return {
+        "start": start,
+        "end": end,
+        "min": value,
+        "max": value,
+        "min_start": start,
+        "min_end": end,
+        "max_start": start,
+        "max_end": end,
+        "observed_seconds": end - start,
+        "integral": value * (end - start),
+        "_last_value": value,
+        "_last_start": start,
+        "_closed_integral": 0.0,
+    }
+
+
+def _extend_accumulator(acc, start, end, value):
+    _extremum(acc, "min", start, end, value, value < acc["min"])
+    _extremum(acc, "max", start, end, value, value > acc["max"])
+    acc["end"] = end
+    acc["observed_seconds"] = end - acc["start"]
+    _value_integral(acc, start, end, value)
+
+
+def _extremum(acc, name, start, end, value, replace):
+    if replace:
+        acc[name], acc[name + "_start"], acc[name + "_end"] = value, start, end
+    elif value == acc[name] and start == acc[name + "_end"]:
+        acc[name + "_end"] = end
+
+
+def _append_range(intervals, start, end):
+    if intervals and start == intervals[-1][1]:
+        intervals[-1] = (intervals[-1][0], end)
+    else:
+        intervals.append((start, end))
+
+
+def _value_integral(acc, start, end, value):
+    if value != acc["_last_value"]:
+        acc["_closed_integral"] = acc["integral"]
+        acc["_last_value"], acc["_last_start"] = value, start
+    acc["integral"] = acc["_closed_integral"] + value * (end - acc["_last_start"])

@@ -29,14 +29,18 @@ class FeasibilityTests(unittest.TestCase):
 
     def test_fit_reports_undetectable_presence_against_the_targets(self):
         # Zero energy never exceeds a threshold: every occupied observation is missed.
-        rows = harness.row_samples({"g0_move": 0}, {"g0_move": 0})
+        # Several episodes, so the later ones are held out (whole-episode chronology).
+        rows = harness.episode_samples({"g0_move": 0}, {"g0_move": 0})
         result = harness.fit(rows, ["g0_move"])
         self.assertEqual(result["status"], "unsafe")
-        for prefix in ("", "Recent human labels: "):
+        # Five occupied episodes in all; the newest fifth of the presence is the last one.
+        for prefix, missed in (("", 5), ("Recent human labels: ", 1)):
             self.assertIn(
                 f"{prefix}Estimated presence-time recall 0.000%; target 99.9%", result["warnings"]
             )
-            self.assertIn(f"{prefix}1 occupied periods have no detection", result["warnings"])
+            self.assertIn(
+                f"{prefix}{missed} occupied periods have no detection", result["warnings"]
+            )
         self.assertTrue(
             any(w.startswith("Earlier-data backtest missed") for w in result["warnings"])
         )

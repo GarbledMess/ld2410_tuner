@@ -1,22 +1,30 @@
 """Time-weighted room assessment; no learning, threshold writes or live presence entity."""
 
-from itertools import chain
-
-from ..calibration.constants import MIN_CLASS_SAMPLES, MIN_RECALL, MISSED_TIME_COST
+from ..calibration.constants import MIN_CLASS_SAMPLES, MIN_RECALL, MISSED_TIME_COST, SAMPLE_SECONDS
 from ..calibration.scoring import error_cost, score_from_cost
-from . import evidence, replay, roles, truth
+from . import adaptive, evidence, replay, roles, truth
 from .intervals import seconds
 
-SCORER_VERSION = 1
+SCORER_VERSION = 2
 
 
-def calculate(members, start, end, room=None):
+def calculate(members, start, end, room=None, *, quality=None):
     """Assess ``members``; ``room`` is a ``truth.view`` snapshot (None: no room labels)."""
+    quality = None if quality is None else adaptive.models(quality)
     inputs = {
-        key: evidence.read(item["view"], key, item["thresholds"], start, end)
+        key: evidence.read(
+            item["view"],
+            key,
+            item["thresholds"],
+            start,
+            end,
+            automatic_reader=adaptive.CorrectedReader(quality[key]) if quality else None,
+        )
         for key, item in members.items()
     }
-    context = truth.for_view(room, inputs)
+    context = (
+        truth.for_view(room, inputs) if quality is None else adaptive.corrected_truth(room, inputs)
+    )
     radars = {
         key: replay.radar(
             inputs[key]["rows"], item["thresholds"], item["timing"], inputs[key]["barriers"]
@@ -39,7 +47,7 @@ def calculate(members, start, end, room=None):
         label = _measure_span(a, b, context, timelines, totals, excluded, contributions)
         if label:
             _tally(tallies, seen, timelines, label, (a + b) / 2, b - a)
-    _samples(context, timelines, totals)
+    _duration_counts(totals)
     return {
         "scorer_version": SCORER_VERSION,
         "start": start,
@@ -56,7 +64,7 @@ def calculate(members, start, end, room=None):
         "excluded": excluded,
         "shared_recording_seconds": seconds(combined["coverage"]),
         "timing": {key: item["timing"] for key, item in members.items()},
-        "sample_basis": "Unique observation timestamps within shared recording coverage",
+        "sample_basis": "Observed recording duration; unchanged values count for how long they hold",
         "label_basis": "Any member labelled present; empty requires every member labelled empty. Human labels override estimates on the same member.",
     }
 
@@ -128,19 +136,13 @@ def _add(total, duration, hit, possible, confidence):
     total["weighted_active_seconds"] += duration * confidence * hit
 
 
-def _samples(context, timelines, totals):
-    times = sorted(
-        set(chain.from_iterable(item["rows"].times for item in context["members"].values()))
-    )
-    covered = [ts for ts in times if timelines["room"]["coverage"].at(ts)]
-    for ts, label in zip(covered, truth.room_truths(context, covered), strict=True):
-        if label is None:
-            continue
-        state, source, _confidence = label
-        for key, timeline in timelines.items():
-            total = totals[key][source][state]
-            total["samples"] += 1
-            total["hits"] += bool(timeline["upper" if state == "not_present" else "lower"].at(ts))
+def _duration_counts(totals):
+    """Native admission uses observed duration in the legacy six-second support unit."""
+    for radar in totals.values():
+        for source in radar.values():
+            for total in source.values():
+                total["samples"] = total["seconds"] / SAMPLE_SECONDS
+                total["hits"] = total["active_seconds"] / SAMPLE_SECONDS
 
 
 def _result(totals):
@@ -149,7 +151,7 @@ def _result(totals):
     if None in sources.values():
         return {
             **result,
-            "reason": "Need shared occupied and empty recordings, with at least 50 labelled observation times for each state.",
+            "reason": "Need enough shared occupied and empty recordings to meet the minimum evidence requirement.",
         }
     present = totals[sources["present"]]["present"]
     empty = totals[sources["not_present"]]["not_present"]

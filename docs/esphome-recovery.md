@@ -404,6 +404,75 @@ With no Timeout it estimates raw-crossing durations between snapshots. Learn and
 
 ## Timing and reporting options: behavior changes to consider
 
+### Gate rounding
+
+The package defaults to rounding all 18 per-gate energy readings and threshold
+writes to the nearest **10** on the ESP. Home Assistant threshold controls use
+the same increment, offering 0, 10, 20, through 100. Duplicate rounded energy
+reports are suppressed after the existing two-second throttle. Distances, gate
+limits, timeout and presence signals retain their existing behavior.
+
+Each radar exposes **Gate Rounding** as an editable HA configuration number.
+Change it to update energy rounding and inherited threshold steps without
+rebuilding firmware. The ESP restores the saved setting across restarts.
+Changing the increment does not rewrite existing radar thresholds. A change
+briefly reconnects the node's API clients, allowing HA to retrieve the updated
+`min/max/step` metadata. All entities on that ESP may briefly appear unavailable;
+the ESP and radar continue running. Setting the same value again does not cause
+a reconnect. Rapid edits are combined by a 500 ms debounce. After one gate
+reporting interval, unchanged raw readings are reprocessed with the new rounding
+before reconnecting, so a stable energy reading also reflects the new increment.
+
+The package substitution supplies the initial default when no saved setting
+exists. Change `ld2410_gate_rounding` in the package's `substitutions`, or override
+it in the calling node configuration:
+
+```yaml
+substitutions:
+  ld2410_gate_rounding: "5"
+
+packages:
+  ld2410: !include packages/ld2410c.yaml
+```
+
+For a per-radar override, put `ld2410_gate_rounding: "5"` in that include's
+`vars`. The HA number accepts integer increments from 1 through 100. Divisors
+of 100 such as 1, 2, 5, 10, 20, 25, 50 or 100 produce evenly spaced values
+across the full range. Set it to **1** to retain full integer precision. Halfway values round
+up: with 10, 5 becomes 10 and 95 becomes 100.
+
+The exposed threshold numbers forward rounded writes to internal LD2410 driver
+numbers and report the actual driver readback. Existing non-aligned thresholds
+are displayed accurately until changed; boot does not rewrite radar settings.
+Each gate exposes its permitted range and increment through the HA number
+entity's `min`, `max`, and `step` attributes. Caller configurations can restrict
+individual gates using the public control's existing ID:
+
+```yaml
+number:
+  - id: !extend ld2410_g0_still
+    min_value: 20
+    max_value: 80
+    step: 10
+```
+
+Use the radar's configured ID prefix in place of `ld2410` for additional radars.
+Gate min/max restrictions remain in force when Gate Rounding changes. A caller
+step differing from the package's initial rounding default stays fixed; controls
+whose configured step matches that default follow the runtime increment.
+Threshold writes use these final per-gate attributes, rounding to
+`min + n * step` within the configured bounds. Gate bounds must stay within
+the LD2410's 0–100 range, with integer values and a positive integer step.
+Choose a maximum aligned with the minimum and step; otherwise the highest
+permitted grid value below the maximum is used. Gate-specific threshold
+restrictions do not change the energy reporting increment.
+
+The radar still compares raw energy with its threshold, so rounded energy can
+hide crossings near a threshold and reduce the precision of tuner replay and
+learning. The tuner's timed recording cadence and stored observation count do
+not change. Rebuild and flash once to add the Gate Rounding control; subsequent
+HA changes require no firmware build or flash.
+
 No option below was changed automatically:
 
 | Option | Effect | Tradeoff |
@@ -415,11 +484,12 @@ No option below was changed automatically:
 | `ld2410_sensor_throttle` | Limits aggregate energy/distance reports | Faster reporting affects telemetry traffic, not the radar's gate decision or its timeout. |
 | Maximum distance / distance resolution | Changes the physical area covered by active gates | Can exclude pets or clutter, but also people at those locations. Changing these requires a new assessment; it is not a general pet filter. |
 
-Keep raw per-gate energies for calibration. Adding averaging, median filters or
+Use Gate Rounding **1** to retain raw integer gate energies for calibration.
+Adding averaging, median filters or
 clipping to them would make the learner fit a different signal from the radar's
 own threshold input. Engineering Mode is needed for per-gate reporting; it is
-already exposed by the package. No additional firmware filtering or custom
-presence handler is introduced.
+already exposed by the package. Rounding filters the reported energies; it does
+not replace the radar's presence logic.
 
 Timing semantics: [LD2410 configuration](https://esphome.io/components/sensor/ld2410/)
 and [ESPHome binary sensor filters](https://esphome.io/components/binary_sensor/#binary-sensor-filters).

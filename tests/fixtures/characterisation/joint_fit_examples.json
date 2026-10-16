@@ -1,6 +1,6 @@
 {
  "both_strong": {
-  "cost_after": 2.5,
+  "cost_after": 0.0,
   "cost_before": 500.0,
   "room": {
    "basis": "human",
@@ -10,18 +10,18 @@
     "automatic": {
      "not_present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 0,
+      "samples": 0.0,
       "seconds": 0.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 0.0
      },
      "present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 0,
+      "samples": 0.0,
       "seconds": 0.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 0.0
@@ -30,92 +30,26 @@
     "human": {
      "not_present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 99,
-      "seconds": 594.0,
+      "samples": 99.5,
+      "seconds": 597.0,
       "weighted_active_seconds": 0.0,
-      "weighted_seconds": 594.0
+      "weighted_seconds": 597.0
      },
      "present": {
-      "active_seconds": 597.0,
-      "hits": 100,
-      "possible_seconds": 597.0,
-      "samples": 100,
+      "active_seconds": 600.0,
+      "hits": 100.0,
+      "possible_seconds": 600.0,
+      "samples": 100.0,
       "seconds": 600.0,
-      "weighted_active_seconds": 597.0,
+      "weighted_active_seconds": 600.0,
       "weighted_seconds": 600.0
      }
     }
    },
-   "presence_recall": 0.995,
-   "score": 97.5,
-   "sources": {
-    "not_present": "human",
-    "present": "human"
-   },
-   "target_met": false
-  },
-  "thresholds": {
-   "a": {
-    "g0_move": 40
-   },
-   "b": {
-    "g0_move": 27
-   }
-  }
- },
- "different_timing": {
-  "cost_after": 1.851851852,
-  "cost_before": 1.851851852,
-  "room": {
-   "basis": "human",
-   "false_positive_percent": 1.851851852,
-   "missed_time_cost": 5.0,
-   "outcomes": {
-    "automatic": {
-     "not_present": {
-      "active_seconds": 0.0,
-      "hits": 0,
-      "possible_seconds": 0.0,
-      "samples": 0,
-      "seconds": 0.0,
-      "weighted_active_seconds": 0.0,
-      "weighted_seconds": 0.0
-     },
-     "present": {
-      "active_seconds": 0.0,
-      "hits": 0,
-      "possible_seconds": 0.0,
-      "samples": 0,
-      "seconds": 0.0,
-      "weighted_active_seconds": 0.0,
-      "weighted_seconds": 0.0
-     }
-    },
-    "human": {
-     "not_present": {
-      "active_seconds": 11.0,
-      "hits": 2,
-      "possible_seconds": 5.0,
-      "samples": 99,
-      "seconds": 594.0,
-      "weighted_active_seconds": 11.0,
-      "weighted_seconds": 594.0
-     },
-     "present": {
-      "active_seconds": 589.0,
-      "hits": 98,
-      "possible_seconds": 589.0,
-      "samples": 98,
-      "seconds": 589.0,
-      "weighted_active_seconds": 589.0,
-      "weighted_seconds": 589.0
-     }
-    }
-   },
    "presence_recall": 1.0,
-   "score": 98.15,
+   "score": 100.0,
    "sources": {
     "not_present": "human",
     "present": "human"
@@ -131,8 +65,74 @@
    }
   }
  },
+ "different_timing": {
+  "cost_after": 0.751675042,
+  "cost_before": 2.25921273,
+  "room": {
+   "basis": "human",
+   "false_positive_percent": 0.335008375,
+   "missed_time_cost": 5.0,
+   "outcomes": {
+    "automatic": {
+     "not_present": {
+      "active_seconds": 0.0,
+      "hits": 0.0,
+      "possible_seconds": 0.0,
+      "samples": 0.0,
+      "seconds": 0.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 0.0
+     },
+     "present": {
+      "active_seconds": 0.0,
+      "hits": 0.0,
+      "possible_seconds": 0.0,
+      "samples": 0.0,
+      "seconds": 0.0,
+      "weighted_active_seconds": 0.0,
+      "weighted_seconds": 0.0
+     }
+    },
+    "human": {
+     "not_present": {
+      "active_seconds": 2.0,
+      "hits": 0.333333333,
+      "possible_seconds": 2.0,
+      "samples": 99.5,
+      "seconds": 597.0,
+      "weighted_active_seconds": 2.0,
+      "weighted_seconds": 597.0
+     },
+     "present": {
+      "active_seconds": 599.5,
+      "hits": 99.916666667,
+      "possible_seconds": 599.5,
+      "samples": 100.0,
+      "seconds": 600.0,
+      "weighted_active_seconds": 599.5,
+      "weighted_seconds": 600.0
+     }
+    }
+   },
+   "presence_recall": 0.999166667,
+   "score": 99.25,
+   "sources": {
+    "not_present": "human",
+    "present": "human"
+   },
+   "target_met": true
+  },
+  "thresholds": {
+   "a": {
+    "g0_move": 40
+   },
+   "b": {
+    "g0_move": 50
+   }
+  }
+ },
  "handoff": {
-  "cost_after": 2.5,
+  "cost_after": 0.0,
   "cost_before": 100.0,
   "room": {
    "basis": "human",
@@ -142,18 +142,18 @@
     "automatic": {
      "not_present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 0,
+      "samples": 0.0,
       "seconds": 0.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 0.0
      },
      "present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 0,
+      "samples": 0.0,
       "seconds": 0.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 0.0
@@ -162,31 +162,31 @@
     "human": {
      "not_present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 99,
-      "seconds": 594.0,
+      "samples": 99.5,
+      "seconds": 597.0,
       "weighted_active_seconds": 0.0,
-      "weighted_seconds": 594.0
+      "weighted_seconds": 597.0
      },
      "present": {
-      "active_seconds": 597.0,
-      "hits": 100,
-      "possible_seconds": 597.0,
-      "samples": 100,
+      "active_seconds": 600.0,
+      "hits": 100.0,
+      "possible_seconds": 600.0,
+      "samples": 100.0,
       "seconds": 600.0,
-      "weighted_active_seconds": 597.0,
+      "weighted_active_seconds": 600.0,
       "weighted_seconds": 600.0
      }
     }
    },
-   "presence_recall": 0.995,
-   "score": 97.5,
+   "presence_recall": 1.0,
+   "score": 100.0,
    "sources": {
     "not_present": "human",
     "present": "human"
    },
-   "target_met": false
+   "target_met": true
   },
   "thresholds": {
    "a": {
@@ -198,8 +198,8 @@
   }
  },
  "strong_and_weak": {
-  "cost_after": 2.5,
-  "cost_before": 2.5,
+  "cost_after": 0.0,
+  "cost_before": 0.0,
   "room": {
    "basis": "human",
    "false_positive_percent": 0.0,
@@ -208,18 +208,18 @@
     "automatic": {
      "not_present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 0,
+      "samples": 0.0,
       "seconds": 0.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 0.0
      },
      "present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 0,
+      "samples": 0.0,
       "seconds": 0.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 0.0
@@ -228,31 +228,31 @@
     "human": {
      "not_present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 99,
-      "seconds": 594.0,
+      "samples": 99.5,
+      "seconds": 597.0,
       "weighted_active_seconds": 0.0,
-      "weighted_seconds": 594.0
+      "weighted_seconds": 597.0
      },
      "present": {
-      "active_seconds": 597.0,
-      "hits": 100,
-      "possible_seconds": 597.0,
-      "samples": 100,
+      "active_seconds": 600.0,
+      "hits": 100.0,
+      "possible_seconds": 600.0,
+      "samples": 100.0,
       "seconds": 600.0,
-      "weighted_active_seconds": 597.0,
+      "weighted_active_seconds": 600.0,
       "weighted_seconds": 600.0
      }
     }
    },
-   "presence_recall": 0.995,
-   "score": 97.5,
+   "presence_recall": 1.0,
+   "score": 100.0,
    "sources": {
     "not_present": "human",
     "present": "human"
    },
-   "target_met": false
+   "target_met": true
   },
   "thresholds": {
    "a": {

@@ -88,8 +88,9 @@ def overnight_joint_attempt():
     from tuner_under_test.runtime import schedule
 
     case = joint.JointRuntimeTests()
-    case.setUp()
+    case._setupAsyncioRunner()  # Its cleanup dispatcher requires an initialized runner.
     try:
+        case.setUp()
         case.office()
         case.runtime.data["learning_schedule"] = {"enabled": True, "auto_apply": False}
         case.runtime.async_save = AsyncMock()
@@ -103,13 +104,17 @@ def overnight_joint_attempt():
             for key, item in sorted(case.runtime.data["devices"].items())
         }
     finally:
-        case.doCleanups()
+        try:
+            case.doCleanups()
+        finally:
+            case._tearDownAsyncioRunner()
 
 
 def reference_profile():
     case = references.ReferenceRuntimeTests()
-    case.setUp()
+    case._setupAsyncioRunner()
     try:
+        case.setUp()
         for i in range(40):
             case.sample(BASE + i * 6, 70 if i < 20 else 8)
         with patch("time.time", return_value=BASE + 1000):
@@ -124,7 +129,10 @@ def reference_profile():
         ]
         return {"summary": summary, "periods": periods}
     finally:
-        case.doCleanups()
+        try:
+            case.doCleanups()
+        finally:
+            case._tearDownAsyncioRunner()
 
 
 # name -> (builder, keys dropped as volatile); used by tools/update_characterisation.py.
@@ -142,19 +150,16 @@ def check(name):
     golden(name, builder(), drop)
 
 
-PRE_TASK_17 = Path(__file__).parent / "fixtures" / "pre_task17"
-
-
 class CharacterisationTests(unittest.TestCase):
-    def test_existing_report_fields_unchanged(self):
-        """Without Task 17's per-member role fields the assessment equals its frozen
-        pre-Task-17 golden: the change only adds keys."""
+    def test_existing_native_report_fields_unchanged(self):
+        """Role fields are additive to the reviewed native duration report."""
         report = room_assessment_two_members()
-        for device in report["devices"].values():
-            for name in roles.FIELDS:
-                del device[name]
-        frozen = (PRE_TASK_17 / "room_assessment_two_members.json").read_text(encoding="utf-8")
-        self.assertEqual(canonical(report), frozen)
+        expected = json.loads((FIXTURES / "room_assessment_two_members.json").read_text())
+        for value in (report, expected):
+            for device in value["devices"].values():
+                for name in roles.FIELDS:
+                    del device[name]
+        self.assertEqual(canonical(report), canonical(expected))
 
     def test_role_fields_are_the_only_additions(self):
         report = room_assessment_two_members()

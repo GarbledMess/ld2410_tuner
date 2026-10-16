@@ -202,7 +202,6 @@ def _install(runtime, job, result):
     if runtime._reference_closed:
         _restore_all(runtime, [job])
         return
-    attribution.remember(runtime, job["view"])
     device_id = job["device_id"]
     device = runtime.data["devices"].get(device_id)
     if device is None:

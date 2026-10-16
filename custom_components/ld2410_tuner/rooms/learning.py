@@ -5,16 +5,16 @@ import time
 from copy import deepcopy
 from uuid import uuid4
 
-from ..calibration import recovery, results, settings
+from ..calibration import ownership, recovery, results, settings
 from ..calibration.constants import METHOD
 from ..runtime.tasks import finish_task
-from . import fitting, groups, jobs, truth
+from . import adaptive, fitting, groups, jobs, truth
 
-# Approximations that make a set's fit faster, off (exact) by default. A fit scores the last
-# ``LEARNING_DAYS`` of history; attribution (a radar's quiet baseline) reads the last
-# ``ATTRIBUTION_DAYS`` of it (None: all of the retained history).
+# A fit scores the last ``LEARNING_DAYS`` of history. Attribution uses a recent quiet
+# baseline: seven days preserved all measured accuracy metrics on the real-data harness
+# and shortened linked learning. Set ``ATTRIBUTION_DAYS`` to None for full-history exactness.
 LEARNING_DAYS = 7
-ATTRIBUTION_DAYS = None
+ATTRIBUTION_DAYS = 7
 
 CHANGED = "Zone labels, settings or membership changed; learn again"
 
@@ -109,13 +109,14 @@ async def _run(runtime, set_id, chosen, report):
             learned = await jobs.on_views(
                 runtime,
                 members,
-                fitting.fit_set,
+                _fit_set,
                 members,
                 end - LEARNING_DAYS * 86400,
                 end,
                 rooms,
                 settings.automatic_weight(runtime.data),
             )
+            await runtime.hass.async_add_executor_job(_check_history, runtime, members)
         _unchanged(runtime, list(chosen), signature)
         learned.update(
             id=report["id"],
@@ -144,6 +145,17 @@ async def _run(runtime, set_id, chosen, report):
     finally:
         report["finished_at"] = time.time()
         runtime._schedule_save()
+
+
+def _fit_set(members, start, end, rooms, weight):
+    contexts = adaptive.collect_contexts(members, start, end, rooms)
+    return fitting.fit_set(members, start, end, rooms, weight, quality_contexts=contexts)
+
+
+def _check_history(runtime, groups):
+    members = {key: item for found in groups.values() for key, item in found.items()}
+    if not all(ownership.intact(item["view"], runtime, [key]) for key, item in members.items()):
+        raise ValueError(CHANGED)
 
 
 async def _manual_apply(runtime, learned, report):
@@ -179,7 +191,7 @@ def _measured(learned, device_id):
 def projection(learned, device_id):
     signature = learned["signature"][device_id]
     report = _measured(learned, device_id)
-    return {
+    result = {
         "id": learned["id"],
         "method": METHOD,
         "created_at": learned["created_at"],
@@ -212,6 +224,9 @@ def projection(learned, device_id):
             "Joint zone result: all member radars are required. Review and apply the complete recommendation in Rooms and zones."
         ],
     }
+    if "automatic_evidence" in learned:
+        result["automatic_evidence"] = deepcopy(learned["automatic_evidence"])
+    return result
 
 
 def _save_member(device, learned, key, sources, remembered):

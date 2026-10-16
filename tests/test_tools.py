@@ -1,17 +1,15 @@
 """Offline replay, quality-gate, package and release transport regressions."""
 
 import argparse
-import base64
 import contextlib
+import datetime
 import importlib
 import io
 import json
-import struct
 import sys
 import tempfile
 import unittest
 import urllib.error
-import zlib
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -24,23 +22,37 @@ complexity = importlib.import_module("check_complexity")
 updater = importlib.import_module("update_characterisation")
 
 
-def block(count=100):
-    raw = b"".join(
-        struct.pack(">H", i * 6) + bytes([5 if i < count // 2 else 30] * 18) for i in range(count)
-    )
-    return {"start": 0, "count": count, "data": base64.b64encode(zlib.compress(raw)).decode()}
+START = 1_760_486_400.0  # A UTC midnight: the recording is one day file.
+
+
+def record(history, device_id, count=100):
+    """Write ``count`` six-second readings to ``device_id``'s day file under ``history``:
+    every gate at 5 for the first half, then 30."""
+    dayfile, daystore = replay.load("history.dayfile"), replay.load("history.daystore")
+    records = [
+        dayfile.Change(START, dict.fromkeys(range(18), 5)),
+        dayfile.Change(START + count // 2 * 6, dict.fromkeys(range(18), 30)),
+        dayfile.End(START + count * 6),
+    ]
+    start, end = daystore.bounds(daystore.date_of(START))
+    folder = history / daystore._folder_name(device_id)
+    folder.mkdir(parents=True)
+    day = dayfile.day_from_log(records, None, start, end)
+    (folder / f"{daystore.date_of(START).isoformat()}.day").write_bytes(dayfile.encode_day(day))
+    return folder
 
 
 class ReplayTests(unittest.TestCase):
     def test_replay_reports_are_anonymous_and_never_change_source_data(self):
         device = {
-            "history": [block()],
             "history_labels": [],
             "entities": {"sensor.synthetic": {"gate": 0, "kind": "move"}},
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             store = root / "store.json"
+            history = root / "ld2410_tuner" / "history"
+            day = next(record(history, "private_device").iterdir())
             labels = root / "labels.json"
             output = root / "output.json"
             store.write_text(
@@ -53,8 +65,16 @@ class ReplayTests(unittest.TestCase):
                             "private_device": {
                                 "history": {
                                     "labels": [
-                                        {"start": 0, "end": 300, "state": "not_present"},
-                                        {"start": 300, "end": 600, "state": "present"},
+                                        {
+                                            "start": START,
+                                            "end": START + 300,
+                                            "state": "not_present",
+                                        },
+                                        {
+                                            "start": START + 300,
+                                            "end": START + 600,
+                                            "state": "present",
+                                        },
                                     ]
                                 }
                             }
@@ -62,9 +82,10 @@ class ReplayTests(unittest.TestCase):
                     }
                 )
             )
-            before = store.read_bytes(), labels.read_bytes()
+            before = store.read_bytes(), labels.read_bytes(), day.read_bytes()
             args = argparse.Namespace(
                 store=store,
+                history=None,  # Beside the store, as Home Assistant keeps it.
                 labels=labels,
                 output=output,
                 baseline=replay.PACKAGE / "presence" / "inference.py",
@@ -74,10 +95,30 @@ class ReplayTests(unittest.TestCase):
             self.assertEqual(len(reports), 3)
             self.assertEqual(json.loads(output.read_text()), reports)
             self.assertNotIn("private_device", output.read_text() + stdout.getvalue())
-            self.assertEqual(before, (store.read_bytes(), labels.read_bytes()))
+            self.assertEqual(before, (store.read_bytes(), labels.read_bytes(), day.read_bytes()))
+            self.assertEqual([path.name for path in day.parent.iterdir()], [day.name])
             for report in reports:
                 self.assertEqual(report["before"], report["after"])
                 self.assertEqual(sum(report["after"]["validation"]["matrix"].values()), 20)
+
+    def test_a_day_still_being_recorded_ends_at_its_last_record(self):
+        """A log continues the finished day before it, and is read up to its last record
+        (as the integration recovers it), never to midnight."""
+        dayfile, daystore = replay.load("history.dayfile"), replay.load("history.daystore")
+        with tempfile.TemporaryDirectory() as directory:
+            folder = record(Path(directory), "radar", count=14400)  # Held to midnight.
+            date = daystore.date_of(START) + datetime.timedelta(days=1)
+            start = daystore.bounds(date)[0]
+            log = folder / f"{date.isoformat()}.log"
+            written = dayfile.encode_records([dayfile.Change(start + 12, {0: 9})], start)
+            log.write_bytes(written)
+            days = replay.recorded_days(Path(directory), "radar")
+            self.assertEqual(log.read_bytes(), written)  # Read, never recovered in place.
+            rows = replay.decode_rows({"history_labels": []}, days[1:])
+        self.assertEqual(
+            [(ts - start, values["g0_move"]) for ts, values, _ in rows], [(0, 30), (6, 30)]
+        )
+        self.assertEqual(rows[0][1]["g1_still"], 30)
 
     def test_future_holdout_labels_cannot_train_the_estimator(self):
         class Model:
@@ -128,10 +169,11 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(
             replay.confirm_legacy({"label": "present", "score": 0}, state, 5), "unknown"
         )
-        malformed = block()
-        malformed["count"] += 1
-        with self.assertRaisesRegex(ValueError, "block length"):
-            replay.decode_rows({"history": [malformed]})
+        with tempfile.TemporaryDirectory() as directory:
+            day = next(record(Path(directory), "radar").iterdir())
+            day.write_bytes(b"corrupt")
+            with self.assertRaisesRegex(ValueError, "Not a recorded day file"):
+                replay.recorded_days(Path(directory), "radar")
         histogram = [100] * 101
         replay.compress(histogram)
         self.assertEqual(histogram, [50] * 101)

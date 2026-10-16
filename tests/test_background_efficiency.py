@@ -10,7 +10,7 @@ import unittest
 from copy import deepcopy
 
 import old_background as old
-import test_tuner  # noqa: F401  (registers tuner_under_test)
+import test_tuner as harness
 from tuner_under_test.const import HISTORY_KEYS
 from tuner_under_test.rooms import attribution
 
@@ -118,8 +118,45 @@ def steps(rng, times, answers):
         reads.append(t)
         return values[sum(1 for edge in edges if edge <= t)]
 
+    read.edges = sorted(set(edges))
     read.reads = reads
     return read
+
+
+def observation_runtime(rows):
+    runtime = types.SimpleNamespace(data={"devices": {"a": {}}})
+    return harness.record_rows(runtime, "a", rows)
+
+
+def folded_observations(runtime, own, room, automatic):
+    profiles = {source: refs.empty() for source in (*training.ROOM_SOURCES, "human")}
+    training._fold_native(runtime, "a", own, room, automatic, profiles, NOW - 1)
+    return profiles
+
+
+def point_observations(runtime):
+    """Independent half-second grid: all synthetic label edges fall on this clock."""
+    from tuner_under_test.history import spans
+
+    for cell in spans.events(runtime, "a"):
+        row = bytes(255 if value is None else int(value) for value in cell.values)
+        for tick in range(round(cell.start * 2), round(cell.end * 2)):
+            yield tick / 2, row
+
+
+def oracle_profiles(runtime, own, room, automatic):
+    points = types.SimpleNamespace(_iter_history_samples=lambda device: point_observations(runtime))
+    auto = attribution.select(room, automatic)
+    human = old.human_observations(points, None, own, room)
+    inferred = old.room_observations(points, None, auto, own) if auto else ()
+    profiles = {source: refs.empty() for source in (*training.ROOM_SOURCES, "human")}
+    for observations in (human, inferred):
+        folds = {source: refs.SpanFold(profile) for source, profile in profiles.items()}
+        for timestamp, values, state, source, confidence in observations:
+            folds[source].add(timestamp, timestamp + 0.5, values, state, source, confidence)
+        for fold in folds.values():
+            fold.close()
+    return profiles
 
 
 class RoomObservationTests(unittest.TestCase):
@@ -131,7 +168,7 @@ class RoomObservationTests(unittest.TestCase):
             (t, bytes(rng.choice((rng.randrange(101), 101, 255)) for _ in HISTORY_KEYS))
             for t in times
         ]
-        runtime = types.SimpleNamespace(_iter_history_samples=lambda device: iter(rows))
+        runtime = observation_runtime(rows)
         labels = [None, None, None, "present", "not_present", "unknown"]
         own = steps(rng, times or [NOW], labels)
         humans = [
@@ -156,17 +193,21 @@ class RoomObservationTests(unittest.TestCase):
         rng = random.Random(21)
         for _ in range(150):
             runtime, own, room, automatic = self.scene(rng)
-            auto = attribution.select(room, automatic)
-            expected_human = list(old.human_observations(runtime, None, own, room))
-            expected_room = list(old.room_observations(runtime, None, auto, own)) if auto else []
-            found = list(training._observations(runtime, None, own, room, automatic))
-            self.assertEqual([o for o in found if o[3] == "human"], expected_human)
-            for source in training.ROOM_SOURCES:
-                self.assertEqual(
-                    [o for o in found if o[3] == source],
-                    [o for o in expected_room if o[3] == source],
+            expected = oracle_profiles(runtime, own, room, automatic)
+            found = folded_observations(runtime, own, room, automatic)
+            for source in (*training.ROOM_SOURCES, "human"):
+                actual_periods, expected_periods = (
+                    found[source]["periods"],
+                    expected[source]["periods"],
                 )
-            self.assertEqual(len(found), len(expected_human) + len(expected_room))
+                self.assertEqual(len(actual_periods), len(expected_periods))
+                for actual, wanted in zip(actual_periods, expected_periods, strict=True):
+                    self.assertAlmostEqual(actual["confidence"], wanted["confidence"], delta=1e-12)
+                    self.assertEqual(refs.decode(actual["data"]), refs.decode(wanted["data"]))
+                    self.assertEqual(
+                        {k: v for k, v in actual.items() if k not in ("confidence", "data")},
+                        {k: v for k, v in wanted.items() if k not in ("confidence", "data")},
+                    )
 
     def test_a_sample_is_asked_about_the_room_once(self):
         rng = random.Random(22)
@@ -174,7 +215,13 @@ class RoomObservationTests(unittest.TestCase):
         room = steps(rng, times, [("present", "human", 1.0), None])
         automatic = steps(rng, times, [("present", "automatic", 0.8), None])
         rows = [(t, bytes(18)) for t in times]
-        runtime = types.SimpleNamespace(_iter_history_samples=lambda device: iter(rows))
-        list(training._observations(runtime, None, lambda t: None, room, automatic))
+        runtime = observation_runtime(rows)
+        folded_observations(runtime, lambda t: None, room, automatic)
         self.assertEqual(len(room.reads), len(set(room.reads)), "each sample once")
-        self.assertEqual(len(room.reads), len(times))
+        # Physical rows split at reader edges; each piece asks the room only once.
+        from tuner_under_test.history import spans
+
+        cells = list(spans.events(runtime, "a"))
+        edges = training._native_edges([room, automatic])
+        pieces = sum(len(list(training._native_pieces(cell, edges))) for cell in cells)
+        self.assertEqual(len(room.reads), pieces)

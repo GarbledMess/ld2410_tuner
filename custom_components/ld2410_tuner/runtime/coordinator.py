@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import OrderedDict, defaultdict
 from typing import Any
 
@@ -29,6 +30,12 @@ from . import discovery, schedule
 class TunerRuntime:
     """Own state and expose a stable API; feature modules receive it explicitly."""
 
+    @property
+    def _physical_history_start(self):
+        if hasattr(self, "_snapshot_history_start"):
+            return self._snapshot_history_start
+        return max(0, time.time() - recording.retention_seconds(self.data))
+
     def __init__(self, hass: HomeAssistant, store: Store, data: dict[str, Any]) -> None:
         self.hass = hass
         self.store = store
@@ -53,9 +60,9 @@ class TunerRuntime:
         self._room_sensor_open: dict[str, dict[str, Any]] = {}
         self._room_sensor_checked: set[str] = set()
         self._history_runtime: dict[str, dict[str, Any]] = {}
+        # The recorded history (history/daystore.py); None until the integration opens it.
+        self._days = None
         self._history_cache = OrderedDict()
-        # Device id -> history.recording.BlockIndex of its current history list.
-        self._block_index = {}
         # Device id -> history.label_counts.Counts behind its histograms.
         self._label_counts = {}
         self._history_jobs = {}
@@ -79,7 +86,6 @@ class TunerRuntime:
         self._reference_task = None
         self._reference_running: set[str] = set()
         self._reference_closed = False
-        self._attribution_cache = {}
         self._room_learning_jobs = {}
         self._comparison_cache = {}
         self._comparison_semaphore = asyncio.Semaphore(2)
@@ -130,13 +136,10 @@ class TunerRuntime:
     handle_state_change = discovery.handle_state_change
     sample_devices = autolabelling.sample_devices
     _record_history_sample = recording._record_history_sample
-    _flush_history_block = recording._flush_history_block
     _enforce_history_retention = recording._enforce_history_retention
     async_clean_history = recording.async_clean_history
     _compact_history_labels = staticmethod(manual_training._compact_history_labels)
     flush_history = recording.flush_history
-    _iter_history_samples = recording._iter_history_samples
-    _history_columns = recording._history_columns
     label_history_range = manual_training.label_history_range
     edit_history_label = manual_training.edit_history_label
     _manual_history_state = staticmethod(manual_training._manual_history_state)
@@ -149,7 +152,6 @@ class TunerRuntime:
     auto_learning_summary = staticmethod(autolabelling.auto_learning_summary)
     record_auto_feedback = autolabelling.record_auto_feedback
     refresh_references = rebuilds.refresh_references
-    _migrate_device_samples = manual_training._migrate_device_samples
     _compress_histogram = staticmethod(manual_training._compress_histogram)
     _ensure_histograms = manual_training._ensure_histograms
     restore_timeouts = manual_training.restore_timeouts

@@ -124,7 +124,6 @@ async def _compare_and_apply(runtime, device_id, learned, report, source):
         measured = await runtime.hass.async_add_executor_job(
             comparison.calculate, view, device_id, context
         )
-    attribution.remember(runtime, view)
     report.update(assessment=measured, scorer_version=comparison.SCORER_VERSION)
 
     def guard(applied):

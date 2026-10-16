@@ -3,24 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import heapq
 import math
 import time
-from bisect import bisect_right
-from collections import defaultdict
-from copy import deepcopy
 from typing import Any
 
+from ..calibration.constants import SAMPLE_SECONDS
 from ..const import (
-    HISTOGRAM_BINS,
     HISTORY_KEYS,
     HISTORY_LABELS_MAX,
     MAX_HISTOGRAM_COUNT,
     TRAINING_STATES,
 )
 from ..presence import reference_training, references
-from . import label_counts
-from .policy import STORED
+from . import daystore, label_counts, spans, summaries
+from .policy import retention_seconds
 
 
 def _compact_history_labels(device: dict[str, Any]) -> None:
@@ -79,11 +75,13 @@ def label_history_range(
     _prepare_history_edit(runtime, device)
     labels = apply_range(device.get("history_labels", []), start, end, state)
     _save_history_edit(runtime, device, labels, [(start, end)])
-    samples = runtime._iter_history_samples(device, since=start, until=end)
+    seconds = _observed_seconds(runtime, device_id, start, end)
     return {
         "ok": True,
-        "labelled_samples": sum(1 for ts, _ in samples if start <= ts < end),
+        "labelled_samples": seconds / SAMPLE_SECONDS,  # Recorded time, in six-second units.
         "history_labels": device["history_labels"],
+        "observed_seconds": seconds,
+        "support_basis": "observed_native_duration",
     }
 
 
@@ -125,8 +123,6 @@ def _history_device(runtime, device_id):
 
 def _prepare_history_edit(runtime, device):
     runtime._ensure_histograms(device)
-    if "history_legacy_histograms" not in device:  # Copied once, not on every edit.
-        device["history_legacy_histograms"] = deepcopy(device["histograms"])
     now = time.time()
     runtime._close_training_interval(device, now)
     if device.get("training_state") in {"present", "not_present"}:
@@ -141,6 +137,27 @@ def _save_history_edit(runtime, device, labels, ranges):
     device["label_revision"] = device.get("label_revision", 0) + 1
     runtime._compact_history_labels(device)
     runtime._schedule_save()
+
+
+def _observed_seconds(runtime, device_id, start, end):
+    """Recorded time in ``[start, end)`` within retention where any gate read."""
+    start = max(
+        start,
+        time.time() - retention_seconds(runtime.data),
+        getattr(runtime, "_physical_history_start", -math.inf),
+    )
+    end = min(end, getattr(runtime, "_attribution_until", math.inf))
+    if end <= start:
+        return 0.0
+    days = getattr(runtime, "_days", None)
+    if days is None:
+        return 0.0
+    return sum(
+        summary.observed(start, end)
+        for date in days.days(device_id)
+        if daystore.bounds(date)[1] > start and daystore.bounds(date)[0] < end
+        if (summary := summaries.of(runtime, device_id, date)) is not None
+    )
 
 
 def _manual_history_state(device: dict[str, Any], timestamp: float) -> str | None:
@@ -162,32 +179,21 @@ def _history_label_at(device: dict[str, Any], timestamp: float) -> str:
     return _manual_history_state(device, timestamp) or "unknown"
 
 
-def _migrate_device_samples(runtime, device: dict[str, Any]) -> None:
-    """Convert the old raw sample arrays to bounded histograms once."""
-    if "histograms" in device:
-        return
-    histograms: dict[str, dict[str, list[int]]] = {}
-    for key, series in device.pop("samples", {}).items():
-        out = {"present": [0] * HISTOGRAM_BINS, "not_present": [0] * HISTOGRAM_BINS}
-        for state in ("present", "not_present"):
-            out[state] = _legacy_histogram(series.get(state, []))
-            runtime._compress_histogram(out[state])
-        histograms[key] = out
-    device["histograms"] = histograms
-
-
 def _compress_histogram(histogram: list[int]) -> None:
     total = sum(histogram)
     if total <= MAX_HISTOGRAM_COUNT:
         return
     # Keep a bounded, recency-weighted distribution. Halving makes recent
     # observations progressively more important without storing raw samples.
+    fractional = any(isinstance(count, float) for count in histogram)
+    if fractional:
+        histogram[:] = [value * MAX_HISTOGRAM_COUNT / total for value in histogram]
+        return
     for i, value in enumerate(histogram):
         histogram[i] = value // 2
 
 
 def _ensure_histograms(runtime, device: dict[str, Any]) -> dict[str, dict[str, list[int]]]:
-    runtime._migrate_device_samples(device)
     return device.setdefault("histograms", {})
 
 
@@ -226,7 +232,15 @@ def set_training_state(
     else:
         device.pop("training_timeout_seconds", None)
         device.pop("training_expires_at", None)
+    _native_label_rebuild(runtime, device_id, device)
     runtime._schedule_save()
+
+
+def _native_label_rebuild(runtime, device_id, device):
+    if not spans.has_events(runtime, device_id):
+        return
+    runtime._ensure_histograms(device)
+    device["histograms"] = _rebuild_histograms(runtime, device)
 
 
 def _close_training_interval(runtime, device, now):
@@ -262,6 +276,7 @@ async def _timeout_worker(runtime, device_id: str, seconds: float) -> None:
             device["training_state"] = "unknown"
             device.pop("training_label_start", None)
             device.pop("training_expires_at", None)
+            _native_label_rebuild(runtime, device_id, device)
             runtime._schedule_save()
     finally:
         if runtime._timeout_tasks.get(device_id) is asyncio.current_task():
@@ -269,6 +284,7 @@ async def _timeout_worker(runtime, device_id: str, seconds: float) -> None:
 
 
 def clear_samples(runtime, device_id: str) -> None:
+
     if device_id in runtime.data["devices"]:
         runtime.set_training_state(device_id, "unknown")
         runtime.data["devices"][device_id].pop("last_learning", None)
@@ -285,49 +301,15 @@ def clear_samples(runtime, device_id: str) -> None:
         runtime.data["devices"][device_id].pop("auto", None)
         runtime.data["devices"][device_id].pop("reference_profile", None)
         runtime.data["devices"][device_id].pop(references.STALE, None)
-        for key in (*STORED, "history_labels"):
-            runtime.data["devices"][device_id].pop(key, None)
-        runtime.data["devices"][device_id].pop("history_legacy_histograms", None)
-        runtime.data["devices"][device_id].pop("history_legacy_since", None)
+        runtime.data["devices"][device_id].pop("history_labels", None)
         runtime._live.pop(device_id, None)
         runtime._auto_runtime.pop(device_id, None)
         runtime._source_runtime.pop(device_id, None)
         runtime._history_runtime.pop(device_id, None)
+        if runtime._days is not None:
+            runtime._days.remove_device(device_id)
         label_counts.forget(runtime, device_id)
         runtime._schedule_save()
-
-
-def _history_label_reader(device):
-    """Resolve labels once, keeping last-label-wins semantics in logarithmic time."""
-    return index_reader(label_index(device))
-
-
-def label_index(device):
-    """``(times, states)``: the device's label (saved periods, then its live label) from each
-    time until the next one; None before the first or where no label applies."""
-    intervals = list(device.get("history_labels", []))
-    start = device.get("training_label_start")
-    if start is not None:
-        intervals.append(
-            {
-                "start": start,
-                "end": device.get("training_expires_at") or float("inf"),
-                "state": device.get("training_state", "unknown"),
-            }
-        )
-    return _label_index(_label_events(intervals))
-
-
-def index_reader(index):
-    """Read the label at a time from a ``label_index``."""
-    times, states = index
-
-    def read(timestamp):
-        position = bisect_right(times, timestamp) - 1
-        return states[position] if position >= 0 else None
-
-    read.edges = times  # Where the answer can change, in order.
-    return read
 
 
 def _preserved_labels(labels, start, end):
@@ -353,60 +335,7 @@ def _preserved_labels(labels, start, end):
 
 
 def _rebuild_histograms(runtime, device):
-    """Every retained sample's gate values under its current label, plus the untimed legacy
-    summaries, compressed. The counting itself is ``label_counts`` (incremental)."""
+    """Every retained recorded second's gate values under its current label, as stored
+    (``label_counts.stored``). The counting itself is ``label_counts`` (incremental)."""
     counted = label_counts.current(runtime, device)
-    rebuilt = {
-        key: {state: list(counted[key][state]) for state in ("present", "not_present")}
-        for key in HISTORY_KEYS
-    }
-    _restore_legacy_histograms(device, rebuilt)
-    for series in rebuilt.values():
-        runtime._compress_histogram(series["present"])
-        runtime._compress_histogram(series["not_present"])
-    return rebuilt
-
-
-def _restore_legacy_histograms(device, rebuilt):
-    legacy = device.get("history_legacy_histograms", {})
-    for key, legacy_series in legacy.items():
-        target = rebuilt.setdefault(
-            key, {"present": [0] * HISTOGRAM_BINS, "not_present": [0] * HISTOGRAM_BINS}
-        )
-        for label in ("present", "not_present"):
-            old_hist = legacy_series.get(label, [])
-            for index, count in enumerate(old_hist[:HISTOGRAM_BINS]):
-                target[label][index] += int(count)
-
-
-def _label_events(intervals):
-    events = defaultdict(list)
-    for order, label in enumerate(intervals):
-        start, end = float(label.get("start", 0)), float(label.get("end", 0))
-        if end > start:
-            events[start].append((-order, end, label.get("state", "unknown")))
-            events[end]  # Endpoints are needed even when no new interval starts.
-    return events
-
-
-def _label_index(events):
-    times, states, active = [], [], []
-    for timestamp, additions in sorted(events.items()):
-        for entry in additions:
-            heapq.heappush(active, entry)
-        while active and active[0][1] <= timestamp:
-            heapq.heappop(active)
-        times.append(timestamp)
-        states.append(active[0][2] if active else None)
-    return times, states
-
-
-def _legacy_histogram(values):
-    histogram = [0] * HISTOGRAM_BINS
-    for value in values:
-        try:
-            value = max(0, min(100, int(round(float(value)))))
-        except (TypeError, ValueError):
-            continue
-        histogram[value] += 1
-    return histogram
+    return label_counts.stored({key: counted[key] for key in HISTORY_KEYS})

@@ -80,11 +80,14 @@ Keep recordings and saved baseline code outside the repository:
 
 ```sh
 python3 tools/replay_autolabels.py /private/store.data \
+  --history /private/ld2410_tuner/history \
   --baseline /private/inference-v1.py \
   --labels /private/newer-labels.json \
   --output /private/replay-report.json
 ```
 
-The tool never modifies its inputs. CI tests use synthetic recordings, assert that
+`--history` is the folder of recorded day files (by default the `ld2410_tuner/history`
+folder beside the store, as Home Assistant keeps it); each recorded value is replayed as a
+reading every six seconds while it held. The tool never modifies its inputs. CI tests use synthetic recordings, assert that
 holdout labels cannot enter references, and verify the metric and anonymization
 contracts. Refactoring the replay produced exactly the same 15 scenario reports.

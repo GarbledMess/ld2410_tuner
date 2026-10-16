@@ -4,7 +4,6 @@ import json
 import sys
 import types
 import unittest
-from collections import Counter
 from copy import deepcopy
 from unittest.mock import AsyncMock, patch
 
@@ -14,23 +13,62 @@ import test_sources as source_harness
 import test_tuner as harness
 from tuner_under_test.calibration import (
     comparison,
-    evidence,
-    fitting,
     scoring,
     service,
     settings,
 )
-from tuner_under_test.history import recording
+from tuner_under_test.history import budget, daystore, recording
 from tuner_under_test.rooms import attribution, groups, room_labels
 
 refs = sys.modules["tuner_under_test.presence.references"]
 training = sys.modules["tuner_under_test.presence.reference_training"]
 inference = sys.modules["tuner_under_test.presence.inference"]
-cleanup = sys.modules["tuner_under_test.history.cleanup"]
-budget = sys.modules["tuner_under_test.history.budget"]
 NOW = 2_000_000_000
 # Quiet samples that give a rule-2 attribution confidence of 0.6, above MIN_AUTO_CONFIDENCE.
 QUIET = 60
+
+
+def setup_clock(case):
+    clock = patch("time.time", return_value=NOW)
+    case.clock = clock.start()
+    case.addCleanup(clock.stop)
+    harness.RuntimeTests.setUp(case)
+
+
+def measured(runtime, device_id, thresholds=None):
+    """What the learner takes from a radar's recorded history, as six-second units of
+    ``(present, empty)`` time per source (human, automatic) and the automatic evidence's mean
+    confidence: read now (open coverage reaches now; fixtures record in the past)."""
+    import time
+
+    from tuner_under_test.calibration import event_fitting
+
+    newest = recording.newest(runtime, device_id, float("-inf"))
+    with patch.object(time, "time", return_value=newest):
+        found = event_fitting.assess(
+            runtime, device_id, thresholds or {"g0_move": 50}, quality_context=False
+        )
+    units = {
+        source: tuple(
+            round(found[source]["duration"][key] / 6, 3)
+            for key in ("present_seconds", "empty_seconds")
+        )
+        for source in ("human", "automatic")
+    }
+    return units, found["automatic_evidence"]["mean_confidence"]
+
+
+def learned(runtime, device_id):
+    """The native device fit of ``g0_move`` as Learn runs it, read now."""
+    import time
+
+    from tuner_under_test.calibration import service
+
+    newest = recording.newest(runtime, device_id, float("-inf"))
+    with patch.object(time, "time", return_value=newest):
+        return service._fit_history(
+            runtime, device_id, {"g0_move": "number.threshold"}, {"g0_move": 50}
+        )
 
 
 def teach(profile, state, energy, source="human", start=NOW, count=60, confidence=1):
@@ -110,11 +148,13 @@ def test_quiet_presence_is_not_absorbed_into_background():
     assert noise["g0_still"]["not_present"][70] == 0
 
 
-def test_references_survive_retention_and_restart_with_bounded_storage():
+def test_references_survive_retention_and_restart_with_bounded_storage(tmp_path):
     profile = seeded()
-    device = {"reference_profile": profile, "history": []}
-    updated, _ = cleanup.clean_history(device, [], NOW + 40 * refs.DAY, 30 * refs.DAY)
-    device.update(updated)
+    store = daystore.DayStore(tmp_path / "history")
+    store.open(now=NOW + 40 * refs.DAY)
+    data = {"devices": {"a": {"reference_profile": profile}}}
+    prepared, _changes, _report = budget.prepare_days(store, data, NOW + 40 * refs.DAY, True)
+    device = prepared["devices"]["a"]
     restored = json.loads(json.dumps(device))
     assert estimate(restored["reference_profile"], 70, NOW + 40 * refs.DAY)[0] == "present"
     without_profile = budget.storage_bytes(
@@ -141,7 +181,6 @@ def test_profile_updates_do_not_mutate_previously_decoded_periods():
 
 
 def test_adapted_guesses_support_new_thresholds_after_human_recordings_expire():
-    fitting = sys.modules["tuner_under_test.calibration.fitting"]
     profile = seeded()
     later = NOW + 40 * refs.DAY
     assert estimate(profile, 50, later)[0] == "present"
@@ -153,7 +192,7 @@ def test_adapted_guesses_support_new_thresholds_after_human_recordings_expire():
             (later + 600 + offset + i * 6, {"g0_still": energy}, state, confidence)
             for i in range(60)
         )
-    result = fitting.fit_thresholds([], ["g0_still"], {"g0_still": 39}, automatic)
+    result = harness.fit([], ["g0_still"], {"g0_still": 39}, automatic)
     threshold = result["proposals"]["g0_still"]["threshold"]
     assert 50 <= threshold < 70
     assert result["evidence_basis"] == "automatic"
@@ -182,9 +221,13 @@ def test_batched_reference_import_matches_live_updates():
 
 
 class ReferenceRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    setUp = harness.RuntimeTests.setUp
+    setUp = setup_clock
     asyncTearDown = harness.RuntimeTests.asyncTearDown
-    sample = harness.RuntimeTests.sample
+
+    def sample(self, timestamp, value=10):
+        self.clock.return_value = timestamp
+        harness.RuntimeTests.sample(self, timestamp, value)
+
     entity = source_harness.SourceTests.entity
     configure = source_harness.SourceTests.configure
 
@@ -258,14 +301,15 @@ class ReferenceRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.sample(self.now + i * 6, 70)
         periods = self.device["reference_profile"]["periods"]
         assert len(periods) == 1
-        assert periods[0]["count"] == 2
-        assert periods[0]["start"] == self.now + 12
-        assert periods[0]["end"] == self.now + 18
+        assert periods[0]["count"] * 6 == 10
+        assert periods[0]["start"] == self.now + 10
+        assert periods[0]["end"] == self.now + 20
 
     def test_source_reconfiguration_drops_entity_models_and_clear_drops_all_models(self):
         self.configure()
         self.entity("binary_sensor.camera_person", "on")
         self.sample(self.now, 70)
+        self.sample(self.now + 6, 70)
         assert self.device["reference_profile"]["periods"]
         self.configure(negative=True)
         assert not self.device["reference_profile"]["periods"]
@@ -274,11 +318,14 @@ class ReferenceRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_existing_human_history_is_imported_once_with_original_times(self):
         self.sample(self.now, 70)
+        self.clock.return_value = self.now + 1
         self.runtime.label_history_range("a", self.now - 1, self.now + 1, "present")
         self.device.pop("reference_profile", None)
         await training.initialize(self.runtime)
         before = deepcopy(self.device["reference_profile"])
-        assert before["periods"][0]["end"] == self.now
+        assert before["periods"][0]["start"] == self.now
+        assert before["periods"][0]["end"] == self.now + 1
+        assert before["periods"][0]["count"] * 6 == 1
         await training.initialize(self.runtime)
         assert self.device["reference_profile"] == before
         with patch("time.time", return_value=self.now + 40 * refs.DAY):
@@ -286,38 +333,30 @@ class ReferenceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         assert self.device["reference_profile"] == before
 
 
-def test_legacy_histogram_import_keeps_age_uncertainty_explicit():
-    case = ReferenceRuntimeTests()
-    case.setUp()
-    try:
-        histogram = [0] * 101
-        histogram[70] = 100
-        case.device["history_legacy_histograms"] = {"g0_move": {"present": histogram}}
-        training._import_history(case.runtime, case.device)
-        profile = case.device["reference_profile"]
-        assert profile["periods"][0]["imported_legacy"]
-        assert refs.summary(profile, case.now)["legacy_age_unknown"]
-        assert refs.summary(profile, case.now)["last_independent_label"] is None
-    finally:
-        case.doCleanups()
-
-
 class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
     """Room labels teach each member radar only what that radar saw (spec 4.3)."""
 
-    setUp = harness.RuntimeTests.setUp
+    setUp = setup_clock
     asyncTearDown = harness.RuntimeTests.asyncTearDown
 
     def office(self):
+        if not hasattr(self, "clock"):
+            # Other suites reuse this fixture without this class's setUp.
+            clock = patch("time.time", return_value=NOW)
+            self.clock = clock.start()
+            self.addCleanup(clock.stop)
+            self.now = NOW
         rooms_harness.GroupTests.office(self)
         self.base = self.now - 3600
         self.b = self.runtime.data["devices"]["b"]
+        self.clock.return_value = self.base
 
     def record(self, a, b, start=0, count=40):
         for i in range(start, start + count):
             when = self.base + i * 6
             self.runtime._record_history_sample("a", {"g0_move": a}, when)
             self.runtime._record_history_sample("b", {"g0_move": b}, when)
+        self.clock.return_value = self.base + (start + count) * 6
 
     def label(self, start, end, state, group="area:office"):
         room_labels.label_room_range(
@@ -373,9 +412,8 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         assert self.inferred(self.device) == set()
         assert self.human(self.b) == {"not_present"}  # b's rise is rule 2: an inference.
         assert self.inferred(self.b) == {"present"}
-        rows, guesses = evidence.collect_samples(self.runtime, "a", ["g0_move"])
-        assert {row[2] for row in rows} == {"not_present"}
-        assert guesses == []
+        # The learner takes a's room Empty as human quiet time and nothing from the Present.
+        assert measured(self.runtime, "a")[0] == {"human": (0, QUIET), "automatic": (0, 0)}
 
     async def test_attributed_room_present_enters_on_rebuild(self):
         self.office()
@@ -402,12 +440,13 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         self.label(QUIET, QUIET + 40, "present")
         start = self.base + QUIET * 6
         self.runtime.label_history_range("b", start, start + 60, "unknown")
-        rows, guesses = evidence.collect_samples(self.runtime, "b", ["g0_move"])
-        assert Counter(row[2] for row in rows) == {"not_present": QUIET}
-        # Rule-2 attributed room Present is a weighted guess, outside the own Unknown label.
-        assert Counter((g[2], g[3]) for g in guesses) == {("present", 0.6): 30}
-        view = recording._history_view(self.runtime, "b")
-        assert evidence.collect_samples(view, "b", ["g0_move"]) == (rows, guesses)
+        units, confidence = measured(self.runtime, "b")
+        # Human room Empty over the quiet stretch: QUIET units of time.
+        assert units["human"] == (0, QUIET)
+        # Rule-2 attributed room Present is a weighted guess, outside the own Unknown label:
+        # the 40 units of the room Present label less the 10 of the Unknown label.
+        assert units["automatic"] == (30, 0)
+        assert confidence["present"] == pytest.approx(0.6)
 
     def test_single_radar_groups_do_not_use_room_targets(self):
         self.office()
@@ -416,8 +455,7 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         self.label(0, 40, "present")
         assert attribution.room_targets(self.runtime, "b") is None
         assert recording._history_view(self.runtime, "b").data["room_snapshot"] is None
-        rows, _ = evidence.collect_samples(self.runtime, "b", ["g0_move"])
-        assert rows == []
+        assert measured(self.runtime, "b")[0] == {"human": (0, 0), "automatic": (0, 0)}
 
     async def present_b(self, group="area:office"):
         """Record a quiet a and a high b, then label the room so b learns room Present
@@ -512,7 +550,9 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         self.office()
         await self.present_b()
         target = attribution.room_targets(self.runtime, "b")
-        assert target(self.base + QUIET * 6 + 3) == ("present", "attributed", 0.6)
+        present = target(self.base + QUIET * 6 + 3)
+        assert present[:2] == ("present", "attributed")
+        assert present[2] == pytest.approx(0.6)  # Baseline support in six-second units.
         assert target(self.base + 3) == ("not_present", "human", 1.0)
 
     def member_labelled_office(self, b_present=None, b=70, quiet=QUIET):
@@ -535,28 +575,25 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         # Regression (real data): an unlabelled member whose energy rises above its own empty
         # baseline while another member is labelled Present was trained as human Present.
         self.member_labelled_office()
-        rows, guesses = evidence.collect_samples(self.runtime, "b", ["g0_move"])
-        assert Counter(row[2] for row in rows) == {"not_present": QUIET}
-        assert Counter((g[2], g[3]) for g in guesses) == {("present", 0.6): 40}
-        # The learner itself keeps them as automatic evidence: the weight setting x confidence 0.6.
-        fitted = fitting.fit_thresholds(rows, ["g0_move"], {"g0_move": 50}, guesses)
+        units, confidence = measured(self.runtime, "b")
+        assert units == {"human": (0, QUIET), "automatic": (40, 0)}
+        assert confidence["present"] == pytest.approx(0.6)  # Baseline support QUIET / 100.
+        # The learner itself keeps them as automatic evidence at the weight setting.
+        fitted = learned(self.runtime, "b")
         automatic = fitted["automatic_evidence"]
-        assert automatic["samples"] == {"present": 40, "not_present": 0}
-        assert automatic["mean_confidence"]["present"] == 0.6
+        assert automatic["samples"] == {"present": pytest.approx(40), "not_present": 0}
+        # Corrected confidence (adaptive policy): raw 0.6 x the 0.75 reliability prior, as no
+        # manual episode has checked this radar's automatic evidence yet.
+        assert automatic["mean_confidence"]["present"] == pytest.approx(0.6 * 0.75)
         assert automatic["base_weight"] == settings.DEFAULT_AUTOMATIC_WEIGHT
-        assert fitted["counts"] == {"present": 0, "not_present": QUIET}
-        assert attribution.room_targets(self.runtime, "b")(self.episode + 3) == (
-            "present",
-            "attributed",
-            0.6,
-        )
+        target = attribution.room_targets(self.runtime, "b")(self.episode + 3)
+        assert target[:2] == ("present", "attributed")
+        assert target[2] == pytest.approx(0.6)
 
     def test_rule_two_below_the_automatic_floor_gives_no_target(self):
         # 40 quiet samples give confidence 0.4 < MIN_AUTO_CONFIDENCE, like a floored estimate.
         self.member_labelled_office(quiet=40)
-        rows, guesses = evidence.collect_samples(self.runtime, "b", ["g0_move"])
-        assert Counter(row[2] for row in rows) == {"not_present": 40}
-        assert guesses == []
+        assert measured(self.runtime, "b")[0] == {"human": (0, 40), "automatic": (0, 0)}
         assert attribution.room_targets(self.runtime, "b")(self.episode + 3) is None
         current = {"id": "x", "thresholds": {"g0_move": 50}, "applicable": True}
         context = {"keys": ["g0_move"], "timing": {"mode": "disabled"}, "patterns": {"c": current}}
@@ -573,15 +610,14 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         current = {"id": "x", "thresholds": {"g0_move": 50}, "applicable": True}
         context = {"keys": ["g0_move"], "timing": {"mode": "disabled"}}
         result = comparison.calculate(self.runtime, "b", {**context, "patterns": {"c": current}})
-        assert result["counts"]["human"] == {"present": 0, "not_present": QUIET}
-        assert result["counts"]["automatic"]["present"] == 40
+        assert result["counts"]["human"] == {"present": 0, "not_present": pytest.approx(QUIET)}
+        assert result["counts"]["automatic"]["present"] == pytest.approx(40)
 
     def test_rule_one_attribution_stays_human_at_full_weight(self):
         # b's own Present label inside the episode attributes it (rule 1), even while quiet.
         self.member_labelled_office(b_present=5, b=5)
-        rows, guesses = evidence.collect_samples(self.runtime, "b", ["g0_move"])
-        assert Counter(row[2] for row in rows) == {"not_present": QUIET, "present": 40}
-        assert guesses == []
+        # The whole 40-unit episode is b's (rule 1): human, at full weight; nothing automatic.
+        assert measured(self.runtime, "b")[0] == {"human": (40, QUIET), "automatic": (0, 0)}
         assert attribution.room_targets(self.runtime, "b")(self.episode + 60) == (
             "present",
             "human",
@@ -593,9 +629,7 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         self.record(5, 5)
         self.label(0, 40, "not_present")
         for key in ("a", "b"):
-            rows, guesses = evidence.collect_samples(self.runtime, key, ["g0_move"])
-            assert Counter(row[2] for row in rows) == {"not_present": 40}
-            assert guesses == []
+            assert measured(self.runtime, key)[0] == {"human": (0, 40), "automatic": (0, 0)}
 
     def test_rule_two_present_enters_references_as_radar_never_human(self):
         self.member_labelled_office()
@@ -609,14 +643,16 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         assert sum(p["count"] for p in present) == 40
 
     def test_a_rebuild_reads_the_history_once_for_all_its_evidence(self):
-        """Human labels and entity and radar room evidence come from one pass over the samples,
-        not one each."""
+        """One physical fold serves human, entity and radar reference evidence."""
         self.member_labelled_office()
-        reader = self.runtime._iter_history_samples
-        with patch.object(self.runtime, "_iter_history_samples", wraps=reader) as read:
+        from tuner_under_test.history import spans
+
+        with patch.object(spans, "events", wraps=spans.events) as read:
             training.rebuild_human(self.runtime, self.b)
-        # The attribution's rows come as columns; the one pass over the samples is this.
-        assert read.call_count == 1
+        # Native attribution reads its trace once; all reference sources share the duration index.
+        own = [call for call in read.call_args_list if call.args[1] == "b"]
+        assert len(own) == 1
+        assert self.b["reference_profile"]["periods"]
 
     def test_live_room_empty_reads_only_the_radars_own_groups_and_expires_its_cache(self):
         self.office()
@@ -632,7 +668,7 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
 class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
     """Level-4 room truth (sensor labels, estimate) trains radars at reduced weight."""
 
-    setUp = harness.RuntimeTests.setUp
+    setUp = setup_clock
     asyncTearDown = harness.RuntimeTests.asyncTearDown
     office = RoomReferenceTests.office
     record = RoomReferenceTests.record
@@ -651,6 +687,7 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
                     "confidence": confidence,
                 }
                 self.runtime._record_history_sample(key, {"g0_move": value}, when)
+        self.clock.return_value = self.base + (start + count) * 6
 
     def scenario(self):
         """a and b both guess; b is quiet then high. The estimate counts every member's guess at
@@ -661,27 +698,25 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
         self.record_guessed(5, 5, {"a": ("not_present", 0.6), "b": ("not_present", 0.9)})
         self.record_guessed(5, 70, {"a": ("present", 1.0), "b": ("present", 0.65)}, start=40)
 
-    def room_guesses(self):
-        return list(evidence.collect_samples(self.runtime, "b", ["g0_move"])[1])
-
     def test_estimate_trains_the_radar_with_confidence_weighted_rows(self):
         self.scenario()
-        guesses = self.room_guesses()
-        assert Counter((g[2], round(g[3], 4)) for g in guesses) == {
-            ("not_present", 0.95): 40,
-            ("present", 0.9975): 39,
-            ("present", 0.95): 1,  # The last sample has no estimate cell: only b's own guess.
-        }
-        # Their confidence mass, not their count, sets the learner's automatic share.
-        confident = [g[3] for g in guesses if g[3] > 0.99]
-        assert scoring.automatic_share(1.0, 100, sum(confident)) == pytest.approx(
-            0.25 * 39 * 0.9975 / 100
-        )
+        units, confidence = measured(self.runtime, "b")
+        assert units == {"human": (0, 0), "automatic": (40, 40)}
+        # Native learner admission uses the recorded confidence before display trust:
+        # Empty=min(0.6, 0.9), Present=noisy-OR(1.0, 0.65).
+        assert confidence == {"present": 1.0, "not_present": 0.6}
+        displayed = attribution.auto_targets(self.runtime, "b")
+        assert displayed(self.base + 3) == ("not_present", "estimate", 0.95)
+        assert displayed(self.base + 243) == ("present", "estimate", pytest.approx(0.9975))
+        # Confidence mass over the full physical interval sets the automatic share.
+        assert scoring.automatic_share(
+            1.0, 100, units["automatic"][0] * confidence["present"]
+        ) == pytest.approx(0.25 * 40 / 100)
 
     def test_history_view_carries_other_members_guesses(self):
         self.scenario()
         view = recording._history_view(self.runtime, "b")
-        assert evidence.collect_samples(view, "b", ["g0_move"])[1] == self.room_guesses()
+        assert measured(view, "b") == measured(self.runtime, "b")
 
     def test_own_guess_contributes_to_its_own_estimate(self):
         self.office()
@@ -703,9 +738,7 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
         self.label(40, 80, "present")
         # b's own Present label in the episode (rule 1) makes room Present human for b.
         self.runtime.label_history_range("b", self.base + 240, self.base + 246, "present")
-        rows, guesses = evidence.collect_samples(self.runtime, "b", ["g0_move"])
-        assert Counter(row[2] for row in rows) == {"not_present": 40, "present": 40}
-        assert guesses == []  # Human truth covers every sample: nothing automatic is left.
+        assert measured(self.runtime, "b")[0] == {"human": (40, 40), "automatic": (0, 0)}
         target = attribution.auto_targets(self.runtime, "b")
         assert target(self.base + 3) == ("not_present", "human", 1.0)
         assert target(self.base + 303) == ("present", "human", 1.0)
@@ -736,23 +769,20 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
             "estimate",
             pytest.approx(0.9975),
         )
-        rows, guesses = evidence.collect_samples(self.runtime, "b", ["g0_move"])
-        assert Counter(row[2] for row in rows) == {"not_present": QUIET}
-        # The last sample has no estimate cell, so the attribution guess decides it.
-        assert Counter((g[2], round(g[3], 4)) for g in guesses) == {
-            ("present", 0.9975): 39,
-            ("present", 0.6): 1,
-        }
-        # One "radar" period, at the mean confidence (39 x 0.9975 + 0.6) / 40, never human.
-        assert self.room_present_periods() == {("radar", 0.99)}
+        units, confidence = measured(self.runtime, "b")
+        assert units == {"human": (0, QUIET), "automatic": (40, 0)}
+        assert confidence["present"] == 1.0  # Raw learner confidence; display checked above.
+        # Continuous estimate coverage includes the whole episode, never as human.
+        assert self.room_present_periods() == {("radar", 1.0)}
 
     def test_rule_two_guess_beats_a_less_confident_estimate_and_yields_to_a_sensor(self):
         # Present guesses of a stale reference count for nothing: no estimate, only the 0.6
         # attribution guess.
         t = self.inferred_room({"a": ("present", 0.9), "b": ("present", 0.8)})
         assert attribution.auto_targets(self.runtime, "b")(t) == ("present", "attributed", 0.6)
-        guesses = evidence.collect_samples(self.runtime, "b", ["g0_move"])[1]
-        assert Counter((g[2], round(g[3], 2)) for g in guesses) == {("present", 0.6): 40}
+        units, confidence = measured(self.runtime, "b")
+        assert units == {"human": (0, QUIET), "automatic": (40, 0)}
+        assert confidence["present"] == pytest.approx(0.98)  # Raw noisy-OR(0.9, 0.8).
         assert self.room_present_periods() == {("radar", 0.6)}
         # A more confident room sensor label of Present wins, and enters as "entity".
         self.runtime.data["room_labels"]["area:office"].append(
@@ -765,8 +795,9 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         assert attribution.auto_targets(self.runtime, "b")(t) == ("present", "automatic", 0.9)
-        guesses = evidence.collect_samples(self.runtime, "b", ["g0_move"])[1]
-        assert Counter((g[2], round(g[3], 2)) for g in guesses) == {("present", 0.9): 40}
+        units, confidence = measured(self.runtime, "b")
+        assert units == {"human": (0, QUIET), "automatic": (40, 0)}
+        assert confidence["present"] == pytest.approx(0.9)  # Sensor priority beats raw estimate.
         assert self.room_present_periods() == {("entity", 0.9)}
 
     def test_references_take_estimate_as_radar_and_sensor_as_entity_never_human(self):
@@ -799,7 +830,7 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
         self.record(5, 5)
         self.record(5, 70, start=40)
         assert attribution.auto_targets(self.runtime, "b") is None
-        assert evidence.collect_samples(self.runtime, "b", ["g0_move"])[1] == []
+        assert measured(self.runtime, "b")[0] == {"human": (0, 0), "automatic": (0, 0)}
         training.rebuild_human(self.runtime, self.b)
         assert not [p for p in self.b["reference_profile"]["periods"] if p.get("room")]
 
@@ -815,11 +846,15 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
                 "confidence": 0.7,
             }
         ]
-        rows, guesses = evidence.collect_samples(self.runtime, "b", ["g0_move"])
-        assert sum(1 for row in rows if row[2] == "present") == 10  # Own human label first.
-        early = [g for g in guesses if g[0] >= self.base + 60 and g[0] < self.base + 240]
-        # The room sensor (Present, 0.7), not b's own guess (Empty, 0.95), decides each sample.
-        assert {(g[2], round(g[3], 2)) for g in early} == {("present", 0.7)}
+        units, confidence = measured(self.runtime, "b")
+        assert units == {"human": (10, 0), "automatic": (70, 0)}
+        # The room sensor wins the remaining early interval despite the own Empty guess.
+        assert attribution.auto_targets(self.runtime, "b")(self.base + 63) == (
+            "present",
+            "automatic",
+            0.7,
+        )
+        assert confidence["present"] == pytest.approx((30 * 0.7 + 40) / 70)
 
     def test_sensor_stretches_are_entity_only_and_estimate_stretches_radar_only(self):
         self.scenario()
@@ -840,23 +875,19 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
         }
         assert sum(p["count"] for p in room if p["source"] == "entity") == 40
 
-    async def test_refresh_decodes_each_members_guess_chunk_once(self):
-        """Every member's guess runs are read from their stored chunks once per chunk, however
-        many views and attribution passes read them."""
+    async def test_refresh_decodes_each_members_finished_day_once(self):
+        """Views and attribution share decoded finished day columns, including guesses."""
+        from tuner_under_test.history import dayfile, daystore, ingest
         from tuner_under_test.presence import rebuilds
 
-        guesses = sys.modules["tuner_under_test.history.guesses"]
         self.scenario()
-        self.runtime.data["devices"]["c"] = deepcopy(self.runtime.data["devices"]["a"])
-        groups.configure(self.runtime, "area:office", "Office", "office", ["a", "b", "c"])
-        for device_id in "abc":
-            self.runtime._flush_history_block(device_id)
-        chunks = {
-            c["data"] for key in "abc" for c in self.runtime.data["devices"][key]["guess_runs"]
-        }
-        guesses._decoded.cache_clear()
-        await rebuilds.refresh(self.runtime, {"a", "b", "c"}, reason="test")
-        assert 0 < guesses._decoded.cache_info().misses <= len(chunks)
+        ingest.stop(self.runtime, self.clock.return_value)
+        self.runtime._days.flush(self.base + 86400)
+        # A new store starts with a cold decoded-day cache.
+        self.runtime._days = daystore.DayStore(self.runtime._days.root)
+        with patch.object(dayfile, "decode_day", wraps=dayfile.decode_day) as decode:
+            await rebuilds.refresh(self.runtime, {"a", "b"}, reason="test")
+        assert decode.call_count == 2
 
     def test_a_finished_job_lets_go_of_the_members_guesses_its_views_shared(self):
         shared = {"a": object()}
@@ -873,8 +904,6 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
         self.scenario()
         self.runtime.data["devices"]["c"] = deepcopy(self.runtime.data["devices"]["a"])
         groups.configure(self.runtime, "area:office", "Office", "office", ["a", "b", "c"])
-        for device_id in "abc":
-            self.runtime._flush_history_block(device_id)
         with patch.object(guesses, "of", wraps=guesses.of) as read:
             await rebuilds.refresh(self.runtime, {"a", "b", "c"}, reason="test")
         assert read.call_count == 3

@@ -1,325 +1,53 @@
-"""Canonical history maintenance; all functions are safe to run in an executor."""
+"""Cutting time ranges out of finished day files (thinning, Trim now)."""
 
-from __future__ import annotations
-
-import heapq
 import math
-import struct
-import zlib
-from copy import deepcopy
-
-from . import guesses
-from .codec import ROW, SPAN, STRIDES, VERSION, decode_payload, encode_payload
-
-KEYS = [f"g{gate}_{kind}" for gate in range(9) for kind in ("move", "still")]
 
 
-def _labels(labels, cutoff):
-    events, valid = _label_events(labels, cutoff)
-    active, heap, result = set(), [], []
-    boundaries = sorted(events)
-    for index, start in enumerate(boundaries[:-1]):
-        winner = _latest_label(events[start], active, heap)
-        if winner is None:
+def cut(day, cuts):
+    """Copy a columnar day minus whole time ranges, preserving held vectors at restarts."""
+    from array import array
+    from bisect import bisect_left, bisect_right
+
+    from . import dayfile
+
+    windows = list(dayfile.gaps(day.start, day.end, _cut_union(cuts)))
+    times, ends = array("d"), array("d")
+    columns = [array("f") if isinstance(column, array) else bytearray() for column in day.columns]
+    runs = []
+    for low, high in windows:
+        first, after = bisect_right(day.ends, low), bisect_left(day.times, high)
+        if first >= after:
             continue
-        label = dict(valid[winner], start=start, end=boundaries[index + 1])
-        _append_label(result, label)
-    return result
-
-
-def _valid_label(label, cutoff):
-    try:
-        start, end = float(label["start"]), float(label["end"])
-        if (
-            label["state"] not in {"present", "not_present", "unknown"}
-            or not math.isfinite(start)
-            or not math.isfinite(end)
-        ):
-            return None
-        start = max(start, cutoff)
-        return dict(label, start=start, end=end) if end > start else None
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _label_events(labels, cutoff):
-    events, valid = {}, {}
-    for index, original in enumerate(labels):
-        label = _valid_label(original, cutoff)
-        if label is None:
-            continue
-        valid[index] = label
-        events.setdefault(label["start"], []).append((True, index))
-        events.setdefault(label["end"], []).append((False, index))
-    return events, valid
-
-
-def _latest_label(events, active, heap):
-    for add, index in events:
-        if add:
-            active.add(index)
-            heapq.heappush(heap, -index)
-        else:
-            active.discard(index)
-    while heap and -heap[0] not in active:
-        heapq.heappop(heap)
-    return -heap[0] if heap else None
-
-
-def _append_label(result, label):
-    if (
-        result
-        and result[-1]["end"] == label["start"]
-        and result[-1]["state"] == label["state"]
-        and result[-1].get("source") == label.get("source")
-    ):
-        result[-1]["end"] = label["end"]
-    else:
-        result.append(label)
-
-
-def _encode(samples):
-    blocks = []
-    group = []
-
-    def flush():
-        if not group:
-            return
-        start = group[0][0]
-        raw = b"".join(struct.pack(">H", round(ts - start)) + row for ts, row in group)
-        blocks.append(
-            {
-                "version": VERSION,
-                "start": start,
-                "end": group[-1][0],
-                "count": len(group),
-                "data": encode_payload(raw, ROW),
-            }
+        begin = len(times)
+        times.extend(day.times[first:after])
+        ends.extend(day.ends[first:after])
+        times[begin], ends[-1] = max(times[begin], low), min(ends[-1], high)
+        for out, source in zip(columns, day.columns, strict=True):
+            out.extend(source[first:after])
+        runs.extend(
+            (max(a, low), min(b, high), *rest)
+            for a, b, *rest in day.guesses
+            if b > low and a < high
         )
-
-    for ts, row in samples:
-        if group:
-            offset = ts - group[0][0]
-            # Preserve the original timestamps exactly across block boundaries.
-            if len(group) >= 60 or offset > SPAN or abs(offset - round(offset)) > 1e-6:
-                flush()
-                group = []
-        group.append((ts, row))
-    flush()
-    return blocks
-
-
-def clean_history(device, pending, now, retention_seconds, policy=None):
-    """Return normalized data without altering the caller's live objects.
-
-    Later duplicate rows win; missing energies remain missing. Blocks older than version 4
-    held the radar's guess in every row: it becomes guess runs here (``guesses``), the one
-    conversion of the old layout. Runs are kept while a retained row lies in them, so they
-    follow the rows' retention and thinning. Untimed legacy histograms remain separate and
-    are never assigned timestamps.
-    """
-    cutoff = now - retention_seconds
-    rows, coded = {}, {}
-    stats = {
-        "migrated_blocks": 0,
-        "invalid_blocks": 0,
-        "expired_samples": 0,
-        "duplicate_samples": 0,
-        "repaired_samples": 0,
-        "discarded_samples": 0,
-    }
-    _clean_blocks(device, cutoff, now, stats, rows, coded)
-    samples = sorted(rows.items())
-    runs = guesses.Guesses(_guess_runs(device, samples, coded))
-    labels = _labels(device.get("history_labels", []), cutoff)
-    active_start = device.get("training_label_start")
-    active_end = device.get("training_expires_at") or now + 1
-    histogram_labels = labels
-    if active_start is not None and device.get("training_state") in {"present", "not_present"}:
-        histogram_labels = _labels(
-            labels
-            + [{"start": active_start, "end": active_end, "state": device["training_state"]}],
-            cutoff,
-        )
-    if policy is not None:
-        retained = _retain_by_confidence(samples, histogram_labels, now, policy, runs)
-        stats["discarded_samples"] += len(samples) - len(retained)
-        samples = retained
-    # Keep untimed evidence if this is a legacy histogram-only device.
-    legacy = device.get(
-        "history_legacy_histograms",
-        {} if device.get("history") or pending else device.get("histograms", {}),
+    return dayfile.Day(
+        day.start,
+        day.end,
+        times,
+        ends,
+        [bytes(c) if isinstance(c, bytearray) else c for c in columns],
+        runs,
     )
-    legacy, legacy_since = _age_legacy(device, legacy, now, cutoff, policy, stats)
-    histograms = _legacy_histograms(legacy)
-    _accumulate_histograms(histograms, samples, pending, cutoff, histogram_labels)
-    result = {
-        "history": _encode(samples),
-        "guess_runs": guesses.encode(guesses.kept(runs.runs, [ts for ts, _ in samples])),
-        "history_labels": labels,
-        "histograms": histograms,
-        "history_legacy_histograms": deepcopy(legacy),
-    }
-    if policy is not None:
-        result["history_legacy_since"] = legacy_since
-    return result, stats
 
 
-def _guess_runs(device, samples, coded):
-    """The device's stored guess runs, with those of its old-layout rows (``coded``: the guess
-    each held, by sample time) added."""
-    runs = [run for chunk in device.get("guess_runs", []) for run in guesses.decode(chunk)]
-    if coded:
-        runs += guesses.from_samples((ts, coded.get(ts)) for ts, _ in samples)
-    return runs
-
-
-def _clean_blocks(device, cutoff, now, stats, rows, coded):
-    for block in device.get("history", []):
-        try:
-            start, version, raw, stride = _read_clean_block(block)
-        except (KeyError, TypeError, ValueError, zlib.error):
-            stats["invalid_blocks"] += 1
+def _cut_union(cuts):
+    result = []
+    for low, high in sorted(cuts):
+        if not math.isfinite(low) or not math.isfinite(high) or high < low:
+            raise ValueError("Invalid history cut")
+        if high == low:
             continue
-        stats["migrated_blocks"] += version < VERSION
-        for pos in range(0, len(raw), stride):
-            timestamp = start + struct.unpack(">H", raw[pos : pos + 2])[0]
-            _retain_row(timestamp, raw[pos + 2 : pos + stride], (rows, coded), stats, cutoff, now)
-
-
-def _read_clean_block(block):
-    if not isinstance(block, dict):
-        raise ValueError("Invalid block")
-    version, start, count = block.get("version", 1), float(block["start"]), block["count"]
-    if (
-        version not in STRIDES
-        or not math.isfinite(start)
-        or not isinstance(count, int)
-        or count < 0
-    ):
-        raise ValueError("Invalid block header")
-    raw = decode_payload(block["data"], version, count)
-    stride = STRIDES[version]
-    if len(raw) != count * stride:
-        raise ValueError("Invalid block length")
-    return start, version, raw, stride
-
-
-def _retain_row(timestamp, original, found, stats, cutoff, now):
-    """Keep one stored row's energies in ``rows`` (and, in ``coded``, the guess an old-layout
-    row also held) unless it is expired, from the future or empty."""
-    rows, coded = found
-    if timestamp < cutoff:
-        stats["expired_samples"] += 1
-        return
-    if timestamp > now + 60:
-        stats["discarded_samples"] += 1
-        return
-    row = bytes(value if value <= 100 else 255 for value in original[:18])
-    if all(value == 255 for value in row):
-        stats["discarded_samples"] += 1
-        return
-    stats["repaired_samples"] += row != original[:18]
-    stats["duplicate_samples"] += timestamp in rows
-    rows[timestamp] = row
-    old_guess = guesses.from_code(*original[18:20]) if len(original) > 18 else None
-    if old_guess:
-        coded[timestamp] = old_guess
-    else:
-        coded.pop(timestamp, None)  # A later duplicate replaces the earlier row's guess too.
-
-
-def _legacy_histograms(legacy):
-    histograms = {}
-    for key in KEYS:
-        histograms[key] = {}
-        for state in ("present", "not_present"):
-            source = legacy.get(key, {}).get(state, [])
-            histogram = [v if isinstance(v, int) and v >= 0 else 0 for v in source[:101]]
-            histogram += [0] * (101 - len(histogram))
-            while sum(histogram) > 5000:
-                histogram = [v // 2 for v in histogram]
-            histograms[key][state] = histogram
-    return histograms
-
-
-def _accumulate_histograms(histograms, samples, pending, cutoff, histogram_labels):
-    for row, state in _labelled_rows(samples, pending, cutoff, histogram_labels):
-        for key, value in zip(KEYS, row[:18], strict=False):
-            if value > 100:
-                continue
-            histogram = histograms[key][state]
-            histogram[value] += 1
-            if sum(histogram) > 5000:
-                histogram[:] = [count // 2 for count in histogram]
-
-
-def _labelled_rows(samples, pending, cutoff, labels):
-    index = 0
-    for timestamp, row in sorted(samples + list(pending)):
-        if timestamp < cutoff:
-            continue
-        index = _advance_label(labels, index, timestamp)
-        if index >= len(labels):
-            break
-        label = labels[index]
-        if timestamp >= label["start"] and label["state"] != "unknown":
-            yield row, label["state"]
-
-
-def _advance_label(labels, index, timestamp):
-    while index < len(labels) and labels[index]["end"] <= timestamp:
-        index += 1
-    return index
-
-
-def _retain_by_confidence(samples, labels, now, policy, runs):
-    from .policy import keep_automatic
-
-    retained, index = [], 0
-    percents = runs.percents(timestamp for timestamp, _ in samples)
-    for (timestamp, row), percent in zip(samples, percents, strict=True):
-        index = _advance_label(labels, index, timestamp)
-        human = (
-            index < len(labels)
-            and labels[index]["start"] <= timestamp
-            and labels[index]["state"] in {"present", "not_present"}
-        )
-        if human or keep_automatic(timestamp, percent, now, policy):
-            retained.append((timestamp, row))
-    return retained
-
-
-def accept_cleanup(device, updated, stats, revision):
-    from ..calibration.constants import METHOD
-
-    device.update(updated)
-    device["history_cleanup"] = stats
-    if any(
-        stats.get(key, 0)
-        for key in (
-            "invalid_blocks",
-            "expired_samples",
-            "duplicate_samples",
-            "repaired_samples",
-            "discarded_samples",
-            "trimmed_samples",
-            "expired_legacy",
-        )
-    ):
-        device["label_revision"] = revision + 1
-        device.pop("last_learning", None)
-    elif (device.get("last_learning") or {}).get("method") not in (None, METHOD):
-        device.pop("last_learning", None)
-
-
-def _age_legacy(device, legacy, now, cutoff, policy, stats):
-    if policy is None or not legacy:
-        return legacy, device.get("history_legacy_since")
-    # No sample times exist. Start one retention period on first processing;
-    # never pretend this timestamp is the age of the original observations.
-    since = device.get("history_legacy_since") or now
-    if since < cutoff:
-        stats["expired_legacy"] = 1
-        return {}, since
-    return legacy, since
+        if result and low <= result[-1][1]:
+            result[-1] = (result[-1][0], max(high, result[-1][1]))
+        else:
+            result.append((low, high))
+    return result

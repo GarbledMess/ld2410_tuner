@@ -1,6 +1,7 @@
 """Independent source labels retain manual priority and automatic retention."""
 
 import sys
+import time
 import types
 import unittest
 from copy import deepcopy
@@ -11,7 +12,7 @@ import test_tuner as harness
 
 sources = sys.modules["tuner_under_test.presence.sources"]
 service = sys.modules["tuner_under_test.calibration.service"]
-cleanup = sys.modules["tuner_under_test.history.cleanup"]
+event_fitting = sys.modules["tuner_under_test.calibration.event_fitting"]
 policy = sys.modules["tuner_under_test.history.policy"]
 
 
@@ -24,7 +25,12 @@ def bermuda():
 
 
 class SourceTests(unittest.IsolatedAsyncioTestCase):
-    setUp = harness.RuntimeTests.setUp
+    def setUp(self):
+        harness.RuntimeTests.setUp(self)
+        # Day files quantize timestamps to milliseconds; duration assertions use
+        # an integral synthetic origin instead of the harness's fractional wall time.
+        self.now = 2_000_000_000.0
+
     asyncTearDown = harness.RuntimeTests.asyncTearDown
     sample = harness.RuntimeTests.sample
 
@@ -43,24 +49,22 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    def test_boolean_on_records_automatic_not_human_and_survives_compression(self):
+    def test_boolean_on_records_automatic_not_human_and_survives_a_save(self):
         self.configure()
         self.entity("binary_sensor.camera_person", "on")
         self.sample(self.now, 70)
-        sample = self.runtime._history_runtime["a"]["samples"][0][1]
-        assert len(sample) == len(harness.constants.HISTORY_KEYS)
-        (run,) = self.runtime._history_runtime["a"]["runs"]
-        assert run[2:] == ["present", 18, harness.guesses.EXTERNAL]  # 90 % is 18 steps of 5 %
+        (run,) = harness.guesses.of(self.runtime, "a").runs
+        assert run[2:] == ("present", 18, harness.guesses.EXTERNAL)  # 90 % is 18 steps of 5 %
         assert not self.device.get("history_labels")
         assert sum(self.device.get("histograms", {}).get("g0_move", {}).get("present", [])) == 0
         assert self.device["auto"]["last_classification"]["basis"] == "external"
-        self.runtime._flush_history_block("a")
-        restored = list(self.runtime._iter_history_samples(self.device))
-        assert restored[0][1] == sample
-        assert harness.guesses.of(self.runtime, "a").runs == [tuple(run)]
-        assert not self.device["guess_runs"], "the open run waits in memory until it closes"
-        assert self.runtime._history_runtime["a"]["runs"] == [run]
-        with self.assertRaisesRegex(ValueError, "Correct external labels"):
+        self.runtime._days.flush()
+        (saved,) = harness.guesses.of(self.runtime, "a").runs  # Still open: it ends now.
+        assert (saved[0], *saved[2:]) == (run[0], *run[2:])
+        with (
+            patch.object(time, "time", return_value=self.now + 1),
+            self.assertRaisesRegex(ValueError, "Correct external labels"),
+        ):
             self.runtime.record_auto_feedback("a", False)
 
     def test_off_is_opt_in_and_unknown_never_means_absence(self):
@@ -105,35 +109,43 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.sample(self.now, 70)
         self.entity("binary_sensor.camera_person", "off")
         self.sample(self.now + 6, 10)
+
+        def measured():
+            with patch.object(time, "time", return_value=self.now + 12):
+                found = event_fitting.assess(
+                    self.runtime, "a", {"g0_move": 20}, quality_context=False
+                )
+            return {
+                source: tuple(
+                    round(found[source]["duration"][key], 3)
+                    for key in ("present_seconds", "empty_seconds")
+                )
+                for source in ("human", "automatic")
+            }
+
         self.runtime.label_history_range("a", self.now - 1, self.now + 1, "not_present")
-        with patch.object(service, "fit_thresholds", return_value={}) as fit:
-            service._fit_history(
-                self.runtime, "a", {"g0_move": "number.threshold"}, {"g0_move": 20}
-            )
-        human, _, _, automatic, _, _ = fit.call_args.args
-        assert [(ts, state) for ts, _, state in human] == [(self.now, "not_present")]
-        assert [(ts, state, confidence) for ts, _, state, confidence, *_ in automatic] == [
-            (self.now + 6, "not_present", 0.9)
-        ]
+        # Human [0, 1) s outranks the external present guess there; the guesses keep the rest.
+        assert measured() == {"human": (0, 1), "automatic": (5, 6)}
         self.runtime.label_history_range("a", self.now + 5, self.now + 7, "unknown")
-        with patch.object(service, "fit_thresholds", return_value={}) as fit:
-            service._fit_history(self.runtime, "a", {"g0_move": "number.threshold"}, {})
-        assert not fit.call_args.args[3]
+        assert measured() == {"human": (0, 1), "automatic": (4, 5)}  # Excluded: no evidence.
 
     def test_external_records_follow_automatic_expiry_and_recording_pause(self):
+        from tuner_under_test.history import budget, ingest, spans
+
         self.configure()
         self.entity("binary_sensor.camera_person", "on")
         self.sample(self.now, 70)
-        self.runtime._flush_history_block("a")
-        cleaned, stats = cleanup.clean_history(
-            self.device,
-            [],
-            self.now + 30 * policy.DAY,
-            60 * policy.DAY,
-            {**policy.DEFAULTS, "human_days": 60},
+        ingest.end(self.runtime, "a", self.now + 6)
+        self.runtime._days.flush(self.now + 30 * policy.DAY)
+        self.runtime.data["storage_settings"] = {**policy.DEFAULTS, "human_days": 60}
+        _prepared, changes, stats = budget.prepare_days(
+            self.runtime._days, self.runtime.data, self.now + 30 * policy.DAY, clean=True
         )
-        assert not cleaned["history"]
-        assert stats["discarded_samples"] == 1
+        assert stats["removed_automatic_seconds"] == 6
+        assert stats["removed_human_seconds"] == 0
+        for key, date, day in changes:
+            self.runtime._days.replace(key, date, day)
+        assert not list(spans.events(self.runtime, "a"))
         self.runtime.set_recording("a", False)
         before = deepcopy(self.device)
         self.sample(self.now + 6, 90)
@@ -144,11 +156,13 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         for index in range(120):
             self.entity("binary_sensor.camera_person", "on" if index < 60 else "off")
             self.sample(self.now + index * 6, 70 if index < 60 else 10)
-        learned = service._fit_history(
-            self.runtime, "a", {"g0_move": "number.threshold"}, {"g0_move": 20}
-        )
+        with patch.object(time, "time", return_value=self.now + 720):
+            learned = service._fit_history(
+                self.runtime, "a", {"g0_move": "number.threshold"}, {"g0_move": 20}
+            )
         assert 10 < learned["proposals"]["g0_move"]["threshold"] < 70
-        assert learned["automatic_evidence"]["samples"] == {"present": 60, "not_present": 60}
+        samples = learned["automatic_evidence"]["samples"]  # Six-second units of time.
+        assert samples == {"present": pytest.approx(60), "not_present": pytest.approx(60)}
         assert learned["training"]["present_samples"] == 0
 
     async def test_settings_persist_and_clearing_sources_restores_estimator(self):

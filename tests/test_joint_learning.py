@@ -274,7 +274,8 @@ def test_shared_radar_evidence_is_read_once_per_linked_objective():
 def test_linked_rank_sums_group_ranks_and_rounds_away_summation_noise():
     groups, rooms = linked(DESK, SOFA, BED)
     objective = LinkedObjective(groups, 0, END, rooms)
-    thresholds = {key: {"g0_move": 3} for key in ("x", "y", "z", "s")}
+    # Thresholds whose three group costs (9 places each) do not sum exactly in floats.
+    thresholds = {key: {"g0_move": 7} for key in ("x", "y", "z", "s")}
     parts = [item.rank(part) for _, item, part in objective.parts(thresholds)]
     sums = [sum(values) for values in zip(*parts, strict=True)]
     assert sums[0] != round(sums[0], 9)  # three 9-place costs whose float sum is not
@@ -418,6 +419,61 @@ class JointRuntimeTests(unittest.IsolatedAsyncioTestCase):
     # Reuse the synthetic HA boundary without inheriting its test methods.
     __test__ = True
 
+    async def test_prepared_attribution_reads_the_last_week_by_default(self):
+        self.office()
+        chosen = groups.learning_set(self.runtime, "area:office")[2]
+        now = 1_800_000_123
+        with (
+            patch.object(learning.recovery, "prepare_learning", AsyncMock()),
+            patch.object(learning.time, "time", return_value=now),
+        ):
+            members, _, _ = await learning._prepare(self.runtime, chosen)
+        expected = (now - 7 * 86400) // 3600 * 3600
+        for found in members.values():
+            for item in found.values():
+                self.assertEqual(item["view"]._attribution_since, expected)
+
+    async def test_exact_attribution_reads_all_retained_history(self):
+        self.office()
+        chosen = groups.learning_set(self.runtime, "area:office")[2]
+        with (
+            patch.object(learning.recovery, "prepare_learning", AsyncMock()),
+            patch.object(learning, "ATTRIBUTION_DAYS", None),
+        ):
+            members, _, _ = await learning._prepare(self.runtime, chosen)
+        for found in members.values():
+            for item in found.values():
+                self.assertEqual(item["view"]._attribution_since, 0)
+
+    async def test_attribution_windows_have_separate_cache_keys(self):
+        self.office()
+        del self.runtime._history_view
+        zone = groups.configure(self.runtime, None, "Desk", "office", ["a", "b"])
+        chosen = groups.learning_set(self.runtime, zone["id"])[2]
+        keys = []
+        for days in (None, 7, 3):
+            with (
+                patch.object(learning.recovery, "prepare_learning", AsyncMock()),
+                patch.object(learning.time, "time", return_value=1_800_000_123),
+                patch.object(learning, "ATTRIBUTION_DAYS", days),
+            ):
+                members, _, _ = await learning._prepare(self.runtime, chosen)
+            view = next(iter(next(iter(members.values())).values()))["view"]
+            # Each window's view attributes only its own window (its job-local memo).
+            keys.append(view._attribution_since)
+        self.assertEqual(len(set(keys)), 3)
+
+    async def test_learning_window_is_forwarded_to_the_fit(self):
+        self.office()
+        with (
+            patch.object(learning.recovery, "prepare_learning", AsyncMock()),
+            patch.object(learning.time, "time", return_value=1200),
+            patch.object(learning, "LEARNING_DAYS", 3),
+            patch.object(learning.fitting, "fit_set", wraps=learning.fitting.fit_set) as fit,
+        ):
+            await learning.start_device(self.runtime, "a", "user", "area:office")
+        self.assertEqual(fit.call_args.args[1:3], (1200 - 3 * 86400, 1200))
+
     async def test_joint_job_deduplicates_device_requests_and_saves_both(self):
         self.office()
         prepare = AsyncMock()
@@ -462,6 +518,9 @@ class JointRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_joint_apply_writes_both_and_blocks_changed_companion(self):
         learned = await self._learn()
+        # Exercise actual legal changes; unchanged settings require no device writes.
+        for key in ("a", "b"):
+            learned["thresholds"][key]["g0_move"] = 30
         values = {
             key: dict(signature["thresholds"])
             for key, signature in learned["signature"].items()
@@ -503,6 +562,8 @@ class JointRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_partial_write_never_rotates_group_current(self):
         learned = await self._learn()
+        for key in ("a", "b"):
+            learned["thresholds"][key]["g0_move"] = 30
         with (
             patch.object(application.device_io, "prepare_device", AsyncMock(return_value=None)),
             patch.object(
@@ -1107,8 +1168,11 @@ class SetRuntimeTests(unittest.IsolatedAsyncioTestCase):
         from tuner_under_test.rooms import jobs
 
         set_id = self.linked()
-        learned = await self.learn(set_id)
         sofa = self.ids["Sofa"]
+        # Configure the source before the fit; the later cycles change its observed
+        # state, while retaining the source settings that owned the learned policy.
+        self.sensor_cycle(sofa, 500)
+        learned = await self.learn(set_id)
         stored = {"signature": jobs._context(self.runtime, sofa)[1], "report": {"score": 1}}
         self.runtime.data.setdefault("room_assessments", {})[sofa] = stored
         assert jobs.summary(self.runtime, sofa) == {"score": 1}
@@ -1125,6 +1189,23 @@ class SetRuntimeTests(unittest.IsolatedAsyncioTestCase):
             result = await self.runtime.apply_set(set_id, learned["id"], "user")
         assert not result["skipped"]
         assert ("a", "g0_move", 25) in writes
+
+    async def test_changed_room_sensor_configuration_stales_the_set_result(self):
+        from tuner_under_test.rooms import room_sources
+
+        set_id = self.linked()
+        sofa = self.ids["Sofa"]
+        self.sensor_cycle(sofa, 500)
+        learned = await self.learn(set_id)
+        configured = room_sources.settings(self.runtime, sofa)
+        room_sources.configure_room_sources(self.runtime, sofa, {**configured, "confidence": 90})
+        writes, (prepare, write) = self.writer()
+        with prepare, write, self.assertRaises(ValueError) as error:
+            await self.runtime.apply_set(set_id, learned["id"], "user")
+        assert str(error.exception) == (
+            "A zone member's labels, timing, thresholds or membership changed; learn again"
+        )
+        assert writes == []
 
     async def test_room_sensor_transition_during_set_learning_keeps_the_job(self):
         set_id = self.linked()

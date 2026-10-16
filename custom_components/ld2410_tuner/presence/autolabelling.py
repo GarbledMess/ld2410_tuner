@@ -17,10 +17,12 @@ from ..const import (
     FEEDBACK_BIAS_STEP_UP,
     FEEDBACK_LOG_MAX,
     HISTOGRAM_BINS,
+    HISTORY_KEYS,
     MIN_SAMPLES,
     PRESENT_BIAS_MAX,
     PRESENT_BIAS_MIN,
 )
+from ..history import ingest
 from . import references, sources
 from .inference import (
     HUMAN_REFERENCE,
@@ -260,6 +262,7 @@ def _sample_devices(runtime):
     for device_id, device in runtime.data["devices"].items():
         if device.get("configuration_recovery", {}).get("status") == "running":
             runtime._source_runtime.pop(device_id, None)
+            ingest.end(runtime, device_id, time.time())
             continue
         values = _read_energies(runtime, device)
         runtime._live[device_id] = values  # Drop unavailable readings, never carry them forward.
@@ -267,12 +270,13 @@ def _sample_devices(runtime):
             runtime._auto_runtime.pop(device_id, None)
             runtime._source_runtime.pop(device_id, None)
             device.get("auto", {}).pop("last_classification", None)
+            ingest.change(runtime, device_id, dict.fromkeys(HISTORY_KEYS), time.time())
             continue
         if not device.get("recording_enabled", True) or runtime._storage_status.get("blocked"):
             runtime._source_runtime.pop(device_id, None)
+            ingest.end(runtime, device_id, time.time())
             continue
         now = time.time()
-        runtime._migrate_device_samples(device)
         _classify_tick(runtime, device_id, device, values, now)
         runtime._record_history_sample(device_id, values, now)
         runtime._schedule_save()

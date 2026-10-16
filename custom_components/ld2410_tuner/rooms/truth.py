@@ -5,11 +5,12 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections.abc import Callable, Iterable
 from copy import deepcopy
+from functools import partial
 from itertools import chain
 from typing import Any, TypedDict
 
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
-from ..history.labels import _label_events, _label_index
+from ..history.label_lookup import _label_events, _label_index
 from . import evidence, groups
 
 MANUAL = frozenset({"manual"})
@@ -171,19 +172,20 @@ def estimate_reader(inputs) -> Reader:
             guesses.append((guess[0], guess[2]) if guess else None)
         return estimate(guesses)
 
-    def bulk(times):
-        """``read`` at each of the ``times``, decided once for each combination of guesses."""
-        columns = [list(map(item["automatic"].at, times)) for item in inputs.values()]
-        decided = {}
-        if not columns:
-            return [estimate([])] * len(times)
-        for combination in zip(*columns, strict=True):
-            if combination not in decided:
-                decided[combination] = estimate([(g[0], g[2]) if g else None for g in combination])
-        return [decided[combination] for combination in zip(*columns, strict=True)]
-
-    read.bulk = bulk
+    read.bulk = partial(_estimate_many, inputs)
     return read
+
+
+def _estimate_many(inputs, times):
+    """Decide each combination of recorded guesses once for a batch of times."""
+    columns = [list(map(item["automatic"].at, times)) for item in inputs.values()]
+    decided = {}
+    if not columns:
+        return [estimate([])] * len(times)
+    for combination in zip(*columns, strict=True):
+        if combination not in decided:
+            decided[combination] = estimate([(g[0], g[2]) if g else None for g in combination])
+    return [decided[combination] for combination in zip(*columns, strict=True)]
 
 
 def room_truth(context: TruthContext, timestamp: float) -> Label | None:
@@ -258,21 +260,23 @@ def _decide(key, zones, members, estimated):
     if any((zone or ("",))[0] == "present" for zone in rest[:zones]):
         return "present", "human", 1.0
     manuals, autos = rest[zones : zones + members], rest[zones + members : zones + 2 * members]
+    return _decide_members(manuals, autos, rest[-1], estimated)
+
+
+def _member_evidence(manual, auto):
+    if manual in evidence.LABELS:
+        return manual, "human", 1.0
+    return None if manual is not None else auto
+
+
+def _decide_members(manuals, autos, sensor, estimated):
     derived = evidence.combine(
-        [
-            (manual, "human", 1.0)
-            if manual in evidence.LABELS
-            else None
-            if manual is not None
-            else auto
-            for manual, auto in zip(manuals, autos, strict=True)
-        ]
+        [_member_evidence(manual, auto) for manual, auto in zip(manuals, autos, strict=True)]
     )
     if (derived and derived[1] == "human") or any(
         label is not None and label not in evidence.LABELS for label in manuals
     ):
         return derived
-    sensor = rest[-1]
     sensor = sensor if sensor is not None and sensor[0] in evidence.LABELS else None
     return sensor or derived or (ESTIMATE if estimated else None)
 

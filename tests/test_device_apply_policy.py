@@ -47,6 +47,8 @@ class DeviceApplyPolicyTests(unittest.IsolatedAsyncioTestCase):
     asyncTearDown = harness.AutomaticApplyTests.asyncTearDown
     configuration = harness.AutomaticApplyTests.configuration
     run_apply = harness.AutomaticApplyTests.run_apply
+    record = harness.AutomaticApplyTests.record
+    samples = harness.AutomaticApplyTests.samples
 
     async def test_manual_override_can_enable_apply_when_global_default_and_schedule_are_off(self):
         self.runtime.configure_learning_schedule(False, "03:00", False, "overnight")

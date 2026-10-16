@@ -3,6 +3,7 @@ the registry is read once per change, not once per radar and question."""
 
 import random
 import sys
+import time
 import types
 import unittest
 from copy import deepcopy
@@ -229,20 +230,15 @@ def guess_samples(rng, count, first=0.0):
 
 def stub_runtime(records):
     """Each member (``records`` key) with its own recorded rows and guesses."""
-    stored = {key: harness.guessed(item) for key, item in records.items()}
-
-    def samples(device, since=0, until=float("inf")):
-        return iter(stored[device["key"]][0])
-
-    return types.SimpleNamespace(
-        data={
-            "devices": {key: {"key": key, "guess_runs": stored[key][1]} for key in records},
-            "room_labels": {},
-        },
+    runtime = types.SimpleNamespace(
+        data={"devices": {key: {} for key in records}, "room_labels": {}},
         _history_runtime={},
-        _iter_history_samples=samples,
         _schedule_save=lambda: None,
+        _room_recent=None,
     )
+    for key, rows in records.items():
+        harness.record_rows(runtime, key, rows)
+    return runtime
 
 
 class EstimateTests(unittest.TestCase):
@@ -265,8 +261,19 @@ class EstimateTests(unittest.TestCase):
                     ids = list(members)
                     self.assertEqual(
                         room_labels.current_estimate(runtime, ids),
-                        old.current_estimate(runtime, ids),
+                        uncached(runtime, ids),
                     )
+
+
+def uncached(runtime, ids):
+    """The room estimate computed afresh, without the poll's kept member reads."""
+    from tuner_under_test.rooms import room_labels
+
+    kept, runtime._room_recent = runtime._room_recent, None
+    try:
+        return room_labels.current_estimate(runtime, ids)
+    finally:
+        runtime._room_recent = kept
 
 
 class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
@@ -294,7 +301,7 @@ class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
         ):
             return jobs.snapshot_with_inventory(self.runtime)[0]["groups"]
 
-    def test_polls_that_find_new_samples_publish_the_estimate_they_always_did(self):
+    def test_polls_that_find_new_records_publish_the_uncached_estimate(self):
         from unittest.mock import patch
 
         from tuner_under_test.rooms import groups, room_labels
@@ -310,16 +317,17 @@ class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
             self.record("a", base + step * 6, state)
             self.record("b", base + step * 6 + 3, rng.choice((state, "present")))
             if rng.random() < 0.05:
-                self.runtime._flush_history_block("a")
+                self.runtime._days.flush(base + step * 6 + 3)
             now = base + step * 6 + rng.choice((4, 8, 20))
             published = self.poll(now)
             with patch.object(room_labels.time, "time", return_value=now):
                 for key, ids in (("area:office", ["a", "b"]), (zone, ["a"])):
-                    self.assertEqual(
-                        published[key]["estimate"], old.current_estimate(self.runtime, ids)
-                    )
+                    self.assertEqual(published[key]["estimate"], uncached(self.runtime, ids))
 
-    def test_a_poll_with_new_samples_does_not_read_the_whole_last_hour(self):
+    def test_only_members_with_new_records_are_read_again(self):
+        from unittest.mock import patch
+
+        from tuner_under_test.history import guesses
         from tuner_under_test.rooms import groups
 
         self.office()
@@ -328,48 +336,36 @@ class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
         for step in range(400):
             self.record("a", base + step * 6, "present")
             self.record("b", base + step * 6 + 3, "present")
-        self.runtime._flush_history_block("a")
-        self.runtime._flush_history_block("b")
-        step = 400
-        self.poll(base + step * 6)
-        read = []
-        real = self.runtime._iter_history_samples
+        newest = base + 399 * 6 + 3
+        self.poll(newest + 1)
+        with patch.object(guesses, "evidence", wraps=guesses.evidence) as read:
+            self.poll(newest + 1)  # Nothing new: every member's recent runs are kept.
+            self.assertEqual(read.call_count, 0)
+            self.record("a", newest + 3, "not_present")
+            self.poll(newest + 4)
+            self.assertEqual({call.args[1] for call in read.call_args_list}, {"a"})
 
-        def counting(device, *args, **kwargs):
-            for sample in real(device, *args, **kwargs):
-                read.append(sample)
-                yield sample
-
-        self.runtime._iter_history_samples = counting
-        self.record("a", base + step * 6, "present")
-        self.record("b", base + step * 6 + 3, "present")
-        self.poll(base + step * 6 + 4)
-        self.assertLessEqual(len(read), 8, "the new samples and a few before them")
-
-    def test_a_member_whose_newest_samples_went_is_read_again(self):
-        """The newest sample is remembered between polls; when history is trimmed the memory
-        must not outlive it."""
+    def test_a_cleared_member_is_read_again(self):
+        """The newest observation is remembered between polls; clearing a member's history
+        must not leave that memory behind."""
         from unittest.mock import patch
 
         from tuner_under_test.rooms import room_labels
 
         self.office()
         base = self.now - 600
-        for step in range(70):  # A block of 60 is stored; the rest wait for the next.
+        for step in range(70):
             self.record("a", base + step * 6, "present")
             self.record("b", base + step * 6 + 3, "present")
         now = base + 70 * 6 + 2
         with patch.object(room_labels.time, "time", return_value=now):
-            self.assertEqual(
-                room_labels.current_estimate(self.runtime, ["a", "b"]),
-                old.current_estimate(self.runtime, ["a", "b"]),
-            )
-            pending = self.runtime._history_runtime["a"]
-            pending["samples"].pop()  # The newest sample is gone, and its guess with it.
-            pending["runs"][-1][1] = pending["samples"][-1][0]
-            expected = old.current_estimate(self.runtime, ["a"])
-            self.assertIsNotNone(expected)
-            self.assertEqual(room_labels.current_estimate(self.runtime, ["a"]), expected)
+            before = room_labels.current_estimate(self.runtime, ["a", "b"])
+            self.assertEqual(before["state"], "present")  # Both members agree.
+            self.runtime.clear_samples("b")
+            after = room_labels.current_estimate(self.runtime, ["a", "b"])
+            # Present needs both members of a two-radar room: a alone is not the room.
+            self.assertIsNone(after)
+            self.assertEqual(after, uncached(self.runtime, ["a", "b"]))
 
     def test_polls_that_go_back_in_time_see_the_runs_they_would_have_seen(self):
         from unittest.mock import patch
@@ -382,20 +378,19 @@ class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
             confidence = 1.0 if step // 15 % 2 else 0.65  # Runs of one guess, all Present.
             self.record("a", base + step * 6, "present", confidence)
             self.record("b", base + step * 6 + 3, "present", confidence)
-        self.runtime._flush_history_block("a")
-        self.runtime._flush_history_block("b")
+        self.runtime._days.flush(base + 839 * 6 + 3)
         newest = base + 839 * 6 + 3
         for now in (newest + 4, newest - 2400, newest + 2):
             with patch.object(room_labels.time, "time", return_value=now):
                 self.assertEqual(
                     room_labels.current_estimate(self.runtime, ["a", "b"]),
-                    old.current_estimate(self.runtime, ["a", "b"]),
+                    uncached(self.runtime, ["a", "b"]),
                     now - newest,
                 )
 
-    def test_a_member_with_guesses_but_no_sample_in_the_window_gives_no_anchor(self):
-        """Regression: the estimate used to raise IndexError for such a member (its last cell
-        was looked up among no samples). It has no anchor; the others anchor the estimate."""
+    def test_a_member_whose_coverage_ended_keeps_no_current_estimate(self):
+        """A member no longer observed (recording paused) keeps its guesses as history, but
+        cannot keep an estimate current; an observed member alone still does."""
         from unittest.mock import patch
 
         from tuner_under_test.rooms import room_labels
@@ -404,21 +399,47 @@ class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
         base = self.now - 600
         for step in range(50):
             self.record("a", base + step * 6, "present")
+            if step < 10:
+                self.record("b", base + step * 6 + 3, "present")
+        with patch.object(time, "time", return_value=base + 60):
+            self.runtime.set_recording("b", False)
         now = base + 50 * 6 + 2
-        # b recorded guesses in the window but its samples are gone (nothing to anchor on).
-        self.runtime._history_runtime["b"] = {
-            "samples": [],
-            "runs": [[base - 50, now, "present", 20, 0]],
-        }
         with patch.object(room_labels.time, "time", return_value=now):
-            alone = room_labels.current_estimate(self.runtime, ["a"])
-            with self.assertRaises(IndexError):
-                old.current_estimate(self.runtime, ["a", "b"])
-            mixed = room_labels.current_estimate(self.runtime, ["a", "b"])
-        self.assertIsNotNone(alone)
-        self.assertEqual(mixed["state"], "present")
-        self.assertEqual(mixed["end"], alone["end"], "anchored by a alone")
-        self.assertEqual(mixed["start"], alone["start"])
+            self.assertEqual(room_labels.current_estimate(self.runtime, ["a"])["state"], "present")
+            self.assertIsNone(room_labels.current_estimate(self.runtime, ["b"]))
+            self.assertEqual(
+                room_labels.current_estimate(self.runtime, ["a", "b"]),
+                uncached(self.runtime, ["a", "b"]),
+            )
+
+    def test_a_member_label_change_is_seen_by_the_kept_reads(self):
+        """A label edit rebuilds a member's labelled histograms, which decide where its present
+        guesses were quiet (the veto): reads kept from before must not survive it."""
+        from unittest.mock import patch
+
+        from tuner_under_test.rooms import room_labels
+
+        self.office()
+        base = self.now - 700
+        for step in range(70):
+            self.record("a", base + step * 6, "present")
+            self.record("b", base + step * 6 + 3, "present")
+        now = base + 70 * 6 + 2
+        device = self.runtime.data["devices"]["a"]
+        with patch.object(room_labels.time, "time", return_value=now):
+            self.assertEqual(
+                room_labels.current_estimate(self.runtime, ["a", "b"])["state"], "present"
+            )
+            # As a label edit leaves it: a's readings of 60 were labelled Empty, so are quiet.
+            device["histograms"] = {
+                "g0_move": {
+                    "present": [0] * 101,
+                    "not_present": [200 if i == 60 else 0 for i in range(101)],
+                }
+            }
+            device["label_revision"] = device.get("label_revision", 0) + 1
+            self.assertIsNone(uncached(self.runtime, ["a", "b"]))
+            self.assertIsNone(room_labels.current_estimate(self.runtime, ["a", "b"]))
 
     def test_the_estimate_follows_history_edits_and_cleanup_between_polls(self):
         from unittest.mock import patch
@@ -431,19 +452,18 @@ class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
             self.record("a", base + step * 6, "present")
             self.record("b", base + step * 6 + 3, "present")
         now = base + 70 * 6 + 2
-        device = self.runtime.data["devices"]["a"]
 
         def agree():
             with patch.object(room_labels.time, "time", return_value=now):
                 self.assertEqual(
                     room_labels.current_estimate(self.runtime, ["a", "b"]),
-                    old.current_estimate(self.runtime, ["a", "b"]),
+                    uncached(self.runtime, ["a", "b"]),
                 )
 
         agree()
         self.runtime.label_history_range("a", base, base + 120, "not_present")  # A history edit.
         agree()
-        device["history"].pop(0)  # Retention cleanup removes the stored block.
+        self.runtime._days.flush(now)  # Stored history changes under the kept reads.
         agree()
         self.runtime.clear_samples("b")  # A member's history is cleared.
         agree()

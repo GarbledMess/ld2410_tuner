@@ -28,8 +28,8 @@ def frames(present):
     """``(offset, window, start, end)`` of each window with scored time, in the order of the
     rows; ``offset`` is where the window's samples begin in the radar's hit mask."""
     for offset, window, _confidence in present.windows:
-        start = window.times[0] + max(window.hold + window.off, window.on)
-        end = window.times[-1]
+        start = window.start
+        end = window.end
         if end > start:
             yield offset, window, start, end
 
@@ -93,11 +93,25 @@ class Projector:
         # radar's rows were not.
         self.ordered = all(a[3] < b[2] for a, b in pairwise(self.frames))
         self.known, self.held = {}, 0
+        self.widths = [window.mask.bit_length() for _offset, window, _start, _end in self.frames]
+
+    def _hits(self, bits):
+        """``(index, hits)`` of each window with a hit, ``hits`` being its
+        ``(bits >> offset) & window.mask``: read from one binary rendering of ``bits`` instead
+        of shifting the whole mask once per window, and windows without a hit skipped early."""
+        digits = format(bits, "b")
+        size = len(digits)
+        for index, width in enumerate(self.widths):
+            offset, window, _start, _end = self.frames[index]
+            high = size - offset
+            found = digits[max(0, high - width) : high] if high > 0 and width else ""
+            if "1" in found and (hits := int(found, 2) & window.mask):
+                yield index, hits
 
     def project(self, bits):
         parts = [(array("d"), array("d")) for _ in self.kinds]
-        for index, (offset, window, _start, _end) in enumerate(self.frames):
-            if hits := (bits >> offset) & window.mask:
+        for index, hits in self._hits(bits):
+            if hits:
                 for (starts, ends), (found_starts, found_ends) in zip(
                     parts, self._window(index, hits), strict=True
                 ):

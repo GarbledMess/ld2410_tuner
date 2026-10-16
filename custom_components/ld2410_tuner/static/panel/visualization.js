@@ -117,6 +117,10 @@ export const panelVisualization = {
       const last = groups.at(-1);
       if (
         !last ||
+        point.break_before ||
+        (Number.isFinite(point.start) &&
+          Number.isFinite(last.at(-1).end) &&
+          point.start > last.at(-1).end) ||
         (bucketSeconds && point.t - last.at(-1).t > bucketSeconds * 2)
       )
         groups.push([point]);

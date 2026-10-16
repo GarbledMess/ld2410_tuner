@@ -53,3 +53,12 @@ def blended_cost(human_cost, shares, automatic_rates):
     return human_cost + error_cost(
         *(share * rate for share, rate in zip(shares, automatic_rates, strict=True))
     )
+
+
+def episode_share(weight, human, automatic):
+    """Independent support controls influence; an unlabelled class retains its primary source."""
+    if not automatic:
+        return 0.0
+    if not human:
+        return 1.0
+    return weight * AUTO_CLASS_CAP * automatic / (human + automatic)

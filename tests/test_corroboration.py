@@ -10,14 +10,18 @@ also needs two members agreeing."""
 
 import math
 import sys
+import tempfile
+import time
 import types
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+import room_scenes
 import test_tuner as harness
 from tuner_under_test.calibration import constants
 from tuner_under_test.const import HISTORY_KEYS
 from tuner_under_test.history import guesses, trust
-from tuner_under_test.rooms import evidence as room_evidence
 from tuner_under_test.rooms import truth
 
 references = sys.modules["tuner_under_test.presence.references"]
@@ -49,17 +53,29 @@ def row(**gates):
 
 
 def runtime_of(runs, samples=(), hist=None):
-    """The part of a runtime ``guesses.evidence`` reads: stored chunks and history rows."""
-    device = {"guess_runs": guesses.encode(runs)}
-    if hist is not None:
-        device["histograms"] = hist
-    ordered = sorted(samples)
+    """A recorded radar as ``guesses.evidence`` reads it: each reading held from its sample
+    time until the next one and the guess runs, in a day store; read as of its last record."""
+    from tuner_under_test.history import dayfile, daystore
+
+    folder = tempfile.TemporaryDirectory()
+    days = daystore.DayStore(Path(folder.name))
+    records = [
+        (t, 0, dayfile.Change(t, {g: v for g, v in enumerate(values) if v <= 100}))
+        for t, values in samples
+    ]
+    for start, end, state, level, basis in runs:
+        records.append((start, 2, dayfile.Guess(start, state, level, basis)))
+        records.append((end, 1, dayfile.Guess(end, None, 0, 0)))
+    for _t, _order, record in sorted(records, key=lambda item: item[:2]):
+        days.append("a", record)
+    device = {} if hist is None else {"histograms": hist}
+    until = max((item[0] for item in records), default=BASE)
     return types.SimpleNamespace(
         data={"devices": {"a": device}},
         _history_runtime={},
-        _iter_history_samples=lambda device, since=0, until=math.inf: iter(
-            [sample for sample in ordered if sample[0] >= since]
-        ),
+        _days=days,
+        _history_until=until,
+        _folder=folder,  # Kept with the runtime; removed when it goes.
     )
 
 
@@ -109,6 +125,46 @@ class EvidenceTests(unittest.TestCase):
                 [(BASE, BASE + 60, "not_present", level_, REFERENCE)],
                 confidence,
             )
+
+    def test_calibration_cannot_promote_a_recorded_guess_under_the_floor(self):
+        for state in ("present", "not_present"):
+            for confidence in (0.0, 0.5, 0.54):
+                with self.subTest(state=state, confidence=confidence):
+                    recorded = (
+                        BASE,
+                        BASE + 60,
+                        state,
+                        guesses.level(round(confidence * 100)),
+                        REFERENCE,
+                    )
+                    self.assertEqual(self.runs(recorded), [])
+                    self.assertIsNone(
+                        guesses.counted(
+                            (state, round(confidence * 100), REFERENCE), row(g0_move=40), None
+                        )
+                    )
+            self.assertEqual(len(self.runs(run(0, 60, state, constants.MIN_AUTO_CONFIDENCE))), 1)
+
+    def test_adjacent_evidence_preserves_different_confidence_and_basis(self):
+        for first, second in (
+            (run(0, 30, "present", 0.65, EXTERNAL), run(30, 60, "present", 0.95, EXTERNAL)),
+            (
+                run(0, 30, "not_present", 0.65, REFERENCE),
+                run(30, 60, "not_present", 0.95, EXTERNAL),
+            ),
+        ):
+            with self.subTest(first=first, second=second):
+                found = self.runs(first, second)
+                self.assertEqual(len(found), 2)
+                self.assertEqual(
+                    [(r[0], r[1]) for r in found], [(BASE, BASE + 30), (BASE + 30, BASE + 60)]
+                )
+                self.assertNotEqual(found[0][3:], found[1][3:])
+
+    def test_evidence_since_does_not_return_older_stored_runs(self):
+        runtime = runtime_of([run(0, 20, "not_present", 0.65), run(60, 90, "not_present", 0.65)])
+        found = guesses.evidence(runtime, "a", BASE + 50).runs
+        self.assertEqual([(r[0], r[1]) for r in found], [(BASE + 60, BASE + 90)])
 
     def test_neighbouring_not_present_runs_that_calibrate_alike_are_one_run(self):
         merged = self.runs(
@@ -183,12 +239,12 @@ class QuietVetoTests(unittest.TestCase):
         self.assertTrue(trust.quiet(row(), found), "nothing read, nothing above")
 
     def test_quiet_samples_of_a_present_run_are_cut_out_of_it(self):
-        readings = [20, 20, 3, 3, 3, 20, 20]  # Samples 6 s apart.
+        readings = [20, 20, 3, 3, 3, 20, 20]  # Each held 6 s, until the next reading.
         found = self.evidence(run(0, 36, "present", 1.0), readings)
         self.assertEqual(
             [(r[0] - BASE, r[1] - BASE) for r in found.runs],
-            [(0, 9.0), (27.0, 36)],
-            "cut at the midpoints with the quiet samples",
+            [(0, 12), (30, 36)],
+            "cut exactly where the readings were quiet",
         )
 
     def test_a_present_run_that_is_quiet_throughout_is_gone(self):
@@ -205,7 +261,7 @@ class QuietVetoTests(unittest.TestCase):
 
     def test_a_run_between_two_vetoed_ones_keeps_only_what_is_loud(self):
         found = self.evidence(run(0, 18, "present", 1.0), [3, 20, 3, 20])
-        self.assertEqual([(r[0] - BASE, r[1] - BASE) for r in found.runs], [(3.0, 9.0), (15.0, 18)])
+        self.assertEqual([(r[0] - BASE, r[1] - BASE) for r in found.runs], [(6, 12)])
 
     def test_the_veto_reads_only_samples_inside_present_runs(self):
         seen = []
@@ -214,16 +270,16 @@ class QuietVetoTests(unittest.TestCase):
             [(BASE + 6 * i, row(g0_move=20)) for i in range(40)],
             histograms(),
         )
-        original = runtime._iter_history_samples
+        spans = sys.modules["tuner_under_test.history.spans"]
+        original = spans.events
 
-        def spy(device, since=0, until=math.inf):
-            for sample in original(device, since, until):
-                seen.append(sample[0])
-                yield sample
+        def spy(view, device_id, *, start=-math.inf, end=math.inf):
+            seen.append((start - BASE, end - BASE))
+            return original(view, device_id, start=start, end=end)
 
-        runtime._iter_history_samples = spy
-        guesses.evidence(runtime, "a")
-        self.assertTrue(seen, "the samples were read")
+        with patch.object(spans, "events", spy):
+            guesses.evidence(runtime, "a")
+        self.assertEqual(seen, [(0, 12)], "only the present run's recorded time is read")
 
 
 class LiveCountTests(unittest.TestCase):
@@ -253,6 +309,15 @@ class LiveCountTests(unittest.TestCase):
 
 
 class RoomAgreementTests(unittest.TestCase):
+    def test_two_of_three_members_can_estimate_present(self):
+        found = truth.estimate([("present", 0.95), ("present", 0.95), ("not_present", 0.95)])
+        self.assertEqual(found[:2], ("present", "automatic"))
+        members = {
+            str(i): {"manual": lambda _t: None, "automatic": _timeline(state, "automatic")}
+            for i, state in enumerate(("present", "present", "not_present"))
+        }
+        self.assertEqual(room_scenes.room_label(members, 50)[:2], ("present", "automatic"))
+
     def test_a_present_estimate_needs_two_members_agreeing(self):
         one = truth.estimate([("present", 0.95), None])
         self.assertIsNone(one)
@@ -275,7 +340,7 @@ class RoomAgreementTests(unittest.TestCase):
             return {"manual": lambda _t: None, "automatic": _timeline(state, source)}
 
         def label(*states):
-            return room_evidence.room_label({f"m{i}": member(s) for i, s in enumerate(states)}, 50)
+            return room_scenes.room_label({f"m{i}": member(s) for i, s in enumerate(states)}, 50)
 
         self.assertIsNone(label("present", "not_present"))
         self.assertEqual(label("present", "present")[:2], ("present", "automatic"))
@@ -285,7 +350,7 @@ class RoomAgreementTests(unittest.TestCase):
     def test_one_human_present_member_still_makes_the_room_present(self):
         human = {"manual": lambda _t: "present", "automatic": _timeline(None, "automatic")}
         other = {"manual": lambda _t: None, "automatic": _timeline("not_present", "automatic")}
-        found = room_evidence.room_label({"a": human, "b": other}, 50)
+        found = room_scenes.room_label({"a": human, "b": other}, 50)
         self.assertEqual(found, ("present", "human", 1.0))
 
 
@@ -304,15 +369,18 @@ class HistoryViewTests(unittest.IsolatedAsyncioTestCase):
         harness.RuntimeTests.setUp(self)
 
     def test_a_view_vetoes_with_a_copy_of_the_labelled_histograms(self):
-        from tuner_under_test.history import recording
+        from tuner_under_test.history import dayfile, recording
 
         self.device["histograms"] = histograms()
-        rows = [(self.now + 6 * i, row(g0_move=3)) for i in range(6)]
-        self.runtime._history_runtime["a"] = {
-            "samples": rows,
-            "runs": [[self.now, self.now + 30, "present", 20, REFERENCE]],
-        }
-        view = recording._history_view(self.runtime, "a")
+        start = float(int(self.now))  # Recorded times are whole milliseconds.
+        for record in (
+            dayfile.Change(start, {0: 3}),  # Quiet: within the labelled empty ceiling.
+            dayfile.Guess(start, "present", 20, REFERENCE),
+            dayfile.Guess(start + 30, None, 0, 0),
+        ):
+            self.runtime._days.append("a", record)
+        with patch.object(time, "time", return_value=start + 31):
+            view = recording._history_view(self.runtime, "a")
         self.assertEqual(guesses.evidence(view, "a").runs, [])
         self.assertIsNot(view.data["devices"]["a"]["histograms"], self.device["histograms"])
 
@@ -361,10 +429,46 @@ class LiveRecordingTests(unittest.IsolatedAsyncioTestCase):
             self.record(index * 6, "present", 0.99, 5)
         self.assertEqual(self.radar_periods("present"), [])
 
+    def test_reference_training_rejects_every_source_under_the_confidence_floor(self):
+        from copy import deepcopy
+
+        from tuner_under_test.presence import reference_training
+
+        for external in (False, True):
+            for state in ("present", "not_present"):
+                with self.subTest(external=external, state=state):
+                    device = {
+                        **self.device,
+                        "reference_profile": deepcopy(self.device["reference_profile"]),
+                    }
+                    original = deepcopy(device["reference_profile"])
+                    for confidence in (0.0, 0.5, constants.MIN_AUTO_CONFIDENCE - 0.01):
+                        reference_training.observe(
+                            self.runtime,
+                            device,
+                            self.now,
+                            row(g0_move=40),
+                            state,
+                            confidence,
+                            external=external,
+                        )
+                        self.assertEqual(device["reference_profile"], original)
+                    reference_training.observe(
+                        self.runtime,
+                        device,
+                        self.now,
+                        row(g0_move=40),
+                        state,
+                        constants.MIN_AUTO_CONFIDENCE,
+                        external=external,
+                    )
+                    self.assertNotEqual(device["reference_profile"], original)
+
     def test_a_loud_present_guess_from_a_fresh_reference_does(self):
         for index in range(20):
             self.record(index * 6, "present", 0.99, 40)
-        self.assertEqual(sum(p["count"] for p in self.radar_periods("present")), 20)
+        # 20 polls 6 s apart observe 114 s: 19 six-second units.
+        self.assertAlmostEqual(sum(p["count"] for p in self.radar_periods("present")), 19, places=3)
 
     def test_a_present_guess_from_a_stale_reference_does_not(self):
         for index in range(20):
@@ -375,13 +479,13 @@ class LiveRecordingTests(unittest.IsolatedAsyncioTestCase):
         for index in range(20):
             self.record(index * 6, "not_present", 0.65, 5)
         periods = self.radar_periods("not_present")
-        self.assertEqual(sum(p["count"] for p in periods), 20)
+        self.assertAlmostEqual(sum(p["count"] for p in periods), 19, places=3)  # 114 s observed.
         self.assertAlmostEqual(periods[0]["confidence"], constants.TRUST_NOT_PRESENT)
 
     def test_the_guess_itself_is_recorded_raw_whatever_it_trains(self):
         for index in range(5):
             self.record(index * 6, "present", 0.9, 5)
-        (recorded,) = self.runtime._history_runtime["a"]["runs"]
+        (recorded,) = harness.guesses.of(self.runtime, "a").runs
         self.assertEqual(tuple(recorded[2:4]), ("present", level(0.9)))
 
 

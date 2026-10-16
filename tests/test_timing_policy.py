@@ -15,6 +15,10 @@ schedule = sys.modules["tuner_under_test.runtime.schedule"]
 measure = sys.modules["tuner_under_test.calibration.timing_metrics"]
 
 
+def timing_report(values, groups):
+    return {"configuration": values, "active": values.get("timeout") is not None}
+
+
 def resolved(mode="device", values=None, entries=None):
     runtime = types.SimpleNamespace(
         data={"timing_settings": {**policy.DEFAULTS, "mode": mode}},
@@ -67,7 +71,7 @@ def test_disabled_timing_ignores_device_controls_and_uses_raw_replay():
     assert measure.evaluate(groups, {"g0_still": 10}, result) == measure.evaluate(
         groups, {"g0_still": 10}
     )
-    assert not measure.timing_summary(result, groups)["active"]
+    assert not timing_report(result, groups)["active"]
 
 
 @pytest.mark.parametrize(
@@ -116,7 +120,7 @@ class TimingPolicyRuntimeTests(unittest.IsolatedAsyncioTestCase):
             return {
                 "status": "ok",
                 "proposals": {},
-                "timing": measure.timing_summary(captured[-1], {}),
+                "timing": timing_report(captured[-1], {}),
             }
 
         self.hass.async_add_executor_job = fit
@@ -146,7 +150,7 @@ class TimingPolicyRuntimeTests(unittest.IsolatedAsyncioTestCase):
             return {
                 "status": "uncertain",
                 "proposals": {},
-                "timing": measure.timing_summary(timing, {}),
+                "timing": timing_report(timing, {}),
                 "training": {
                     "duration": {
                         "presence_recall": 1,

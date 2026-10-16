@@ -7,8 +7,9 @@ from time import time
 
 from ..calibration import automatic as policy
 from ..calibration import device_io, results
+from ..calibration import thresholds as threshold_domain
 from ..calibration.scoring import improves
-from . import fitting, groups, jobs, truth
+from . import adaptive, fitting, groups, jobs, truth
 from .objective import Objective
 
 WORSE = "A zone would get worse"
@@ -41,6 +42,11 @@ def guard(runtime, learned, applied, source=None):
         raise ValueError(
             "A zone member's labels, timing, thresholds or membership changed; learn again"
         )
+    if any(
+        not threshold_domain.permitted({key: value}, {key: current[device]["constraints"][key]})
+        for _, device, key, value in _changes(learned)
+    ):
+        raise ValueError("Joint thresholds are not permitted by a gate; learn again")
     for key in learned["thresholds"]:
         if source and not policy.enabled(runtime, source, key):
             raise ValueError("Automatic Apply must be enabled for this source on every zone member")
@@ -54,19 +60,21 @@ def _changes(learned):
         (value - learned["signature"][device]["thresholds"][key], device, key, value)
         for device, gates in learned["thresholds"].items()
         for key, value in gates.items()
+        if value != learned["signature"][device]["thresholds"][key]
     ]
     # Establish replacement coverage before withdrawing the previous coverage.
     return sorted(changes)
 
 
 async def _write(runtime, learned, source):
-    applied = {key: {} for key in learned["thresholds"]}
+    changes = _changes(learned)
+    applied = {device: {} for _, device, _, _ in changes}
     skipped, buttons = {}, {}
     guard(runtime, learned, applied, source)
     for key in applied:
         buttons[key] = await device_io.prepare_device(runtime, key, learned["thresholds"][key])
     guard(runtime, learned, applied, source)
-    for _delta, device, key, value in _changes(learned):
+    for _delta, device, key, value in changes:
         try:
             guard(runtime, learned, applied, source)
             await device_io.write_threshold(runtime, device, key, value, buttons[device])
@@ -79,7 +87,7 @@ async def _write(runtime, learned, source):
     except ValueError as error:
         skipped["configuration"] = str(error)
     if not skipped:
-        _remember(runtime, learned)
+        _remember(runtime, learned, applied)
     return {
         "applied": applied,
         "skipped": skipped,
@@ -88,10 +96,10 @@ async def _write(runtime, learned, source):
     }
 
 
-def _remember(runtime, learned):
+def _remember(runtime, learned, changed):
     from .learning import projection
 
-    for key in learned["thresholds"]:
+    for key in changed:
         device = runtime.data["devices"][key]
         previous = learned["signature"][key]
         results.remember_applied(
@@ -128,9 +136,12 @@ async def apply(runtime, set_id, result_id, source="user", automatic_source=None
 
 def compare(members, thresholds, start, end, room=None):
     """Live and candidate room results for one zone on the same recordings."""
-    objective = Objective(members, start, end, room)
-    current = fitting.measure(members, objective.current, start, end, room)
-    candidate = fitting.measure(members, thresholds, start, end, room)
+    quality = adaptive.models(
+        adaptive.collect_contexts({"room": members}, start, end, {"room": room} if room else {})
+    )
+    objective = Objective(members, start, end, room, quality=quality)
+    current = fitting.measure(members, objective.current, start, end, room, quality=quality)
+    candidate = fitting.measure(members, thresholds, start, end, room, quality=quality)
     return {
         "live": {**current["room"], "error_cost": objective.costs(objective.current)[0]},
         "candidate": {**candidate["room"], "error_cost": objective.costs(thresholds)[0]},

@@ -1,6 +1,8 @@
 """Integrate piecewise confidence while callers retain their boundary semantics."""
 
 from bisect import bisect_right
+from itertools import repeat
+from operator import add, mul, sub
 
 
 class WeightedTime:
@@ -31,19 +33,29 @@ def across(masses, starts, ends):
     times = masses[0].times
     if any(mass.times is not times for mass in masses):
         raise ValueError("Masses must share their times")
-    firsts = [k - 1 if (k := bisect_right(times, x)) else 0 for x in starts]
-    lasts = [k - 1 if (k := bisect_right(times, x)) else 0 for x in ends]
+    if len(starts) != len(ends):
+        raise ValueError("Every span needs a start and an end")
+    firsts, lasts = _cells(times, starts), _cells(times, ends)
+    begins = list(map(sub, starts, map(times.__getitem__, firsts)))
+    finishes = list(map(sub, ends, map(times.__getitem__, lasts)))
     sums = []
     for mass in masses:
+        # Per span: prefix[last] + (end - times[last]) * weights[last]
+        #         - (prefix[first] + (start - times[first]) * weights[first]), summed in order.
         prefix, weights = mass.prefix, mass.weights
-        sums.append(
-            sum(
-                [
-                    prefix[last]
-                    + (end - times[last]) * weights[last]
-                    - (prefix[first] + (start - times[first]) * weights[first])
-                    for start, end, first, last in zip(starts, ends, firsts, lasts, strict=True)
-                ]
-            )
+        high = map(
+            add, map(prefix.__getitem__, lasts), map(mul, finishes, map(weights.__getitem__, lasts))
         )
+        low = map(
+            add, map(prefix.__getitem__, firsts), map(mul, begins, map(weights.__getitem__, firsts))
+        )
+        sums.append(sum(map(sub, high, low)))
     return sums
+
+
+def _cells(times, values):
+    """The index of the cell holding each value (the first cell for one before it)."""
+    found = list(map(bisect_right, repeat(times), values))
+    if 0 in found:
+        return [k - 1 if k else 0 for k in found]
+    return list(map(sub, found, repeat(1)))

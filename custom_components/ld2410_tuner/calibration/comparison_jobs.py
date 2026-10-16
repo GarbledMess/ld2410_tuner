@@ -8,23 +8,38 @@ from ..const import TRAINING_FIELDS
 from ..history import policy
 from ..rooms import attribution
 from ..runtime.tasks import finish_task
-from . import comparison, comparison_cache, results
+from . import comparison, comparison_cache, results, settings
+from . import thresholds as threshold_domain
 from .constants import METHOD
 from .timing_config import read_timing, timing_signature
 
 
-def _pattern(result, entities):
+def _pattern(result, entities, constraints=None, learner_policy=None):
     if not result:
         return None
+    values = {
+        key: value.get("threshold")
+        for key, value in result.get("proposals", {}).items()
+        if isinstance(value, dict)
+    }
+    legal = constraints is None or threshold_domain.permitted(values, constraints)
+    compatible = (
+        constraints is None or result.get("threshold_constraints", constraints) == constraints
+    )
+    policy_compatible = (
+        learner_policy is None
+        or result.get("source") == "device"
+        or all(result.get(key) == value for key, value in learner_policy.items())
+    )
     return {
         "id": result.get("id"),
         "joint": result.get("joint"),
-        "thresholds": {
-            key: value.get("threshold")
-            for key, value in result.get("proposals", {}).items()
-            if isinstance(value, dict)
-        },
-        "applicable": result.get("method") == METHOD and result.get("entities") == entities,
+        "thresholds": values,
+        "applicable": result.get("method") == METHOD
+        and result.get("entities") == entities
+        and legal
+        and compatible
+        and policy_compatible,
     }
 
 
@@ -35,9 +50,21 @@ def _context(runtime, device_id):
     entities, current = runtime._threshold_configuration(device_id)
     saved = results.saved_results(device)
     timing = read_timing(runtime, device_id)
-    patterns = {slot: _pattern(saved.get(slot), entities) for slot in results.SLOTS}
+    constraints = threshold_domain.read(runtime, entities)
+    learner_policy = settings.signature(runtime.data)
+    patterns = {
+        slot: _pattern(saved.get(slot), entities, constraints, learner_policy)
+        for slot in results.SLOTS
+    }
     patterns["live"] = {"id": None, "thresholds": current, "applicable": False}
-    context = {"keys": list(entities), "entities": entities, "patterns": patterns, "timing": timing}
+    context = {
+        "keys": list(entities),
+        "entities": entities,
+        "patterns": patterns,
+        "timing": timing,
+        **learner_policy,
+        "threshold_constraints": constraints,
+    }
     signature = {
         "scorer_version": comparison.SCORER_VERSION,
         "entities": entities,
@@ -46,6 +73,8 @@ def _context(runtime, device_id):
         "revision": device.get("label_revision", 0),
         "training": [device.get(key) for key in TRAINING_FIELDS],
         "retention": policy.settings(runtime.data),
+        "learner_policy": learner_policy,
+        "threshold_constraints": constraints,
     }
     return context, signature
 
@@ -87,7 +116,6 @@ async def _run(runtime, device_id, context, signature, wanted):
             report = await runtime.hass.async_add_executor_job(
                 comparison.calculate, view, device_id, {**context, "patterns": wanted}
             )
-            attribution.remember(runtime, view)
             report.update(state="ready", evaluated_at=started)
         except asyncio.CancelledError:
             raise

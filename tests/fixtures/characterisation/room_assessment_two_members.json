@@ -2,8 +2,8 @@
  "devices": {
   "a": {
    "basis": "human",
-   "empty_seconds": 594.0,
-   "exclusive_presence_seconds": 597.0,
+   "empty_seconds": 597.0,
+   "exclusive_presence_seconds": 600.0,
    "false_active_seconds": 0.0,
    "false_positive_percent": 0.0,
    "missed_seen_automatic_seconds": 0.0,
@@ -15,18 +15,18 @@
     "automatic": {
      "not_present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 0,
+      "samples": 0.0,
       "seconds": 0.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 0.0
      },
      "present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 0,
+      "samples": 0.0,
       "seconds": 0.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 0.0
@@ -35,59 +35,59 @@
     "human": {
      "not_present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 99,
-      "seconds": 594.0,
+      "samples": 99.5,
+      "seconds": 597.0,
       "weighted_active_seconds": 0.0,
-      "weighted_seconds": 594.0
+      "weighted_seconds": 597.0
      },
      "present": {
-      "active_seconds": 597.0,
-      "hits": 100,
-      "possible_seconds": 597.0,
-      "samples": 100,
+      "active_seconds": 600.0,
+      "hits": 100.0,
+      "possible_seconds": 600.0,
+      "samples": 100.0,
       "seconds": 600.0,
-      "weighted_active_seconds": 597.0,
+      "weighted_active_seconds": 600.0,
       "weighted_seconds": 600.0
      }
     }
    },
-   "presence_recall": 0.995,
-   "score": 97.5,
+   "presence_recall": 1.0,
+   "score": 100.0,
    "sources": {
     "not_present": "human",
     "present": "human"
    },
-   "target_met": false
+   "target_met": true
   },
   "b": {
    "basis": "human",
-   "empty_seconds": 594.0,
+   "empty_seconds": 597.0,
    "exclusive_presence_seconds": 0.0,
    "false_active_seconds": 0.0,
    "false_positive_percent": 0.0,
    "missed_seen_automatic_seconds": 0.0,
    "missed_seen_inferred_seconds": 0.0,
-   "missed_seen_seconds": 597.0,
+   "missed_seen_seconds": 600.0,
    "missed_time_cost": 5.0,
    "occupied_seconds": 600.0,
    "outcomes": {
     "automatic": {
      "not_present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 0,
+      "samples": 0.0,
       "seconds": 0.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 0.0
      },
      "present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 0,
+      "samples": 0.0,
       "seconds": 0.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 0.0
@@ -96,18 +96,18 @@
     "human": {
      "not_present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 99,
-      "seconds": 594.0,
+      "samples": 99.5,
+      "seconds": 597.0,
       "weighted_active_seconds": 0.0,
-      "weighted_seconds": 594.0
+      "weighted_seconds": 597.0
      },
      "present": {
       "active_seconds": 0.0,
-      "hits": 0,
+      "hits": 0.0,
       "possible_seconds": 0.0,
-      "samples": 100,
+      "samples": 100.0,
       "seconds": 600.0,
       "weighted_active_seconds": 0.0,
       "weighted_seconds": 600.0
@@ -125,7 +125,7 @@
  },
  "end": 1200,
  "excluded": {
-  "no_shared_recording_seconds": 6,
+  "no_shared_recording_seconds": 3.0,
   "unlabelled_seconds": 0.0
  },
  "label_basis": "Any member labelled present; empty requires every member labelled empty. Human labels override estimates on the same member.",
@@ -137,18 +137,18 @@
    "automatic": {
     "not_present": {
      "active_seconds": 0.0,
-     "hits": 0,
+     "hits": 0.0,
      "possible_seconds": 0.0,
-     "samples": 0,
+     "samples": 0.0,
      "seconds": 0.0,
      "weighted_active_seconds": 0.0,
      "weighted_seconds": 0.0
     },
     "present": {
      "active_seconds": 0.0,
-     "hits": 0,
+     "hits": 0.0,
      "possible_seconds": 0.0,
-     "samples": 0,
+     "samples": 0.0,
      "seconds": 0.0,
      "weighted_active_seconds": 0.0,
      "weighted_seconds": 0.0
@@ -157,35 +157,35 @@
    "human": {
     "not_present": {
      "active_seconds": 0.0,
-     "hits": 0,
+     "hits": 0.0,
      "possible_seconds": 0.0,
-     "samples": 99,
-     "seconds": 594.0,
+     "samples": 99.5,
+     "seconds": 597.0,
      "weighted_active_seconds": 0.0,
-     "weighted_seconds": 594.0
+     "weighted_seconds": 597.0
     },
     "present": {
-     "active_seconds": 597.0,
-     "hits": 100,
-     "possible_seconds": 597.0,
-     "samples": 100,
+     "active_seconds": 600.0,
+     "hits": 100.0,
+     "possible_seconds": 600.0,
+     "samples": 100.0,
      "seconds": 600.0,
-     "weighted_active_seconds": 597.0,
+     "weighted_active_seconds": 600.0,
      "weighted_seconds": 600.0
     }
    }
   },
-  "presence_recall": 0.995,
-  "score": 97.5,
+  "presence_recall": 1.0,
+  "score": 100.0,
   "sources": {
    "not_present": "human",
    "present": "human"
   },
-  "target_met": false
+  "target_met": true
  },
- "sample_basis": "Unique observation timestamps within shared recording coverage",
- "scorer_version": 1,
- "shared_recording_seconds": 1194,
+ "sample_basis": "Observed recording duration; unchanged values count for how long they hold",
+ "scorer_version": 2,
+ "shared_recording_seconds": 1197.0,
  "start": 0,
  "timing": {
   "a": {},

@@ -14,7 +14,6 @@ config_module = sys.modules["tuner_under_test.calibration.timing_config"]
 timing_module = sys.modules["tuner_under_test.calibration.timing"]
 measure_module = sys.modules["tuner_under_test.calibration.timing_metrics"]
 metrics_module = sys.modules["tuner_under_test.calibration.metrics"]
-fitting_module = sys.modules["tuner_under_test.calibration.fitting"]
 
 
 def rows(values, label="present", step=1, start=0):
@@ -147,13 +146,13 @@ def test_timing_improves_gate_choice_without_hiding_noise_or_changing_settings()
     absent = rows([15] * 500, "not_present", step=6, start=4000)
     baseline = fit(present + absent, ["g0_still"])
     timed = fit(present + absent, ["g0_still"], timing=config(20))
-    assert baseline["training"]["false_positives"] == 500
+    assert baseline["training"]["duration"]["error_cost"] == pytest.approx(100, abs=1e-12)
     assert timed["status"] == "ok"
     assert timed["training"]["false_positives"] == timed["training"]["false_negatives"] == 0
     assert 15 <= timed["proposals"]["g0_still"]["threshold"] < 70
     assert timed["raw_training"]["false_negatives"] == 100
     assert timed["review"]["period_count"] == 0
-    assert timed["outlier_filter"]["human"]["excluded"]["present"] == 0
+    assert timed["outlier_filter"]["excluded"] is False
     assert timed["feasibility"]["status"] == "not_assessed"
 
 
@@ -163,28 +162,33 @@ def test_warmup_cannot_produce_a_green_result_with_no_measured_evidence():
         ["g0_still"],
         timing=config(600),
     )
-    assert result["status"] == "insufficient"
-    assert result["proposals"]  # User can still choose to apply an unproven result.
-    assert result["training"]["present_samples"] == 0
+    assert result["status"] == "unsafe"
+    assert result["proposals"]
+    assert result["training"]["present_samples"] == 100
+    assert result["training"]["false_positive_rate"] == 1
 
 
 def test_pair_repair_preserves_presence_supported_by_alternating_gates():
-    search_class = sys.modules["tuner_under_test.calibration.search"]._ThresholdSearch
     keys = ["g0_move", "g1_still"]
     present = [
         (i, {keys[0]: 30 if i % 2 == 0 else 0, keys[1]: 10 if i % 2 == 0 else 20}, "present")
         for i in range(20)
     ]
     absent = [(100 + i, {keys[0]: 25, keys[1]: 0}, "not_present") for i in range(20)]
-    search = search_class(
-        present, absent, {"present": [], "not_present": []}, keys, None, config(0, 3, 0), 0.0
-    )
-    thresholds = {keys[0]: 10, keys[1]: 15}
-    selected = {key: search.tables[key][value] for key, value in thresholds.items()}
-    candidates = list(
-        search._pair_candidates(keys[0], keys[1], thresholds, selected, search._distinct_options())
-    )
-    assert candidates, "Neither gate alone passes delayed_on, but their combined run does"
+    from tuner_under_test.calibration.event_fitting import assess
+
+    view = types.SimpleNamespace(data={"devices": {"d": {}}, "room_snapshot": None})
+    harness.record_samples(view, "d", present + absent)
+
+    def measured(thresholds):
+        return assess(view, "d", thresholds, config(0, 3, 0))["human"]["duration"]
+
+    combined = measured({keys[0]: 25, keys[1]: 15})
+    first = measured({keys[0]: 25, keys[1]: 100})
+    second = measured({keys[0]: 100, keys[1]: 15})
+    assert combined["missed_seconds"] == 3
+    assert combined["false_positive_seconds"] == 0
+    assert combined["missed_seconds"] < min(first["missed_seconds"], second["missed_seconds"])
 
 
 def test_recovered_high_snapshot_is_uncertain_not_a_second_proven_miss():
@@ -223,18 +227,11 @@ def test_unresolved_short_delay_does_not_lower_gates_to_fix_a_sampling_assumptio
     # simply to eliminate every possible miss.
     present = rows([14 if i in (100, 1100, 2100, 3100) else 70 for i in range(5000)], step=6)
     absent = rows([15] * 100, "not_present", step=6, start=40000)
-    # This checks timing, independently of the separate outlier detector.
-    with (
-        patch.object(
-            fitting_module, "prepare_evidence", side_effect=lambda p, a, k: (p, a, {}, {})
-        ),
-        patch.object(fitting_module, "_backtest", return_value=(None, [], None)),
-    ):
-        result = fit(present + absent, ["g0_still"], timing=config(1, 0.5, 1))
+    result = fit(present + absent, ["g0_still"], timing=config(1, 0.5, 1))
     assert result["training"]["false_positives"] == 0
-    assert result["training"]["false_negatives"] == 4
-    assert result["training"]["onset_uncertainty"]["samples"] == 4
-    assert result["status"] == "uncertain"
+    assert result["training"]["duration"]["missed_seconds"] == 18.5
+    assert result["training"]["false_negatives"] == 18.5 / 6
+    assert result["status"] == "ok"
     assert result["proposals"]["g0_still"]["threshold"] >= 15
 
 

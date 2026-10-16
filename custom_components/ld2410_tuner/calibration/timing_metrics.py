@@ -73,30 +73,3 @@ def onset_uncertainty(groups, thresholds, config, *, recent=False):
         "misses_if_latest_onset": (mask & ~latest).bit_count(),
         "misses_if_earliest_onset": (mask & ~possible).bit_count(),
     }
-
-
-def timing_summary(config, groups):
-    config = config or {}
-    gaps = [
-        b[0] - a[0]
-        for rows in groups.values()
-        for a, b in zip(rows, rows[1:], strict=False)
-        if 0 < b[0] - a[0] <= 12
-    ]
-    return {
-        "configuration": config,
-        "active": config.get("timeout") is not None,
-        "sample_interval_seconds": sorted(gaps)[len(gaps) // 2] if gaps else None,
-        "scope": _scope(config),
-        "model": "sampled_timing_estimate_v2",
-    }
-
-
-def _scope(config):
-    if config.get("timeout") is None:
-        return "raw"
-    return (
-        "reported_presence"
-        if all(config.get(key) is not None for key in ("on_delay", "off_delay"))
-        else "radar"
-    )

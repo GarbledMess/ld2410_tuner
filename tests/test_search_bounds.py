@@ -2,6 +2,7 @@
 against the search that ranked every candidate (``old_search``) on random rooms."""
 
 import random
+import types
 import unittest
 from copy import deepcopy
 
@@ -31,6 +32,51 @@ def counted(objective):
 
 
 class SearchEquivalenceTests(unittest.TestCase):
+    def test_mixed_source_search_and_bounds_with_positive_automatic_weight(self):
+        mixed = 0
+        for seed in range(4):
+            rng = random.Random(8000 + seed)
+            members, labels = room(rng)
+            labels["room_labels"]["area:office"] = [
+                {"start": 0, "end": 100, "state": "present", "source": "manual"},
+                {"start": 100, "end": 200, "state": "not_present", "source": "manual"},
+            ]
+            groups = {"g1": members, "g2": {"b": members["b"]}}
+            for weight in (0.5, 1.0):
+                for make in (
+                    lambda members=members, labels=labels, weight=weight: Objective(
+                        members, 0, 900, labels, automatic_weight=weight
+                    ),
+                    lambda groups=groups, labels=labels, weight=weight: LinkedObjective(
+                        groups, 0, 900, {"g1": labels, "g2": labels}, automatic_weight=weight
+                    ),
+                ):
+                    fast, plain = make(), make()
+                    parts = [fast] if isinstance(fast, Objective) else list(fast.groups.values())
+                    mixed += sum(any(item.shares) for item in parts)
+                    self.assertEqual(fitting.search(fast), old.search(plain))
+                    current = fast.current
+                    for bound, rank in zip(
+                        fast.bound(current, current), fast.rank(current)[:-3], strict=True
+                    ):
+                        self.assertLessEqual(bound, rank + 1e-9)
+        self.assertGreater(mixed, 0, "the fixtures must exercise automatic/human blending")
+
+    def test_tail_counts_supported_distance_and_only_changed_gates(self):
+        supported = {
+            "separated": True,
+            "noise_ceiling": 10,
+            "preferred_threshold": 40,
+            "presence_reference": 70,
+        }
+        objective = types.SimpleNamespace(
+            current={"a": {"x": 20, "y": 30}},
+            preferred={"a": {"x": 40, "y": 45}},
+            preferences={"a": {"x": supported, "y": {**supported, "separated": False}}},
+        )
+        self.assertEqual(Objective.tail(objective, {"a": {"x": 25, "y": 30}}), (15, 1, 15))
+        self.assertEqual(Objective.tail(objective, {"a": {"x": 20, "y": 50}}), (20, 1, 5))
+
     def test_the_search_finds_what_ranking_every_candidate_found(self):
         for seed in range(12):
             rng = random.Random(1000 + seed)

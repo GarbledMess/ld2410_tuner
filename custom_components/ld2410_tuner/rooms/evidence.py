@@ -1,15 +1,15 @@
 """Read bounded room evidence without relabelling or copying one zone into another."""
 
 from array import array
-from itertools import compress, islice, repeat
-from math import inf, nextafter
-from operator import is_, le
+from itertools import islice
+from math import ceil
+from operator import le
 
 from ..calibration.constants import AGREEING_MEMBERS
 from ..calibration.metrics import bit_planes
 from ..const import HISTORY_KEYS
-from ..history import guesses
-from ..history.labels import _history_label_reader
+from ..history import guesses, spans
+from ..history.label_lookup import _history_label_reader
 
 LABELS = ("present", "not_present")
 
@@ -26,23 +26,36 @@ class Readings:
 
     def get(self, key, default=None):
         position = self.layout.get(key)
-        return default if position is None else self.values[position]
+        if position is None or self.values[position] > 100:
+            return default
+        return self.values[position]
 
     def __getitem__(self, key):
-        return self.values[self.layout[key]]
+        value = self.values[self.layout[key]]
+        if value > 100:
+            raise KeyError(key)  # The gate did not read.
+        return value
 
     def __contains__(self, key):
-        return key in self.layout
+        position = self.layout.get(key)
+        return position is not None and self.values[position] <= 100
 
     def __len__(self):
-        return len(self.values)
+        return sum(value <= 100 for value in self.values)
 
     def items(self):
-        return [(key, self.values[position]) for key, position in self.layout.items()]
+        return [
+            (key, self.values[position])
+            for key, position in self.layout.items()
+            if self.values[position] <= 100
+        ]
 
 
 # Byte -> 1 for a reading above 100, which is no reading: a sample with one is a barrier.
 OVER = bytes(int(value > 100) for value in range(256))
+MISSING = 255  # A gate that did not read.
+# A gate that did not read compares as reading 0: it is above no threshold.
+UNREAD_AS_ZERO = bytes(value if value <= 100 else 0 for value in range(256))
 
 
 class Rows:
@@ -51,17 +64,23 @@ class Rows:
     for each reading where a sample of objects took hundreds. It reads like the list of
     ``(time, Readings, "unknown")`` it replaces."""
 
-    __slots__ = ("times", "columns", "layout", "planes")
+    __slots__ = ("times", "columns", "layout", "planes", "ends")
 
-    def __init__(self, times, columns, layout):
+    def __init__(self, times, columns, layout, *, ends=None):
         self.times, self.columns, self.layout, self.planes = times, columns, layout, {}
+        self.ends = ends
 
     def __len__(self):
         return len(self.times)
 
     def __getitem__(self, index):
         if isinstance(index, slice):
-            return Rows(self.times[index], [column[index] for column in self.columns], self.layout)
+            return Rows(
+                self.times[index],
+                [column[index] for column in self.columns],
+                self.layout,
+                ends=None if self.ends is None else self.ends[index],
+            )
         values = bytes(column[index] for column in self.columns)
         return self.times[index], Readings(self.layout, values), "unknown"
 
@@ -74,7 +93,7 @@ class Rows:
     def planes_of(self, key):
         """The ``bit_planes`` of the readings of the gate ``key``, made once."""
         if key not in self.planes:
-            self.planes[key] = bit_planes(self.column(key))
+            self.planes[key] = bit_planes(self.column(key).translate(UNREAD_AS_ZERO))
         return self.planes[key]
 
     def in_time_order(self):
@@ -86,26 +105,19 @@ class Rows:
             _like(self.times, map(self.times.__getitem__, order)),
             [bytes(map(column.__getitem__, order)) for column in self.columns],
             self.layout,
+            ends=None if self.ends is None else [self.ends[index] for index in order],
         )
 
 
-def read(view, device_id, keys, start, end):
+def read(view, device_id, keys, start, end, *, automatic_reader=None):
     device = view.data["devices"][device_id]
-    layout = {key: position for position, key in enumerate(keys)}
-    indices = [HISTORY_KEYS.index(key) for key in keys]
-    times, parts = [], [[] for _ in indices]
-    # ``until`` is exclusive and the window includes ``end``: only blocks inside it are read.
-    for batch_times, columns in view._history_columns(device, start, nextafter(end, inf)):
-        times.extend(batch_times)
-        for part, index in zip(parts, indices, strict=True):
-            part.append(columns[index])
-    if all(map(is_, map(type, times), repeat(float))):  # Kept as read if not floats.
-        times = array("d", times)
-    rows, barriers = _usable(times, [b"".join(part) for part in parts], layout, start, end)
-    automatic = guesses.evidence(view, device_id, start)
-    spans = automatic.cells(start, end)
+    rows, barriers = _recorded(view, device_id, keys, end)
+    automatic = (
+        guesses.evidence(view, device_id, start) if automatic_reader is None else automatic_reader
+    )
+    cells = automatic.cells(start, end)
     labels = _history_label_reader(device)
-    boundaries = {start, end, *(point for span in spans for point in span[:2])}
+    boundaries = {start, end, *(point for span in cells for point in span[:2])}
     for item in device.get("history_labels", []):
         boundaries.update((item["start"], item["end"]))
     boundaries.update(
@@ -122,6 +134,29 @@ def read(view, device_id, keys, start, end):
     }
 
 
+def _recorded(view, device_id, keys, end):
+    """``(rows, barriers)`` of the recorded spans up to ``end``: a span where any of ``keys``
+    read is a row (from its start to its end; a gate that did not read is kept as
+    ``MISSING``, which compares as no reading); one where none of them read is a barrier at
+    its start."""
+    indices = [HISTORY_KEYS.index(key) for key in keys]
+    times, ends, barriers = array("d"), array("d"), []
+    columns = [bytearray() for _ in keys]
+    for cell in spans.events(view, device_id, end=end):  # In time order.
+        read = [cell.values[index] for index in indices]
+        if all(value is None for value in read):
+            barriers.append(cell.start)
+            continue
+        times.append(cell.start)
+        ends.append(cell.end)
+        for column, value in zip(columns, read, strict=True):
+            # For integer thresholds, ceil(value) > threshold iff the raw value > threshold.
+            column.append(MISSING if value is None else ceil(value))
+    layout = {key: position for position, key in enumerate(keys)}
+    rows = Rows(times, [bytes(column) for column in columns], layout, ends=ends)
+    return rows, sorted(set(barriers))
+
+
 def member_label(manual, evidence, timestamp):
     """A member's label at ``timestamp``, given its ``manual`` one there."""
     if manual in LABELS:
@@ -135,32 +170,6 @@ def _like(times, items):
     return array("d", items) if isinstance(times, array) else list(items)
 
 
-def _usable(times, columns, layout, start, end):
-    """``(rows, barriers)`` of the samples inside ``[start, end]``: those that read at most 100
-    on every gate are rows, the times of the others are barriers."""
-    inside = bytes(start <= t <= end for t in times)
-    over = 0
-    for column in columns:
-        over |= int.from_bytes(column.translate(OVER), "little")
-    if not over and inside.count(1) == len(times):
-        return Rows(times, columns, layout), []
-    flagged = over.to_bytes(len(times), "little") if over else bytes(len(times))
-    keep = [here and not other for here, other in zip(inside, flagged, strict=True)]
-    barriers = list(
-        compress(times, [here and other for here, other in zip(inside, flagged, strict=True)])
-    )
-    if all(keep):
-        return Rows(times, columns, layout), barriers
-    return (
-        Rows(
-            _like(times, compress(times, keep)),
-            [bytes(compress(column, keep)) for column in columns],
-            layout,
-        ),
-        barriers,
-    )
-
-
 def device_label(evidence, timestamp):
     return member_label(evidence["manual"](timestamp), evidence, timestamp)
 
@@ -169,10 +178,6 @@ def agreed(present, members):
     """Whether ``present`` of a room's ``members`` radars saying present make the room present
     on automatic evidence: ``AGREEING_MEMBERS`` of them (every member of a smaller group)."""
     return present >= min(AGREEING_MEMBERS, members)
-
-
-def room_label(evidence, timestamp):
-    return combine([device_label(item, timestamp) for item in evidence.values()])
 
 
 def combine(labels):

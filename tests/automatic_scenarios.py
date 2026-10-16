@@ -4,7 +4,7 @@ Kept free of P2b-only APIs so the same builders captured the frozen pre-P2b pari
 (``fixtures/pre_p2b/automatic_parity.json``) from the pre-change tree.
 """
 
-import sys
+from types import SimpleNamespace
 
 import test_tuner as harness
 from test_rooms import member
@@ -56,18 +56,20 @@ def room_conflict(slow):
 
 def device_rank(rows, keys, guesses, thresholds, *weight):
     """The device search's rank of ``thresholds`` on the learner's prepared evidence."""
-    reliability = sys.modules["tuner_under_test.calibration.reliability"]
-    search = sys.modules["tuner_under_test.calibration.search"]
-    labels = ("present", "not_present")
-    human = {label: [row for row in rows if row[2] == label] for label in labels}
-    automatic = {label: [row for row in guesses if row[2] == label] for label in labels}
-    human, automatic, _, _ = reliability.prepare_evidence(human, automatic, keys)
-    context = search._ThresholdSearch(
-        human["present"], human["not_present"], automatic, keys, None, None, *weight
+    from tuner_under_test.calibration import event_fitting
+
+    view = SimpleNamespace(data={"devices": {"d": {}}, "room_snapshot": None})
+    harness.record_samples(view, "d", rows, guesses)
+    objective = event_fitting._objective(
+        view,
+        "d",
+        keys,
+        dict.fromkeys(keys, 50),
+        {},
+        weight[0] if weight else 0,
+        {},
+        0 if not rows and not guesses else min(row[0] for row in [*rows, *guesses]),
+        view._history_until,
     )
-    selected = {key: context.tables[key][thresholds[key]] for key in keys}
-    return context.rank(
-        tuple(search._union_masks(selected)),
-        context._gate_false(selected),
-        context._distance(thresholds),
-    )
+    event_fitting._reference(objective, False, weight[0] if weight else 0)
+    return objective.rank({"d": thresholds})

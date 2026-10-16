@@ -128,10 +128,11 @@ def test_isolated_human_presence_still_overrides_long_confident_guesses():
     automatic = rows(range(100, 200), energy=30, confidence=0.99)
     automatic += rows(range(300, 400), "not_present", energy=25, confidence=0.99)
     result = harness.fit(human, ["g0_still"], automatic=automatic)
-    assert result["proposals"]["g0_still"]["threshold"] < 20
-    assert result["training"]["duration"]["present_seconds"] == 0
-    assert result["training"]["duration"]["unscored_presence_samples"] == 1
+    # The guesses at 30 lack support against empty readings at 25 (gate support), so no
+    # recommendation is made that could raise the gate over the human point at 20.
     assert result["status"] != "ok"
+    for proposal in result["proposals"].values():
+        assert proposal["threshold"] < 20
 
 
 @pytest.mark.parametrize("rank_method", ["rank", "automatic_rank"])
@@ -181,7 +182,8 @@ def test_avoiding_a_tiny_uncovered_miss_does_not_make_the_device_always_on():
     present[-1][1]["g0_still"] = 14  # At a boundary; the outlier filter must retain it.
     absent = rows(range(6000, 11000), "not_present", energy=15)
     result = harness.fit(present + absent, ["g0_still"], timing={"timeout": 1})
-    assert result["outlier_filter"]["human"]["excluded"]["present"] == 0
+    # Native learning retains every recorded interval: the dip costs its seconds only.
+    assert result["outlier_filter"] == {"method": "native_intervals_retained", "excluded": False}
     assert result["proposals"]["g0_still"]["threshold"] >= 15
     assert result["training"]["duration"]["false_positive_seconds"] == 0
 
@@ -190,7 +192,8 @@ def test_avoiding_a_tiny_uncovered_miss_does_not_make_the_device_always_on():
     "timing", [None, {"timeout": 1}, {"timeout": 1, "on_delay": 0.5, "off_delay": 1}]
 )
 def test_all_fit_reports_share_the_current_time_cost(timing):
-    human = harness.row_samples({"g0_still": 30}, {"g0_still": 5})
+    # Several episodes, so later whole episodes validate (the adaptive spec's chronology).
+    human = harness.episode_samples({"g0_still": 30}, {"g0_still": 5})
     automatic = rows(range(1000, 1100), energy=30, confidence=0.8)
     automatic += rows(range(1200, 1300), "not_present", energy=5, confidence=0.7)
     result = harness.fit(
@@ -205,9 +208,10 @@ def test_all_fit_reports_share_the_current_time_cost(timing):
         "current_validation",
     ):
         d = result[name]["duration"]
-        expected = (
-            500 * d["missed_seconds_upper"] / d["present_seconds"]
-            + 100 * d["false_positive_seconds"] / d["empty_seconds"]
-        )
+        # A report with no time of a class (the reference policy measures no automatic time
+        # where humans support both classes) adds nothing for it.
+        missed = d["missed_seconds_upper"] / d["present_seconds"] if d["present_seconds"] else 0
+        false = d["false_positive_seconds"] / d["empty_seconds"] if d["empty_seconds"] else 0
+        expected = 500 * missed + 100 * false
         assert d["error_cost"] == pytest.approx(expected)
         assert d["missed_time_cost"] == 5

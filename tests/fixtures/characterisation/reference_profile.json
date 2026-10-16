@@ -2,30 +2,30 @@
  "periods": [
   {
    "confidence": 1.0,
-   "count": 20,
-   "end": 1800000114,
+   "count": 20.0,
+   "end": 1800000120.0,
    "source": "human",
-   "start": 1800000000,
+   "start": 1800000000.0,
    "state": "present"
   },
   {
    "confidence": 1.0,
-   "count": 20,
-   "end": 1800000234,
+   "count": 20.0,
+   "end": 1800000240.0,
    "source": "human",
-   "start": 1800000120,
+   "start": 1800000120.0,
    "state": "not_present"
   }
  ],
  "summary": {
-  "last_independent_label": 1800000234,
+  "last_independent_label": 1800000240.0,
   "legacy_age_unknown": false,
   "periods": {
    "entity": 0,
    "human": 2,
    "radar": 0
   },
-  "reference_strength": 0.999277509,
+  "reference_strength": 0.999283166,
   "version": 1
  }
 }

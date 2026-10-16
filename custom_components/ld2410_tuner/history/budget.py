@@ -1,240 +1,273 @@
 """Pure, bounded-file planning: age cleanup first, automatic history before human."""
 
 import json
-import struct
-import zlib
-from bisect import bisect_left
-from collections import defaultdict
 from copy import deepcopy
 
-from ..const import HISTORY_KEYS, STORAGE_KEY, STORAGE_MINOR_VERSION, STORAGE_VERSION
+from ..const import STORAGE_KEY, STORAGE_MINOR_VERSION, STORAGE_VERSION
 from . import guesses
-from .cleanup import _encode, _read_clean_block, accept_cleanup, clean_history
-from .labels import _history_label_reader
-from .policy import DAY, MIB, STORED, settings
+from .label_lookup import _history_label_reader
+from .policy import DAY, MIB, settings
 
 
 class BudgetExceeded(ValueError):
     """The protected metadata alone cannot fit the requested ceiling."""
 
 
-def history_memo(devices):
-    """A ``deepcopy`` memo that copies each device's stored lists (history blocks and guess run
-    chunks, ``STORED``) shallowly.
-
-    A stored block is never edited once written: flushes append new blocks (or replace the
-    last chunk of runs), and cleanup, trims and confirmation replace blocks (and the list)
-    rather than change them. A copy may therefore share the blocks, which are nearly all of
-    the data."""
-    return {
-        id(stored): list(stored)
-        for device in devices
-        if isinstance(device, dict)
-        for key in STORED
-        if isinstance(stored := device.get(key), list)
-    }
-
-
 def copy_data(data):
-    """``deepcopy(data)`` sharing the immutable history blocks (``history_memo``): a
-    consistent snapshot of the integration's data at a small fraction of the cost."""
-    devices = data.get("devices")
-    return deepcopy(data, history_memo(devices.values() if isinstance(devices, dict) else ()))
-
-
-# id(block) -> (block, length, newlines) of ``json.dumps(block, indent=2)``; holding the block
-# keeps its id unique. Rebuilt on each ``storage_bytes`` call, so it holds only current blocks.
-_BLOCK_TEXT = {}
-HISTORY_LEVEL = 4  # envelope > data > devices > device > history
+    """A consistent snapshot of the integration's JSON data (history lives in day files)."""
+    return deepcopy(data)
 
 
 # TunerStore uses this same standard JSON encoder and HA envelope.
 def storage_bytes(data):
-    """``len(json.dumps(envelope, indent=2).encode("utf-8"))`` without re-encoding the stored
-    history on every save. ASCII output (``ensure_ascii``), so characters are bytes. Every
-    stored list (history, guess runs) is measured from its blocks' cached level-0 text: text
-    nested ``n`` levels deeper gains ``2n`` spaces after each newline, and nothing else
-    changes."""
-    global _BLOCK_TEXT
-    skeleton, histories = _skeleton(data)
+    """The size of the saved JSON store, as written (ASCII, so characters are bytes)."""
     envelope = {
         "version": STORAGE_VERSION,
         "minor_version": STORAGE_MINOR_VERSION,
         "key": STORAGE_KEY,
+        "data": data,
     }
-    size = len(json.dumps({**envelope, "data": skeleton}, indent=2).encode("utf-8"))
-    fresh = {}
-    for history in histories:
-        length, newlines = _list_text(history, _BLOCK_TEXT, fresh)
-        size += length + 2 * HISTORY_LEVEL * newlines - len("[]")
-    _BLOCK_TEXT = fresh
-    return size
+    return len(json.dumps(envelope, indent=2))
 
 
-def _skeleton(data):
-    """``data`` with every non-empty stored list of a device replaced by ``[]``, and those lists."""
-    devices = data.get("devices")
-    if not isinstance(devices, dict):
-        return data, []
-    histories, replaced = [], {}
-    for key, device in devices.items():
-        replaced[key], found = _without_stored(device)
-        histories.extend(found)
-    return {**data, "devices": replaced}, histories
+def _finished_dates(store, key):
+    from . import daystore
+
+    last = store.last(key)
+    live = daystore.date_of(last) if last is not None else None
+    return [date for date in store.days(key) if date != live]
 
 
-def _without_stored(device):
-    """``device`` with each non-empty stored list (``STORED``) emptied, and those lists."""
-    found = []
-    for field in STORED if isinstance(device, dict) else ():
-        stored = device.get(field)
-        if isinstance(stored, list) and stored:
-            found.append(stored)
-            device = {**device, field: []}
-    return device, found
+def _finished_days(store, data):
+    for key, device in data.get("devices", {}).items():
+        for date in _finished_dates(store, key):
+            day = store.day(key, date)
+            if day is not None:
+                yield key, device, date, day
 
 
-def _list_text(items, known, fresh):
-    """``(length, newlines)`` of ``json.dumps(items, indent=2)`` for a non-empty list; each
-    item's text comes from ``known`` (else is encoded) and is kept in ``fresh``."""
-    length, newlines = 3, 1  # "[", "\n" + "]" closing the list
-    for item in items:
-        entry = known.get(id(item))
-        if entry is None or entry[0] is not item:
-            text = json.dumps(item, indent=2)
-            entry = (item, len(text), text.count("\n"))
-        fresh[id(item)] = entry
-        # "\n" and two spaces, then the item one level deeper.
-        length += 3 + entry[1] + 2 * entry[2]
-        newlines += 1 + entry[2]
-    return length + len(items) - 1, newlines  # "," between items
+def plan(store, data, now, policy, target=None):
+    """Plan finished-day range cuts; live days are immutable to maintenance."""
+    from .cleanup import _cut_union
+
+    cuts = {}
+    for key, device, date, day in _finished_days(store, data):
+        ranges = []
+        for low, high, human, confidence in _day_ranges(day, device):
+            cutoff = _cutoff(now, human, confidence, policy)
+            if low < cutoff:
+                ranges.append((low, min(high, cutoff)))
+        if ranges:
+            cuts[key, date] = _cut_union(ranges)
+    if target is not None:
+        _ceiling_plan(store, data, cuts, target)
+    return [(key, date, ranges) for (key, date), ranges in cuts.items()]
 
 
-def prepare(data, pending, now, clean=False, target=None):
-    data = copy_data(data)
-    policy = settings(data)
-    ceiling = int(policy["max_mib"] * MIB)
-    target = min(ceiling, int(target)) if target is not None else ceiling
-    before = storage_bytes(data)
+def _cutoff(now, human, confidence, policy):
+    if human:
+        return now - policy["human_days"] * DAY
+    thin, automatic, minimum = (
+        policy[k] for k in ("thin_after_days", "automatic_days", "minimum_confidence")
+    )
+    fraction = max(0, (confidence - minimum) / (100 - minimum)) if minimum < 100 else 0
+    age = thin + fraction * (automatic - thin)
+    if confidence >= 100:
+        age = automatic
+    return now - age * DAY
+
+
+def _day_ranges(day, device):
+    read = _history_label_reader(device)
+    runs = guesses.Guesses(day.guesses)
+    edges = sorted(
+        {
+            day.start,
+            day.end,
+            *(t for t in read.edges if day.start < t < day.end),
+            *(t for run in day.guesses for t in run[:2] if day.start < t < day.end),
+        }
+    )
+    for low, high in zip(edges, edges[1:], strict=False):
+        label = read(low)
+        human = label in ("present", "not_present")
+        confidence = next(runs.percents([low])) if label != "unknown" else 0
+        yield low, high, human, confidence
+
+
+class _Planned:
+    """The planned total size, kept per cut day: a new cut re-encodes only its own day (the
+    original once), not every day cut so far."""
+
+    def __init__(self, store, data, cuts):
+        self.store, self.base = store, store.size() + storage_bytes(data)
+        self.original, self.change = {}, {}
+        for token, ranges in cuts.items():
+            self.cut(token, ranges)
+
+    def cut(self, token, ranges):
+        from . import dayfile
+        from .cleanup import cut
+
+        day = self.store.day(*token)
+        if token not in self.original:
+            self.original[token] = len(dayfile.encode_day(day))
+        updated = cut(day, ranges)
+        size = len(dayfile.encode_day(updated)) if len(updated.times) or updated.guesses else 0
+        self.change[token] = size - self.original[token]
+
+    @property
+    def total(self):
+        return self.base + sum(self.change.values())
+
+
+def _planned_bytes(store, data, cuts):
+    return _Planned(store, data, cuts).total
+
+
+def _day_candidates(store, data):
+    for key, device, date, day in _finished_days(store, data):
+        if not len(day.times):
+            continue
+        for low, high, human, confidence in _day_ranges(day, device):
+            low, high = max(low, day.times[0]), min(high, day.ends[-1])
+            if high > low:
+                yield human, confidence, low, key, date, high
+
+
+def _ceiling_plan(store, data, cuts, target):
+    from .cleanup import _cut_union
+
+    planned = _Planned(store, data, cuts)
+    for _human, _confidence, low, key, date, high in sorted(_day_candidates(store, data)):
+        if planned.total <= target:
+            break
+        token = key, date
+        cuts[token] = _cut_union([*cuts.get(token, []), (low, high)])
+        planned.cut(token, cuts[token])
+    return cuts
+
+
+def _replacement_days(store, data, cuts):
+    from .cleanup import cut
+
+    changes, automatic, human = [], 0.0, 0.0
+    for (key, date), ranges in cuts.items():
+        original = store.day(key, date)
+        updated = cut(original, ranges)
+        old = _day_seconds(original, data["devices"][key])
+        new = _day_seconds(updated, data["devices"][key])
+        automatic += old[0] - new[0]
+        human += old[1] - new[1]
+        changes.append((key, date, updated))
+    return changes, automatic, human
+
+
+def _bounded_days(store, data, cuts, now, target):
+    while True:
+        changes, automatic, human = _replacement_days(store, data, cuts)
+        prepared = copy_data(data)
+        _day_metadata(store, prepared, changes, now)
+        used = _planned_bytes(store, prepared, cuts)
+        if used <= target:
+            return prepared, changes, automatic, human, used
+        previous = {key: list(ranges) for key, ranges in cuts.items()}
+        _ceiling_plan(store, prepared, cuts, target)
+        if cuts == previous:
+            raise BudgetExceeded(
+                "The size limit is below the remaining settings, summaries and saved results. Increase the limit or clear unused devices; no oversized file was written."
+            )
+
+
+def expired_labels(labels, cutoff):
+    """``labels`` without the time before ``cutoff`` (the human retention): older labels go,
+    one spanning it starts there. Nothing older can be learned from or shown."""
+    return [
+        {**label, "start": max(label["start"], cutoff)} if label["start"] < cutoff else label
+        for label in labels
+        if label["end"] > cutoff
+    ]
+
+
+def _expire_labels(data, cutoff):
+    for device in data.get("devices", {}).values():
+        if "history_labels" in device:
+            device["history_labels"] = expired_labels(device["history_labels"], cutoff)
+
+
+def prepare_days(store, data, now, clean=False, target=None):
+    """Prepare immutable replacements and a seconds report; mutate no files or live state."""
+    ceiling = int(settings(data)["max_mib"] * MIB)
+    target = ceiling if target is None else min(ceiling, target)
+    before = store.size() + storage_bytes(data)
+    if clean:
+        data = copy_data(data)
+        for device in data.get("devices", {}).values():
+            device["history_cleanup"] = {"history_basis": "observed_seconds", "timestamp": now}
+    planned = (
+        plan(store, data, now, settings(data), target=target) if clean or before > target else []
+    )
+    cuts = {(key, date): ranges for key, date, ranges in planned}
+    prepared, changes, automatic, human, used = _bounded_days(store, data, cuts, now, target)
+    if clean:  # After planning: the removed time is reported under the labels it had.
+        _expire_labels(prepared, now - settings(data)["human_days"] * DAY)
     report = {
         "before_bytes": before,
+        "used_bytes": used,
         "limit_bytes": ceiling,
-        "removed_automatic": 0,
-        "removed_human": 0,
         "timestamp": now,
+        "removed_automatic": automatic,
+        "removed_human": human,
+        "removed_automatic_seconds": automatic,
+        "removed_human_seconds": human,
+        "history_basis": "observed_seconds",
     }
-    changes = {}
-    size = before
-    if clean or before > target:
-        _clean_all(data, pending, now, policy, changes, report)
-        size = storage_bytes(data)
-    if size > target:
-        size = _limit_history(data, pending, now, policy, target, changes, report, size)
-    report["used_bytes"] = size
-    if report["used_bytes"] > target:
-        raise BudgetExceeded(
-            "The size limit is below the remaining settings, summaries and saved results. Increase the limit or clear unused devices; no oversized file was written."
-        )
-    return data, changes, report
+    return prepared, changes, report
 
 
-def _clean_all(data, pending, now, policy, changes, report):
-    for device_id, device in data.get("devices", {}).items():
-        old = _class_counts(device)
-        updated, stats = clean_history(
-            device, pending.get(device_id, []), now, policy["human_days"] * DAY, policy
-        )
-        if any(device.get(key) != value for key, value in updated.items()):
-            accept_cleanup(device, updated, stats, device.get("label_revision", 0))
-            changes[device_id] = (updated, stats)
-            new = _class_counts(device)
-            report["removed_human"] += max(0, old[1] - new[1])
-            report["removed_automatic"] += max(0, old[0] - new[0])
+def _day_seconds(day, device):
+    from . import spans
+
+    read = _history_label_reader(device)
+    totals = [0.0, 0.0]
+    for span in spans.day_spans(day):
+        if not any(value is not None for value in span.values):
+            continue
+        edges = [span.start, *(t for t in read.edges if span.start < t < span.end), span.end]
+        for low, high in zip(edges, edges[1:], strict=False):
+            totals[read(low) in ("present", "not_present")] += high - low
+    return totals
 
 
-def _rows(block):
-    start, _version, raw, stride = _read_clean_block(block)
-    for pos in range(0, len(raw), stride):
-        row = raw[pos + 2 : pos + 2 + len(HISTORY_KEYS)]
-        yield start + struct.unpack(">H", raw[pos : pos + 2])[0], row
+def _day_histograms(store, key, device, replacements, now, cutoff):
+    """The radar's histograms after the planned replacements, as a label edit stores them."""
+    from ..calibration.constants import SAMPLE_SECONDS
+    from . import label_counts, spans
+
+    raw = label_counts.empty()
+    read = _history_label_reader(device)
+    for date in store.days(key):
+        day = replacements.get((key, date))
+        if day is None:
+            day = store.day(key, date, until=now)
+        if day is not None:
+            label_counts._count_native(raw, spans.day_spans(day), read, cutoff, 1)
+    return label_counts.stored(
+        {
+            gate: {
+                state: [value / SAMPLE_SECONDS for value in counts]
+                for state, counts in series.items()
+            }
+            for gate, series in raw.items()
+        }
+    )
 
 
-def _class_counts(device):
-    counts = [0, 0]
-    label_at = _history_label_reader(device)
-    for block in device.get("history", []):
-        try:
-            for timestamp, _row in _rows(block):
-                counts[label_at(timestamp) in {"present", "not_present"}] += 1
-        except (ValueError, KeyError, TypeError, zlib.error, struct.error):
-            pass  # clean_history reports corrupt blocks without inventing a label.
-    return counts
-
-
-def _candidates(data):
-    chunks = []
-    for device_id, device in data["devices"].items():
-        label_at = _history_label_reader(device)
-        runs = guesses.Guesses(
-            run for chunk in device.get("guess_runs", []) for run in guesses.decode(chunk)
-        )
-        for block in device.get("history", []):
-            chunks.extend(_block_candidates(device_id, block, label_at, runs))
-    return sorted(chunks, key=lambda item: item[:4])
-
-
-def _block_candidates(device_id, block, label_at, runs):
-    groups = defaultdict(list)
-    for timestamp, row in _rows(block):
-        groups[label_at(timestamp) in {"present", "not_present"}].append((timestamp, row))
-    for human, rows in groups.items():
-        confidence = 100 if human else _mean_confidence(rows, label_at, runs)
-        for part in _encode(rows):
-            yield human, confidence, part["start"], device_id, part
-
-
-def _mean_confidence(rows, label_at, runs):
-    percents = runs.percents(timestamp for timestamp, _row in rows)
-    return sum(
-        percent if label_at(timestamp) != "unknown" else 0
-        for (timestamp, _row), percent in zip(rows, percents, strict=True)
-    ) / len(rows)
-
-
-def _limit_history(data, pending, now, policy, target, changes, report, size):
-    chunks = _candidates(data)
-    position = 0
-    while size > target and position < len(chunks):
-        # Leave modest headroom so the next save does not immediately trim again.
-        needed = size - int(target * 0.98)
-        removed = 0
-        while position < len(chunks) and removed < needed:
-            human, _confidence, _start, _device_id, block = chunks[position]
-            report["removed_human" if human else "removed_automatic"] += block["count"]
-            removed += len(json.dumps(block))
-            position += 1
-        _install_chunks(data, chunks[position:], pending, now, policy, changes)
-        size = storage_bytes(data)
-    return size
-
-
-def _install_chunks(data, chunks, pending, now, policy, changes):
-    kept = defaultdict(list)
-    for _human, _confidence, _start, device_id, block in chunks:
-        kept[device_id].append(block)
-    for device_id, device in data["devices"].items():
-        previous = sum(block["count"] for block in device.get("history", []))
-        candidate = {**device, "history": kept[device_id]}
-        updated, stats = clean_history(
-            candidate, pending.get(device_id, []), now, policy["human_days"] * DAY, policy
-        )
-        timestamps = sorted(ts for block in updated["history"] for ts, _ in _rows(block))
-        updated["history_labels"] = [
-            label
-            for label in updated["history_labels"]
-            if bisect_left(timestamps, label["start"]) < bisect_left(timestamps, label["end"])
-        ]
-        stats["trimmed_samples"] = previous - sum(block["count"] for block in updated["history"])
-        if any(device.get(key) != value for key, value in updated.items()):
-            accept_cleanup(device, updated, stats, device.get("label_revision", 0))
-            changes[device_id] = (updated, stats)
+def _day_metadata(store, prepared, changes, now):
+    replacements = {(key, date): day for key, date, day in changes}
+    for key in {key for key, _date, _day in changes}:
+        device = prepared["devices"][key]
+        cutoff = max(0, now - settings(prepared)["human_days"] * DAY)
+        device["histograms"] = _day_histograms(store, key, device, replacements, now, cutoff)
+        device["label_revision"] = device.get("label_revision", 0) + 1
+        device.pop("last_learning", None)

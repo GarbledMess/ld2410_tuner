@@ -1,0 +1,58 @@
+"""Raw learner guesses stay separate from trusted reference and display attribution."""
+
+import unittest
+
+import test_rooms
+from tuner_under_test.history import dayfile, guesses
+from tuner_under_test.rooms import attribution
+
+
+class RawLearningAttributionTests(unittest.IsolatedAsyncioTestCase):
+    setUp = test_rooms.RoomAttributionTests.setUp
+    asyncTearDown = test_rooms.RoomAttributionTests.asyncTearDown
+    office = test_rooms.RoomAttributionTests.office
+
+    def test_learning_window_clips_reused_rows_at_the_exclusive_cutoff(self):
+        self.office()
+        start = self.now - 120
+        for offset in range(0, 121, 6):  # A change at every reading: one span each.
+            value = 60 + offset // 6 % 2
+            self.runtime._record_history_sample("a", {"g0_move": value}, start + offset)
+
+        def times(until=None):
+            view = attribution.prepared_view(self.runtime, "a")
+            if until is not None:
+                view._attribution_until = until
+            return list(
+                attribution.radar_attribution(view, "a", view.data["room_snapshot"])["times"]
+            )
+
+        full, cutoff = times(), start + 30
+        self.assertEqual(times(cutoff), [t for t in full if t < cutoff])
+        self.assertLess(len(times(cutoff)), len(full))
+
+    def test_raw_reader_reaches_derived_room_truth_without_changing_default(self):
+        self.office()
+        start = self.now - 120
+        for key in ("a", "b"):
+            for offset in range(0, 360, 6):
+                self.runtime._record_history_sample(key, {"g0_move": 2}, start - 500 + offset)
+            self.runtime.data["devices"][key]["history_labels"] = [
+                {"start": start - 500, "end": start - 140, "state": "not_present"}
+            ]
+            device = self.runtime.data["devices"][key]
+            device["label_revision"] = device.get("label_revision", 0) + 1
+            for offset in range(0, 121, 6):
+                self.runtime._record_history_sample(key, {"g0_move": 60}, start + offset)
+            # The radar's own present guess at 80 % over the loud minutes, confirmed.
+            self.runtime._days.append(
+                key, dayfile.GuessSpan(self.now, start, self.now, "present", 16, guesses.REFERENCE)
+            )
+        view = attribution.prepared_view(self.runtime, "a")
+        self.assertIsNone(attribution.auto_targets(view, "a"))
+        raw = guesses.of(view, "a")
+        target = attribution.auto_targets(view, "a", reader=raw)
+        self.assertIsNotNone(target)
+        # Two independent .8 member guesses combine through the existing union rule.
+        self.assertEqual(target(start + 60), ("present", "estimate", 0.96))
+        self.assertIsNone(attribution.auto_targets(view, "a"))

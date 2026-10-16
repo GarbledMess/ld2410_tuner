@@ -6,8 +6,10 @@ import time
 from copy import deepcopy
 
 from ..calibration import settings
+from ..calibration import thresholds as threshold_domain
 from ..calibration.timing_config import read_timing, timing_signature
 from ..const import TRAINING_FIELDS
+from ..history import policy
 from ..runtime.tasks import finish_task
 from . import assessment, attribution, groups, room_labels, room_sources, sets, truth
 
@@ -34,13 +36,15 @@ def _context(runtime, group_id, sensor=True):
                 f"{name}: threshold settings are missing; restore them before assessing"
             )
         timing = read_timing(runtime, key)
-        members[key] = {"thresholds": thresholds, "timing": timing}
+        constraints = threshold_domain.read(runtime, entities)
+        members[key] = {"thresholds": thresholds, "timing": timing, "constraints": constraints}
         signature[key] = {
             "entities": entities,
             "thresholds": thresholds,
             "timing": timing_signature(timing),
             "revision": device.get("label_revision", 0),
             "training": [device.get(field) for field in TRAINING_FIELDS],
+            "constraints": constraints,
         }
     if revisions := truth.revisions(runtime, definitions, group_id, sensor):
         # Absent until a room label exists, so upgraded signatures stay identical.
@@ -58,7 +62,25 @@ def set_context(runtime, group_ids):
     either (so changing it stales saved results); at the default nothing is added."""
     found, signature = _set_context(runtime, group_ids)
     signature.update(settings.signature(runtime.data))
+    signature["evidence_sources"] = _source_signature(runtime, group_ids, found)
     return found, signature
+
+
+def _source_signature(runtime, group_ids, found):
+    definitions = groups.definitions(runtime)[2]
+    related = truth.related_to(definitions, group_ids)
+    members = {key for group in found.values() for key in group}
+    return {
+        "retention": policy.settings(runtime.data),
+        "members": {
+            key: deepcopy(runtime.data["devices"][key].get("presence_sources", {}))
+            for key in sorted(members)
+        },
+        "rooms": {
+            key: deepcopy(runtime.data.get("room_presence_sources", {}).get(key, {}))
+            for key in related
+        },
+    }
 
 
 def _set_context(runtime, group_ids):
@@ -92,10 +114,8 @@ def set_views(runtime, members, since=None):
 
 
 async def on_views(runtime, members, job, *args):
-    """Run ``job(*args)`` in the executor on ``set_views`` views, then keep each view's
-    attribution for the next job (``attribution.remember``)."""
+    """Run ``job(*args)`` in the executor on ``set_views`` views."""
     views = [item["view"] for found in members.values() for item in found.values()]
-    attribution.adopt(runtime, views)
 
     def run():
         try:
@@ -103,11 +123,7 @@ async def on_views(runtime, members, job, *args):
         finally:
             attribution.release(views)
 
-    result = await runtime.hass.async_add_executor_job(run)
-    for found in members.values():
-        for item in found.values():
-            attribution.remember(runtime, item["view"])
-    return result
+    return await runtime.hass.async_add_executor_job(run)
 
 
 def summary(runtime, group_id):

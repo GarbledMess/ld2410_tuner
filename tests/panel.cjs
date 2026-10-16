@@ -189,6 +189,30 @@ const { execFileSync } = require("node:child_process");
         },
       };
     });
+    const nativeSegments = await page.evaluate(() =>
+      panel
+        ._seriesSegments(
+          [
+            { t: 100, start: 99, end: 100, avg: 20 },
+            {
+              t: 100.15,
+              start: 100.1,
+              end: 100.2,
+              avg: 30,
+              break_before: true,
+            },
+            { t: 100.25, start: 100.2, end: 100.3, avg: 40 },
+            { t: 100.45, start: 100.4, end: 100.5, avg: 50 },
+          ],
+          60,
+        )
+        .map((points) => points.map((point) => point.avg)),
+    );
+    assert.deepEqual(
+      nativeSegments,
+      [[20], [30, 40], [50]],
+      "exact native outages split chart lines within a single display bucket",
+    );
     const cards = page.locator(".card");
     await cards.first().waitFor();
     assert.equal(await cards.count(), 3);

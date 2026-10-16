@@ -330,18 +330,23 @@ def attributions(radar, rows, radar_label_at, group_truths):
 
 
 def evidence_rows(view, device_id, keys, start, end):
-    """``evidence.read``'s ``(rows, barriers)``: rows ``(time, {gate: energy}, "unknown")``."""
-    device = view.data["devices"][device_id]
-    records = [(ts, row) for ts, row in view._iter_history_samples(device) if start <= ts <= end]
-    indices = {key: HISTORY_KEYS.index(key) for key in keys}
+    """``evidence.read``'s ``(rows, barriers)`` from the recorded spans up to ``end``: a span
+    where any of ``keys`` read is a row ``(span start, {gate: energy rounded up}, "unknown")``;
+    one where none of them read is a barrier at its start."""
+    from tuner_under_test.history import spans
+
     rows, barriers = [], []
-    for ts, row in records:
-        values = {key: row[index] for key, index in indices.items() if row[index] <= 100}
-        if len(values) == len(keys):
-            rows.append((ts, values, "unknown"))
+    for cell in spans.events(view, device_id, end=end):
+        values = {
+            key: math.ceil(cell.values[HISTORY_KEYS.index(key)])
+            for key in keys
+            if cell.values[HISTORY_KEYS.index(key)] is not None
+        }
+        if values:
+            rows.append((cell.start, values, "unknown"))
         else:
-            barriers.append(ts)
-    return rows, barriers
+            barriers.append(cell.start)
+    return rows, sorted(set(barriers))
 
 
 # --- A reference rebuild reads the whole history twice more: once for human labels, once for room evidence.

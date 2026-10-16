@@ -30,9 +30,8 @@ class HistoryEditingTests(unittest.IsolatedAsyncioTestCase):
         self.configuration()
         keys = list(self.device["last_learning"]["entities"])
         row = bytes(30 if key in keys else 255 for key in harness.constants.HISTORY_KEYS)
-        state = harness.pending([(self.now - 12, row + bytes((1, 100)))])
-        samples = state["samples"]
-        self.runtime._history_runtime["a"] = state
+        harness.record_rows(self.runtime, "a", [(self.now - 12, row + bytes((1, 100)))])
+        recorded = list(harness.spans.events(self.runtime, "a"))
         self.runtime.label_history_range("a", self.now - 20, self.now - 1, "unknown")
         entities, current = self.runtime._threshold_configuration("a")
         before = self.runtime._fit_history("a", entities, current)
@@ -41,25 +40,24 @@ class HistoryEditingTests(unittest.IsolatedAsyncioTestCase):
             "a", self.now - 20, self.now - 1, self.now - 20, self.now - 1, "unlabelled", 1
         )
         after = self.runtime._fit_history("a", entities, current)
-        self.assertEqual(after["automatic_evidence"]["samples"]["present"], 1)
+        self.assertEqual(after["automatic_evidence"]["samples"]["present"], 0.5)
         self.assertEqual(self.device["history_labels"], [])
-        self.assertEqual(self.runtime._history_runtime["a"]["samples"], samples)
+        self.assertEqual(list(harness.spans.events(self.runtime, "a")), recorded)
         self.hass.services.async_call.assert_not_called()
 
     def test_edit_rebuilds_human_counts_for_the_new_boundaries(self):
         base = self.now - 60
         self.device["history_labels"] = [{"start": base + 10, "end": base + 40, "state": "present"}]
         row = bytes([30] * len(harness.constants.HISTORY_KEYS))
-        self.runtime._history_runtime["a"] = {
-            "samples": [(base + offset, row) for offset in (15, 25, 35)]
-        }
+        harness.record_rows(self.runtime, "a", [(base + offset, row) for offset in (15, 25, 35)])
         self.runtime.edit_history_label(
             "a", base + 10, base + 40, base + 20, base + 30, "not_present", 0
         )
         series = self.device["histograms"]["g0_move"]
         self.assertEqual(sum(series["present"]), 0)
-        self.assertEqual(sum(series["not_present"]), 1)
-        self.assertEqual(series["not_present"][30], 1)
+        # 10 s of empty-labelled recording, stored to a thousandth of a sample.
+        self.assertEqual(sum(series["not_present"]), round(10 / 6, 3))
+        self.assertEqual(series["not_present"][30], round(10 / 6, 3))
 
     def test_stale_missing_and_invalid_edits_do_not_mutate_data(self):
         self.device["history_labels"] = [{"start": 10, "end": 20, "state": "present"}]

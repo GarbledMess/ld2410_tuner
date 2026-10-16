@@ -5,8 +5,10 @@ import importlib
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
 import test_tuner as harness
 
 mod = harness.mod
@@ -56,6 +58,43 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.handle_registry_update(None)
         self.assertEqual(self.device["entities"], {})
 
+    def registry_device(self):
+        self.configuration()
+        self.add_entity("sensor.radar_g0_move_energy")
+        dr = sys.modules["homeassistant.helpers.device_registry"]
+        dr.async_get = lambda _: types.SimpleNamespace(
+            async_get=lambda _: types.SimpleNamespace(
+                name_by_user="Synthetic room", name="Radar", area_id="test_area"
+            )
+        )
+
+    def test_export_contains_day_history_for_selected_device(self):
+        import base64
+
+        from tuner_under_test.history import dayfile, spans
+
+        self.registry_device()
+        rows = [(self.now - 600 + i * 6, bytes([20 + i % 3] + [255] * 17)) for i in range(50)]
+        harness.record_rows(self.runtime, "a", rows)
+        exported = self.runtime.export_data("a")["devices"]["a"]["history"]
+        days = exported["day_files"]
+        assert days, "the selected radar's recorded days are exported"
+        decoded = [dayfile.decode_day(base64.b64decode(data)) for data in days.values()]
+        found = [(c.start, c.end, c.values) for d in decoded for c in spans.day_spans(d)]
+        expected = [(c.start, c.end, c.values) for c in spans.events(self.runtime, "a")]
+        assert found == expected
+        # Exporting every radar keeps only the summaries: day files can be large.
+        assert "day_files" not in self.runtime.export_data()["devices"]["a"]["history"]
+
+    def test_snapshot_history_summary_from_day_store(self):
+        self.registry_device()
+        harness.record_rows(self.runtime, "a", [(self.now - 60, bytes([20] + [255] * 17))])
+        history = self.runtime.snapshot()["devices"]["a"]["history"]
+        assert history["days"] == 1
+        assert history["oldest_day"] is not None
+        # The last reading holds half a sample; day files keep milliseconds.
+        assert history["newest"] == pytest.approx(self.now - 57, abs=1e-3)
+
     def test_snapshot_and_export_preserve_training_and_hide_removed_devices(self):
         self.configuration()
         self.add_entity("sensor.radar_g0_move_energy")
@@ -65,7 +104,10 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
                 name_by_user="Synthetic room", name="Radar", area_id="test_area"
             )
         )
-        self.device["samples"] = {"g0_move": {"present": [3, 3, 4], "not_present": [1]}}
+        # Readings 3, 3 and 4 labelled present and 1 labelled empty, as histogram bins.
+        present, empty = [0] * 101, [0] * 101
+        present[3], present[4], empty[1] = 2, 1, 1
+        self.device["histograms"] = {"g0_move": {"present": present, "not_present": empty}}
         self.runtime.data["devices"]["removed"] = {"histograms": {}}
         self.states["number.radar_g1_move_threshold"].state = "unavailable"
         self.states["number.radar_g2_move_threshold"].state = "invalid"
@@ -151,6 +193,10 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("js_url", custom)
             self.assertEqual(self.hass.http.async_register_static_paths.await_count, 1)
             runtime = self.hass.data[mod.DOMAIN]
+            self.assertEqual(
+                runtime._days.root,
+                Path(self.hass.config.path(".storage", "ld2410_tuner", "history")),
+            )
             runtime._save_task = asyncio.create_task(asyncio.sleep(100))
             runtime._cleanup_task = asyncio.create_task(asyncio.sleep(100))
             runtime._timeout_tasks["test"] = asyncio.create_task(asyncio.sleep(100))
@@ -196,11 +242,11 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cleanup_retains_device_inventory_snapshot_across_await(self):
         self.sample(self.now - 6)
-        self.runtime._flush_history_block("a")
         added = {"entities": {}}
 
         async def execute(function, *args):
-            self.runtime.data["devices"]["new"] = added
+            if function.__name__ == "_prepare_day_save":
+                self.runtime.data["devices"]["new"] = added
             return function(*args)
 
         self.hass.async_add_executor_job = execute

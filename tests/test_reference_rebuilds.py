@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import test_references as references_harness
 import test_tuner as harness
-from tuner_under_test.rooms import attribution, membership
+from tuner_under_test.rooms import attribution, event_attribution, membership
 
 training = sys.modules["tuner_under_test.presence.reference_training"]
 refs = sys.modules["tuner_under_test.presence.references"]
@@ -83,22 +83,16 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
         while (task := self.runtime._reference_task) is not None and not task.done():
             await asyncio.wait({task})
 
-    async def test_a_rebuild_pass_frees_its_views_in_the_executor(self):
-        """Regression: the views' guesses and truth readers were freed on the event loop."""
+    async def test_a_rebuild_keeps_no_attribution_state_after_its_job(self):
+        """Regression: guesses and truth readers stayed alive after a rebuild. Native
+        attribution is cached per job view only, so nothing outlives the job."""
         self.scenario()
-        views = []
-        real = attribution.prepare
-
-        def prepare(runtime, view, device_id, shared=None):
-            views.append(view)
-            real(runtime, view, device_id, shared)
-
-        with patch.object(attribution, "prepare", side_effect=prepare):
-            self.label(QUIET, QUIET + 40, "present")
+        self.label(QUIET, QUIET + 40, "present")
+        with patch.object(event_attribution, "_found", wraps=event_attribution._found) as found:
             await self.request(None)
             await self.finish()
-        entries = [entry for view in views for entry in view._attribution_both.values()]
-        assert entries and not any(set(attribution.HEAVY) & set(entry) for entry in entries)
+        assert found.call_count
+        assert not getattr(self.runtime, "_native_found_job", None)
 
     async def test_room_label_edit_leaves_attribution_to_the_executor(self):
         self.scenario()
@@ -297,45 +291,23 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
         await self.finish()
         assert len(self.calls) == 2
         assert self.runtime._reference_pending == set()
-        assert set(self.runtime._attribution_cache) <= {"a"}
+        assert set(self.runtime.data["devices"]) == {"a"}
         assert self.b["reference_profile"] == before  # Removed: nothing was installed.
         periods = self.runtime.data["devices"]["a"]["reference_profile"]["periods"]
         assert not [p for p in periods if p.get("room")]  # a rebuilt without room evidence.
 
-    async def test_attribution_is_computed_once_per_radar_per_rebuild(self):
+    async def test_attribution_is_computed_once_per_radar_per_job(self):
         self.scenario()
         self.present()
-        with patch.object(attribution, "_rows", wraps=attribution._rows) as rows:
-            await self.request({"b"})
-            await self.finish()
-        assert rows.call_count == 1
-
-    async def test_unchanged_inputs_reuse_the_cached_attribution(self):
-        self.scenario()
-        self.present()
-        await self.request({"b"})
-        await self.finish()
-        profile = deepcopy(self.b["reference_profile"])
-        with patch.object(attribution, "_attributions", wraps=attribution._attributions) as spy:
-            await self.request({"b"})
-            await self.finish()
-            assert spy.call_count == 0, "same revisions and history: the cached result applies"
-            assert self.b["reference_profile"] == profile
-            self.runtime.data["devices"]["a"]["label_revision"] = 9  # A member's labels changed.
-            await self.request({"b"})
-            await self.finish()
-            assert spy.call_count == 2  # Human and full truth, once each.
-
-    async def test_new_samples_miss_the_cached_attribution(self):
-        self.scenario()
-        self.present()
-        await self.request({"b"})
-        await self.finish()
-        self.record(5, 70, start=QUIET + 40, count=5)
-        with patch.object(attribution, "_attributions", wraps=attribution._attributions) as spy:
-            await self.request({"b"})
-            await self.finish()
-        assert spy.call_count == 2
+        recording = sys.modules["tuner_under_test.history.recording"]
+        view = recording._history_view(self.runtime, "b")  # A real job view (office() stubs it).
+        attribution.prepare(self.runtime, view, "b")
+        saved = view.data["room_snapshot"]
+        with patch.object(event_attribution, "_found", wraps=event_attribution._found) as found:
+            for _ in range(3):  # Reference rebuild, Seen by and roles all ask in one job.
+                attribution.radar_attribution(view, "b", saved)
+                attribution.radar_attribution(view, "b", saved, human=False)
+        assert found.call_count == 2  # Human and full truth, once each.
 
     async def shutdown(self):
         mod = sys.modules["tuner_under_test"]
@@ -458,7 +430,7 @@ class StaleReferenceTests(unittest.IsolatedAsyncioTestCase):
         # drops overlapping automatic summaries stays immediate.
         when = self.now - 60
         row = bytes([30] * len(harness.constants.HISTORY_KEYS))
-        self.runtime._history_runtime["a"] = {"samples": [(when + i * 6, row) for i in range(5)]}
+        harness.record_rows(self.runtime, "a", [(when + i * 6, row) for i in range(5)])
         profile = training.profile(self.device)
         refs.observe(profile, {"g0_move": 9}, "not_present", "entity", 0.9, when - 9000)
         refs.observe(profile, {"g0_move": 9}, "not_present", "entity", 0.9, when)

@@ -439,10 +439,12 @@ class ObjectiveEquivalenceTests(unittest.TestCase):
                 key: wide_member(rng, key, rng.choice(TIMINGS), guessing=rng.random() < 0.7)
                 for key in ("a", "b")
             }
-            item = Objective(members, 0, 900, room_labels(rng))
+            labels = room_labels(rng)
+            item = Objective(members, 0, 900, labels)
             for _ in range(25):
                 thresholds = random_thresholds(rng, item)
-                expected = old.rates(item, thresholds)
+                # A fresh objective computes from nothing: no remembered masks or spans.
+                expected = Objective(members, 0, 900, labels).rates(thresholds)
                 self.assertEqual(item.rates(thresholds), expected)
                 self.assertEqual(item.rates(thresholds), expected, "and again, remembered")
 
@@ -453,8 +455,8 @@ class ObjectiveEquivalenceTests(unittest.TestCase):
         linked = LinkedObjective(groups, 0, 900)
         for _ in range(20):
             thresholds = random_thresholds(rng, linked)
-            for _gid, item, part in linked.parts(thresholds):
-                self.assertEqual(item.rates(part), old.rates(item, part))
+            for gid, item, part in linked.parts(thresholds):
+                self.assertEqual(item.rates(part), Objective(groups[gid], 0, 900).rates(part))
             self.assertEqual(linked.rank(thresholds), linked.rank(thresholds))
 
     def test_the_search_finds_what_it_found_without_the_fast_paths(self):
@@ -462,7 +464,18 @@ class ObjectiveEquivalenceTests(unittest.TestCase):
         members = {key: wide_member(rng, key, rng.choice(TIMINGS), guessing=True) for key in "ab"}
         labels = room_labels(rng)
         fast, plain = Objective(members, 0, 900, labels), Objective(members, 0, 900, labels)
-        plain.rates = lambda thresholds: old.rates(plain, thresholds)
+        oracle = {}
+
+        def plain_rates(thresholds):
+            key = tuple(
+                (device, tuple(sorted(gates.items())))
+                for device, gates in sorted(thresholds.items())
+            )
+            if key not in oracle:
+                oracle[key] = Objective(members, 0, 900, labels).rates(thresholds)
+            return oracle[key]
+
+        plain.rates = plain_rates
         self.assertEqual(fitting.search(fast), fitting.search(plain))
 
     def test_possible_spans_are_never_computed_by_the_search(self):
@@ -554,7 +567,7 @@ class ReadingsTests(unittest.TestCase):
 
         view = self.view(random.Random(92), 0)
         samples = [(NOW + i * 6, bytes((i + k) % 101 for k in range(18))) for i in range(20_000)]
-        view._history_columns = harness.columns_of(samples)
+        harness.record_rows(view, "a", samples)
         tracemalloc.start()
         try:
             found = evidence.read(view, "a", HISTORY_KEYS, NOW, NOW + 1e6)

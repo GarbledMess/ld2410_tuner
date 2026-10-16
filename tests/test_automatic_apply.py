@@ -60,14 +60,28 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
             self.device, self.device["last_learning"], "automatic"
         )
         self.keys = list(self.learned["entities"])
-        rows = [(i * 6, dict.fromkeys(self.keys, 80), "present") for i in range(100)]
-        rows += [(1000 + i * 6, dict.fromkeys(self.keys, 15), "not_present") for i in range(100)]
-        self.evidence = patch.object(
-            automatic.comparison, "collect_samples", return_value=(rows, [])
-        )
-        self.evidence.start()
-        self.addCleanup(self.evidence.stop)
+        self.record(self.samples(), [])
         self.report = {}
+
+    def samples(self, confidence=None):
+        """100 present samples reading 80, then 100 empty ones reading 15 (with
+        ``confidence``: as automatic guesses of it)."""
+        start = self.now - 3000
+        extra = () if confidence is None else (confidence,)
+        rows = [
+            (start + i * 6, dict.fromkeys(self.keys, 80), "present", *extra) for i in range(100)
+        ]
+        rows += [
+            (start + 1000 + i * 6, dict.fromkeys(self.keys, 15), "not_present", *extra)
+            for i in range(100)
+        ]
+        return rows
+
+    def record(self, rows, automatic):
+        """The radar's recorded history is ``rows`` (labelled) and ``automatic``, nothing else."""
+        self.runtime._days.remove_device("a")
+        self.device["history_labels"] = []
+        harness.record_samples(self.runtime, "a", rows, automatic)
 
     async def run_apply(self):
         await automatic.run(self.runtime, "a", self.learned, self.report)
@@ -100,12 +114,9 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
             return fn(*args)
 
         self.hass.async_add_executor_job = execute
-        with patch.object(
-            automatic.attribution, "remember", wraps=automatic.attribution.remember
-        ) as keep:
-            await self.run_apply()
-        assert getattr(views[0], "_attribution_slots", None) is not None
-        keep.assert_called_once_with(self.runtime, views[0])
+        await self.run_apply()
+        # Prepared: its members' guesses are built once for the job (``attribution.prepare``).
+        assert getattr(views[0], "_attribution_guesses", None) is not None
 
     async def test_disabled_policy_or_paused_recording_prevents_writes(self):
         for flag in (False, True):
@@ -201,12 +212,8 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
                 assert set(timing["sources"].values()) == {"device"}
 
     async def test_automatic_only_evidence_is_allowed_and_identified_as_estimated(self):
-        rows = [(i * 6, dict.fromkeys(self.keys, 80), "present", 0.9) for i in range(100)]
-        rows += [
-            (1000 + i * 6, dict.fromkeys(self.keys, 15), "not_present", 0.9) for i in range(100)
-        ]
-        with patch.object(automatic.comparison, "collect_samples", return_value=([], rows)):
-            await self.run_apply()
+        self.record([], self.samples(confidence=0.9))
+        await self.run_apply()
         assert self.report["status"] == "applied"
         assert self.report["assessment"]["patterns"]["automatic"]["basis"] == "estimated"
 
@@ -219,8 +226,8 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
         assert "current" not in self.device["learning_results"]
 
     async def test_missing_evidence_or_replaced_result_does_not_apply(self):
-        with patch.object(automatic.comparison, "collect_samples", return_value=([], [])):
-            await self.run_apply()
+        self.record([], [])
+        await self.run_apply()
         assert "Not enough" in self.report["reason"]
         self.learned = {**self.learned, "id": "stale"}
         await self.run_apply()

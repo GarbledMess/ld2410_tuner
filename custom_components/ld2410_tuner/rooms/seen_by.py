@@ -27,8 +27,9 @@ import logging
 import time
 from bisect import bisect_left, bisect_right
 from copy import deepcopy
+from math import inf, nextafter
 
-from ..calibration.constants import MIN_AUTO_CONFIDENCE, SAMPLE_SECONDS
+from ..calibration.constants import MIN_AUTO_CONFIDENCE
 from ..history import recording
 from ..runtime.tasks import finish_task
 from . import attribution, truth
@@ -36,6 +37,11 @@ from . import attribution, truth
 _LOGGER = logging.getLogger(__name__)
 
 EPISODE_LIMIT = 50
+# Opt-in approximation for chips only; None keeps all retained evidence. A positive
+# number bounds both occupied episodes and their quiet baseline. Older chips disappear,
+# ownership/confidence can change, and a cutoff-crossing episode is clipped. Stored human
+# labels, references, assessments and learning remain independent of this display policy.
+SEEN_BY_HISTORY_HOURS = None
 # Minimum time between rebuilds caused by new or pruned history alone.
 HISTORY_REBUILD_SECONDS = 300
 _clock = time.monotonic  # Injectable for tests.
@@ -62,11 +68,12 @@ def signature(runtime, definitions, group_id):
     manual = runtime.data.get("room_label_revision", {})
     sensor = runtime.data.get("room_sensor_revision", {})
     inputs = {
+        "history_hours": SEEN_BY_HISTORY_HOURS,
         "groups": deepcopy({key: definitions.get(key) for key in {*owners, *related}}),
         "labels": {key: (manual.get(key, 0), sensor.get(key, 0)) for key in related},
         "members": {key: attribution.member_signature(devices[key]) for key in members},
     }
-    history = {key: attribution.history_fingerprint(devices[key]) for key in members}
+    history = {key: attribution.history_fingerprint(runtime, key, devices[key]) for key in members}
     return {"inputs": inputs, "history": history}
 
 
@@ -75,13 +82,17 @@ def _view(runtime, definitions, group_id):
     snapshot); None when no member has recorded anything."""
     devices = runtime.data["devices"]
     own = [key for key in definitions[group_id]["device_ids"] if key in devices]
-    if not any(
-        devices[key].get("history") or recording.pending_samples(runtime, key) for key in own
-    ):
+    if not any(recording.has_history(runtime, key) for key in own):
         return None
     # Shares the learner's attribution cache.
     shared = {}  # The members' guesses, built once for the job's views.
-    return {key: attribution.prepared_view(runtime, key, shared) for key in own}
+    since = None if SEEN_BY_HISTORY_HOURS is None else time.time() - SEEN_BY_HISTORY_HOURS * 3600
+    return {
+        key: attribution.prepared_view(
+            runtime, key, shared, **({} if since is None else {"since": since})
+        )
+        for key in own
+    }
 
 
 def _as_learned(result):
@@ -90,22 +101,37 @@ def _as_learned(result):
     return {**result, "state": "unknown"} if weak and result["state"] != "unknown" else result
 
 
-def _pieces(inside, human, truth_at):
+def _pieces(inside, human, truth_at, starts=None):
     """Split one radar's full-truth episode (its sample times ``inside``) where room truth
     is human (``attribution.is_human``): such a sample lies in a human episode and takes its
     result. ``((first, last), human result or None)`` per run of samples with one owner."""
-    starts = [span[0] for span, _ in human]
+    if starts is None:
+        starts = [span[0] for span, _ in human]
     pieces = []
-    for t in inside:
+    cuts = _piece_cuts(inside, starts, truth_at)
+    for first, after in attribution.stretches(len(inside), cuts):
+        t, last = inside[first], inside[after - 1]
         owner = bisect_right(starts, t) - 1 if attribution.is_human(truth_at(t)) else None
         if pieces and pieces[-1][1] == owner:
-            pieces[-1][0][1] = t
+            pieces[-1][0][1] = last
         else:
-            pieces.append(([t, t], owner))
+            pieces.append(([t, last], owner))
     return [
         ((first, last), human[owner][1] if owner is not None else None)
         for (first, last), owner in pieces
     ]
+
+
+def _piece_cuts(inside, starts, truth_at):
+    cuts = attribution.change_points(inside, truth_at)
+    if cuts is not None:
+        local = (
+            starts[bisect_left(starts, inside[0]) : bisect_right(starts, inside[-1])]
+            if len(inside)
+            else ()
+        )
+        cuts = sorted({*cuts, *(bisect_left(inside, t) for t in local)})
+    return cuts
 
 
 def _member_episodes(view, key, group_id):
@@ -116,19 +142,37 @@ def _member_episodes(view, key, group_id):
     saved = view.data["room_snapshot"]
     human = attribution.radar_attribution(view, key, saved)["found"][group_id]
     full = attribution.radar_attribution(view, key, saved, human=False)
-    truth_at = full["truths"][group_id]
-    times = full["times"]
-    episodes = []
-    for span, result in full["found"][group_id]:
-        inside = times[bisect_left(times, span[0]) : bisect_right(times, span[1])]
-        for piece, decided in _pieces(inside, human, truth_at):
-            if decided is not None:
-                episodes.append((piece, _as_learned(decided), False))
-                continue
-            part = times[bisect_left(times, piece[0]) : bisect_right(times, piece[1])]
-            estimated = all(truth_at(t)[1] == "estimate" for t in part)
-            episodes.append((piece, _as_learned(result), estimated))
-    return episodes
+    return _native_episodes(human, full, group_id)
+
+
+def _native_episodes(human, full, group_id):
+    """Split physical intervals at truth ownership edges, preserving their exact ends."""
+    read = full["truths"][group_id]
+    starts = [span[0] for span, _ in human]
+    edges = tuple(truth.edges(full["contexts"][group_id]))
+    result = []
+    for (start, last), decided in full["found"][group_id]:
+        end = nextafter(last, inf)
+        cuts = sorted({start, end, *(t for t in edges if start < t < end)})
+        for low, high in zip(cuts, cuts[1:], strict=False):
+            answer, estimated = _native_owner(read(low), human, starts, low, decided)
+            _append_native(result, low, high, answer, estimated)
+    return result
+
+
+def _native_owner(label, human, starts, low, decided):
+    owner = attribution._attributed(human, starts, low) if attribution.is_human(label) else None
+    answer = _as_learned(owner if owner is not None else decided)
+    estimated = owner is None and label is not None and label[1] == "estimate"
+    return answer, estimated
+
+
+def _append_native(result, low, high, answer, estimated):
+    piece = ((low, nextafter(high, -inf)), answer, estimated)
+    if result and nextafter(result[-1][0][1], inf) == low and result[-1][1:] == (answer, estimated):
+        result[-1] = ((result[-1][0][0], piece[0][1]), answer, estimated)
+    else:
+        result.append(piece)
 
 
 def _merge(members):
@@ -168,7 +212,7 @@ def build(views, definitions, group_id):
     }
     rows = _merge(members)[-EPISODE_LIMIT:]
     for row in rows:
-        row["end"] += SAMPLE_SECONDS
+        row["end"] = nextafter(row["end"], inf)
         for key in members:
             row["devices"].setdefault(key, dict(UNKNOWN))
     attribution.release(views.values())
@@ -178,10 +222,7 @@ def build(views, definitions, group_id):
 async def _run(runtime, definitions, group_id, current, view, started):
     try:
         async with runtime._room_attribution_semaphore:
-            attribution.adopt(runtime, view.values())
             episodes = await runtime.hass.async_add_executor_job(build, view, definitions, group_id)
-        for item in view.values():
-            attribution.remember(runtime, item)
     except asyncio.CancelledError:
         raise
     except Exception:  # A failing build must not be retried on every poll.
@@ -191,6 +232,8 @@ async def _run(runtime, definitions, group_id, current, view, started):
 
 
 def _store(runtime, group_id, current, episodes, started):
+    if current["inputs"]["history_hours"] != SEEN_BY_HISTORY_HOURS:
+        return  # A later poll rebuilds using the new display policy.
     runtime._room_attribution[group_id] = {
         "signature": current,
         "episodes": episodes,

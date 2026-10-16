@@ -3,7 +3,6 @@
 import unittest
 
 import test_tuner as harness
-from tuner_under_test.calibration.search import _ThresholdSearch, _union_masks
 from tuner_under_test.calibration.separation import gate_preference
 
 EMPTY = {"present": [], "not_present": []}
@@ -39,12 +38,16 @@ class SeparationTests(unittest.TestCase):
         self.assertEqual(result["proposals"][keys[0]]["false_positives"], 0)
         self.assertEqual(result["proposals"][keys[0]]["threshold"], 50)
 
-    def test_human_separation_outranks_weak_guesses_inside_the_gap(self):
+    def test_automatic_share_can_spend_margin_without_sacrificing_human_labels(self):
         rows = harness.row_samples({"g0_still": 80}, {"g0_still": 20})
         guesses = [(300 + i, {"g0_still": 25}, "present", 0.99) for i in range(500)]
-        result = harness.fit(rows, ["g0_still"], automatic=guesses)
-        self.assertEqual(result["proposals"]["g0_still"]["threshold"], 50)
+        manual = harness.fit(rows, ["g0_still"], automatic=guesses, automatic_weight=0)
+        result = harness.fit(rows, ["g0_still"], automatic=guesses, automatic_weight=0.2)
+        self.assertEqual(manual["proposals"]["g0_still"]["threshold"], 50)
+        self.assertEqual(result["proposals"]["g0_still"]["threshold"], 24)
         self.assertTrue(result["automatic_evidence"]["used"])
+        self.assertEqual(result["training"]["false_negatives"], 0)
+        self.assertEqual(result["training"]["false_positives"], 0)
 
     def test_actual_quiet_presence_overrides_the_preferred_margin(self):
         rows = harness.row_samples({"g0_still": 80}, {"g0_still": 20}, count=1000)
@@ -53,7 +56,7 @@ class SeparationTests(unittest.TestCase):
         self.assertEqual(result["proposals"]["g0_still"]["separation"]["preferred_threshold"], 50)
         self.assertLess(result["proposals"]["g0_still"]["threshold"], 24)
         self.assertEqual(result["training"]["false_negatives"], 0)
-        self.assertEqual(result["outlier_filter"]["human"]["excluded"]["present"], 0)
+        self.assertEqual(result["outlier_filter"]["excluded"], False)
 
     def test_no_fixed_floor_on_a_legitimate_low_energy_gate(self):
         result = harness.fit(harness.row_samples({"g0_still": 5}, {"g0_still": 1}), ["g0_still"])
@@ -102,23 +105,24 @@ class SeparationTests(unittest.TestCase):
             (10000 + i * 6, dict(zip(keys, (20, 5, 5), strict=True)), "not_present")
             for i in range(500)
         ]
-        context = _ThresholdSearch(positives, negatives, EMPTY, keys, None, None, 0.0)
-        seed = dict(zip(keys, (9, 17, 17), strict=True))
-        selected = {key: context.tables[key][value] for key, value in seed.items()}
-        score = context.rank(_union_masks(selected), 500, context._distance(seed))
-        repaired = context.repair_pair(seed, score)
-        # Either support gate can replace the noisy detector. Gate 2 detects the
-        # quiet location at 8, retaining more separation than Gate 1 at 7.
-        self.assertEqual(repaired, dict(zip(keys, (25, 17, 8), strict=True)))
+        result = harness.fit(positives + negatives, keys)
+        thresholds = {key: value["threshold"] for key, value in result["proposals"].items()}
+        self.assertEqual(result["training"]["false_positives"], 0)
+        self.assertEqual(result["training"]["false_negatives"], 0)
+        self.assertLess(thresholds[keys[2]], 9)
+        self.assertGreater(thresholds[keys[1]] - 5, thresholds[keys[2]] - 5)
+        constrained = harness.fit(
+            positives + negatives, keys, constraints={keys[2]: {"min": 10, "max": 100, "step": 1}}
+        )
+        self.assertGreaterEqual(constrained["proposals"][keys[2]]["threshold"], 10)
+        self.assertLess(constrained["proposals"][keys[1]]["threshold"], 8)
+        self.assertEqual(constrained["training"]["false_positives"], 0)
+        self.assertEqual(constrained["training"]["false_negatives"], 0)
 
-    def test_single_human_class_does_not_gain_extra_sensitivity_penalties(self):
+    def test_single_human_class_keeps_automatic_presence_as_primary(self):
         negatives = [(i, {"g0_still": 20}, "not_present") for i in range(100)]
-        automatic = {
-            "present": [(200 + i, {"g0_still": 30}, "present", 0.9) for i in range(100)],
-            "not_present": [],
-        }
-        context = _ThresholdSearch([], negatives, automatic, ["g0_still"], None, None, 0.0)
-        bits = context.tables["g0_still"][22]
-        self.assertEqual(context.preferred["g0_still"], 22)
-        self.assertEqual(context.rank(bits, gate_false=0), context.rank(bits, gate_false=20))
-        self.assertFalse(context._needs_refinement((0, 0, 0, 0, 0, 0, 4)))
+        automatic = [(200 + i, {"g0_still": 30}, "present", 0.9) for i in range(100)]
+        result = harness.fit(negatives, ["g0_still"], automatic=automatic, automatic_weight=0)
+        self.assertEqual(result["training"]["false_positives"], 0)
+        self.assertEqual(result["estimated_training"]["false_negatives"], 0)
+        self.assertTrue(result["automatic_evidence"]["used"])

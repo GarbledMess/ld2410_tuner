@@ -1,13 +1,14 @@
 """Rooms train from automatic evidence alone: no human labels, still assessed, learned, applied."""
 
 import unittest
+from copy import deepcopy
 from unittest.mock import patch
 
 import test_joint_learning as joint
 import test_rooms as harness
 from test_rooms import set_records
 from tuner_under_test.calibration.scoring import error_cost
-from tuner_under_test.rooms import application, jobs, room_labels
+from tuner_under_test.rooms import application, jobs, room_labels, truth
 from tuner_under_test.rooms.objective import LinkedObjective, Objective
 
 CURRENT = 60  # Above the occupied signal (40), so the radar misses every occupied sample.
@@ -155,6 +156,9 @@ class AutomaticRoomTests(unittest.IsolatedAsyncioTestCase):
     # (c) linked set: one auto-only zone, one human-labelled zone -----------------
 
     async def test_linked_set_learns_auto_only_zone_beside_human_zone(self):
+        # This case tests positive automatic preferences beside a human zone.
+        # The zero ceiling is covered separately and removes those tie preferences.
+        self.runtime.data["learning_schedule"] = {"automatic_weight": 0.5}
         set_id = self.linked(current=CURRENT)
         self.unlabelled_history(guess=False)
         desk, sofa = self.ids["Desk"], self.ids["Sofa"]
@@ -176,6 +180,48 @@ class AutomaticRoomTests(unittest.IsolatedAsyncioTestCase):
             result = await application.apply(self.runtime, set_id, learned["id"], "user")
         assert not result["skipped"]
         assert {device for device, _key, _value in writes} == {"a", "b", "c"}
+
+    async def test_zero_ceiling_preserves_redundant_member_when_shared_radar_covers_union(self):
+        self.runtime.data["learning_schedule"] = {"automatic_weight": 0}
+        set_id = self.linked(current=CURRENT)
+        self.unlabelled_history(guess=False)
+        desk, sofa = self.ids["Desk"], self.ids["Sofa"]
+        self.set_sensor(desk)
+        room_labels.label_room_range(self.runtime, sofa, 0, SPLIT, "present")
+        room_labels.label_room_range(self.runtime, sofa, SPLIT, 1200, "not_present")
+        learned = await self.learn(set_id)
+        self.assert_lowered(learned["thresholds"], "a", "b")
+        assert learned["thresholds"]["c"]["g0_move"] == CURRENT
+        forced = deepcopy(learned["thresholds"])
+        forced["c"] = dict(forced["b"])
+        for gid, keys in ((desk, ("a", "b")), (sofa, ("b", "c"))):
+            members = {
+                key: {
+                    "view": self.runtime._history_view(key),
+                    "thresholds": learned["thresholds"][key],
+                    "timing": learned["timing"][key],
+                }
+                for key in keys
+            }
+            redundant = joint.fitting.measure(
+                members, forced, 0, 1200, truth.view(self.runtime, gid)
+            )["room"]
+            actual = learned["groups"][gid]["after"]["room"]
+            # The last loud reading holds until the next one, exactly at the state boundary:
+            # every present second is detected, and lowering c changes nothing.
+            self.assertAlmostEqual(actual["presence_recall"], 1.0)
+            self.assertAlmostEqual(redundant["presence_recall"], 1.0)
+            assert actual["false_positive_percent"] == redundant["false_positive_percent"] == 0
+            assert actual["target_met"] == redundant["target_met"] is True
+        assert learned["groups"][sofa]["after"]["devices"]["c"]["presence_recall"] == 0
+        writes, (prepare, write) = self.writer()
+        with prepare, write:
+            result = await application.apply(self.runtime, set_id, learned["id"], "user")
+        assert not result["skipped"]
+        # Joint Apply preserves redundant c without issuing unsupported/no-op writes.
+        assert {device for device, _key, _value in writes} == {"a", "b"}
+        assert "c" not in result["applied"]
+        assert "last_applied" not in self.runtime.data["devices"]["c"]
 
     async def test_linked_set_learns_when_both_zones_are_automatic_only(self):
         set_id = self.linked(current=CURRENT)

@@ -65,11 +65,30 @@ def _sessions(rows, barriers=()):
     for index in range(1, len(rows)):
         previous, current = times[index - 1], times[index]
         changed_label = bisect_right(barriers, current) != bisect_right(barriers, previous)
-        if current - previous > SAMPLE_SECONDS * 2 or changed_label:
+        if _separated(rows, index, previous, current, changed_label):
             yield start, rows[start:index]
             start = index
     if rows:
         yield start, rows[start:]
+
+
+def _separated(rows, index, previous, current, changed_label):
+    ends = getattr(rows, "ends", None)
+    if ends is not None and (ends[index - 1] is not None or ends[index] is not None):
+        if ends[index - 1] is None or ends[index] is None:
+            return True
+        if ends[index - 1] > current:
+            raise ValueError("Physical event cells overlap")
+        return ends[index - 1] != current
+    return current - previous > SAMPLE_SECONDS * 2 or changed_label
+
+
+def make_window(rows, hold, on_delay, off_delay):
+    if getattr(rows, "ends", None) is not None and rows.ends[0] is not None:
+        from .event_timing import EventWindow
+
+        return EventWindow(rows, hold, on_delay, off_delay)
+    return _Window(rows, hold, on_delay, off_delay)
 
 
 class _Window:
@@ -81,6 +100,14 @@ class _Window:
         first = bisect_left(self.times, self.times[0] + warmup)
         self.eligible = self.mask ^ ((1 << first) - 1)
         self.link = max(hold, hold + off_delay - on_delay) if on_delay <= hold else hold
+
+    @property
+    def start(self):
+        return self.times[0] + max(self.hold + self.off, self.on)
+
+    @property
+    def end(self):
+        return self.times[-1]
 
     @cached_property
     def in_order(self):
@@ -195,7 +222,8 @@ class GroupTiming:
             )
             on, off = (config["on_delay"], config["off_delay"]) if filters_known else (0, 0)
             self.windows = [
-                (offset, _Window(part, hold, on, off)) for offset, part in _sessions(rows, barriers)
+                (offset, make_window(part, hold, on, off))
+                for offset, part in _sessions(rows, barriers)
             ]
             self.eligible = sum(window.eligible << offset for offset, window in self.windows)
         # Per-fit bounded cache, released when this fitting instance is discarded.

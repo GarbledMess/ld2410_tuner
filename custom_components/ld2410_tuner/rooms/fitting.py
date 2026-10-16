@@ -12,9 +12,13 @@ METHOD = "joint_room_v1"
 def _options(objective, device_id, key):
     radar = objective.radars[device_id]
     preferred = objective.preferred[device_id][key]
-    current = objective.current[device_id][key]
+    allowed = radar.allowed[key]
+    current = min(
+        allowed, key=lambda value: (abs(value - objective.current[device_id][key]), -value)
+    )
     unique = {}
-    for threshold, bits in enumerate(radar.tables[key]):
+    for threshold in allowed:
+        bits = radar.tables[key][threshold]
         previous = unique.get(bits)
         rank = (threshold != current, abs(threshold - preferred))
         if previous is None or rank < (previous != current, abs(previous - preferred)):
@@ -131,9 +135,21 @@ def search(objective):
         for device, gates in objective.current.items()
         for key in gates
     }
-    best = deepcopy(objective.current)
-    quiet = {device: dict.fromkeys(gates, 100) for device, gates in best.items()}
-    for seed in (objective.current, objective.preferred, quiet):
+    best = {
+        device: {
+            key: min(
+                objective.radars[device].allowed[key],
+                key=lambda value: (abs(value - current), -value),
+            )
+            for key, current in gates.items()
+        }
+        for device, gates in objective.current.items()
+    }
+    quiet = {
+        device: {key: max(objective.radars[device].allowed[key]) for key in gates}
+        for device, gates in best.items()
+    }
+    for seed in (deepcopy(best), objective.preferred, quiet):
         candidate = deepcopy(seed)
         for _ in range(4):
             if not _sweep(objective, candidate, options):
@@ -143,12 +159,31 @@ def search(objective):
     return best
 
 
-def measure(members, thresholds, start, end, room=None):
+def measure(members, thresholds, start, end, room=None, *, quality=None):
     candidates = {key: {**item, "thresholds": thresholds[key]} for key, item in members.items()}
-    return assessment.calculate(candidates, start, end, room)
+    return assessment.calculate(candidates, start, end, room, quality=quality)
 
 
-def fit(members, start, end, room=None, automatic_weight=DEFAULT_AUTOMATIC_WEIGHT):
+def fit(
+    members,
+    start,
+    end,
+    room=None,
+    automatic_weight=DEFAULT_AUTOMATIC_WEIGHT,
+    *,
+    quality_contexts=None,
+):
+    if quality_contexts is not None:
+        result = fit_set(
+            {"room": members},
+            start,
+            end,
+            {"room": room} if room else {},
+            automatic_weight,
+            quality_contexts=quality_contexts,
+        )
+        result.pop("groups")
+        return result
     objective = Objective(members, start, end, room, automatic_weight=automatic_weight)
     before = measure(members, objective.current, start, end, room)
     if before["room"]["score"] is None:
@@ -171,12 +206,14 @@ def _current(members):
     return {key: dict(item["thresholds"]) for key, item in members.items()}
 
 
-def _scorable(groups, start, end, rooms):
+def _scorable(groups, start, end, rooms, quality=None):
     """Before-reports of the groups that can be scored, and the reasons the rest cannot.
     Raises the first group's reason (as ``fit`` would) when no group can be scored."""
     before, skipped = {}, {}
     for gid in sorted(groups):
-        report = measure(groups[gid], _current(groups[gid]), start, end, rooms.get(gid))
+        report = measure(
+            groups[gid], _current(groups[gid]), start, end, rooms.get(gid), quality=quality
+        )
         if report["room"]["score"] is None:
             skipped[gid] = report["room"]["reason"]
         else:
@@ -223,7 +260,15 @@ def _group_results(groups, before, after, skipped, objective, thresholds):
     }
 
 
-def fit_set(groups, start, end, rooms=None, automatic_weight=DEFAULT_AUTOMATIC_WEIGHT):
+def fit_set(
+    groups,
+    start,
+    end,
+    rooms=None,
+    automatic_weight=DEFAULT_AUTOMATIC_WEIGHT,
+    *,
+    quality_contexts=None,
+):
     """Fit a learning set together: ``fit_set(groups, start, end, rooms=None, automatic_weight)``.
 
     ``groups`` is ``{group_id: members}``; ``rooms`` is ``{group_id: truth.view snapshot}``
@@ -240,16 +285,30 @@ def fit_set(groups, start, end, rooms=None, automatic_weight=DEFAULT_AUTOMATIC_W
     if not groups:
         raise ValueError("No zones to learn")
     rooms = rooms or {}
-    before, skipped = _scorable(groups, start, end, rooms)
+    if quality_contexts is not None:
+        from .adaptive import models
+
+        quality_contexts = models(quality_contexts)
+    before, skipped = _scorable(groups, start, end, rooms, quality_contexts)
+    policy, audit = _policy(groups, before, start, end, rooms, automatic_weight, quality_contexts)
     objective = LinkedObjective(
-        {gid: groups[gid] for gid in before}, start, end, rooms, automatic_weight
+        {gid: groups[gid] for gid in before},
+        start,
+        end,
+        rooms,
+        automatic_weight,
+        quality=quality_contexts,
+        reference=policy == "reference",
     )
     thresholds = search(objective)
     for gid in skipped:
         for key, value in _current(groups[gid]).items():
             thresholds.setdefault(key, value)
-    after = {gid: measure(groups[gid], thresholds, start, end, rooms.get(gid)) for gid in before}
-    return {
+    after = {
+        gid: measure(groups[gid], thresholds, start, end, rooms.get(gid), quality=quality_contexts)
+        for gid in before
+    }
+    result = {
         "method": METHOD,
         "thresholds": thresholds,
         "before": _top_level(groups, before, objective.current),
@@ -262,3 +321,23 @@ def fit_set(groups, start, end, rooms=None, automatic_weight=DEFAULT_AUTOMATIC_W
         "validation_scope": "training_replay_not_independent_validation",
         "groups": _group_results(groups, before, after, skipped, objective, thresholds),
     }
+    if audit is not None:
+        result["automatic_evidence"] = audit
+        result["validation_scope"] = (
+            "later_explicit_episodes"
+            if audit["selection"]["validated"]
+            else "estimated_without_independent_validation"
+        )
+    return result
+
+
+def _policy(groups, before, start, end, rooms, weight, contexts):
+    if contexts is None:
+        return None, None
+    from .adaptive import choose_policy
+
+    scorable = {gid: groups[gid] for gid in before}
+    active = {key for found in scorable.values() for key in found}
+    return choose_policy(
+        scorable, start, end, rooms, weight, {key: contexts[key] for key in active}
+    )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import time
 from typing import Any
 
@@ -14,7 +15,7 @@ from ..calibration import settings as learning_settings
 from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
-from ..history import policy, recording, storage
+from ..history import dayfile, policy, recording, storage
 from ..presence import rebuilds, sources
 from ..rooms import jobs as room_jobs
 from ..rooms import layout, seen_by
@@ -29,7 +30,23 @@ def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
     exported["timing_settings"] = timing_config.settings(runtime)
     devreg = dr.async_get(runtime.hass)
     _export_devices(runtime, devices, devreg, registry, exported)
+    if device_id in exported["devices"]:  # One radar: its recorded days too.
+        exported["devices"][device_id]["history"]["day_files"] = _recorded_days(runtime, device_id)
     return exported
+
+
+def _recorded_days(runtime, device_id):
+    """``{date: base64 day file}`` of the radar's recorded days, the day being recorded as it
+    stands: the stored format, compressed and lossless (``history.dayfile.decode_day``)."""
+    days = runtime._days
+    if days is None:
+        return {}
+    found = {}
+    for date in days.days(device_id):
+        day = days.day(device_id, date)
+        if day is not None:
+            found[date.isoformat()] = base64.b64encode(dayfile.encode_day(day)).decode("ascii")
+    return found
 
 
 def snapshot(runtime) -> dict[str, Any]:
@@ -149,15 +166,11 @@ def _snapshot_device(runtime, device_id, device, registry):
 
 
 def _history_summary(runtime, device_id, device):
-    blocks, samples, oldest, newest = recording.history_summary(runtime, device_id)
     return {
         "retention_days": policy.settings(runtime.data)["human_days"],
         "revision": device.get("label_revision", 0),
-        "blocks": blocks,
-        "samples": samples,
         "labels": device.get("history_labels", []),
-        "oldest": oldest,
-        "newest": newest,
+        **recording.history_summary(runtime, device_id),
     }
 
 
@@ -199,13 +212,7 @@ def _export_device(runtime, did, devreg, registry):
         "engineering_mode": runtime._engineering_status.get(did),
         "last_applied": device.get("last_applied", {}),
         "auto_learning": device.get("auto", {}),
-        "history": {
-            "retention_days": policy.settings(runtime.data)["human_days"],
-            "revision": device.get("label_revision", 0),
-            "labels": device.get("history_labels", []),
-            "blocks": len(device.get("history", [])),
-            "samples": sum(int(b.get("count", 0)) for b in device.get("history", [])),
-        },
+        "history": _history_summary(runtime, did, device),
     }
 
 

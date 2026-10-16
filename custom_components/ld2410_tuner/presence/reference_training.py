@@ -1,8 +1,10 @@
 """Connect independent corrections and confirmed observations to room references."""
 
 import time
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from copy import deepcopy
+from itertools import pairwise
 
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
 from ..const import HISTORY_KEYS
@@ -58,7 +60,7 @@ def rebuild_human(runtime, device):
     """Rebuild retained human evidence after an edit; keep older learned summaries.
     Returns the retention cutoff: the periods it rewrote are those ``owned`` at it.
     Runs only off the event loop: callers on it go through ``rebuilds.refresh``."""
-    from ..history.labels import _history_label_reader
+    from ..history.label_lookup import _history_label_reader
     from ..history.policy import retention_seconds
     from ..rooms import attribution
 
@@ -68,22 +70,31 @@ def rebuild_human(runtime, device):
         p for p in current["periods"] if p["source"] != "human" or p["end"] < cutoff
     ]
     device_id = _device_id(runtime, device)
-    room = attribution.room_targets(runtime, device_id)
-    # Human room truth's targets (human answers are skipped by ``ROOM_ORIGIN``), else the
-    # more confident of its "attributed" guess and the automatic room truth.
-    automatic = attribution.auto_targets(runtime, device_id)
-    folds = {source: references.Fold(references.empty()) for source in ROOM_SOURCES}
-    folds["human"] = references.Fold(current)
     label_at = _history_label_reader(device)
-    for timestamp, values, state, source, confidence in _observations(
-        runtime, device, label_at, room, automatic
-    ):
-        folds[source].add((timestamp, values, state, source, confidence))
-    for fold in folds.values():
-        fold.close()
-    _install_room_evidence(current, cutoff, [folds[source] for source in ROOM_SOURCES])
+    room, automatic = None, None
+    if not _fully_labelled(runtime, device_id, label_at, cutoff):
+        room = attribution.room_targets(runtime, device_id)
+        # Automatic room evidence only fills time without the radar's own label.
+        automatic = attribution.auto_targets(runtime, device_id)
+    profiles = {source: references.empty() for source in ROOM_SOURCES}
+    profiles["human"] = current
+    _fold_native(runtime, device_id, label_at, room, automatic, profiles, cutoff)
+    _install_room_evidence(current, cutoff, [profiles[source] for source in ROOM_SOURCES])
     device.get("auto", {}).pop("filter", None)
     return cutoff
+
+
+def _reference_end(runtime):
+    from math import inf
+
+    until = getattr(runtime, "_history_until", None)
+    return min(time.time() if until is None else until, getattr(runtime, "_attribution_until", inf))
+
+
+def _fully_labelled(runtime, device_id, label_at, cutoff):
+    from ..history import summaries
+
+    return summaries.fully_labelled(runtime, device_id, label_at, cutoff, _reference_end(runtime))
 
 
 def owned(period, cutoff):
@@ -123,13 +134,13 @@ def _newest(periods):
     return result
 
 
-def _install_room_evidence(current, cutoff, folds):
+def _install_room_evidence(current, cutoff, profiles):
     """Automatic room truth feeds references with its own confidence, never as "human":
     room sensor labels as "entity"; the room estimate and human room Present attributed only
     by the radar's baseline (rule 2, an inference) as "radar"."""
     current["periods"] = [p for p in current["periods"] if not p.get("room") or p["end"] < cutoff]
     current["periods"].extend(
-        {**period, "room": True} for fold in folds for period in fold.profile["periods"]
+        {**period, "room": True} for profile in profiles for period in profile["periods"]
     )
     for key in {(p["source"], p["state"]) for p in current["periods"] if p.get("room")}:
         same = [p for p in current["periods"] if (p["source"], p["state"]) == key]
@@ -148,22 +159,10 @@ def _room_human(target):
     return target[0] if attribution.is_human(target) else None
 
 
-def _latest(read):
-    """``read`` remembering its last answer: asked twice in a row about one time, it reads once."""
-    asked, answer = [object()], [None]
-
-    def cached(t):
-        if t != asked[0]:
-            asked[0], answer[0] = t, read(t)
-        return answer[0]
-
-    return cached
-
-
-def _human_label(own, room, timestamp):
-    """The radar's own label, else human room truth at ``timestamp`` (the radar's label wins)."""
-    if own is None and room is not None:
-        return _room_human(room(timestamp))
+def _human_label(own, target):
+    """The radar's own label, else the already-read human room truth."""
+    if own is None and target is not None:
+        return _room_human(target)
     return own
 
 
@@ -178,25 +177,19 @@ def _evidence(label, guess):
     return found
 
 
-def _observations(runtime, device, label_at, room, automatic):
-    """The observations of every sample, from one pass over the history: its human one (the
-    radar's own label, else human room truth, which the room ``room`` targets give) and, when
-    the radar has no label of its own, the room's automatic one: the more confident of
-    ``room`` and ``automatic``."""
+def _span_evidence(label_at, room, automatic, timestamp):
     from ..rooms import attribution
 
-    if room is not None:
-        room = _latest(room)  # The human pass and the automatic one ask about each sample.
-    auto = attribution.select(room, automatic)
-    for timestamp, row in runtime._iter_history_samples(device):
-        own = label_at(timestamp)
-        guess = None if own or auto is None else auto(timestamp)
-        if found := _evidence(_human_label(own, room, timestamp), guess):
-            values = {
-                key: value for key, value in zip(HISTORY_KEYS, row, strict=False) if value <= 100
-            }
-            for state, source, confidence in found:
-                yield timestamp, values, state, source, confidence
+    own = label_at(timestamp)
+    target = room(timestamp) if own is None and room is not None else None
+    guess = None
+    if not own:
+        guess = (
+            target
+            if attribution.is_human(target)
+            else attribution.stronger(target, automatic(timestamp) if automatic else None)
+        )
+    return _evidence(_human_label(own, target), guess)
 
 
 def correct(runtime, device, ranges):
@@ -240,36 +233,126 @@ async def initialize(runtime):
 
 def _import_history(runtime, device):
     rebuild_human(runtime, device)
-    current = profile(device)
-    if current["periods"]:
+
+
+def _native_values(values):
+    from math import ceil
+
+    return {
+        key: ceil(value)
+        for key, value in zip(HISTORY_KEYS, values, strict=True)
+        if value is not None
+    }
+
+
+def _native_edges(readers):
+    edges = set()
+    for reader in readers:
+        edges.update(getattr(reader, "edges", ()))
+        edges.update(_native_edges(getattr(reader, "parts", ())))
+    return tuple(sorted(edges))
+
+
+def _native_pieces(cell, edges):
+    first, after = bisect_right(edges, cell.start), bisect_left(edges, cell.end)
+    yield from pairwise((cell.start, *edges[first:after], cell.end))
+
+
+def _fold_native(runtime, device_id, label_at, room, automatic, profiles, cutoff):
+    """Fold indexed observed ranges without materialising full-vector readings."""
+    from math import inf
+
+    from ..history import spans, summaries
+
+    cutoff = max(cutoff, getattr(runtime, "_physical_history_start", -inf))
+    end = _reference_end(runtime)
+    if end <= cutoff:
         return
-    # Old histogram-only stores have no observation times. Preserve their useful
-    # distributions, explicitly recording import time and reduced certainty.
-    legacy = device.get("history_legacy_histograms", {})
-    timestamp = device.get("history_legacy_since") or time.time()
-    for state in references.STATES:
-        histograms = _legacy_bins(legacy, state)
-        if histograms:
-            current["periods"].append(
-                {
-                    "source": "human",
-                    "state": state,
-                    "start": timestamp,
-                    "end": timestamp,
-                    "confidence": 0.8,
-                    "count": max(sum(b.values()) for b in histograms.values()),
-                    "data": references.encode(histograms),
-                    "imported_legacy": True,
-                }
-            )
+    native = {source: references.SpanFold(profile) for source, profile in profiles.items()}
+    readers = [read for read in (label_at, room, automatic) if read is not None]
+    edges = _native_edges(readers)
+    for date in spans._store_days(runtime, device_id, cutoff, end):
+        summary = summaries.of(runtime, device_id, date)
+        if summary is not None:
+            _fold_summary(summary, cutoff, end, edges, (label_at, room, automatic), native)
+    for fold in native.values():
+        fold.close()
 
 
-def _legacy_bins(legacy, state):
-    result = {}
-    for key, series in legacy.items():
-        if key not in HISTORY_KEYS:
-            continue
-        bins = {str(i): count for i, count in enumerate(series.get(state, [])[:101]) if count > 0}
-        if bins:
-            result[key] = bins
-    return result
+def _fold_summary(summary, cutoff, end, edges, readers, native):
+    from ..history.spans import Span
+
+    for start, stop in summary.coverage_ranges(cutoff, end):
+        cell = Span(start, stop, (), "event")
+        for low, high in _native_pieces(cell, edges):
+            found = _span_evidence(*readers, low)
+            if found:
+                _fold_summary_piece(summary, low, high, found, native)
+
+
+def _fold_summary_piece(summary, start, end, found, native):
+    from math import floor
+
+    while start < end:
+        stop = min(end, (floor(start / references.PERIOD_SECONDS) + 1) * references.PERIOD_SECONDS)
+        histograms = summary.histograms(start, stop)
+        for state, source, confidence in found:
+            native[source].add_histograms(start, stop, histograms, state, source, confidence)
+        start = stop
+
+
+def observe_span(
+    runtime, device, start, end, values, label=None, confidence=0.0, *, external=False
+):
+    """Causal native reference evidence; automatic confidence is raw, in0..1.
+
+    Call only for newly observed physical coverage. This adapter applies the same
+    fixed recording/display trust and quiet veto as observe(), once, after the raw
+    admission floor. Own inferred guesses cannot bootstrap independent references.
+    ``values`` is a complete HISTORY_KEYS vector; missing gates are None.
+    """
+    from ..history.label_lookup import _history_label_reader
+    from ..history.spans import Span
+
+    # Live room evidence is Empty only (``_room_quiet``), which changes only at room label
+    # edges; attributed Present enters through ``rebuild_human``, never per poll.
+    edges = sorted({*_native_edges([_history_label_reader(device)]), *_room_edges(runtime)})
+    fold = None  # Made on the first evidence: no evidence leaves the profile untouched.
+    for low, high in _native_pieces(Span(start, end, tuple(values), "event"), edges):
+        found = _native_piece(runtime, device, low, values, label, confidence, external)
+        if found is not None:
+            fold = fold or references.SpanFold(profile(device))
+            fold.add(low, high, _native_values(values), *found)
+    if fold is not None:
+        fold.close()
+
+
+def _room_edges(runtime):
+    for labels in runtime.data.get("room_labels", {}).values():
+        for label in labels:
+            yield from (label["start"], label["end"])
+
+
+def _native_piece(runtime, device, low, values, label, confidence, external):
+    """``(state, source, confidence)`` a live piece starting at ``low`` adds, or None."""
+    manual = _human_state(runtime, device, low)
+    if manual == "unknown":
+        return None
+    if manual in references.STATES:
+        return manual, "human", 1.0
+    found = _native_confidence(device, values, label, confidence, external)
+    return None if found is None else (label, "entity" if external else "radar", found)
+
+
+def _native_confidence(device, values, label, confidence, external):
+    from math import isfinite
+
+    from ..history import guesses
+
+    if label is None or not isfinite(confidence) or not MIN_AUTO_CONFIDENCE <= confidence <= 1:
+        return None
+    if not external and not profile(device)["periods"]:
+        return None
+    row = tuple(value if value is not None else 255 for value in values)
+    basis = guesses.EXTERNAL if external else guesses.REFERENCE
+    return guesses.counted((label, confidence * 100, basis), row, device.get("histograms"))

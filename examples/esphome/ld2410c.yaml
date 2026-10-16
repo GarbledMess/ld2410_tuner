@@ -12,6 +12,8 @@ substitutions:
   ld2410_presence_off_delay: 1s
   ld2410_sensor_throttle: 1s
   ld2410_gate_throttle: 2s
+  # Initial Gate Rounding value; restored HA setting takes precedence after setup.
+  ld2410_gate_rounding: "10"
 
 # A host uart list replaces these single-bus defaults; set all bus options there.
 uart:
@@ -103,12 +105,24 @@ sensor:
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
       still_energy:
         id: ${ld2410_id}_g0_still_energy
         name: G0 Still Energy
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
     g1:
       move_energy:
         id: ${ld2410_id}_g1_move_energy
@@ -116,12 +130,24 @@ sensor:
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
       still_energy:
         id: ${ld2410_id}_g1_still_energy
         name: G1 Still Energy
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
     g2:
       move_energy:
         id: ${ld2410_id}_g2_move_energy
@@ -129,12 +155,24 @@ sensor:
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
       still_energy:
         id: ${ld2410_id}_g2_still_energy
         name: G2 Still Energy
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
     g3:
       move_energy:
         id: ${ld2410_id}_g3_move_energy
@@ -142,12 +180,24 @@ sensor:
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
       still_energy:
         id: ${ld2410_id}_g3_still_energy
         name: G3 Still Energy
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
     g4:
       move_energy:
         id: ${ld2410_id}_g4_move_energy
@@ -155,12 +205,24 @@ sensor:
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
       still_energy:
         id: ${ld2410_id}_g4_still_energy
         name: G4 Still Energy
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
     g5:
       move_energy:
         id: ${ld2410_id}_g5_move_energy
@@ -168,12 +230,24 @@ sensor:
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
       still_energy:
         id: ${ld2410_id}_g5_still_energy
         name: G5 Still Energy
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
     g6:
       move_energy:
         id: ${ld2410_id}_g6_move_energy
@@ -181,12 +255,24 @@ sensor:
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
       still_energy:
         id: ${ld2410_id}_g6_still_energy
         name: G6 Still Energy
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
     g7:
       move_energy:
         id: ${ld2410_id}_g7_move_energy
@@ -194,12 +280,24 @@ sensor:
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
       still_energy:
         id: ${ld2410_id}_g7_still_energy
         name: G7 Still Energy
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
     g8:
       move_energy:
         id: ${ld2410_id}_g8_move_energy
@@ -207,12 +305,24 @@ sensor:
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
       still_energy:
         id: ${ld2410_id}_g8_still_energy
         name: G8 Still Energy
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
+          - lambda: |-
+              if (!std::isfinite(x)) return x;
+              const float increment = id(${ld2410_id}_gate_rounding).has_state()
+                  ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+          - delta: 1
 
 number:
   - platform: ld2410
@@ -231,85 +341,536 @@ number:
       device_id: ${ld2410_device_id}
     g0:
       move_threshold:
-        id: ${ld2410_id}_g0_move
-        name: G0 Move Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g0_move_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g0_move).publish_state(x);
       still_threshold:
-        id: ${ld2410_id}_g0_still
-        name: G0 Still Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g0_still_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g0_still).publish_state(x);
     g1:
       move_threshold:
-        id: ${ld2410_id}_g1_move
-        name: G1 Move Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g1_move_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g1_move).publish_state(x);
       still_threshold:
-        id: ${ld2410_id}_g1_still
-        name: G1 Still Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g1_still_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g1_still).publish_state(x);
     g2:
       move_threshold:
-        id: ${ld2410_id}_g2_move
-        name: G2 Move Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g2_move_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g2_move).publish_state(x);
       still_threshold:
-        id: ${ld2410_id}_g2_still
-        name: G2 Still Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g2_still_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g2_still).publish_state(x);
     g3:
       move_threshold:
-        id: ${ld2410_id}_g3_move
-        name: G3 Move Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g3_move_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g3_move).publish_state(x);
       still_threshold:
-        id: ${ld2410_id}_g3_still
-        name: G3 Still Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g3_still_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g3_still).publish_state(x);
     g4:
       move_threshold:
-        id: ${ld2410_id}_g4_move
-        name: G4 Move Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g4_move_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g4_move).publish_state(x);
       still_threshold:
-        id: ${ld2410_id}_g4_still
-        name: G4 Still Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g4_still_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g4_still).publish_state(x);
     g5:
       move_threshold:
-        id: ${ld2410_id}_g5_move
-        name: G5 Move Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g5_move_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g5_move).publish_state(x);
       still_threshold:
-        id: ${ld2410_id}_g5_still
-        name: G5 Still Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g5_still_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g5_still).publish_state(x);
     g6:
       move_threshold:
-        id: ${ld2410_id}_g6_move
-        name: G6 Move Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g6_move_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g6_move).publish_state(x);
       still_threshold:
-        id: ${ld2410_id}_g6_still
-        name: G6 Still Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g6_still_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g6_still).publish_state(x);
     g7:
       move_threshold:
-        id: ${ld2410_id}_g7_move
-        name: G7 Move Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g7_move_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g7_move).publish_state(x);
       still_threshold:
-        id: ${ld2410_id}_g7_still
-        name: G7 Still Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g7_still_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g7_still).publish_state(x);
     g8:
       move_threshold:
-        id: ${ld2410_id}_g8_move
-        name: G8 Move Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g8_move_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g8_move).publish_state(x);
       still_threshold:
-        id: ${ld2410_id}_g8_still
-        name: G8 Still Threshold
-        device_id: ${ld2410_device_id}
+        id: ${ld2410_id}_g8_still_raw
+        internal: true
+        on_value:
+          - lambda: id(${ld2410_id}_g8_still).publish_state(x);
+
+  # Public controls round writes; internal driver numbers preserve actual readback.
+  - platform: template
+    id: ${ld2410_id}_g0_move
+    name: G0 Move Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g0_move_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g0_move_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g0_move).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g0_move).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g0_move).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g0_still
+    name: G0 Still Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g0_still_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g0_still_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g0_still).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g0_still).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g0_still).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g1_move
+    name: G1 Move Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g1_move_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g1_move_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g1_move).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g1_move).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g1_move).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g1_still
+    name: G1 Still Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g1_still_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g1_still_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g1_still).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g1_still).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g1_still).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g2_move
+    name: G2 Move Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g2_move_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g2_move_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g2_move).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g2_move).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g2_move).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g2_still
+    name: G2 Still Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g2_still_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g2_still_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g2_still).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g2_still).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g2_still).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g3_move
+    name: G3 Move Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g3_move_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g3_move_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g3_move).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g3_move).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g3_move).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g3_still
+    name: G3 Still Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g3_still_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g3_still_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g3_still).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g3_still).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g3_still).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g4_move
+    name: G4 Move Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g4_move_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g4_move_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g4_move).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g4_move).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g4_move).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g4_still
+    name: G4 Still Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g4_still_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g4_still_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g4_still).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g4_still).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g4_still).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g5_move
+    name: G5 Move Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g5_move_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g5_move_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g5_move).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g5_move).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g5_move).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g5_still
+    name: G5 Still Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g5_still_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g5_still_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g5_still).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g5_still).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g5_still).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g6_move
+    name: G6 Move Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g6_move_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g6_move_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g6_move).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g6_move).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g6_move).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g6_still
+    name: G6 Still Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g6_still_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g6_still_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g6_still).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g6_still).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g6_still).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g7_move
+    name: G7 Move Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g7_move_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g7_move_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g7_move).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g7_move).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g7_move).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g7_still
+    name: G7 Still Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g7_still_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g7_still_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g7_still).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g7_still).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g7_still).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g8_move
+    name: G8 Move Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g8_move_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g8_move_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g8_move).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g8_move).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g8_move).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  - platform: template
+    id: ${ld2410_id}_g8_still
+    name: G8 Still Threshold
+    device_id: ${ld2410_device_id}
+    min_value: 0
+    max_value: 100
+    step: ${ld2410_gate_rounding}
+    update_interval: never
+    lambda: return id(${ld2410_id}_g8_still_raw).state;
+    set_action:
+      - number.set:
+          id: ${ld2410_id}_g8_still_raw
+          value: !lambda |-
+            const float minimum = id(${ld2410_id}_g8_still).traits.get_min_value();
+            const float maximum = id(${ld2410_id}_g8_still).traits.get_max_value();
+            const float increment = id(${ld2410_id}_g8_still).traits.get_step();
+            const float last = minimum + floorf((maximum - minimum) / increment) * increment;
+            const float rounded = minimum + roundf((x - minimum) / increment) * increment;
+            return fminf(last, fmaxf(minimum, rounded));
+
+  # Saved runtime control. Changing it refreshes HA metadata, without radar writes.
+  - platform: template
+    id: ${ld2410_id}_gate_rounding
+    name: Gate Rounding
+    device_id: ${ld2410_device_id}
+    entity_category: config
+    min_value: 1
+    max_value: 100
+    step: 1
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: ${ld2410_gate_rounding}
+    on_value:
+      - lambda: |-
+          // Normalize fractional API writes to the same integer shown in HA.
+          const float increment = roundf(x);
+          if (increment != x) {
+            id(${ld2410_id}_gate_rounding).publish_state(increment);
+            return;
+          }
+          number::Number *gates[] = {
+            id(${ld2410_id}_g0_move),
+            id(${ld2410_id}_g0_still),
+            id(${ld2410_id}_g1_move),
+            id(${ld2410_id}_g1_still),
+            id(${ld2410_id}_g2_move),
+            id(${ld2410_id}_g2_still),
+            id(${ld2410_id}_g3_move),
+            id(${ld2410_id}_g3_still),
+            id(${ld2410_id}_g4_move),
+            id(${ld2410_id}_g4_still),
+            id(${ld2410_id}_g5_move),
+            id(${ld2410_id}_g5_still),
+            id(${ld2410_id}_g6_move),
+            id(${ld2410_id}_g6_still),
+            id(${ld2410_id}_g7_move),
+            id(${ld2410_id}_g7_still),
+            id(${ld2410_id}_g8_move),
+            id(${ld2410_id}_g8_still)
+          };
+          // Capture caller overrides once, before changing any runtime traits.
+          static const float configured_steps[] = {
+            id(${ld2410_id}_g0_move).traits.get_step(),
+            id(${ld2410_id}_g0_still).traits.get_step(),
+            id(${ld2410_id}_g1_move).traits.get_step(),
+            id(${ld2410_id}_g1_still).traits.get_step(),
+            id(${ld2410_id}_g2_move).traits.get_step(),
+            id(${ld2410_id}_g2_still).traits.get_step(),
+            id(${ld2410_id}_g3_move).traits.get_step(),
+            id(${ld2410_id}_g3_still).traits.get_step(),
+            id(${ld2410_id}_g4_move).traits.get_step(),
+            id(${ld2410_id}_g4_still).traits.get_step(),
+            id(${ld2410_id}_g5_move).traits.get_step(),
+            id(${ld2410_id}_g5_still).traits.get_step(),
+            id(${ld2410_id}_g6_move).traits.get_step(),
+            id(${ld2410_id}_g6_still).traits.get_step(),
+            id(${ld2410_id}_g7_move).traits.get_step(),
+            id(${ld2410_id}_g7_still).traits.get_step(),
+            id(${ld2410_id}_g8_move).traits.get_step(),
+            id(${ld2410_id}_g8_still).traits.get_step()
+          };
+          for (size_t i = 0; i < 18; i++) {
+            const float step = configured_steps[i] == ${ld2410_gate_rounding}
+                ? increment : configured_steps[i];
+            gates[i]->traits.set_step(step);
+          }
+          static float previous = NAN;
+          const bool changed = std::isfinite(previous) && previous != increment;
+          previous = increment;
+          if (changed) id(${ld2410_id}_refresh_rounding_metadata).execute();
 
 select:
   - platform: ld2410
@@ -341,7 +902,7 @@ text_sensor:
     name: LD2410 Recovery Status
     device_id: ${ld2410_device_id}
     entity_category: diagnostic
-    update_interval: 1s
+    update_interval: never
     lambda: |-
       if (id(${ld2410_id}_configuration_ready).state) return {"Settings available"};
       if (id(${ld2410_id}_recovery_paused)) return {"Paused after failed recovery; use Retry Radar Recovery"};
@@ -481,6 +1042,48 @@ script:
             - logger.log:
                 level: WARN
                 format: "LD2410 recovery failed; automatic commands paused until settings return or Retry Radar Recovery is pressed"
+
+  # HA retrieves min/max/step when connecting; reconnect after a runtime change.
+  - id: ${ld2410_id}_refresh_rounding_metadata
+    mode: restart
+    then:
+      - delay: 500ms
+      # Allow the throttle to expire before replaying unchanged raw readings.
+      - delay: ${ld2410_gate_throttle}
+      - lambda: |-
+          sensor::Sensor *gates[] = {
+            id(${ld2410_id}_g0_move_energy),
+            id(${ld2410_id}_g0_still_energy),
+            id(${ld2410_id}_g1_move_energy),
+            id(${ld2410_id}_g1_still_energy),
+            id(${ld2410_id}_g2_move_energy),
+            id(${ld2410_id}_g2_still_energy),
+            id(${ld2410_id}_g3_move_energy),
+            id(${ld2410_id}_g3_still_energy),
+            id(${ld2410_id}_g4_move_energy),
+            id(${ld2410_id}_g4_still_energy),
+            id(${ld2410_id}_g5_move_energy),
+            id(${ld2410_id}_g5_still_energy),
+            id(${ld2410_id}_g6_move_energy),
+            id(${ld2410_id}_g6_still_energy),
+            id(${ld2410_id}_g7_move_energy),
+            id(${ld2410_id}_g7_still_energy),
+            id(${ld2410_id}_g8_move_energy),
+            id(${ld2410_id}_g8_still_energy)
+          };
+          for (auto *gate : gates) {
+            if (gate->has_state()) gate->publish_state(gate->raw_state);
+          }
+      - delay: 100ms
+      - lambda: |-
+          #ifdef USE_API
+          if (api::global_api_server != nullptr) {
+            for (const auto &client : api::global_api_server->active_clients()) {
+              api::DisconnectRequest request;
+              if (!client->send_message(request)) client->on_fatal_error();
+            }
+          }
+          #endif
 
 esphome:
   on_boot:

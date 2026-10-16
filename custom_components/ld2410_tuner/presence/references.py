@@ -5,7 +5,9 @@ import json
 import zlib
 from collections import Counter
 from functools import lru_cache
+from math import ceil, floor, isfinite
 
+from ..calibration.constants import SAMPLE_SECONDS
 from ..const import HISTORY_KEYS
 from .inference import MIN_REFERENCE
 
@@ -61,14 +63,29 @@ class Fold:
         current = self._period(state, source, confidence, timestamp)
         if current is None:
             return
-        if current is not self.period:
-            self.close()
-            self.period = current
-            self.histograms = {key: dict(bins) for key, bins in decode(current["data"]).items()}
+        self._adopt(current)
         _add_values(self.histograms, values)
         current["end"] = timestamp
         current["count"] += 1
         current["confidence"] += (confidence - current["confidence"]) / current["count"]
+
+    def _adopt(self, current):
+        if current is not self.period:
+            self.close()
+            self.period = current
+            self.histograms = {key: dict(bins) for key, bins in decode(current["data"]).items()}
+
+    @staticmethod
+    def _confidence(current, confidence, count):
+        for _ in range(count):
+            # Once the mean exactly equals this batch's value, every remaining
+            # recurrence adds zero. Skip those steps without changing float bits.
+            if current["confidence"] == confidence:
+                current["count"] += count
+                return
+            current["count"] += 1
+            current["confidence"] += (confidence - current["confidence"]) / current["count"]
+            count -= 1
 
     def close(self):
         if self.period is not None:
@@ -292,4 +309,147 @@ def summary(profile, now):
         "last_independent_label": latest,
         "legacy_age_unknown": any(p.get("imported_legacy") for p in periods),
         "reference_strength": freshness(now - latest) if latest is not None else 0,
+    }
+
+
+class SpanFold:
+    """Native duration/6 evidence, with exact fixed-clock periods and source boundaries.
+
+    Input spans must arrive in chronological order. Their boundaries are physical
+    coverage, not synthetic samples. No value is imputed across missing readings.
+    Keeping a fold open decodes/encodes each surviving period only once.
+    """
+
+    def __init__(self, profile):
+        self.profile, self.period, self.histograms = profile, None, {}
+
+    def add(self, start, end, values, state, source, confidence):
+        if not isfinite(start) or not isfinite(end) or end < start:
+            raise ValueError("Reference span endpoints must be finite and ordered")
+        values = _span_bins(values)
+        if not _span_admitted(values, state, source, confidence):
+            return
+        while start < end:
+            high = min(end, (floor(start / PERIOD_SECONDS) + 1) * PERIOD_SECONDS)
+            self._add(start, high, values, state, source, confidence)
+            start = high
+
+    def add_histograms(self, start, end, histograms, state, source, confidence):
+        """Fold one observed, fixed-clock piece using per-gate duration bins."""
+        if not isfinite(start) or not isfinite(end) or end < start:
+            raise ValueError("Reference span endpoints must be finite and ordered")
+        values = _histogram_bins(histograms)
+        if end == start or not _span_admitted(values, state, source, confidence):
+            return
+        if end > (floor(start / PERIOD_SECONDS) + 1) * PERIOD_SECONDS:
+            raise ValueError("Reference histogram crosses a fixed-clock period")
+        if not self._open(start, end, state, source, confidence):
+            return
+        for key, additions in values.items():
+            bins = self.histograms.setdefault(key, {})
+            for energy, seconds in additions.items():
+                bins[energy] = bins.get(energy, 0) + seconds
+
+    def _add(self, start, end, values, state, source, confidence):
+        if self._open(start, end, state, source, confidence):
+            for key, energy in values.items():
+                bins = self.histograms.setdefault(key, {})
+                bins[energy] = bins.get(energy, 0) + (end - start)
+
+    def _open(self, start, end, state, source, confidence):
+        previous = next(
+            (
+                p
+                for p in reversed(self.profile["periods"])
+                if p.get("kind") == "duration" and p["source"] == source
+            ),
+            None,
+        )
+        if previous is not None and start < previous["end"]:
+            return
+        if not _span_continues(previous, start, state):
+            previous = self._new(start, state, source)
+        if previous is not self.period:
+            self.close()
+            self.period = previous
+            self.histograms = {  # Stored in six-second units; accumulated in seconds.
+                key: {energy: units * SAMPLE_SECONDS for energy, units in bins.items()}
+                for key, bins in decode(previous["data"]).items()
+            }
+        seconds = end - start
+        old_seconds = previous["observed_seconds"]
+        previous["observed_seconds"] = end - previous["start"]
+        previous["count"] = previous["observed_seconds"] / SAMPLE_SECONDS
+        previous["confidence"] = _span_mean(
+            previous["confidence"], confidence, old_seconds, seconds
+        )
+        previous["end"] = end
+        return True
+
+    def _new(self, start, state, source):
+        period = {
+            "source": source,
+            "state": state,
+            "start": start,
+            "end": start,
+            "confidence": 0.0,
+            "count": 0.0,
+            "data": encode({}),
+            "kind": "duration",
+            "observed_seconds": 0.0,
+        }
+        self.profile["periods"].append(period)
+        same = [p for p in self.profile["periods"] if p["source"] == source and p["state"] == state]
+        for old in same[:-MAX_PERIODS]:
+            self.profile["periods"].remove(old)
+        return period
+
+    def close(self):
+        if self.period is not None:
+            self.period["data"] = encode(
+                {
+                    key: {energy: seconds / SAMPLE_SECONDS for energy, seconds in bins.items()}
+                    for key, bins in self.histograms.items()
+                }
+            )
+
+
+def _span_bins(values):
+    return {
+        key: str(ceil(value))
+        for key, value in values.items()
+        if key in KEYS and isinstance(value, (int, float)) and isfinite(value) and 0 <= value <= 100
+    }
+
+
+def _span_admitted(values, state, source, confidence):
+    return bool(
+        values
+        and state in STATES
+        and source in SOURCE_WEIGHT
+        and isfinite(confidence)
+        and 0 < confidence <= 1
+    )
+
+
+def _span_continues(previous, start, state):
+    return bool(
+        previous
+        and previous["state"] == state
+        and previous["end"] == start
+        and floor(previous["start"] / PERIOD_SECONDS) == floor(start / PERIOD_SECONDS)
+    )
+
+
+def _span_mean(previous, confidence, old_seconds, seconds):
+    if not old_seconds or previous == confidence:
+        return confidence
+    return (previous * old_seconds + confidence * seconds) / (old_seconds + seconds)
+
+
+def _histogram_bins(histograms):
+    return {
+        key: {str(energy): seconds for energy, seconds in enumerate(bins) if seconds > 0}
+        for key, bins in zip(HISTORY_KEYS, histograms, strict=True)
+        if any(seconds > 0 for seconds in bins)
     }

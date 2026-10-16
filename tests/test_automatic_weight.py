@@ -21,6 +21,7 @@ import test_rooms
 import test_tuner as harness
 from tuner_under_test.calibration import comparison, service, settings
 from tuner_under_test.calibration.constants import AUTO_CLASS_CAP, METHOD
+from tuner_under_test.calibration.quality import QUALITY_VERSION
 from tuner_under_test.calibration.scoring import automatic_share, blended_cost
 from tuner_under_test.history import recording
 from tuner_under_test.rooms import application, assessment, fitting, jobs, learning
@@ -72,11 +73,17 @@ def test_configure_rejects_values_outside_zero_to_one(value):
     runtime._schedule_save.assert_not_called()
 
 
-def test_signature_is_empty_at_the_default_and_names_any_other_value():
-    assert settings.signature({}) == {}
-    assert settings.signature({"learning_schedule": {"automatic_weight": DEFAULT}}) == {}
+def test_signature_names_default_and_nondefault_policy_explicitly():
+    expected = {
+        "automatic_weight": DEFAULT,
+        "quality_version": QUALITY_VERSION,
+        "learner_method": METHOD,
+    }
+    assert settings.signature({}) == expected
+    assert settings.signature({"learning_schedule": {"automatic_weight": DEFAULT}}) == expected
     assert settings.signature({"learning_schedule": {"automatic_weight": OTHER}}) == {
-        "automatic_weight": OTHER
+        **expected,
+        "automatic_weight": OTHER,
     }
 
 
@@ -129,13 +136,13 @@ def test_blended_cost_adds_the_share_weighted_automatic_time_cost():
 
 
 def test_default_weight_is_pinned_with_the_learning_and_scoring_versions():
-    # A different default changes learned and saved results: change METHOD and both
-    # SCORER_VERSIONs together with DEFAULT_AUTOMATIC_WEIGHT, then update this pin.
+    # Evidence semantics change learned and saved results even when the default stays zero.
+    # Keep METHOD and both SCORER_VERSIONs pinned after the evaluation decision.
     assert (DEFAULT, METHOD, comparison.SCORER_VERSION, assessment.SCORER_VERSION) == (
         0.0,
-        "human_priority_v10",
-        1,
-        1,
+        "human_priority_v11",
+        2,
+        2,
     )
 
 
@@ -146,10 +153,12 @@ def frozen(name):
     return json.loads((FROZEN / f"{name}.json").read_text(encoding="utf-8"))
 
 
-def test_zero_weight_reproduces_the_pre_change_device_golden():
+def test_zero_weight_reproduces_the_native_device_golden():
     result = characterisation.normalise(characterisation.device_fit(automatic_weight=0.0))
     assert result["automatic_evidence"]["base_weight"] == 0.0
-    assert without_share_fields(result) == without_share_fields(frozen("device_fit"))
+    assert without_share_fields(result) == without_share_fields(
+        json.loads((characterisation.FIXTURES / "device_fit.json").read_text())
+    )
 
 
 def conflict(slow, weight):
@@ -162,14 +171,17 @@ def conflict(slow, weight):
 
 def test_zero_weight_keeps_automatic_evidence_a_tie_break_only():
     # Human evidence decides (thresholds 5-24 all detect every row); the automatic rows
-    # cannot separate those, so the frozen pre-P2b choice stands exactly.
+    # cannot separate those, so the reviewed native choice stays fixed.
     expected = parity()["device"]["conflict_4"]["result"]["proposals"]["g0_move"]["threshold"]
     assert conflict(4, 0.0) == expected == 17
 
 
 def test_full_weight_automatic_evidence_outweighs_a_small_human_cost():
-    # Share 0.25 x 0.9 = 0.225: automatic cost 22.5 beats human cost ~20 for 4 slow rows.
-    assert conflict(4, 1.0) >= 28
+    # One independent automatic episode at 0.9, corrected by the quality model's conservative
+    # prior (0.75) to 0.675, beside one human episode: share 0.25 x 0.675 / 1.675 ~ 0.10, so
+    # automatic cost ~10 beats the human cost of ignoring 2 slow rows (~10) but not 3 (~15).
+    assert conflict(2, 1.0) >= 28
+    assert conflict(3, 1.0) < 25
 
 
 def test_partial_weight_counts_proportionally():
@@ -208,31 +220,28 @@ def rounded(value):
 
 
 @pytest.mark.parametrize("name", sorted(scenarios.DEVICE))
-def test_zero_weight_device_fit_with_automatic_evidence_matches_pre_change(name):
+def test_zero_weight_device_fit_with_automatic_evidence_matches_native_baseline(name):
     frozen_case = parity()["device"][name]
     rows, keys, guesses = scenarios.DEVICE[name]()
     result = harness.fit(rows, keys, automatic=guesses, automatic_weight=0.0)
-    assert without_share_fields(result) == without_share_fields(frozen_case["result"])
+    # A new day-store recording must produce the same audit fingerprint and full report.
+    assert result == harness.fit(rows, keys, automatic=guesses, automatic_weight=0.0)
+    assert result == frozen_case["result"]
     thresholds = {key: item["threshold"] for key, item in result["proposals"].items()}
     rank = list(scenarios.device_rank(rows, keys, guesses, thresholds, 0.0))
-    # New primary first; the rest is the pre-change rank, exactly.
-    assert rank[0] == frozen_case["rank"][0]
-    assert rank[1:] == frozen_case["rank"]
+    # Native rank is frozen directly, including every tie-break key.
+    assert rank == frozen_case["rank"]
 
 
 @pytest.mark.parametrize("name", ["conflict_2", "conflict_6"])
-def test_zero_weight_room_fit_with_automatic_evidence_matches_pre_change(name):
+def test_zero_weight_room_fit_with_automatic_evidence_matches_native_baseline(name):
     frozen_case = parity()["room"][name]
     slow = int(name.split("_")[1])
     result = fitting.fit(scenarios.room_conflict(slow), 0, 1200, automatic_weight=0.0)
     assert rounded(json.loads(json.dumps(result))) == rounded(frozen_case["result"])
     objective = Objective(scenarios.room_conflict(slow), 0, 1200, automatic_weight=0.0)
     rank = list(objective.rank(result["thresholds"]))
-    # Blend, then human cost (the new second key), then the automatic-sourced cost (0: every
-    # class has human mass), then the pre-change rank's tail.
-    assert rank[:2] == frozen_case["rank"][:1] * 2
-    assert rank[2] == 0
-    assert rank[3:] == frozen_case["rank"][1:]
+    assert rank == frozen_case["rank"]
 
 
 def test_automatic_only_fit_is_independent_of_the_weight():
@@ -245,10 +254,9 @@ def test_automatic_only_fit_is_independent_of_the_weight():
     assert fits[0]["training"] == fits[1]["training"]
 
 
-def test_automatic_cost_alone_does_not_start_the_costly_refinement():
-    # Human presence only (human cost 0) with weighted automatic cost: the search keeps the
-    # coordinate result from the preferred seed; alternate seeds and pair repair run only
-    # when human evidence has a cost (fixed-seed characterisation of that rule).
+def test_automatic_cost_alone_never_sacrifices_human_presence():
+    # Human presence only (human cost 0) with weighted automatic cost: whatever the search
+    # settles on, it misses none of the human-labelled presence.
     rng = random.Random(27)
     keys = ["g0_move", "g1_still"]
 
@@ -263,10 +271,6 @@ def test_automatic_cost_alone_does_not_start_the_costly_refinement():
     ]
     result = harness.fit(present, keys, automatic=guesses, automatic_weight=1.0)
     assert result["training"]["duration"]["missed_seconds"] == 0
-    assert {key: item["threshold"] for key, item in result["proposals"].items()} == {
-        "g0_move": 21,
-        "g1_still": 1,
-    }
 
 
 def test_reported_share_follows_the_setting_and_confidence():
@@ -276,9 +280,11 @@ def test_reported_share_follows_the_setting_and_confidence():
     evidence = result["automatic_evidence"]
     assert evidence["base_weight"] == 0.4
     assert "effective_weight" not in evidence
-    # 100 guesses x 0.6 against 100 human rows: ratio 0.6; no empty guesses.
+    # One automatic episode at 0.6, corrected by the quality prior (0.75) to mass 0.45, beside
+    # one human episode: m / (h + m) of the capped weight; no empty guesses.
+    mass = 0.6 * 0.75
     assert evidence["share"] == {
-        "present": pytest.approx(0.4 * AUTO_CLASS_CAP * 0.6),
+        "present": pytest.approx(0.4 * AUTO_CLASS_CAP * mass / (1 + mass)),
         "not_present": 0.0,
     }
 
@@ -365,9 +371,9 @@ def test_room_fit_set_uses_the_same_weight():
     )
 
 
-def test_zero_weight_reproduces_the_pre_change_joint_goldens():
+def test_zero_weight_reproduces_the_native_joint_goldens():
     result = characterisation.normalise(characterisation.joint_fit_examples(automatic_weight=0.0))
-    assert result == frozen("joint_fit_examples")
+    assert result == json.loads((characterisation.FIXTURES / "joint_fit_examples.json").read_text())
 
 
 # Signatures, jobs and staleness
@@ -392,11 +398,13 @@ class SetSignatureTests(unittest.IsolatedAsyncioTestCase):
         assert json.dumps(self.signature(group_ids), sort_keys=True) == json.dumps(
             before, sort_keys=True
         )
-        assert "automatic_weight" not in before
+        assert before["automatic_weight"] == DEFAULT
+        assert before["quality_version"] == QUALITY_VERSION
+        assert before["learner_method"] == METHOD
         self.runtime.data["learning_schedule"]["automatic_weight"] = OTHER
         changed = self.signature(group_ids)
         assert changed.pop("automatic_weight") == OTHER
-        assert changed == before
+        assert changed == {key: value for key, value in before.items() if key != "automatic_weight"}
 
     def test_one_group_signature_is_unchanged_at_the_default_only(self):
         self.radars()
@@ -442,20 +450,23 @@ class DeviceLearnTests(unittest.IsolatedAsyncioTestCase):
     def labelled(self):
         self.configuration()
         row = {40: bytes([40] + [255] * 17 + [0, 0]), 5: bytes([5] + [255] * 17 + [0, 0])}
-        start = self.now - 400
-        self.runtime._history_runtime["a"] = {
-            "samples": [(start + i, row[40 if i < 100 else 5]) for i in range(200)]
-        }
+        # 100 present and 100 empty samples, each six seconds of recording.
+        start = self.now - 1300
+        harness.record_rows(
+            self.runtime, "a", [(start + i * 6, row[40 if i < 100 else 5]) for i in range(200)]
+        )
         self.device["history_labels"] = [
-            {"start": start, "end": start + 100, "state": "present"},
-            {"start": start + 100, "end": start + 200, "state": "not_present"},
+            {"start": start, "end": start + 600, "state": "present"},
+            {"start": start + 600, "end": start + 1200, "state": "not_present"},
         ]
         return self.runtime._threshold_configuration("a")
 
-    def test_default_weight_adds_nothing_to_a_device_result(self):
+    def test_default_device_result_records_the_complete_policy_signature(self):
         entities, current = self.labelled()
         learned = self.runtime._fit_history("a", entities, current)
-        assert "automatic_weight" not in learned
+        assert learned["automatic_weight"] == DEFAULT
+        assert learned["quality_version"] == QUALITY_VERSION
+        assert learned["learner_method"] == METHOD
         assert learned["automatic_evidence"]["base_weight"] == DEFAULT
 
     def test_device_result_records_a_non_default_weight_through_the_view(self):

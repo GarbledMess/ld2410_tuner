@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -66,29 +67,30 @@ def _recent(runtime, key, since):
     mark = _history_mark(runtime, devices, key)
     known = kept.get(key) if kept is not None else None
     if known is None or known["mark"] != mark:
-        known = {"mark": mark, "newest": _newest(runtime, devices[key], since, known)}
-        known["since"], known["runs"] = None, guesses.EMPTY
+        known = {"mark": mark, "since": None, "runs": guesses.EMPTY}
         if kept is not None:
             kept[key] = known
-    if known["since"] is None or known["since"] > since:
+    # Recorded history observed up to now moves without a new record (open coverage).
+    newest = recording.newest(runtime, key, since)
+    if known["since"] is None or known["since"] > since or _went_back(known, newest):
         known["since"], known["runs"] = since, guesses.evidence(runtime, key, since)
-    return known["newest"], known["runs"]
+        known["read"] = newest
+    if newest is None:
+        return None, known["runs"]
+    return newest, _continued(known, newest)
 
 
-def _newest(runtime, device, since, known):
-    """The time of ``device``'s newest sample since ``since``: after a first full read, only the
-    samples from the one found last on (``known``)."""
+def _went_back(known, newest):
+    return newest is not None and known.get("read") is not None and newest < known["read"]
 
-    def latest(start):
-        return max(
-            (ts for ts, _row in runtime._iter_history_samples(device, since=start)), default=None
-        )
 
-    seen = known["newest"] if known else None
-    found = latest(since if seen is None else max(since, seen))
-    if seen is not None and (found is None or found < seen):  # Samples went: read them all.
-        found = latest(since)
-    return found
+def _continued(known, newest):
+    """The kept runs as of ``newest``: with no new record since they were read, the run that
+    was open then is still open, so it reaches ``newest``."""
+    runs, read = known["runs"].runs, known.get("read")
+    if read is None or newest == read or not runs or runs[-1][1] != read:
+        return known["runs"]
+    return guesses.Guesses([*runs[:-1], (runs[-1][0], newest, *runs[-1][2:])])
 
 
 def current_estimate(runtime, device_ids) -> dict[str, Any] | None:
@@ -137,10 +139,8 @@ def _anchor(newest, cells):
 
 
 def _stretch(read, edges, anchor):
-    """Walk back from the last estimated sample over the segments between members' cell
-    edges while one confident state holds. ``start`` is the first agreeing sample's cell
-    start; ``end`` covers the last estimated sample's own cell (its recorded cell is clipped
-    at the sample), so the label never reaches time the estimate did not cover."""
+    """Walk back over physical cell edges while one confident state holds. The estimate
+    ends at the exact observed anchor, without extending beyond recorded coverage."""
     state, start = None, None
     for before, after in zip(reversed(edges[:-1]), reversed(edges[1:]), strict=True):
         # A recording gap has no cell between its samples, so it reads as None.
@@ -150,34 +150,34 @@ def _stretch(read, edges, anchor):
         state, start = state or label, before
     if state is None:
         return None
-    end = anchor + SAMPLE_SECONDS / 2
-    return {"state": state[0], "confidence": state[2], "start": start, "end": end}
+    return {"state": state[0], "confidence": state[2], "start": start, "end": anchor}
 
 
 def _history_mark(runtime, devices, key):
     if key not in devices:
         return (key,)
-    history = devices[key].get("history", [])
-    last = (history[-1].get("start"), history[-1].get("count")) if history else ()
-    pending = recording.pending_samples(runtime, key)
-    return key, len(history), *last, len(pending)
+    # A label edit rebuilds the histograms that decide where present guesses were quiet.
+    labels = devices[key].get("label_revision", 0)
+    return key, labels, recording.history_mark(runtime, key)
 
 
 def cached_estimate(runtime, group_id, device_ids):
-    """``current_estimate`` for the snapshot, recomputed only when a member records (a new
-    pending sample or block) or the ``ESTIMATE_CACHE_SECONDS`` bucket turns (staleness)."""
+    """``current_estimate`` for the snapshot, recomputed only when a member records or its
+    labels change, or the ``ESTIMATE_CACHE_SECONDS`` bucket turns (staleness)."""
     devices = runtime.data["devices"]
     key = (
         int(time.time() // ESTIMATE_CACHE_SECONDS),
         tuple(_history_mark(runtime, devices, member) for member in device_ids),
+        # Open coverage is observed up to now: the estimate's anchor moves with it.
+        tuple(recording.newest(runtime, member, -math.inf) for member in device_ids),
     )
     entry = runtime._room_estimates.get(group_id)
     if entry is None or entry[0] != key:
         entry = (key, current_estimate(runtime, device_ids))
         runtime._room_estimates[group_id] = entry
     estimate = entry[1]
-    # A hit within the bucket still expires on time: the last estimated sample is end - 3 s.
-    if estimate and time.time() - (estimate["end"] - SAMPLE_SECONDS / 2) > FEEDBACK_WINDOW_SECONDS:
+    # A closed session expires from its exact observed end, even within a cache bucket.
+    if estimate and time.time() - estimate["end"] > FEEDBACK_WINDOW_SECONDS:
         return None
     return estimate
 

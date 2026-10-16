@@ -4,7 +4,7 @@ from copy import deepcopy
 from time import time
 from uuid import uuid4
 
-from .fitting import METHOD
+from .constants import METHOD
 
 SLOTS = ("user", "previous", "current", "automatic")
 

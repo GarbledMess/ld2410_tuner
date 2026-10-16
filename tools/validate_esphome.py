@@ -49,6 +49,7 @@ def _node(count, override=False):
             "ld2410_presence_off_delay": "10s",
             "ld2410_sensor_throttle": "3s",
             "ld2410_gate_throttle": "4s",
+            "ld2410_gate_rounding": "5",
         }
     return node
 
@@ -77,6 +78,7 @@ def _includes(count):
                 ld2410_id=f"radar_{index}",
                 ld2410_device_id=f"device_{index}",
                 ld2410_presence_on_delay=f"{index + 1}s",
+                ld2410_gate_rounding="1" if index == 1 else "20",
             )
         include = {"file": str(PACKAGE), "vars": variables}
         lines.append(f"  radar_{index}: !include {json.dumps(include)}")
@@ -97,7 +99,7 @@ def _entities(value):
 def _check(config, count, expected_names, override=False):
     assert len(config["ld2410"]) == count
     assert len(config["uart"]) == count
-    assert len(config["script"]) == count
+    assert len(config["script"]) == 2 * count
     assert len(config["globals"]) == 4 * count
     for index, radar in enumerate(config["ld2410"]):
         prefix = f"radar_{index}" if index else "ld2410"
@@ -128,6 +130,12 @@ def main():
         for count, override in ((1, False), (1, True), (2, False), (3, False), (12, False)):
             path = Path(directory) / f"radars-{count}-{override}.yaml"
             path.write_text(yaml.safe_dump(_node(count, override)) + _includes(count))
+            if override:
+                with path.open("a") as node_file:
+                    node_file.write(
+                        "number:\n  - id: !extend ld2410_g0_move\n"
+                        "    min_value: 15\n    max_value: 85\n    step: 20\n"
+                    )
             CORE.reset()
             CORE.config_path = path
             config = read_config({})
@@ -154,6 +162,7 @@ def _check_options(config, count, override):
         _check_legacy_options(config, presence, override)
     energies = {f"G{gate} {kind} Energy" for gate in range(9) for kind in ("Move", "Still")}
     assert energies <= {e["name"] for e in _entities(config["sensor"])}
+    _check_rounding(config, override)
     for index in range(1, count):
         sensor = next(
             x for x in config["binary_sensor"] if str(x.get("ld2410_id")) == f"radar_{index}_radar"
@@ -162,6 +171,41 @@ def _check_options(config, count, override):
             sensor["has_target"]["filters"][0]["delayed_on"].total_milliseconds
             == (index + 1) * 1000
         )
+
+
+def _check_rounding(config, override):
+    for index, sensor in enumerate(config["sensor"]):
+        if sensor.get("platform") != "ld2410":
+            continue
+        rounding = _expected_rounding(index, override)
+        prefix = f"radar_{index}" if index else "ld2410"
+        control = next(n for n in config["number"] if str(n["id"]) == f"{prefix}_gate_rounding")
+        assert control["initial_value"] == rounding
+        assert control["restore_value"]
+        assert tuple(control[k] for k in ("min_value", "max_value", "step")) == (1, 100, 1)
+        _check_gate_controls(config, sensor, prefix, rounding, override)
+
+
+def _expected_rounding(index, override):
+    if override:
+        return 5
+    return {0: 10, 1: 1}.get(index, 20)
+
+
+def _check_gate_controls(config, sensor, prefix, rounding, override):
+    for gate in range(9):
+        for kind in ("move", "still"):
+            filters = sensor[f"g{gate}"][f"{kind}_energy"]["filters"]
+            assert f"id({prefix}_gate_rounding).state" in str(filters[1]["lambda"])
+            assert filters[2]["delta"] == 1
+            number = next(n for n in config["number"] if str(n["id"]) == f"{prefix}_g{gate}_{kind}")
+            expected = (
+                (15, 85, 20) if override and gate == 0 and kind == "move" else (0, 100, rounding)
+            )
+            assert tuple(number[key] for key in ("min_value", "max_value", "step")) == expected
+            action = number["set_action"]["then"][0]["number.set"]
+            assert str(action["id"]) == f"{prefix}_g{gate}_{kind}_raw"
+            assert ".traits.get_step()" in str(action["value"])
 
 
 def _check_legacy_options(config, presence, override):

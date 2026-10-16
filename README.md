@@ -14,17 +14,31 @@ that folder. Existing stored training/history are preserved; earlier recommendat
 must be learned again before Apply. Local brand icons are supported by Home Assistant
 2026.3+.
 
-### Back up before upgrading (history format change)
+### Back up before upgrading to 1.24 (history moves to day files)
 
-**Upgrading from 1.22 or earlier changes the stored history, and the change cannot be
-undone by installing the older version again.** The first start after the upgrade converts
-every stored history block to the new layout (version 4, with automatic guesses kept as
-runs). The older integration does not read that layout and discards history blocks it does
-not recognise at its next startup or hourly cleanup, so **downgrading afterwards deletes
-your recorded history** (labels, settings and saved results stay, the recordings do not).
-Before upgrading, copy Home Assistant's `.storage/ld2410_tuner.data` file (or take a Home
-Assistant backup) and keep it for as long as you may want to go back. To downgrade, stop
-Home Assistant, restore that copy, then install the older version.
+**Upgrading to 1.24 moves the recorded history out of Home Assistant's JSON store, and
+the move cannot be undone by installing an older version.** The first start after the
+upgrade converts every stored history block and automatic guess run into day files in
+`<config>/.storage/ld2410_tuner/history/` (see [Recorded history storage](#recorded-history-storage)),
+then saves `.storage/ld2410_tuner.data` without them. Labels, room labels, settings,
+references and saved results stay in the JSON store unchanged.
+
+- **Downgrading afterwards loses the recordings.** An older version reads only the JSON
+  store, finds no history there and does not read the day files. Anything it records is
+  kept in the JSON store again, and upgrading once more converts that and *replaces* the
+  day files of each radar it converts, so recordings made by 1.24 before the downgrade are
+  lost for those radars.
+- **Back up first.** Before upgrading, take a Home Assistant backup (or copy
+  `.storage/ld2410_tuner.data`) and keep it for as long as you may want to go back. To
+  downgrade, stop Home Assistant, restore that copy, delete the
+  `.storage/ld2410_tuner/` folder, then install the older version.
+- The conversion runs in the background executor at startup and keeps each stored
+  reading at its own time (old recordings keep their six-second resolution; nothing is
+  invented between samples). If it is interrupted, the next start converts again from the
+  untouched JSON store. Old summaries without timestamps cannot be placed on a day and are
+  dropped; earlier learned results are then marked for relearning.
+
+This applies when upgrading from any earlier version, including 1.22.
 
 ### HACS custom repository (requires a public GitHub repository)
 
@@ -108,7 +122,7 @@ learner and the **Seen by** chips:
 
 All automatic evidence, including a radar's own guesses, the room estimate, sensor
 room labels and these attributions, trains at its confidence times the **Automatic
-evidence weight** setting (default WEIGHT_DEFAULT, up to a quarter of the human evidence at 1).
+evidence weight** setting (default 0, up to a quarter of the human evidence at 1).
 Human labels have weight 1. Automatic evidence is therefore used but stays clearly
 down-weighted, and it is not independent validation of the detector.
 
@@ -147,7 +161,7 @@ A history window limits the assessed dates, without deleting recordings.
 
 The result includes the combined score, occupied/empty time, hits, misses, false
 triggers, correct empties, and each radar's exclusive occupied-time contribution.
-All valid readings are included, without the individual learner's outlier filter.
+All valid readings are included.
 The replay follows continuous recordings across label transitions so existing
 holds can extend into an empty period. It therefore differs from per-device Learn
 and its stored scores; the per-member rows instead use identical group evidence.
@@ -436,17 +450,29 @@ presence signals overlap so that no threshold combination cleanly separates them
 the result is marked red and the conflicting periods are available for graph review.
 You can still apply those learned thresholds explicitly.
 
-The learner needs at least 50 usable timed observations of each state, combining
-human labels and confident automatic estimates. There is no minimum human percentage
-and no human-only sample quota for Apply. It retains up to 5,000 recent observations
-per class and source for fitting. Missing gate readings remain missing; usable
-observations from other gates still contribute. Gates with no observations keep
+The learner needs at least five minutes of observed time in each state (shown as 50
+six-second units), combining human labels and confident automatic estimates. There is no
+minimum human percentage and no human-only quota for Apply. Missing gate readings remain
+missing; readings from other gates still contribute. Gates with no observations keep
 their current threshold.
 
-History is sampled at a minimum five-second spacing on a two-second timer (normally
-six seconds), independently of whether values change. Existing gate histograms can
-include legacy data without timestamps; the learning result reports the timed
-human and inferred observations actually used, separately from gate histogram counts.
+**Learning evidence budget.** A radar whose retained history fits 50,000 recorded changes
+is learned from all of it. A denser history (a busy radar can record hundreds of thousands
+of changes a day) is learned from representative recorded periods instead of a random
+sample: each class's newest time, its quietest presence and loudest empty-room noise, then
+the minutes either side of label edges (newest first, while they fit) are kept whole; the
+rest of each class is sampled evenly across the whole history, and each sampled period
+stands for the time it represents, so totals and rates stay unbiased. Classes are kept apart by state and source
+(human or automatic). Presence episodes and automatic-label quality are still counted from
+the whole history. The result says when the budget was used; its time totals are then
+weighted estimates. If the configured device timing needs more context than the budget
+allows, the result is insufficient rather than silently partial.
+
+History records every gate value change at the time Home Assistant delivers it, and
+nothing between changes: a reading holds until the radar reports a different one (see
+[Recorded history storage](#recorded-history-storage)). Learning and histograms weigh
+readings by how long they held, not by how many were recorded. The learning result reports
+the human and automatic recorded time actually used, separately from gate histogram counts.
 
 The Apply button is red when combined targets fail, yellow for unknown timing, limited human
 measurements or backtest concerns, and green when measured results meet the targets.
@@ -530,32 +556,20 @@ labels and code organization; Learn/Apply remain explicit and retain their fitti
 targets. Quality is advisory for explicit Apply. No software presence entity is added. The effective global or sensor automatic Apply policy controls
 whether manual or overnight runs can apply a measured improvement.
 
-Each stored observation retains its automatic label and confidence alongside the
-gate energies. Confidence weights the observed time represented by each estimate;
-extra readings within a brief fluctuation do not multiply its influence. Automatic
-scores refine candidates after human-labelled performance and supported separation.
-Human priority is enforced by ranking, not by the relative volume of estimates.
-The sample-weight totals shown in calculation details remain legacy diagnostics,
-not the time-based objective. Scores below 55% are not used. Old history without
-confidence is readable but gains no invented estimates. Human corrections and
+Automatic guesses are stored as runs with their label and confidence beside the gate
+energies. Confidence weights the observed time each guess covers; extra readings within a
+brief fluctuation do not multiply its influence. Automatic scores refine candidates after
+human-labelled performance and supported separation. Human priority is enforced by
+ranking, not by the relative volume of estimates. Sample counts shown in calculation
+details are observed seconds divided by six. Scores below 55% are not used. Converted
+history without confidence gains no invented estimates. Human corrections and
 explicit UNKNOWN ranges override stored guesses. Feedback buttons adjust estimator
 bias; use chart/training labels to supply known occupancy examples.
 
-Before fitting, a detector identifies rare low-energy clusters separated from the
-normal presence distribution. A candidate cluster must overlap recorded noise and
-be separated by at least three times its own interquartile spread (one energy unit
-for a flat cluster). Exclusion additionally requires a brief dip of at most six
-samples, two surrounding observations on each side, continuous timestamps, and no
-independent above-noise presence support from another informative gate. It never
-removes a complete presence episode, sustained quiet presence, or empty-room spikes.
-The 1% upper bound limits exclusions; it does not trim a fixed percentage of data.
-
-The same retained observations feed fitting, sample counts, accuracy, episode/run
-checks and recommendation quality. Human and automatic outlier
-counts are shown separately. Original recordings and labels remain unchanged; raw
-measurements are available separately in the exported `raw_audit` result and do not
-participate in acceptance. The detector does not use candidate thresholds or errors
-to decide what to exclude.
+Learning uses every recorded reading in the evidence it learns from: it does not exclude
+brief dips or spikes as outliers. Empty-room spikes and quiet presence both remain evidence,
+so a brief dip during labelled presence can make a result unsafe rather than being removed.
+Original recordings and labels remain unchanged.
 
 The quality target remains **99.9% of observed occupied time**, but search uses a
 continuous, finite error cost rather than treating that target as a free allowance
@@ -578,12 +592,9 @@ Gates are combined before timeout and known on/off filters are replayed. A gap
 covered by those settings does not incur a missed-presence penalty; an on-delay
 only rejects an activation if it remains too short after radar hold.
 
-Only time within continuous recorded sessions counts; gaps and isolated readings
-do not invent minutes of evidence. Isolated human observations still take priority
-over automatic guesses, but have no measurable duration. Unknown timing uses
-midpoint estimates between snapshots and is marked unknown. These snapshots cannot
-prove sub-second pulse lengths. Existing outlier exclusions and human labels are
-unchanged; no additional observations are removed to improve a score.
+Only recorded coverage counts: gaps and ends of coverage do not invent minutes of
+evidence, and a reading holds only until the next change. Unknown device timing is marked
+unknown. Human labels are unchanged; no observations are removed to improve a score.
 
 When both human-labelled classes establish separation, the preferred threshold
 is halfway between the highest
@@ -603,14 +614,16 @@ penalty or margin preference.
 Their proportion never rejects a recommendation; human labels and explicit UNKNOWN
 ranges override stored estimates for the same period.
 
-When enough human-labelled observations exist, the latest 20% of each class is used
-for an earlier-data backtest. That evaluation excludes newer inferred observations
-to avoid leaking holdout labels through the estimator. The outlier detector is also
-trained on the earlier subset and frozen for the holdout; holdout exclusion counts
-are reported separately. The final recommendation is
-then refit using **all retained** eligible observations, including newer estimates. Its
-training results and the earlier-data backtest are reported separately. A failed
-backtest does not veto a final candidate that learned the newly observed pattern.
+When the labelled episodes allow it, learning first checks its policy chronologically: it
+cuts the history between whole episodes, near 80% of them, with both states on each side;
+learns two candidates from the earlier part (one where automatic evidence only breaks ties,
+one that also weighs quality-corrected automatic evidence); and keeps the automatic
+evidence only if, on the later part, it improves missed or false-active time without
+missing more presence, more empty time or more empty-room episodes; a tie keeps the
+tie-break policy. The final recommendation is
+then learned from **all retained** evidence with the chosen policy. The earlier-data
+check is reported with the result. Without a valid cut, the corrected policy is used and
+the result says the choice was not validated.
 
 Recommendations are red when the occupied-time target is missed, an entire
 measurable occupied session is missed, or the candidate remains active throughout
@@ -693,15 +706,14 @@ windows; zoom into a review period to inspect its short-lived readings.
 - Earlier recommendations must be learned again with the temporal model and
   human-priority fitting model (version 1.9.2). Restart Home Assistant and reload the panel after updating. Clear stops training and invalidates learned values. Expired sessions end at the
   actual deadline; cancelling an old timeout cannot remove a replacement timer.
-- Unload flushes partial history and cancels the pending save. Long gaps start a
-  new history block instead of overflowing timestamp offsets. An abrupt process
-  failure can still lose the current in-memory history block (up to 60 samples).
+- Unload writes the unwritten history changes and cancels the pending save. An abrupt
+  process failure can lose only the changes recorded since the last write; coverage
+  then ends at the last stored change.
 - Chart aggregation uses bounded buckets. Chart/history reads and calibration run
-  on detached snapshots in HA's executor; snapshot polling no longer schedules
-  unnecessary storage writes. Label lookup is indexed, decoded blocks and chart
-  responses have bounded caches, and duplicate history/learning jobs are shared.
-  Retrospective histogram rebuilding remains on the event loop and may be noticeable
-  with a large 30-day history.
+  in HA's executor; snapshot polling no longer schedules unnecessary storage writes.
+  Label lookup is indexed, decoded days and chart responses have bounded caches, and
+  duplicate history/learning jobs are shared. A label edit recounts only the time whose
+  label changed.
 - Apply requires a complete current-model recommendation and available threshold
   configuration matching the reviewed panel state for saved results. Quality failures do not block a user-requested Apply.
   Writes are serialized per device, raise thresholds
@@ -763,50 +775,57 @@ by the local package check; the license remains undecided.
 Hosted validation runs after these files are pushed. Local checks do not establish
 live Home Assistant compatibility.
 
+## Recorded history storage
+
+Recorded history lives in its own folder beside the JSON store, so Home Assistant
+backups include it:
+
+```text
+<config>/.storage/ld2410_tuner/history/<radar device id>/<YYYY-MM-DD>.log   today (UTC)
+<config>/.storage/ld2410_tuner/history/<radar device id>/<YYYY-MM-DD>.day   finished days
+```
+
+- **What is stored.** Every change of a gate energy, at the time Home Assistant delivered
+  it (millisecond resolution), and nothing else: no snapshots, no heartbeats. A reading
+  holds until the next change. Changes delivered in the same millisecond are one record.
+  The radar's automatic guess is stored in the same day as **guess runs** (one record per
+  stretch of time with the same state, source and confidence step), so one day file holds
+  all of a radar's time evidence.
+- **Coverage.** Recording starts with the radar's full current readings and lasts until
+  an explicit end: recording paused, the radar removed, storage blocked, a configuration
+  recovery or the integration stopping. An unavailable or non-numeric entity makes only
+  that gate missing (missing is never zero). After a crash, coverage ends at the last
+  stored change. The two-second poll records only values that events missed, so it never
+  duplicates them.
+- **Today's file** is append-only: changes are kept in memory and appended at the next
+  save and when the integration stops; nothing is rewritten. A partly written last record
+  is ignored.
+- **Finished days** are compacted once into a zlib-compressed columnar file (one byte per
+  gate per change; a gate that reported non-integer values that day uses a float column).
+  They change only when thinning or **Trim now** cuts time out of them.
+- **Summary files** (`.sum`) beside finished days are optional indexes that make label
+  counts and reference rebuilds fast. They hold no history of their own, are limited to
+  64 MiB, are rebuilt when missing or damaged, and are the first thing removed under the
+  size ceiling.
+
+Values are stored as received; rounding is the job of the ESPHome package (or whichever
+integration provides the entities).
+
 ## Automatic history maintenance
 
-At startup and hourly, the integration normalizes history in Home Assistant's
-executor. Valid older blocks become version 4; version-1 observations carried no
-automatic guess, and none is invented for them. Recorded energies, timestamps, missing
-values, and human-label precedence are preserved.
+At startup and hourly, the integration applies the retention policy below in Home
+Assistant's executor. Thinning removes whole **time ranges** from finished days (the cut
+time becomes an explicit gap), never single changes; today's file is never thinned. Human
+labels decide which policy applies to a stretch of time; otherwise its automatic guess run
+and confidence do. A label edit, thinning or **Trim now** recounts only the time that
+changed.
 
-Version 4 uses lossless byte-column delta encoding before zlib compression. It keeps
-every recorded timestamp, energy value and missing-value marker, and does not downsample
-older history. A history row holds energies only. The radar's automatic guess is stored
-beside the blocks as **guess runs** (`guess_runs` per device): one record per stretch of
-time with the same guess, not one per five-second sample. A run has a start, an end, a
-state (present or not present), a confidence and where the guess came from (the
-references, an external source, or unknown for migrated rows). Confidence is kept in
-steps of 5 %, and a new run starts when the state changes, the source changes, the
-recording has a gap, or a sample's confidence is 10 points or more from the run's (a
-confidence hovering on a step edge stays one run). A run's confidence is that of its first
-sample, and a run whose first sample is under the 55 % training floor is under it. On real
-recordings that is about twenty times fewer records than samples. The run that is still
-growing is kept in memory and added to what is saved, so closing a run is the only time
-stored chunks change; a flush costs no more than it did when rows held the guess. Runs
-are retained and thinned with the history rows: a run lives while a retained row lies
-inside it.
-
-Learning reads the whole retained history of automatic guesses without expanding it to a
-record per sample: a stretch of one guess is read as snippets of ten consecutive samples,
-spaced so that the history yields at most about 10,000 of them per radar (a history that
-small is read in full), each standing for the samples between it and the next, and the
-newest 5,000 of each state are kept.
-
-The guess itself is not recomputed on every two-second tick. A radar's readings are
+The radar's guess is not recomputed on every two-second tick. A radar's readings are
 classified again only when a channel has stayed 3 energy units or more from the readings
 last classified for 5 seconds, its references, calibration or external source changed, the
-filter has not settled, or a minute has passed (about half the ticks on recorded radars);
-otherwise the last classification stands (and stays
-current for the panel and the Correct/Incorrect feedback), and the temporal filter and
-confirmation continue over the elapsed time.
-
-Stores written by earlier versions (storage minor version 1, a guess in every row) are
-converted once, in Home Assistant's executor, when the integration first starts: each
-row's guess becomes runs and the rows are rewritten as version 4. The conversion works
-on a copy and Home Assistant saves only the finished result, so an interruption leaves
-the old file to convert again. Earlier integration versions cannot read the converted
-store; retain a pre-upgrade storage backup if you need to downgrade.
+filter has not settled, or a minute has passed; otherwise the last classification stands
+(and stays current for the panel and the Correct/Incorrect feedback), and the temporal
+filter and confirmation continue over the elapsed time.
 
 Recording is controlled per device with **Record data**, including on collapsed
 cards. Newly discovered devices start disabled. Existing devices keep recording
@@ -825,37 +844,32 @@ remove recordings from an old placement. Re-enabling starts with an Unknown labe
 - A **100 MiB total file ceiling**, configurable independently of retention ages.
 
 Human labels override stored automatic guesses when deciding which policy applies.
-The age policy deletes individual readings without changing those retained. Under
-size pressure, the tuner removes compressed automatic/unlabelled chunks across all
-devices, lower mean confidence first and oldest first within a confidence level.
-Mixed chunks are split so their human-labelled readings remain protected. Only
-after automatic chunks are exhausted does size trimming remove human chunks,
-oldest first. Size pressure may remove data before its normal age expiry.
+The age policy removes time ranges without changing the time retained. Labels older than
+the human retention expire with the time they cover. Under size pressure, the tuner
+removes automatic/unlabelled time across all devices, lower confidence first and oldest
+first within a confidence level; human-labelled time inside a day stays protected. Only
+after automatic time is exhausted does size trimming remove human-labelled time, oldest
+first. Size pressure may remove data before its normal age expiry.
 
 **Save settings and clean now** applies the global policy immediately. **Trim now**
 uses the saved policy and can target a smaller file size without changing the
 ongoing ceiling. Both actions ask for confirmation and report removed automatic
-and human reading counts. Removed history cannot be restored without an export or
+and human-labelled recorded time. Removed history cannot be restored without an export or
 backup. Saved recommendations and device settings are preserved; their earlier
 accuracy reports may become stale when evidence is removed.
 
 Every integration save uses the same budget check, including recovery, overnight
-jobs, shutdown and storage migration. The size includes the JSON storage envelope,
-labels, summaries, settings and saved results, not just compressed history. The
-panel reports the last saved file size; unfinished sample buffers are not yet part
-of that file. Exports, Home Assistant backups and temporary filesystem copies are
+jobs, shutdown and the conversion. The size is the history folder (day files, today's
+log and summary files) plus the JSON store with its labels, settings and saved results.
+The panel reports the size at the last save; changes not yet appended are not counted. Exports, Home Assistant backups and temporary filesystem copies are
 outside this ceiling. If protected metadata alone exceeds a requested limit, the
 change is rejected. If an existing limit becomes impossible, recording pauses and
 the panel explains how to raise the limit or clear unused device data; no oversized
 replacement is written.
 
-Startup and hourly cleanup also remove malformed blocks and wholly unusable rows;
-invalid individual gate readings become missing. Duplicate timestamps retain the
-later record. Histograms are rebuilt from retained evidence. Untimed legacy human
-summaries have no trustworthy original age: their retention clock starts on first
-processing by this version, and they expire after one configured human-retention
-period. That timestamp is not treated as an original observation time. Concurrent
-sampling or label edits defer or retry cleanup instead of overwriting new evidence.
+At startup, leftovers of an interrupted day finish are removed and earlier days' logs are
+finished. Histograms are rebuilt from retained recorded time. Concurrent recording or
+label edits defer or retry cleanup instead of overwriting new evidence.
 
 ## Automatic labels from cameras, boolean entities and Bermuda
 
@@ -918,11 +932,11 @@ incorrect recorded period Unknown to exclude it, or assign the correct status.
 The panel shows the current external label and each source's availability. The
 latest automatic reading identifies external sources; its radar-calibration
 feedback buttons are disabled because they cannot fix another integration.
-Recorded samples retain the automatic label and confidence, while the bounded
+Recorded guess runs retain the automatic label and confidence, while the bounded
 recent segment log also records external source entity IDs. There is no camera
-video access, historical import, new presence entity, or automatic Apply. The
-existing two-second sampling/six-second recording cadence applies; very short
-source pulses between samples may not be captured. Paused recording also pauses
+video access, historical import, new presence entity, or automatic Apply. Sources are
+read on the two-second poll, and the guess is recorded every five seconds; very short
+source pulses between polls may not be captured. Paused recording also pauses
 source-derived training. Remove all source rows and save to return to radar-only
 labelling.
 
@@ -970,7 +984,7 @@ Scores and their scorer version are persisted with the device. An existing score
 
 New recordings, corrected labels, retention changes and timing-policy changes do not silently alter a stored score. Its date and original timing describe its assessment. Scores calculated together use the same evidence; scores from different dates may use different evidence or timing and are **not a controlled head-to-head comparison**. Best ranks the stored assessments, including unrounded costs and duration tie-breaks. Incompatible results are excluded from Best.
 
-Calculations use up to the latest 5,000 observations per state and source, complete gate vectors and the existing outlier filter. Human evidence takes priority; confidence-weighted automatic evidence fills unsupported states and breaks ties. Automatic evidence is identified as estimated. Insufficient evidence is **unscored**, never a fake zero. **Check stored scores** reuses valid scores and retries unscored or failed assessments; it does not refresh already-scored configurations against newer recordings. Checking stored comparison scores never applies thresholds or initiates radar recovery.
+Calculations use the same recorded evidence as Learn, including its evidence budget on dense histories. Human evidence takes priority; confidence-weighted automatic evidence fills unsupported states and breaks ties. Automatic evidence is identified as estimated. Insufficient evidence is **unscored**, never a fake zero. **Check stored scores** reuses valid scores and retries unscored or failed assessments; it does not refresh already-scored configurations against newer recordings. Checking stored comparison scores never applies thresholds or initiates radar recovery.
 
 For maintainers: increment `SCORER_VERSION` in `calibration/comparison.py` whenever score calculation, evidence selection, filtering or timing-replay semantics change. A frontend-only release does not invalidate saved scores.
 
@@ -1007,6 +1021,9 @@ The profile keeps compressed gate distributions, not another copy of the raw
 recordings. It retains at most 24 periods per source and state (144 total),
 splitting continuous periods at 30 minutes. It survives recording expiry and
 integration restarts, and its bytes count towards the global storage ceiling.
+Reference timestamps remain numeric seconds. Batched rebuilding can serialize an
+integral timestamp as a JSON floating-point number (for example, `120.0` instead
+of `120`); its value and the history schema are unchanged.
 Clear data also clears the profile. Existing retained human recordings are
 imported once at startup, using their recording timestamps. Histogram-only legacy
 training is retained at reduced confidence, explicitly marked as having an unknown

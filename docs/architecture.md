@@ -28,9 +28,9 @@ custom_components/ld2410_tuner/
 | --- | --- |
 | `runtime/` | `coordinator.py` owns state/tasks; `discovery.py` follows registry changes; `websocket.py` exposes administrator commands |
 | `presence/` | `autolabelling.py` records guesses/feedback; `inference.py` implements the pure temporal estimator; `reference_training.py` builds per-radar references; `rebuilds.py` owns reference rebuild policy: events only `mark_stale` (`reference_stale_since`), and `refresh` (overnight pass, "Refresh references") rebuilds in the executor (coalesced, revision-checked) |
-| `history/` | `recording.py` owns buffers/executor snapshots; `codec.py` is the block payload codec (version 4: 2-byte offset + 18 energies, delta-coded byte columns under zlib); `guesses.py` is the only reader/writer of automatic guesses, kept as change runs (`device["guess_runs"]`: `start, end, state, level, basis`, level in steps of `GUESS_CONFIDENCE_STEP`) with `Guesses` bisect lookups ("guess at t", "runs in [a, b)"); `migration.py` converts pre-run stores; `cleanup.py` normalizes stored blocks and keeps a run while a retained row lies in it; `policy.py` owns global retention settings (`retained`: the one age filter for stored blocks and chunks); `budget.py` plans age/size pruning; `storage.py` owns guarded persistence and recording controls; `labels.py` owns human labels/timeouts |
-| `calibration/` | `service.py` owns Learn/Apply and hardware guards; `jobs.py` owns task lifetime, result saving and job reports; `results.py` owns the four saved-result slots; `fitting.py`, `search.py`, `metrics.py`, `constants.py` own the numerical learner; `duration.py` scores observed elapsed time; `influence.py` attributes errors to recorded chunks; `recovery.py` owns bounded pre-Learn recovery; `timing.py` and `timing_metrics.py` replay sampled device timing, while `timing_config.py` reads optional HA timing entities |
-| `rooms/` | `layout.py` builds the area/zone/elsewhere/area-less/unassigned tree; `room_labels.py` owns manual and sensor room labels (manual-only revision for stale edits, separate sensor revision; finalising a sensor label marks member references stale); `room_sources.py` reads camera/boolean/Bermuda sources; `truth.py` applies precedence (own human label, implied, member-derived human truth, room sensor labels, member guesses, then the noisy-OR estimate; sensor labels below `MIN_AUTO_CONFIDENCE` are ignored); `attribution.py` decides which radar saw a room's occupancy (own human label, else sustained energy above its empty baseline) and caches each radar's result by its inputs; `seen_by.py` uses that same function and cache for chips; `roles.py` computes per-radar role metrics, and `objective.py` per-radar preferences, from it too (a job computes it once per radar); `sets.py`, `objective.py`, `fitting.py`, `learning.py`, `application.py` implement linked learning sets, set-level jobs and Apply |
+| `history/` | Recorded history is owned by the day store and nothing else holds it. `daystore.py` owns the folder `<config>/.storage/ld2410_tuner/history/<radar>/<YYYY-MM-DD>.log` (live) and `.day` (finished; UTC days): `append` on the event loop touches memory only, `flush` (executor) appends logs and finishes ended days, `open` repairs an interrupted finish and ends coverage left open by a crash; `dayfile.py` is the one codec (append-only log records; zlib columnar finished day, one byte a gate per change, 255 missing, float32 for a non-integer day, plus the day's guess runs); `ingest.py` is the one writer (delivered changes at their own millisecond time, guess run changes, explicit ends of coverage); `live.py` is the poll's recording work (only values events missed); `spans.py` is the one reader (`events`, `day_spans`: physical spans, a reading holds until the next); `day_results.py` keeps what learning derives from a finished day (row counts, evidence chunks, quality histograms, guess runs) until that day file or the labels inside it change (`DayStore.identity`, `day_results.fingerprint`), so daily learning recomputes only new or relabelled days; `summaries.py` and `summary_cache.py` are label-independent duration indexes per finished day (optional `.sum` files, worker-only, 64 MiB, never own history); `guesses.py` and `trust.py` read automatic guess runs as evidence; `label_lookup.py` and `labels.py` own human labels/timeouts and `label_counts.py` the per-radar labelled time behind histograms; `convert.py` is the only reader of the old JSON formats (one-way, at startup); `cleanup.py` cuts time ranges out of finished days; `policy.py` owns retention settings; `budget.py` plans age/size cuts; `storage.py` owns guarded persistence and recording controls; `recording.py` owns runtime history operations |
+| `calibration/` | `service.py` owns Learn/Apply and hardware guards; `jobs.py` owns task lifetime, result saving and job reports; `results.py` owns the four saved-result slots; `event_fitting.py` (with `event_replay.py`, `event_timing.py`, `event_quality.py`, `event_preferences.py`), `metrics.py`, `scoring.py`, `constants.py` own the numerical learner over physical spans; `evidence_budget.py` chooses a bounded, representative set of recorded time when a history is too dense to replay in full; `duration.py` scores observed elapsed time; `influence.py` attributes errors to recorded chunks; `recovery.py` owns bounded pre-Learn recovery; `timing.py` and `timing_metrics.py` replay sampled device timing, while `timing_config.py` reads optional HA timing entities |
+| `rooms/` | `layout.py` builds the area/zone/elsewhere/area-less/unassigned tree; `room_labels.py` owns manual and sensor room labels (manual-only revision for stale edits, separate sensor revision; finalising a sensor label marks member references stale); `room_sources.py` reads camera/boolean/Bermuda sources; `truth.py` applies precedence (own human label, implied, member-derived human truth, room sensor labels, member guesses, then the noisy-OR estimate; sensor labels below `MIN_AUTO_CONFIDENCE` are ignored); `attribution.py` decides which radar saw a room's occupancy (own human label, else sustained energy above its empty baseline) computed once per job (`event_attribution`); `seen_by.py` uses that same function and cache for chips; `roles.py` computes per-radar role metrics, and `objective.py` per-radar preferences, from it too (a job computes it once per radar); `sets.py`, `objective.py`, `fitting.py`, `learning.py`, `application.py` implement linked learning sets, set-level jobs and Apply |
 | `presentation/` | `charts.py` aggregates history; `snapshots.py` builds dashboard/export data |
 | `static/panel/` | `view.js` owns the shell/draw lifecycle; `card.js`, `controls.js`, `learning.js` own card sections and interactions; `chart.js`, `visualization.js`, `selection.js` own history requests, SVG drawing, and range interaction; `jobs.js` renders server-owned learning progress; `layout.js` renders the room tree and group headers; `room_timeline.js` and `room_report.js` render room labelling, Seen-by chips and the role scoreboard; `constants.js` owns shared values |
 
@@ -70,43 +70,28 @@ replay tools use the same grouped module paths as the installed integration.
 - Recording opt-in is per device; retention and size settings are global. Discovery
   defaults new devices to paused. The sampler updates live readings but must not
   change training evidence while paused. Disabling closes the live label.
-- All runtime writes go through `async_save`, which serializes an isolated snapshot,
-  enforces the total file ceiling, then delegates to HA Store. TunerStore selects
-  the standard JSON encoder so byte accounting uses the same indented envelope.
-  Storage migration also applies the budget before HA's migration write.
-- Automatic guesses are runs, not a code in every 5 s row (storage minor version 2,
-  `STORAGE_MINOR_VERSION`). A run is the union of the per-sample cells (midpoint to
-  midpoint, clipped at recording gaps of more than `SAMPLE_SECONDS` x 2) of consecutive
-  samples that share (state, basis) and a confidence within `GUESS_CONFIDENCE_DELTA` of the
-  run's (its first sample's, in steps of `GUESS_CONFIDENCE_STEP`, under the
-  `MIN_AUTO_CONFIDENCE` floor when that sample's raw confidence is); about 20x fewer records
-  than samples. Recording extends the open run in memory (`_history_runtime[id]["runs"]`);
-  a block flush stores only the runs that closed (`guesses.split_open`, `guesses.upsert`),
-  and a save adds the open one to its copy (`storage._with_open_runs`). Rows are version 4
-  blocks of energies only. `guesses.of(runtime, id, since)` reads them as recorded (storage,
-  source labels); every consumer of evidence reads `guesses.evidence(runtime, id, since)`
-  (P6b): each radar run at its calibrated confidence (`history/trust.py`,
-  `constants.TRUST_*`: not_present 0.95; present 0.95 from no or a fresh reference, under the
-  floor in between), present runs cut where every gate reads within the ceiling of the
-  radar's Empty-labelled histograms (`QUIET_QUANTILE`, `QUIET_MARGIN`), external runs as given.
-  `guesses.counted` applies the same rules to a sample as it is recorded (reference
-  training). A room is present on automatic evidence only when `AGREEING_MEMBERS` members say
-  so (`evidence.agreed`, used by `evidence.room_label` and `truth.estimate`). Consumers:
-  attribution, the room estimate (`truth.estimate_reader`, `room_labels.current_estimate`),
-  the learner (`calibration/evidence.collect_samples`), Seen-by, references and the
-  assessment (`rooms/evidence.read`). `Guesses.at(t)` is the guess in force at a time
-  (below `MIN_AUTO_CONFIDENCE` none); `of_sample(t)` is a recorded sample's own run.
-  Confirming a buffered external presence adds runs for the samples left unguessed
-  (`source_labels.confirm_presence`), extending the run it continues. The one-time
-  conversion of stores written before runs (a guess in every row) is
-  `history/migration.convert_guesses`, run by `TunerStore` in the executor before the budget;
-  `cleanup.clean_history` is the single place that reads old-layout rows.
-- The learner's automatic evidence covers the whole retained history without expanding it:
-  stretches of one automatic label are read as snippets of `AUTO_SNIPPET_ROWS` consecutive
-  samples, spaced to about `2 * MAX_CLASS_SAMPLES` samples in all, each carrying the samples
-  it stands for (`scoring.mass`: confidence x that count), so mass is proportional to
-  duration; the newest `MAX_CLASS_SAMPLES` of each class are kept. `AUTO_CLASS_CAP` bounds
-  its influence against human evidence.
+- All runtime writes go through `async_save`, which first flushes the day store, then
+  serializes an isolated snapshot, enforces the total ceiling (history folder plus the
+  JSON envelope), then delegates to HA Store. TunerStore selects the standard JSON encoder
+  so byte accounting uses the same indented envelope. The JSON store holds no history.
+- History is change-only and time-weighted. Every delivered gate change is stored at its
+  own millisecond time; a reading holds until the next one, and coverage ends only on an
+  explicit event (pause, removal, blocked storage, recovery, stop; after a crash, the last
+  stored record). Every consumer weighs a reading by how long it held, never by how often
+  it was recorded. Automatic guesses are runs `(start, end, state, level, basis)` stored in
+  the same day files (`ingest.guess`, recorded every `HISTORY_SAMPLE_INTERVAL`). Every
+  consumer of evidence reads `guesses.evidence` (`history/trust.py`, `constants.TRUST_*`:
+  calibrated confidence, present runs cut where every gate reads within the ceiling of the
+  radar's Empty-labelled histograms). A room is present on automatic evidence only when
+  `AGREEING_MEMBERS` members say so (`evidence.agreed`, `truth.estimate`).
+- The one-time conversion of JSON-held history (`history/convert.run`) runs in the executor
+  at startup before anything reads history; the JSON is then saved without it. It is
+  one-way; re-running after an interruption rewrites the same day files.
+- Learning replays physical spans exactly. When a radar's recorded rows exceed the learning
+  budget, `calibration/evidence_budget.select` keeps the most valuable recorded time whole
+  (newest per class, quietest presence, loudest empty noise, then stretches beside label
+  edges) and samples the rest of each class evenly, each sampled window standing for its
+  class's unsampled time (`Window.scale`), so class totals and rates stay unbiased.
 - A radar's readings are classified when something notably changes, not on every tick
   (`inference.reclassify`: a channel `CHANGE` away for `SUSTAIN` seconds, a changed filter,
   references, calibration or external source, a classification not at rest, or the
@@ -117,13 +102,15 @@ replay tools use the same grouped module paths as the installed integration.
   [HA's Store envelope](https://github.com/home-assistant/core/blob/dev/homeassistant/helpers/storage.py)
   and [JSON serialization](https://github.com/home-assistant/core/blob/dev/homeassistant/helpers/json.py)
   define that boundary. Pending buffers are not counted as persisted bytes.
-- Budget planning is pure and tested without modifying real recordings. Human labels
-  take precedence over automatic confidence; size eviction splits mixed chunks,
-  drops automatic chunks globally first, then oldest human chunks. Settings and
-  saved recommendations are protected. Revision/pending-data guards reject stale
+- Budget planning is pure and tested without modifying real recordings. It cuts time
+  ranges out of finished days only (the live day is immutable to maintenance). Human labels
+  take precedence over automatic confidence; size eviction drops automatic time globally
+  first (lower confidence, then older), then the oldest human-labelled time. Optional
+  summary files are evicted before any recorded history. Labels older than the human
+  retention expire after planning. Settings and saved recommendations are protected. Revision/pending-data guards reject stale
   cleanup. A write that cannot fit is refused, not silently allowed over the cap.
-- Missing energy is not zero. Old observations without confidence do not acquire
-  invented automatic labels. Cleanup preserves valid timestamps and label priority.
+- Missing energy is not zero (255 in a byte column, NaN in a float column). Converted
+  observations without confidence do not acquire invented automatic labels.
 - Executor work uses detached views. Revision guards prevent stale work from
   overwriting newer sampling or human corrections.
 - History windows share a fixed ending timestamp until Refresh. Obsolete requests
@@ -173,12 +160,16 @@ keeps the numbers.
 - The room estimate remembers each member's newest sample and its recent guess runs
   while the member records nothing new (`room_labels._recent`), so a poll that finds one
   new sample reads that sample, not the last hour.
-- A radar's samples in attribution are `attribution.Samples`: sample times and one byte
-  a gate, a few bytes a sample. `Memo` answers a stretch of samples between the times
-  the room truth can change (`truth.edges`) with one read. Jobs prepared in one poll
-  take an earlier job's finished attribution (`attribution.adopt`).
-- Reference rebuilds read the history once for human labels and room evidence, folding
-  periods with `references.Fold`.
+- Day files decode to columns (`array` times and ends, a `bytes` column a gate), so a
+  radar-day of 777,600 changes decodes in well under a second; room evidence rows keep
+  the same byte columns (`rooms/evidence.Rows`).
+- Learning keeps per-day derived results (`history/day_results.py`, memory only, bounded by
+  entries and 64 MiB) keyed by the finished day's identity and the labels inside it, so a
+  repeated Learn (the next overnight run) re-derives only days that are new or relabelled;
+  live and closing days are never kept.
+- Label counts, label edits and reference rebuilds read per-day duration indexes
+  (`history/summaries.py`) instead of replaying every change; a label edit recounts only
+  the time whose label changed (`label_counts.update`).
 - The timing windows return spans as `(starts, ends)` lists (`timing.merged`), runs of
   hits come from one regular expression (`timing.hit_runs`), and the joint search keeps
   each window's spans for the hits it has seen (`replay.Projector`, bounded) and the

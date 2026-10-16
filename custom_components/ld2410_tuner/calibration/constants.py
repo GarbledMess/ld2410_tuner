@@ -12,7 +12,7 @@ MAX_CLASS_SAMPLES = 5000  # Samples kept per class, human and automatic, newest 
 # spaced so that a whole history yields about twice MAX_CLASS_SAMPLES samples; a history that
 # small is read in full. Each snippet sample stands for the samples between.
 AUTO_SNIPPET_ROWS = 10
-METHOD = "human_priority_v10"
+METHOD = "human_priority_v11"
 AUTO_CLASS_CAP = 0.25  # At most 20% of combined class evidence when manual data exists.
 MIN_AUTO_CONFIDENCE = 0.55
 # Which automatic guesses count as evidence (history/trust.py), fitted on the recorded guesses of

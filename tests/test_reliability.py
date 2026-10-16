@@ -2,15 +2,12 @@
 
 import copy
 import unittest
-from unittest.mock import patch
 
 import test_tuner as harness
-from tuner_under_test.calibration import fitting
 from tuner_under_test.calibration.metrics import metrics
 from tuner_under_test.calibration.reliability import (
     filter_groups,
     fit_outlier_model,
-    prepare_evidence,
 )
 
 KEYS = ["g0_move", "g1_still"]
@@ -41,18 +38,17 @@ class ReliabilityTests(unittest.TestCase):
         groups = observations()
         original = copy.deepcopy(groups)
         result = fit(groups)
-        self.assertEqual(result["outlier_filter"]["human"]["excluded"]["present"], 5)
+        self.assertEqual(result["outlier_filter"]["excluded"], False)
         for measurement in (result["training"], *result["proposals"].values()):
             self.assertEqual(measurement["false_positives"], 0)
-            self.assertEqual(measurement["false_negatives"], 0)
-            self.assertEqual(measurement["present_samples"], 995)
+            self.assertEqual(measurement["false_negatives"], 5)
+            self.assertEqual(measurement["present_samples"], 1000)
             self.assertEqual(measurement["not_present_samples"], 1000)
-            self.assertEqual(measurement["longest_missed_run_samples"], 0)
-        self.assertEqual(result["counts"]["present"], 995)
-        self.assertEqual(result["training"]["duration"]["missed_seconds"], 0)
+            self.assertEqual(measurement["longest_missed_run_samples"], 5)
+        self.assertEqual(result["counts"]["present"], 1000)
+        self.assertEqual(result["training"]["duration"]["missed_seconds"], 30)
         self.assertEqual(result["feasibility"]["status"], "not_assessed")
-        self.assertEqual(result["raw_audit"]["false_negatives"], 5)
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "unsafe")
         self.assertEqual(groups, original)
 
     def test_sustained_quiet_presence_whole_episodes_and_boundaries_stay(self):
@@ -142,22 +138,26 @@ class ReliabilityTests(unittest.TestCase):
         groups = observations()
         automatic = [(*row, 0.8) for group in groups.values() for row in group]
         result = harness.fit([], KEYS, automatic=automatic)
-        self.assertEqual(result["outlier_filter"]["automatic"]["excluded"]["present"], 5)
-        self.assertEqual(result["automatic_evidence"]["samples"]["present"], 995)
-        self.assertEqual(result["estimated_training"]["present_samples"], 995)
-        self.assertEqual(result["estimated_training"]["false_negatives"], 0)
+        self.assertEqual(result["outlier_filter"]["excluded"], False)
+        self.assertEqual(result["automatic_evidence"]["samples"]["present"], 1000)
+        self.assertEqual(result["estimated_training"]["present_samples"], 1000)
+        self.assertEqual(result["estimated_training"]["false_negatives"], 5)
 
     def test_holdout_uses_only_earlier_detector_and_thresholds(self):
-        groups = observations(dip=range(850, 855))
-        with patch.object(fitting, "prepare_evidence", wraps=prepare_evidence) as prepare:
-            result = fit(groups)
-        full, earlier = prepare.call_args_list
-        self.assertEqual(len(full.args[0]["present"]), 1000)
-        self.assertEqual(len(earlier.args[0]["present"]), 800)
-        self.assertEqual(result["outlier_filter"]["human"]["excluded"]["present"], 5)
-        self.assertEqual(result["validation_outliers"]["excluded"]["present"], 0)
+        rows = harness.episode_samples(dict.fromkeys(KEYS, 40), dict.fromkeys(KEYS, 5), count=1000)
+        for row in rows[1650:1655]:
+            row[1].update(dict.fromkeys(KEYS, 5))
+        result = harness.fit(rows, KEYS)
+        self.assertEqual(result["counts"]["present"], 1000)
+        self.assertEqual(result["validation"]["present_samples"], 200)
         self.assertEqual(result["validation"]["false_negatives"], 5)
-        self.assertEqual(result["recent_training"]["false_negatives"], 0)
+        self.assertEqual(result["recent_training"]["false_negatives"], 5)
+        self.assertTrue(
+            all(
+                candidate["thresholds"][KEYS[0]] > 5
+                for candidate in result["adaptive_policy"]["candidates"].values()
+            )
+        )
 
     def test_frozen_detector_filters_matching_holdout_and_caps_details(self):
         groups = observations(dip=range(100, 105))
@@ -192,6 +192,6 @@ class ReliabilityTests(unittest.TestCase):
         groups = observations()
         guesses = [(*row, 0.99) for row in groups["present"][100:105]]
         result = fit(groups, guesses)
-        self.assertEqual(result["outlier_filter"]["human"]["excluded"]["present"], 5)
+        self.assertEqual(result["outlier_filter"]["excluded"], False)
         self.assertEqual(result["automatic_evidence"]["samples"]["present"], 0)
-        self.assertEqual(result["training"]["present_samples"], 995)
+        self.assertEqual(result["training"]["present_samples"], 1000)

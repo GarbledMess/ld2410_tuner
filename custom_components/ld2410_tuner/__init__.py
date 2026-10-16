@@ -26,8 +26,8 @@ from .const import (
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
 )
-from .history.budget import prepare
-from .history.migration import convert_guesses
+from .history import convert, ingest
+from .history.daystore import DayStore
 from .presence import rebuilds, reference_training
 from .runtime import engineering, schedule
 from .runtime.coordinator import TunerRuntime
@@ -35,28 +35,23 @@ from .runtime.websocket import _register_websocket_commands
 
 
 class TunerStore(Store):
-    """Store subclass that tolerates older on-disk schema versions.
+    """Store subclass that loads older on-disk schema versions as they are.
 
-    The actual data-shape migration (raw "samples" arrays -> bounded
-    histograms) is performed lazily, per-device, by
-    TunerRuntime._migrate_device_samples() the first time each device
-    is touched. Home Assistant's Store base class raises
-    NotImplementedError from _async_migrate_func() by default whenever
-    the stored file's version doesn't match STORAGE_VERSION, even if
-    the caller never intended Store itself to do the migration. This
-    override also enforces the file ceiling before Home Assistant writes
-    migrated data. Runtime cleanup handles the remaining normalization. Files from before
-    minor version 2 also have each row's guess turned into guess runs (history/migration.py),
-    in the executor: a file that is not saved yet is converted again, harmlessly.
+    Home Assistant's Store raises NotImplementedError from _async_migrate_func() whenever the
+    stored file's version differs from STORAGE_VERSION. Nothing needs reshaping here: history
+    of any earlier layout is converted into day files once at startup (``history/convert.py``),
+    in the executor, before anything reads it.
     """
 
     async def _async_migrate_func(self, old_major_version, old_minor_version, old_data):
-        return await self.hass.async_add_executor_job(_migrated, old_data)
+        return old_data
 
 
-def _migrated(old_data):
-    prepared, _changes, _report = prepare(convert_guesses(old_data), {}, time.time())
-    return prepared
+def _open_history(runtime):
+    """Recover the day store, then move any history still in the JSON store into it, once."""
+    now = time.time()
+    runtime._days.open(now)
+    convert.run(runtime.data, runtime._days, now)
 
 
 async def async_setup_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
@@ -75,6 +70,8 @@ async def _start_runtime(hass):
     )
     data = await store.async_load() or {"devices": {}, "training": {}}
     runtime = TunerRuntime(hass, store, data)
+    runtime._days = DayStore(Path(hass.config.path(".storage", DOMAIN, "history")))
+    await hass.async_add_executor_job(_open_history, runtime)
     schedule.restore(runtime)
     await runtime.async_clean_history(persist=False)
     await reference_training.initialize(runtime)
@@ -163,6 +160,5 @@ async def _shutdown(runtime):
     if runtime._save_task:
         runtime._save_task.cancel()
         await asyncio.gather(runtime._save_task, return_exceptions=True)
-    for device_id in runtime._history_runtime:
-        runtime._flush_history_block(device_id)
+    ingest.stop(runtime, time.time())  # Nothing is observed while stopped.
     await runtime.async_save()

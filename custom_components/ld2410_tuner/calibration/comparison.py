@@ -2,52 +2,17 @@
 
 import math
 
-from ..rooms import attribution
-from .constants import MIN_CLASS_SAMPLES, MIN_RECALL, MISSED_TIME_COST
-from .duration import DurationReplay
-from .evidence import collect_samples
-from .reliability import prepare_evidence
-from .scoring import error_cost, score_from_cost
-from .timing_metrics import evaluate, hit_mask
+from .constants import MIN_CLASS_SAMPLES
 
 SCORE_MODEL = "weighted_time_v1"
 # Increment whenever scoring, evidence selection, outlier or timing semantics change.
-SCORER_VERSION = 1
-
-
-def _groups(rows, keys):
-    return {
-        label: [row for row in rows if row[2] == label and all(key in row[1] for key in keys)]
-        for label in ("present", "not_present")
-    }
+SCORER_VERSION = 2
 
 
 def calculate(view, device_id, context):
-    keys, timing = context["keys"], context["timing"]
-    rows, guesses = collect_samples(view, device_id, keys)
-    attribution.release([view])
-    human, automatic = _groups(rows, keys), _groups(guesses, keys)
-    incomplete = (
-        len(rows) + len(guesses) - sum(len(g) for g in (*human.values(), *automatic.values()))
-    )
-    human, automatic, exclusions, _ = prepare_evidence(human, automatic, keys)
-    patterns = {
-        name: _measure_pattern(pattern, keys, human, automatic, timing)
-        for name, pattern in context["patterns"].items()
-    }
-    return {
-        "model": SCORE_MODEL,
-        "patterns": patterns,
-        "best_slots": best_slots(patterns),
-        "timing": timing,
-        "counts": {
-            "human": {k: len(v) for k, v in human.items()},
-            "automatic": {k: len(v) for k, v in automatic.items()},
-        },
-        "incomplete_samples": incomplete,
-        "outliers": exclusions,
-        "missed_time_cost": MISSED_TIME_COST,
-    }
+    from .event_fitting import compare
+
+    return compare(view, device_id, context)
 
 
 def best_slots(patterns):
@@ -64,62 +29,6 @@ def _rank(item):
     # A deliberate safety gate, independent of the automatic evidence weight setting:
     # automatic evidence only breaks ties here, so Automatic Apply needs a human-label gain.
     return tuple(item["ranking"])
-
-
-def _measure_pattern(pattern, keys, human, automatic, timing):
-    if pattern is None:
-        return {"score": None, "reason": "No saved result", "applicable": False}
-    result = {
-        "result_id": pattern.get("id"),
-        "applicable": pattern["applicable"],
-        "thresholds_complete": False,
-    }
-    values = pattern["thresholds"]
-    if not complete_thresholds(values, keys):
-        return {
-            **result,
-            "score": None,
-            "reason": "A complete threshold set for the active gates is unavailable",
-            "applicable": False,
-        }
-    result["thresholds_complete"] = True
-    measured = evaluate(human, values, timing)
-    estimated = evaluate(automatic, values, timing)
-    replay = DurationReplay(automatic["present"], automatic["not_present"], timing)
-    auto_cost, auto_miss, auto_false = replay.automatic_rank(
-        hit_mask(automatic["present"], values), hit_mask(automatic["not_present"], values)
-    )
-    sources = {label: _source(label, measured, estimated) for label in human}
-    result.update(human=measured, automatic=estimated, sources=sources)
-    if None in sources.values():
-        return {
-            **result,
-            "score": None,
-            "reason": "Need at least 50 usable observations and measurable time for both occupied and empty states",
-        }
-    duration = measured["duration"]
-    miss = 1 - duration["presence_recall_lower"] if sources["present"] == "human" else auto_miss
-    false = (
-        duration["false_positive_percent"] / 100
-        if sources["not_present"] == "human"
-        else auto_false
-    )
-    cost = error_cost(miss, false)
-    human_replay = DurationReplay(human["present"], human["not_present"], timing)
-    human_rank = human_replay.rank(
-        hit_mask(human["present"], values), hit_mask(human["not_present"], values)
-    )
-    return {
-        **result,
-        "score": score_from_cost(cost),
-        "error_cost": cost,
-        "automatic_error_cost": auto_cost,
-        "ranking": [round(cost, 10), *human_rank[1:], auto_cost, auto_miss, auto_false],
-        "presence_recall": 1 - miss,
-        "false_positive_percent": 100 * false,
-        "target_met": 1 - miss >= MIN_RECALL - 1e-12,
-        "basis": "human" if set(sources.values()) == {"human"} else "estimated",
-    }
 
 
 def _source(label, human, automatic):

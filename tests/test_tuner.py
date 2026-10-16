@@ -4,14 +4,13 @@ HA adapters are stubbed at the boundary; no live HA installation or radar requir
 """
 
 import asyncio
-import base64
 import importlib.util
-import struct
+import shutil
 import sys
+import tempfile
 import time
 import types
 import unittest
-import zlib
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -72,9 +71,95 @@ mod = load_runtime()
 constants = sys.modules["tuner_under_test.const"]
 calibration_constants = sys.modules["tuner_under_test.calibration.constants"]
 training = sys.modules["tuner_under_test.history.labels"]
+label_lookup = sys.modules["tuner_under_test.history.label_lookup"]
 ws = sys.modules["tuner_under_test.runtime.websocket"]
-fit = sys.modules["tuner_under_test.calibration.fitting"].fit_thresholds
 guesses = sys.modules["tuner_under_test.history.guesses"]
+spans = sys.modules["tuner_under_test.history.spans"]
+
+
+def fit(
+    rows,
+    keys,
+    current=None,
+    automatic=(),
+    timing=None,
+    automatic_weight=None,
+    *,
+    constraints=None,
+    **_ignored,
+):
+    """The device learner (``event_fitting.fit``) on the samples of the sampled recorder
+    (``record_samples``): labelled readings ``rows`` and automatic ones ``automatic``."""
+    from tuner_under_test.calibration import event_fitting, settings
+
+    if automatic_weight is None:
+        automatic_weight = settings.DEFAULT_AUTOMATIC_WEIGHT
+    view = types.SimpleNamespace(
+        data={"devices": {"d": {}}, "room_snapshot": None}, _history_runtime={}
+    )
+    record_samples(view, "d", rows, automatic)
+    return event_fitting.fit(
+        view, "d", list(keys), current or {}, timing, automatic_weight, constraints=constraints
+    )
+
+
+def record_samples(view, device_id, rows, automatic=()):
+    """Record the samples of the sampled recorder into ``view``'s day store: labelled readings
+    ``rows`` ``(time, values, label)`` and automatic ones ``automatic``
+    ``(time, values, label, confidence[, weight])``. Each reading was one sample, so it is
+    recorded as ``SAMPLE_SECONDS`` of history (``sample_clock``): readings follow each other
+    and a gap longer than ``GAP`` between them stays a gap. Consecutive labelled readings
+    with one label are one labelled period (added to the radar's labels); an automatic
+    reading is a guess of its confidence (external, so taken as given) over it."""
+    from tuner_under_test.history import dayfile
+
+    labelled = {ts: (values, label) for ts, values, label in rows}
+    guessed = {ts: (values, label, confidence) for ts, values, label, confidence, *_ in automatic}
+    clock = sample_clock(sorted({*labelled, *guessed}))
+    records, labels = [], []
+    for ts, (start, end, last) in clock.items():
+        values = (labelled.get(ts) or guessed[ts])[0]
+        vector = {gate: values.get(key) for gate, key in enumerate(constants.HISTORY_KEYS)}
+        records.append(dayfile.Change(start, vector))
+        if ts in labelled and labelled[ts][1] in ("present", "not_present", "unknown"):
+            state = labelled[ts][1]
+            if labels and labels[-1]["end"] == start and labels[-1]["state"] == state:
+                labels[-1]["end"] = end  # One labelled stretch, as the samples were.
+            else:
+                labels.append({"start": start, "end": end, "state": state})
+        elif ts in guessed and guessed[ts][1] in ("present", "not_present"):
+            _values, label, confidence = guessed[ts]
+            level = guesses.level(confidence * 100)
+            records.append(dayfile.Guess(start, label, level, guesses.EXTERNAL))
+            records.append(dayfile.Guess(end, None, 0, 0))
+        if last:
+            records.append(dayfile.End(end))
+    device = view.data["devices"][device_id]
+    device["history_labels"] = [*device.get("history_labels", []), *labels]
+    days = _store(view)
+    order = {dayfile.End: 0, dayfile.Guess: 1, dayfile.Change: 2}
+    for record in sorted(records, key=lambda item: (item.time, order[type(item)])):
+        days.append(device_id, record)
+    if clock:
+        end = max(end for _start, end, _last in clock.values())
+        view._history_until = max(end, getattr(view, "_history_until", None) or end)
+    return view
+
+
+def sample_clock(times):
+    """``{time: (start, end, last)}``: each of the sorted sample ``times`` as the
+    ``SAMPLE_SECONDS`` of history it stood for, laid end to end; a gap longer than ``GAP``
+    between samples stays (``last``: no sample follows within it)."""
+    seconds = sys.modules["tuner_under_test.calibration.constants"].SAMPLE_SECONDS
+    found, start = {}, None
+    for index, ts in enumerate(times):
+        if start is None or ts - times[index - 1] > guesses.GAP:
+            start = ts if start is None else max(ts, start + seconds)
+        else:
+            start += seconds
+        follows = index + 1 < len(times) and times[index + 1] - ts <= guesses.GAP
+        found[ts] = (start, start + seconds, not follows)
+    return found
 
 
 def split_guesses(records):
@@ -113,22 +198,81 @@ def columns_of(samples):
 
 def set_records(view, device_id, records):
     """Make a ``stub_view`` read ``records`` instead (rows may end in a recorded guess)."""
-    samples, chunks = guessed(records)
-    view._iter_history_samples = lambda *a, **kw: iter(samples)
-    view._history_columns = columns_of(samples)
-    view.data["devices"][device_id]["guess_runs"] = chunks
+    _store(view).remove_device(device_id)
+    record_rows(view, device_id, records)
+
+
+def _store(view):
+    """``view``'s day store: a temporary one, removed with the view, when it has none."""
+    from tuner_under_test.history import daystore
+
+    days = getattr(view, "_days", None)
+    if days is None:
+        folder = tempfile.TemporaryDirectory()
+        view._history_folder = folder  # Removed with the view.
+        days = view._days = daystore.DayStore(Path(folder.name))
+    return days
+
+
+def record_rows(view, device_id, records, extra=()):
+    """Record old-style test rows ``(time, row)`` into ``view``'s day store: ``row`` is 18
+    energies (over 100: not read), optionally followed by a guess code and percent. They are
+    recorded as conversion records stored rows (``convert``): each row holds until the next,
+    and a gap longer than ``GAP`` ends coverage half a sample after the row before it. ``extra``
+    records (guess spans) are recorded among them in time order."""
+    from tuner_under_test.history import convert
+
+    rows = {
+        ts: (bytes(row[:18]), convert._from_code(*row[18:20]) if len(row) > 18 else None)
+        for ts, row in records
+    }
+    found = sorted(
+        [*convert._sampled(sorted(rows.items())), *extra],
+        key=lambda record: (record.time, convert.ORDER.get(type(record), 3)),
+    )
+    days = _store(view)
+    for record in found:
+        days.append(device_id, record)
+    if found:
+        end = found[-1].time
+        view._history_until = max(end, getattr(view, "_history_until", None) or end)
+    return view
+
+
+def recorded(view, device_id, events, end, *, open_until=None):
+    """Record ``events`` ``[(time, 18-value vector)]`` for ``device_id`` into ``view``'s day
+    store (a temporary one when it has none); coverage ends at ``end``, or with ``open_until``
+    stays open (still recording) and is read up to that time. Call again for a later stretch
+    after a gap. The view reads history as of the latest end recorded."""
+    from tuner_under_test.history import dayfile
+
+    days = _store(view)
+    for timestamp, vector in events:
+        days.append(device_id, dayfile.Change(timestamp, dict(enumerate(vector))))
+    if open_until is None:
+        days.append(device_id, dayfile.End(end))
+    else:
+        end = open_until
+    view._history_until = max(end, getattr(view, "_history_until", None) or end)
+    return view
 
 
 def stub_view(device_id, device, records):
     """A minimal history view (what assessments and the room estimate read) of one radar whose
-    ``records`` rows may end in a recorded guess (``guessed``)."""
-    samples, chunks = guessed(records)
-    return types.SimpleNamespace(
-        data={"devices": {device_id: {**device, "guess_runs": chunks}}},
-        _history_runtime={},
-        _iter_history_samples=lambda *a, **kw: iter(samples),
-        _history_columns=columns_of(samples),
-    )
+    ``records`` rows may end in a recorded guess (``record_rows``)."""
+    view = types.SimpleNamespace(data={"devices": {device_id: dict(device)}}, _history_runtime={})
+    return record_rows(view, device_id, records)
+
+
+def episode_samples(present, negative, count=100, episodes=5):
+    """``row_samples`` split into ``episodes`` alternating present and empty episodes, so the
+    learner can hold later whole episodes out for chronological validation."""
+    rows, size, t = [], count // episodes, 0
+    for _ in range(episodes):
+        for values, state in ((present, "present"), (negative, "not_present")):
+            rows += [(t + i, dict(values), state) for i in range(size)]
+            t += size
+    return rows
 
 
 def row_samples(present, negative, count=100):
@@ -149,16 +293,16 @@ class LearningTests(unittest.TestCase):
         ]
         result = fit(rows, keys)
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["training"]["false_negatives"], 0)
-        self.assertEqual(result["outlier_filter"]["human"]["excluded"]["present"], 1)
-        self.assertEqual(result["raw_audit"]["false_negatives"], 1)
+        self.assertEqual(result["training"]["false_negatives"], 1)
+        self.assertEqual(result["outlier_filter"]["method"], "native_intervals_retained")
+        self.assertFalse(result["outlier_filter"]["excluded"])
         self.assertEqual(result["training"]["false_positives"], 0)
         self.assertGreaterEqual(result["training"]["sensitivity"], 0.999)
         self.assertEqual(result["training"]["missed_presence_episodes"], 0)
-        self.assertEqual(result["training"]["longest_missed_run_samples"], 0)
+        self.assertEqual(result["training"]["longest_missed_run_samples"], 1)
         self.assertEqual(result["recent_training"]["false_negatives"], 0)
 
-    def test_recent_presence_target_is_part_of_search(self):
+    def test_recent_presence_reports_retained_dip_within_the_overall_time_budget(self):
         keys = ["g1_move", "g3_still"]
         rows = [
             (i * 6, {keys[0]: 7, keys[1]: 4 if i == 2867 else 40}, "present") for i in range(2868)
@@ -166,7 +310,11 @@ class LearningTests(unittest.TestCase):
         rows += [(30000 + i * 6, {keys[0]: 9, keys[1]: 4}, "not_present") for i in range(5000)]
         result = fit(rows, keys)
         self.assertEqual(result["status"], "ok")
-        self.assertGreaterEqual(result["recent_training"]["duration"]["presence_recall"], 0.999)
+        self.assertAlmostEqual(
+            result["recent_training"]["duration"]["presence_recall"], 1 - 1 / (2868 * 0.2)
+        )
+        self.assertEqual(result["recent_training"]["false_negatives"], 1)
+        self.assertEqual(result["recent_training"]["longest_missed_run_samples"], 1)
         self.assertEqual(result["training"]["false_positives"], 0)
 
     def test_brief_consecutive_misses_use_time_budget(self):
@@ -182,7 +330,7 @@ class LearningTests(unittest.TestCase):
         rows += [(40000 + i * 6, {keys[0]: 9, keys[1]: 4}, "not_present") for i in range(5000)]
         result = fit(rows, keys)
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["training"]["duration"]["missed_seconds"], 9)
+        self.assertEqual(result["training"]["duration"]["missed_seconds"], 12)
         self.assertGreaterEqual(result["training"]["duration"]["presence_recall"], 0.999)
         self.assertEqual(result["training"]["false_positives"], 0)
 
@@ -220,7 +368,7 @@ class LearningTests(unittest.TestCase):
             )
             for i in range(10000)
         ]
-        result = fit(rows, ["g0_still"], automatic=guesses)
+        result = fit(rows, ["g0_still"], automatic=guesses, automatic_weight=0.2)
         self.assertEqual(result["status"], "insufficient")
         self.assertEqual(result["training"]["sensitivity"], 1)
         self.assertEqual(result["training"]["false_positive_rate"], 0)
@@ -228,8 +376,8 @@ class LearningTests(unittest.TestCase):
         self.assertIsNone(result["validation"])
 
     def test_refit_learns_a_location_first_seen_in_recent_labels(self):
-        rows = row_samples({"g0_move": 30, "g1_still": 5}, {"g0_move": 5, "g1_still": 5})
-        rows[99] = (99, {"g0_move": 5, "g1_still": 6}, "present")
+        rows = episode_samples({"g0_move": 30, "g1_still": 5}, {"g0_move": 5, "g1_still": 5})
+        rows[179] = (179, {"g0_move": 5, "g1_still": 6}, "present")
         result = fit(rows, ["g0_move", "g1_still"])
         self.assertEqual(result["validation"]["false_negatives"], 1)
         self.assertEqual(result["training"]["false_negatives"], 0)
@@ -247,7 +395,7 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
 
     def test_weak_still_signal_is_not_sacrificed(self):
-        result = fit(row_samples({"g0_still": 14}, {"g0_still": 10}), ["g0_still"])
+        result = fit(episode_samples({"g0_still": 14}, {"g0_still": 10}), ["g0_still"])
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["proposals"]["g0_still"]["threshold"], 12)
         self.assertEqual(result["validation"]["sensitivity"], 1)
@@ -258,24 +406,23 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(result["training"]["false_positive_rate"], 1)
 
     def test_equality_does_not_trigger(self):
-        metrics = sys.modules["tuner_under_test.calibration.fitting"].metrics
+        metrics = sys.modules["tuner_under_test.calibration.metrics"].metrics
         result = metrics(row_samples({"g0_move": 100}, {"g0_move": 100}), {"g0_move": 100})
         self.assertEqual(result["sensitivity"], 0)
         self.assertEqual(result["false_positives"], 0)
 
     def test_different_locations_use_complementary_gates(self):
-        rows = [
-            (i, {"g0_move": 30 if i % 2 else 5, "g1_still": 5 if i % 2 else 20}, "present")
-            for i in range(100)
-        ]
-        rows += [(100 + i, {"g0_move": 5, "g1_still": 5}, "not_present") for i in range(100)]
+        rows = episode_samples({"g0_move": 30, "g1_still": 5}, {"g0_move": 5, "g1_still": 5})
+        for i, (timestamp, _values, state) in enumerate(rows):
+            if state == "present" and i % 2 == 0:
+                rows[i] = (timestamp, {"g0_move": 5, "g1_still": 20}, state)
         result = fit(rows, ["g0_move", "g1_still"])
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["validation"]["sensitivity"], 1)
         self.assertTrue(all(p["sensitivity"] == 0.5 for p in result["proposals"].values()))
 
     def test_held_out_background_drift_reports_a_time_penalty(self):
-        rows = row_samples({"g0_move": 30}, {"g0_move": 5})
+        rows = episode_samples({"g0_move": 30}, {"g0_move": 5})
         rows[-20:] = [(i, {"g0_move": 40}, "not_present") for i in range(180, 200)]
         result = fit(rows, ["g0_move"])
         self.assertEqual(result["training"]["false_positive_rate"], 0.2)
@@ -313,19 +460,22 @@ class LearningTests(unittest.TestCase):
             self.assertEqual(proposal["false_positives"], 4)
             self.assertEqual(proposal["not_present_samples"], 1000)
             self.assertEqual(proposal["message"], "")
-        self.assertAlmostEqual(result["training"]["duration"]["false_positive_score"], -750 / 999)
+        self.assertAlmostEqual(result["training"]["duration"]["false_positive_score"], -0.8)
 
     def test_guesses_cover_additional_location_at_lower_weight(self):
         keys = ["g0_move", "g1_still"]
         rows = row_samples({keys[0]: 30, keys[1]: 5}, dict.fromkeys(keys, 5))
         guesses = [(-100 + i, {keys[0]: 5, keys[1]: 6}, "present", 0.6) for i in range(100)]
-        manual_only = fit(rows, keys)
-        # Reported share: 0.2 x cap 0.25 x confidence mass ratio (0.6 x 100 / 100).
-        assisted = fit(rows, keys, automatic=guesses, automatic_weight=0.2)
+        current = {keys[0]: 20, keys[1]: 7}
+        manual_only = fit(rows, keys, current=current)
+        # Episode support uses confidence0.6 times the conservative reliability prior0.75.
+        assisted = fit(rows, keys, current=current, automatic=guesses, automatic_weight=0.2)
         self.assertEqual(manual_only["proposals"][keys[1]]["threshold"], 7)
         self.assertLess(assisted["proposals"][keys[1]]["threshold"], 6)
         self.assertTrue(assisted["automatic_evidence"]["used"])
-        self.assertAlmostEqual(assisted["automatic_evidence"]["share"]["present"], 0.03)
+        self.assertAlmostEqual(
+            assisted["automatic_evidence"]["share"]["present"], 0.05 * 0.45 / 1.45
+        )
         self.assertEqual(assisted["validation"], manual_only["validation"])
 
     def test_confidence_changes_the_share_and_volume_is_capped(self):
@@ -339,7 +489,7 @@ class LearningTests(unittest.TestCase):
 
         self.assertGreater(weighted(50, 0.9), weighted(50, 0.6))
         # Plentiful guesses: the mass ratio caps at 1, so the share is 0.2 x 0.25.
-        self.assertAlmostEqual(weighted(1000, 0.99), 0.05)
+        self.assertAlmostEqual(weighted(1000, 0.99), 0.05 * 0.75 / (1 + 0.75))
 
     def test_automatic_only_recommendation_is_usable_but_identified_as_estimated(self):
         guesses = [
@@ -353,22 +503,23 @@ class LearningTests(unittest.TestCase):
         self.assertLess(result["proposals"]["g0_move"]["threshold"], 30)
 
     def test_newer_guesses_are_used_by_final_fit_without_changing_backtest(self):
-        rows = row_samples({"g0_move": 30}, {"g0_move": 5})
+        rows = episode_samples({"g0_move": 30}, {"g0_move": 5})
         result = fit(rows, ["g0_move"], automatic=[(300, {"g0_move": 50}, "not_present", 0.99)])
         self.assertEqual(result["automatic_evidence"]["deferred_samples"], 0)
-        self.assertTrue(result["automatic_evidence"]["used"])
+        self.assertEqual(result["automatic_evidence"]["offered_samples"]["not_present"], 1)
+        self.assertEqual(result["adaptive_policy"]["selected"], "reference")
         self.assertEqual(result["validation"], fit(rows, ["g0_move"])["validation"])
 
     def test_one_missed_validation_sample_is_not_almost_perfect(self):
-        rows = row_samples({"g0_move": 30}, {"g0_move": 5})
-        rows[99] = (99, {"g0_move": 5}, "present")
+        rows = episode_samples({"g0_move": 30}, {"g0_move": 5})
+        rows[179] = (179, {"g0_move": 5}, "present")
         result = fit(rows, ["g0_move"])
         self.assertEqual(result["validation"]["sensitivity"], 0.95)
         self.assertEqual(result["status"], "unsafe")
         self.assertEqual(result["targets"]["sensitivity"], 0.999)
 
     def test_episode_and_burst_metrics_reveal_temporal_failures(self):
-        metrics = sys.modules["tuner_under_test.calibration.fitting"].metrics
+        metrics = sys.modules["tuner_under_test.calibration.metrics"].metrics
         rows = [
             (0, {"g0_move": 30}, "present"),
             (6, {"g0_move": 30}, "present"),
@@ -386,113 +537,24 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(result["false_trigger_bursts"], 2)
 
     def test_near_perfect_average_cannot_hide_entire_missed_episode(self):
-        rows = [(i * 6, {"g0_move": 30}, "present") for i in range(5000)]
-        rows[-1] = (30100, {"g0_move": 5}, "present")
-        rows += [(40000 + i * 6, {"g0_move": 5}, "not_present") for i in range(5000)]
+        rows = episode_samples({"g0_move": 30}, {"g0_move": 5}, count=5000)
+        rows = [(t * 6, values, state) for t, values, state in rows]
+        rows[8999] = (8999 * 6 + 120, {"g0_move": 5}, "present")
+        rows[9000:] = [(t + 120, values, state) for t, values, state in rows[9000:]]
         result = fit(rows, ["g0_move"])
-        self.assertEqual(result["validation"]["sensitivity"], 0.999)
+        self.assertEqual(result["validation"]["present_samples"], 1)
+        self.assertEqual(result["validation"]["sensitivity"], 0)
         self.assertEqual(result["validation"]["missed_presence_episodes"], 1)
-        self.assertEqual(result["status"], "uncertain")
+        self.assertEqual(result["status"], "unsafe")
 
     def test_frequent_bursts_remain_visible_without_failing_the_job(self):
-        rows = [(i * 6, {"g0_move": 30}, "present") for i in range(5000)]
-        rows += [
-            (40000 + i * 6, {"g0_move": 40 if i in (4100, 4400, 4800) else 5}, "not_present")
-            for i in range(5000)
-        ]
+        rows = episode_samples({"g0_move": 30}, {"g0_move": 5}, count=5000)
+        for i in (9100, 9400, 9800):
+            rows[i][1]["g0_move"] = 40
         result = fit(rows, ["g0_move"])
         self.assertLessEqual(result["validation"]["false_positive_rate"], 0.005)
         self.assertGreater(result["validation"]["false_trigger_bursts_per_hour"], 1)
         self.assertEqual(result["status"], "tradeoff")
-
-
-class HistoryCleanupTests(unittest.TestCase):
-    def block(self, start, samples, version=1):
-        import base64
-        import struct
-        import zlib
-
-        raw = b"".join(struct.pack(">H", offset) + bytes(values) for offset, values in samples)
-        return {
-            "start": start,
-            "end": start + max(offset for offset, values in samples),
-            "version": version,
-            "count": len(samples),
-            "data": base64.b64encode(zlib.compress(raw)).decode(),
-        }
-
-    def test_migration_preserves_timestamps_and_turns_old_guesses_into_runs(self):
-        from tuner_under_test.history.cleanup import clean_history
-
-        first = self.block(100.25, [(0, [5] * 18), (6, [7] * 18)])
-        second = self.block(112.75, [(0, [9] * 18 + [1, 80])], 2)
-        device = {
-            "history": [first, second],
-            "history_labels": [{"start": 99, "end": 120, "state": "present"}],
-        }
-        updated, stats = clean_history(device, [], 130, 1000)
-        runtime = mod.TunerRuntime(None, None, {"devices": {"a": updated}})
-        with patch.object(time, "time", return_value=130):
-            rows = list(runtime._iter_history_samples(updated))
-        self.assertEqual([ts for ts, row in rows], [100.25, 106.25, 112.75])
-        self.assertEqual([row[:1] for ts, row in rows], [bytes([5]), bytes([7]), bytes([9])])
-        # Version 1 rows held no guess; the third row's (present, 80 % = 16 steps) is a run
-        # over its cell: from the midpoint with the row before to the row itself.
-        runs = [run for chunk in updated["guess_runs"] for run in guesses.decode(chunk)]
-        self.assertEqual(runs, [(109.5, 112.75, "present", 16, 0)])
-        self.assertEqual(stats["migrated_blocks"], 2)
-        self.assertEqual(sum(updated["histograms"]["g0_move"]["present"]), 3)
-        again, _ = clean_history(updated, [], 130, 1000)
-        self.assertEqual(again, updated)
-        self.assertEqual(first["version"], 1, "input is unchanged")
-
-    def test_cleanup_removes_expired_corrupt_and_duplicate_data(self):
-        from tuner_under_test.history.cleanup import clean_history
-
-        values = [5] * 18
-        old = self.block(50, [(0, values)])
-        current = self.block(100, [(0, values), (6, values)])
-        duplicate = self.block(100, [(0, [9] * 18)])
-        bad = dict(current, data="not valid base64")
-        repaired = self.block(112, [(0, [200] + values[1:] + [1, 255])], 2)
-        device = {
-            "history": [current, old, bad, duplicate, repaired],
-            "history_labels": [
-                {"start": 40, "end": 110, "state": "present"},
-                {"start": 100, "end": 120, "state": "not_present"},
-            ],
-        }
-        updated, stats = clean_history(device, [], 150, 60)
-        self.assertEqual(sum(b["count"] for b in updated["history"]), 3)
-        self.assertEqual(stats["invalid_blocks"], 1)
-        self.assertEqual(stats["expired_samples"], 1)
-        self.assertEqual(stats["duplicate_samples"], 1)
-        self.assertEqual(stats["repaired_samples"], 1)
-        self.assertEqual(
-            updated["history_labels"],
-            [
-                {"start": 90, "end": 100, "state": "present"},
-                {"start": 100, "end": 120, "state": "not_present"},
-            ],
-        )
-        self.assertEqual(updated["histograms"]["g0_move"]["not_present"][9], 1)
-        self.assertEqual(sum(updated["histograms"]["g0_move"]["not_present"]), 2)
-
-    def test_unknown_label_and_pending_samples_are_preserved(self):
-        from tuner_under_test.history.cleanup import clean_history
-
-        device = {
-            "history": [self.block(100, [(0, [5] * 18), (6, [5] * 18)])],
-            "history_labels": [
-                {"start": 90, "end": 120, "state": "present"},
-                {"start": 105, "end": 108, "state": "unknown"},
-            ],
-        }
-        pending = [(112, bytes([5] * 18 + [2, 90]))]
-        updated, _ = clean_history(device, pending, 130, 1000)
-        self.assertEqual(sum(b["count"] for b in updated["history"]), 2)
-        self.assertEqual(sum(updated["histograms"]["g0_move"]["present"]), 2)
-        self.assertEqual(training._history_label_reader(updated)(106), "unknown")
 
 
 class WebsocketTests(unittest.IsolatedAsyncioTestCase):
@@ -813,7 +875,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.settle.stop)
         self.registry = types.SimpleNamespace(entities={})
         mod.er.async_get = lambda hass: self.registry
+        config = tempfile.mkdtemp(prefix="ld2410-config-")
+        self.addCleanup(shutil.rmtree, config, ignore_errors=True)
         self.hass = types.SimpleNamespace(
+            config=types.SimpleNamespace(path=lambda *parts: str(Path(config, *parts))),
             async_add_executor_job=lambda fn, *args: asyncio.to_thread(fn, *args),
             states=types.SimpleNamespace(get=self.states.get),
             services=types.SimpleNamespace(async_call=AsyncMock(side_effect=self.report_write)),
@@ -831,6 +896,11 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.runtime._schedule_save = lambda: None
         self.now = time.time()
+        from tuner_under_test.history.daystore import DayStore
+
+        self.runtime._days = DayStore(
+            Path(self.hass.config.path(".storage", "ld2410_tuner", "history"))
+        )
 
     async def report_write(self, domain, service, data, **kwargs):
         if domain == "number" and service == "set_value":
@@ -852,13 +922,12 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.runtime._record_history_sample(
                 "a", {"g0_move": 95 if i == 190 else i % 20}, self.now - 21600 + i * 60
             )
-        self.runtime._flush_history_block("a")
         six = self.runtime.history_series_multi("a", ["g0_move"], 6, 400, self.now)
         day = self.runtime.history_series_multi("a", ["g0_move"], 24, 400, self.now)
         self.assertEqual(six["end"], day["end"])
         for result in (six, day):
             series = result["series"]["g0_move"]
-            self.assertEqual(series["sample_count"], 360)
+            self.assertAlmostEqual(series["sample_count"], 21600 / 6, places=3)  # Duration.
             self.assertEqual(max(p["max"] for p in series["points"]), 95)
             self.assertEqual(min(p["min"] for p in series["points"]), 0)
         again = self.runtime.history_series_multi("a", ["g0_move"], 6, 400, self.now)
@@ -896,7 +965,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.device.update(
             training_state="present", training_label_start=28, training_expires_at=35
         )
-        read = training._history_label_reader(self.device)
+        read = label_lookup._history_label_reader(self.device)
         for timestamp in (-1, 0, 9, 10, 15, 19, 20, 24, 25, 28, 30, 34, 35, 100):
             self.assertEqual(
                 read(timestamp), self.runtime._manual_history_state(self.device, timestamp)
@@ -909,41 +978,61 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "labels changed"):
             await self.runtime.apply("a")
 
-    def test_constant_signal_is_sampled_without_state_events(self):
+    def test_native_rebuild_never_readds_preconversion_histogram_mass(self):
+        histogram = [0] * 101
+        histogram[10] = 40
+        self.device["histograms"] = {"g0_move": {"present": histogram, "not_present": [0] * 101}}
+        self.device.update(training_state="present", training_label_start=self.now - 12)
+        for timestamp in (self.now - 12, self.now - 6, self.now):
+            self.sample(timestamp)
+        with patch.object(time, "time", return_value=self.now):
+            rebuilt = training._rebuild_histograms(self.runtime, self.device)
+        self.assertAlmostEqual(sum(rebuilt["g0_move"]["present"]), 2, places=2)
+
+    def test_constant_signal_is_counted_without_state_events(self):
         self.device.update(training_state="present", training_label_start=self.now - 1)
         for i in range(3):
             self.sample(self.now + i * 6)
-        self.assertEqual(sum(self.device["histograms"]["g0_move"]["present"]), 3)
+        # Polls at 0, 6 and 12 s observe 12 s of an unchanged reading: two 6 s units.
+        self.assertAlmostEqual(sum(self.device["histograms"]["g0_move"]["present"]), 2, places=2)
 
     def test_unavailable_reading_is_not_reused(self):
         self.sample(self.now)
         self.sample(self.now + 6, "unavailable")
         self.assertEqual(self.runtime._live["a"], {})
-        self.assertEqual(len(list(self.runtime._iter_history_samples(self.device))), 1)
+        with patch.object(time, "time", return_value=self.now + 9):
+            cells = [(c.start, c.end, c.values[0]) for c in spans.events(self.runtime, "a")]
+        start = cells[0][0]
+        self.assertEqual([value for _a, _b, value in cells], [10, None])
+        self.assertAlmostEqual(cells[0][1] - start, 6, places=2)
 
     def test_buffered_history_visible_immediately(self):
         self.sample(self.now - 2)
-        result = self.runtime.history_series_multi("a", ["g0_move"], 1)
-        self.assertEqual(result["series"]["g0_move"]["sample_count"], 1)
+        with patch.object(time, "time", return_value=self.now):
+            result = self.runtime.history_series_multi("a", ["g0_move"], 1)
+        self.assertAlmostEqual(result["series"]["g0_move"]["sample_count"], 2 / 6, places=2)
+        self.assertEqual(max(p["max"] for p in result["series"]["g0_move"]["points"]), 10)
         self.assertEqual(self.device.get("history", []), [])
 
     def test_relabel_is_idempotent_and_does_not_duplicate_initial_training(self):
         self.device.update(training_state="present", training_label_start=self.now - 20)
         self.sample(self.now - 12)
         self.sample(self.now - 6)
-        for _ in range(2):
-            self.runtime.label_history_range("a", self.now - 15, self.now - 1, "not_present")
+        with patch.object(time, "time", return_value=self.now - 1):
+            for _ in range(2):
+                self.runtime.label_history_range("a", self.now - 15, self.now - 1, "not_present")
         hist = self.device["histograms"]["g0_move"]
         self.assertEqual(sum(hist["present"]), 0)
-        self.assertEqual(sum(hist["not_present"]), 2)
+        self.assertAlmostEqual(sum(hist["not_present"]), 11 / 6, places=2)  # [-12, -1) s.
 
     def test_unknown_clears_only_requested_half_open_range(self):
         self.device.update(training_state="present", training_label_start=self.now - 20)
         self.sample(self.now - 12)
         self.sample(self.now - 6)
-        self.runtime.label_history_range("a", self.now - 12, self.now - 6, "unknown")
+        with patch.object(time, "time", return_value=self.now):
+            self.runtime.label_history_range("a", self.now - 12, self.now - 6, "unknown")
         hist = self.device["histograms"]["g0_move"]
-        self.assertEqual(sum(hist["present"]), 1)
+        self.assertAlmostEqual(sum(hist["present"]), 1, places=2)  # [-6, 0) s stays present.
 
     def test_empty_auto_training_is_unknown(self):
         result = self.runtime._classify_auto(self.device, {"g0_move": 50})
@@ -959,18 +1048,22 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.clear_samples("a")
         self.assertNotIn("last_learning", self.device)
         self.assertEqual(self.device["training_state"], "unknown")
-        self.assertEqual(list(self.runtime._iter_history_samples(self.device)), [])
+        self.assertEqual(list(spans.events(self.runtime, "a")), [])
 
     def test_unknown_device_training_rejected(self):
         with self.assertRaises(ValueError):
             self.runtime.set_training_state("bogus", "present")
         self.assertNotIn("bogus", self.runtime.data["devices"])
 
-    def test_long_history_gap_does_not_overflow_offset(self):
+    def test_far_apart_readings_keep_their_exact_times_across_days(self):
         self.runtime._record_history_sample("a", {"g0_move": 10}, self.now - 70000)
         self.runtime._record_history_sample("a", {"g0_move": 20}, self.now)
-        timestamps = [ts for ts, _ in self.runtime._iter_history_samples(self.device)]
-        self.assertEqual(timestamps, [self.now - 70000, self.now])
+        with patch.object(time, "time", return_value=self.now + 1):  # Read after the reading.
+            changes = [(c.start, c.values[0]) for c in spans.events(self.runtime, "a")]
+        self.assertAlmostEqual(changes[0][0], self.now - 70000, places=2)
+        self.assertEqual(changes[0][1], 10)
+        self.assertAlmostEqual(changes[-1][0], self.now, places=2)
+        self.assertEqual(changes[-1][1], 20)
 
     async def test_cancelled_timeout_cannot_remove_replacement(self):
         self.runtime.set_training_state("a", "present", 100)
@@ -1012,7 +1105,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.states[entity_id] = types.SimpleNamespace(state=str(limit))
         entities, current = self.runtime._threshold_configuration("a")
         self.device["last_learning"] = {
-            "method": "human_priority_v10",
+            "method": "human_priority_v11",
+            **sys.modules["tuner_under_test.calibration.settings"].signature(self.runtime.data),
             "status": "ok",
             "entities": entities,
             "configuration": current,
@@ -1085,8 +1179,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chart_executor_includes_pending_data(self):
         self.sample(self.now - 2)
-        result = await self.runtime.async_history_series("a", ["g0_move"], 1, 400)
-        self.assertEqual(result["series"]["g0_move"]["sample_count"], 1)
+        with patch.object(time, "time", return_value=self.now):
+            result = await self.runtime.async_history_series("a", ["g0_move"], 1, 400)
+        self.assertAlmostEqual(result["series"]["g0_move"]["sample_count"], 2 / 6, places=2)
 
     async def test_learning_executor_does_not_use_unlabelled_auto_samples(self):
         self.configuration()
@@ -1105,14 +1200,17 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 values["g0_move" if i % 2 else "g2_still"] = 30
             row = bytes(values.get(key, 255) for key in constants.HISTORY_KEYS)
             samples.append((start + i * 6, row))
-        self.runtime._history_runtime["a"] = {"samples": samples}
+        record_rows(self.runtime, "a", samples)
         self.device["history_labels"] = [
             {"start": start, "end": start + 600, "state": "present"},
             {"start": start + 600, "end": self.now, "state": "not_present"},
         ]
         learned = await self.runtime.async_learn("a")
         self.assertEqual(learned["status"], "ok")
-        self.assertEqual(learned["validation"]["sensitivity"], 1)
+        # One occupied then one empty episode cannot provide both classes before
+        # and after a chronological cut; do not certify a random within-episode split.
+        self.assertIsNone(learned["validation"])
+        self.assertFalse(learned["adaptive_policy"]["validated"])
         result = await self.runtime.apply("a")
         self.assertEqual(set(result["applied"]), set(keys))
         self.assertEqual(result["skipped"], {})
@@ -1130,7 +1228,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 values["g0_move" if i % 2 else "g2_still"] = 30
             row = bytes(values.get(key, 255) for key in constants.HISTORY_KEYS)
             samples.append((start + i * 6, row))
-        self.runtime._history_runtime["a"] = {"samples": samples}
+        record_rows(self.runtime, "a", samples)
         self.device["history_labels"] = [
             {"start": start, "end": start + 600, "state": "present"},
             {"start": start + 600, "end": self.now, "state": "not_present"},
@@ -1198,67 +1296,60 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             states.append(self.device["auto"]["last_classification"]["state"])
         self.assertNotIn("present", states)
 
-    def test_guess_survives_history_flush_as_a_quantised_run_and_old_blocks_still_read(self):
+    def test_a_guess_is_recorded_as_a_quantised_run(self):
         self.device["auto"] = {
             "last_classification": {"state": "present", "confidence": 0.73, "timestamp": self.now}
         }
         self.runtime._record_history_sample("a", {"g0_move": 20}, self.now)
-        self.runtime._flush_history_block("a")
-        self.assertEqual(self.device["history"][0]["version"], 4)
-        self.assertEqual(len(list(self.runtime._iter_history_samples(self.device))[0][1]), 18)
         # 73 % is stored in steps of 5 %: 15 steps.
         known = guesses.of(self.runtime, "a")
-        self.assertEqual(known.of_sample(self.now)[2:], ("present", 15, guesses.REFERENCE))
-        self.assertEqual(known.sample_guess(self.now), ("present", "automatic", 0.75))
-        old_raw = struct.pack(">H", 0) + bytes([5] * 18)
-        self.device["history"].append(
-            {
-                "start": self.now + 6,
-                "count": 1,
-                "data": base64.b64encode(zlib.compress(old_raw)).decode(),
-            }
-        )
-        rows = list(self.runtime._iter_history_samples(self.device))
-        self.assertEqual(len(rows[-1][1]), 18)
+        self.assertEqual(known.runs[0][2:], ("present", 15, guesses.REFERENCE))
+        self.assertEqual(known.sample_guess(known.runs[0][0]), ("present", "automatic", 0.75))
 
     def test_manual_corrections_and_explicit_unknown_override_guesses(self):
+        self.now = round(self.now, 3)
         self.configuration()
         keys = list(self.device["last_learning"]["entities"])
         values = bytes(30 if key in keys else 255 for key in constants.HISTORY_KEYS)
-        self.runtime._history_runtime["a"] = pending(
-            [(self.now - 12, values + bytes((1, 90))), (self.now - 6, values + bytes((1, 90)))]
+        record_rows(
+            self.runtime,
+            "a",
+            [(self.now - 12, values + bytes((1, 90))), (self.now - 6, values + bytes((1, 90)))],
         )
         self.runtime.label_history_range("a", self.now - 15, self.now - 9, "not_present")
         self.runtime.label_history_range("a", self.now - 9, self.now - 1, "unknown")
         entities, current = self.runtime._threshold_configuration("a")
         result = self.runtime._fit_history("a", entities, current)
-        self.assertEqual(result["counts"]["not_present"], 1)
+        # The empty label covers 3 s of the first reading (held until the next): half a sample.
+        self.assertAlmostEqual(result["counts"]["not_present"], 0.5, places=4)
         self.assertEqual(result["automatic_evidence"]["samples"]["present"], 0)
 
-    def test_ungrouped_radar_collect_samples_unchanged(self):
-        # Equals the characterisation ``device_fit`` input rows: an ungrouped radar's
-        # evidence is its own labels only, whatever room attribution exists elsewhere.
-        evidence = sys.modules["tuner_under_test.calibration.evidence"]
+    def test_ungrouped_radar_evidence_is_its_own_labels_only(self):
+        # An ungrouped radar's labelled evidence is its own labels only, whatever room
+        # attribution exists elsewhere: no room snapshot travels with its views.
+        from tuner_under_test.calibration import event_fitting
+
         row = {40: bytes([40] + [255] * 17), 5: bytes([5] + [255] * 17)}
-        self.runtime._history_runtime["a"] = {
-            "samples": [(i, row[40 if i < 100 else 5]) for i in range(200)]
-        }
+        start = round(self.now - 1300, 3)
+        record_rows(
+            self.runtime, "a", [(start + i * 6, row[40 if i < 100 else 5]) for i in range(200)]
+        )
         self.device["history_labels"] = [
-            {"start": 0, "end": 100, "state": "present"},
-            {"start": 100, "end": 200, "state": "not_present"},
+            {"start": start, "end": start + 600, "state": "present"},
+            {"start": start + 600, "end": start + 1200, "state": "not_present"},
         ]
-        with patch.object(time, "time", return_value=1000):
-            rows, guesses = evidence.collect_samples(self.runtime, "a", ["g0_move"])
-            view_rows, _ = evidence.collect_samples(
-                self.runtime._history_view("a"), "a", ["g0_move"]
-            )
-        expected = row_samples({"g0_move": 40}, {"g0_move": 5})
-        self.assertEqual(rows, expected)
-        self.assertEqual(view_rows, expected)
-        self.assertEqual(guesses, [])
-        self.assertIsNone(self.runtime._history_view("a").data["room_snapshot"])
+        view = self.runtime._history_view("a")
+        self.assertIsNone(view.data["room_snapshot"])
+        objective = event_fitting._objective(
+            view, "a", ["g0_move"], {"g0_move": 20}, {}, 0.0, None, start, start + 1200
+        )
+        found = {(state, source) for _low, _high, _readings, state, source, _c in objective.regions}
+        self.assertEqual(found, {("present", "human"), ("not_present", "human")})
+        present = sum(b - a for a, b, _r, state, *_ in objective.regions if state == "present")
+        self.assertAlmostEqual(present, 600)
 
     async def test_persisted_guesses_reach_learner_with_confidence(self):
+        self.now = round(self.now, 3)
         self.configuration()
         keys = list(self.device["last_learning"]["entities"])
         samples = []
@@ -1268,17 +1359,18 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 values["g0_move"] = 30
             row = bytes(values.get(key, 255) for key in constants.HISTORY_KEYS)
             samples.append((self.now - 1200 + i * 6, row + bytes((1 if i < 100 else 2, 100))))
-        self.runtime._history_runtime["a"] = pending(samples)
-        self.runtime._flush_history_block("a")
+        record_rows(self.runtime, "a", samples)
         result = await self.runtime.async_learn("a")
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["evidence_basis"], "automatic")
         self.assertEqual(
-            result["automatic_evidence"]["samples"], {"present": 100, "not_present": 100}
+            # Six-second units of recorded time; the recording's last reading holds half a sample.
+            result["automatic_evidence"]["samples"],
+            {"present": 100, "not_present": 99.5},
         )
         self.assertAlmostEqual(
             result["automatic_evidence"]["mean_confidence"]["present"],
-            calibration_constants.TRUST_PRESENT[-1][1],
+            0.75,  # Recorded confidence 1.0 times the learner's unvalidated prior.
         )
         applied = await self.runtime.apply("a")
         self.assertEqual(set(applied["applied"]), set(keys))
@@ -1293,9 +1385,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_format_cleanup_preserves_current_model_recommendation(self):
         self.sample(self.now - 10)
-        self.runtime._flush_history_block("a")
         self.device["last_learning"] = {
-            "method": sys.modules["tuner_under_test.calibration.fitting"].METHOD,
+            "method": sys.modules["tuner_under_test.calibration.constants"].METHOD,
             "status": "ok",
         }
         saved = self.device["last_learning"]
@@ -1305,40 +1396,46 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("history_cleanup", self.device)
 
     async def test_invalid_history_cleanup_invalidates_recommendation(self):
+        from tuner_under_test.history import convert
+
         self.device["history"] = [{"data": "corrupt"}]
         self.device["last_learning"] = {
-            "method": sys.modules["tuner_under_test.calibration.fitting"].METHOD,
+            "method": sys.modules["tuner_under_test.calibration.constants"].METHOD,
             "status": "ok",
         }
         self.hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
+        convert.run(self.runtime.data, self.runtime._days, self.now)
+        self.assertEqual(self.device["history_cleanup"]["invalid_blocks"], 1)
         await self.runtime.async_clean_history(persist=False)
         self.assertNotIn("last_learning", self.device)
-        self.assertEqual(self.device["history"], [])
-        self.assertEqual(self.device["history_cleanup"]["invalid_blocks"], 1)
+        self.assertNotIn("history", self.device)
+        self.assertEqual(list(spans.events(self.runtime, "a")), [])
 
-    async def test_cleanup_does_not_overwrite_concurrent_sample(self):
+    async def test_a_reading_recorded_during_cleanup_is_kept(self):
         self.sample(self.now - 10)
-        self.runtime._flush_history_block("a")
-        original = self.runtime.data["devices"]["a"]["history"]
 
         def executor(fn, *args):
             result = fn(*args)
-            self.sample(self.now)
+            self.sample(self.now, 30)
             return result
 
         self.hass.async_add_executor_job = AsyncMock(side_effect=executor)
         await self.runtime.async_clean_history()
-        self.assertIs(self.device["history"], original)
-        self.assertEqual(len(self.runtime._history_runtime["a"]["samples"]), 1)
-        self.assertNotIn("history_cleanup", self.device)
+        with patch.object(time, "time", return_value=self.now + 1):  # Read after the reading.
+            values = [c.values[0] for c in spans.events(self.runtime, "a")]
+        self.assertEqual(values[0], 10)
+        self.assertEqual(values[-1], 30)
 
-    async def test_unload_flushes_partial_history(self):
+    async def test_unload_ends_coverage_and_writes_the_day_files(self):
         self.sample(self.now - 2)
         self.hass.data = {mod.DOMAIN: self.runtime}
         mod.frontend.async_panel_exists = lambda *a: False
-        await mod.async_unload_entry(self.hass, None)
-        self.assertEqual(self.device["history"][0]["count"], 1)
+        with patch.object(time, "time", return_value=self.now):
+            await mod.async_unload_entry(self.hass, None)
+        self.assertIsNone(self.runtime._days.current("a"))
+        self.assertTrue(any(self.runtime._days.folder("a").glob("*.log")))
         self.runtime.store.async_save.assert_awaited_once()
+        self.assertNotIn("history", self.device)
 
 
 if __name__ == "__main__":

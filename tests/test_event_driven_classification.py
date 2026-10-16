@@ -7,6 +7,7 @@ temporal filter and the confirmation integrate over the time the result was reus
 
 import importlib.util
 import sys
+import time
 import types
 import unittest
 from copy import deepcopy
@@ -155,7 +156,11 @@ class TickTests(unittest.IsolatedAsyncioTestCase):
 
     def test_a_tick_is_recorded_whether_or_not_it_was_classified(self):
         self.run_ticks(30)
-        self.assertGreater(len(self.runtime._history_runtime["a"]["samples"]), 3)
+        spans = sys.modules["tuner_under_test.history.spans"]
+        with patch.object(time, "time", return_value=self.now + 30):
+            covered = spans.coverage(spans.events(self.runtime, "a"))
+        self.assertEqual(len(covered), 1)  # One unchanged reading, observed all along.
+        self.assertAlmostEqual(covered[0][1] - covered[0][0], 30, places=2)
         self.assertEqual(self.runtime._live["a"], {KEY: 10.0})
 
     def test_nothing_is_reused_after_readings_stop_and_resume(self):

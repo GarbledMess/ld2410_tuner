@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import time
+
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .. import entity_index
 from ..const import GATE_RE
+from ..history import ingest
 from ..rooms import groups, membership
 
 
@@ -47,6 +50,7 @@ def refresh_devices(runtime, registry: er.EntityRegistry) -> None:
     for existing_id, existing in runtime.data["devices"].items():
         if existing_id not in devices:
             existing["entities"] = {}
+            ingest.end(runtime, existing_id, time.time())  # Removed: nothing more is observed.
     for device_id, info in devices.items():
         runtime.data["devices"].setdefault(device_id, {"recording_enabled": False})
         runtime.data["devices"][device_id]["entities"] = dict(info["entities"])
@@ -72,16 +76,27 @@ def handle_state_change(runtime, event) -> None:
     if not match or match.group("metric") != "energy":
         return
 
-    try:
-        value = float(new_state.state)
-    except (TypeError, ValueError):
-        return
-    if not 0 <= value <= 100:
-        return
-
     device = runtime.data["devices"].get(entity.device_id)
     if not device:
         return
 
     key = f"g{match.group('gate')}_{match.group('kind')}"
-    runtime._live.setdefault(entity.device_id, {})[key] = value
+    value = _energy(new_state.state)
+    if value is not None:
+        runtime._live.setdefault(entity.device_id, {})[key] = value
+    ingest.change(runtime, entity.device_id, {key: value}, _event_time(new_state))
+
+
+def _energy(state):
+    """A delivered energy reading, or None for unavailable, non-numeric or out-of-range."""
+    try:
+        value = float(state)
+    except (TypeError, ValueError):
+        return None
+    return value if 0 <= value <= 100 else None
+
+
+def _event_time(new_state):
+    """When Home Assistant set the state; receipt time when the state carries none."""
+    updated = getattr(new_state, "last_updated", None)
+    return updated.timestamp() if updated is not None else time.time()

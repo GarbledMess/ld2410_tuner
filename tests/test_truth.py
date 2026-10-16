@@ -2,16 +2,18 @@
 
 import types
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
+import room_scenes
 import test_rooms as rooms_harness
 import test_tuner as harness
-from sample_rows import samples_of
+from sample_rows import found_of
 from tuner_under_test.rooms import (
     application,
     assessment,
     attribution,
-    evidence,
     fitting,
     groups,
     jobs,
@@ -115,7 +117,7 @@ class PrecedenceTests(unittest.TestCase):
         ]
         for case in cases:
             inputs = dict(enumerate(case))
-            expected = evidence.room_label(inputs, 50)
+            expected = room_scenes.room_label(inputs, 50)
             with self.subTest(case=expected):
                 for group_id in GROUPS:
                     self.assertEqual(at(group_id, inputs), expected)
@@ -215,7 +217,8 @@ class AssessmentTests(unittest.TestCase):
         report = assessment.calculate(data, 0, 1200, room)
         human = report["room"]["outcomes"]["human"]
         self.assertAlmostEqual(human["present"]["seconds"], 399)
-        self.assertAlmostEqual(human["not_present"]["seconds"], 201 + 600 - 6)
+        # Readings held until the next; the recording's last holds half a sample (to 1197).
+        self.assertAlmostEqual(human["not_present"]["seconds"], 201 + 600 - 3)
 
     def test_objective_and_fit_use_room_truth(self):
         data = {"a": office_member("a"), "b": office_member("b")}
@@ -373,7 +376,7 @@ class FeedbackTests(unittest.TestCase):
         right = self.run_feedback(guess_records([1] * 20), True)
         self.assertEqual(
             right["room_labels"],
-            [{"start": 0, "end": 117, "state": "present", "source": "manual"}],
+            [{"start": 0, "end": 120, "state": "present", "source": "manual"}],
         )
         wrong = self.run_feedback(guess_records([1] * 20), False)
         self.assertEqual(wrong["room_labels"][0]["state"], "not_present")
@@ -394,9 +397,9 @@ class FeedbackTests(unittest.TestCase):
         flipped = guess_records([1] * 8 + [2] + [1] * 11)
         for _ in range(2):  # Never stuck: the same request succeeds again.
             result = self.run_feedback(flipped, True)
-            # The first agreeing sample (54) from its cell start, to the last cell's end.
-            self.assertEqual(result["room_labels"][0]["start"], 51)
-            self.assertEqual(result["room_labels"][0]["end"], 117)
+            # A recorded change at 54 holds until the explicit coverage end.
+            self.assertEqual(result["room_labels"][0]["start"], 54)
+            self.assertEqual(result["room_labels"][0]["end"], 120)
 
     def test_a_recording_gap_ends_the_stretch(self):
         records = guess_records([1] * 5) + guess_records([1] * 5, first=90)
@@ -430,21 +433,35 @@ class FeedbackTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.run_feedback(records, True)
 
-    def member_runtime(self, records):
-        """Each member (``records`` key) with its own recorded rows."""
+    def member_runtime(self, records, ends=None):
+        """Synthetic native traces; each row holds six seconds, gaps explicitly end sessions."""
+        from tuner_under_test.history import dayfile, daystore, guesses
 
-        stored = {key: harness.guessed(item) for key, item in records.items()}
-
-        def samples(device, since=0, until=float("inf")):
-            return iter(stored[device["key"]][0])
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        store = daystore.DayStore(Path(folder.name))
+        for key, rows in records.items():
+            previous = None
+            for timestamp, row in rows:
+                if previous is not None and timestamp - previous > guesses.GAP:
+                    store.append(key, dayfile.End(previous + 6))
+                store.append(key, dayfile.Change(timestamp, dict(enumerate(row[:18]))))
+                state = {1: "present", 2: "not_present"}.get(row[18])
+                store.append(
+                    key, dayfile.Guess(timestamp, state, guesses.level(row[19]), guesses.UNKNOWN)
+                )
+                previous = timestamp
+            if previous is not None:
+                store.append(key, dayfile.End((ends or {}).get(key, previous + 6)))
 
         return types.SimpleNamespace(
             data={
-                "devices": {key: {"key": key, "guess_runs": stored[key][1]} for key in records},
+                "devices": {key: {"key": key} for key in records},
                 "room_labels": {},
             },
+            _days=store,
             _history_runtime={},
-            _iter_history_samples=samples,
+            _iter_history_samples=lambda *args, **kwargs: iter(()),
             _schedule_save=lambda: None,
         )
 
@@ -469,17 +486,20 @@ class FeedbackTests(unittest.TestCase):
                     members = list(runtime.data["devices"])
                     self.assertIsNone(room_labels.current_estimate(runtime, members))
             # b still guesses (newest 111): the estimate holds to b's last estimated cell.
-            guessing = self.member_runtime({"a": stopped, "b": guess_records([1] * 19, first=3)})
+            guessing = self.member_runtime(
+                {"a": stopped, "b": guess_records([1] * 19, first=3)}, ends={"a": 114, "b": 114}
+            )
             estimate = room_labels.current_estimate(guessing, ["a", "b"])
         self.assertEqual((estimate["state"], estimate["end"]), ("present", 114.0))
-        # b's newest guess (114) anchors it; a's last cell runs past (to 115) before a's
-        # unguessed 118. The walk starts at the anchor, where both members agree (0.99).
+        # b's explicit end (114) anchors it; a's present coverage runs until 118,
+        # then unguessed coverage through 120. Both agree throughout the anchored stretch.
         overlap = self.member_runtime(
-            {"a": guess_records([1] * 19 + [0], first=4), "b": guess_records([1] * 20)}
+            {"a": guess_records([1] * 19 + [0], first=4), "b": guess_records([1] * 20)},
+            ends={"a": 120, "b": 114},
         )
         with patch.object(room_labels.time, "time", return_value=120.0):
             estimate = room_labels.current_estimate(overlap, ["a", "b"])
-        self.assertEqual((round(estimate["confidence"], 6), estimate["end"]), (0.9975, 117.0))
+        self.assertEqual((round(estimate["confidence"], 6), estimate["end"]), (0.9975, 114.0))
         with self.assertRaises(ValueError):
             self.run_feedback(stopped, True, now=115.0)
 
@@ -501,7 +521,7 @@ class FeedbackTests(unittest.TestCase):
             estimate = room_labels.current_estimate(runtime, ["a", "b"])
         self.assertEqual(
             {key: round(value, 6) for key, value in estimate.items() if key != "state"},
-            {"confidence": 0.9975, "start": 51, "end": 117},
+            {"confidence": 0.9975, "start": 54, "end": 120},
         )
         self.assertEqual(estimate["state"], "present")
         with patch.object(room_labels.time, "time", return_value=500.0):
@@ -542,7 +562,9 @@ class TrainingObjectiveTests(unittest.TestCase):
             "b": guessed_member("b", values, own, quiet),
         }
         automatic = self.preferences(data)[1]  # Members are fitted in order: a, then b.
-        self.assertGreater(len(automatic["present"]), 40)
+        # 50 samples of b's present guess, by how long the readings held (six-second units;
+        # the recording's last reading holds half a sample).
+        self.assertAlmostEqual(sum(row[4] for row in automatic["present"]), 49.5)
         # Recorded confidence is kept in steps of GUESS_CONFIDENCE_STEP (99 % is stored as
         # 100 %), and counts as calibrated (0.95), the room label of two agreeing members.
         self.assertEqual({row[3] for row in automatic["present"]}, {0.95})
@@ -551,7 +573,8 @@ class TrainingObjectiveTests(unittest.TestCase):
 class WeightedTargetTests(unittest.TestCase):
     def target(self, *labels):
         truths = {f"g{i}": (lambda _t, x=x: x) for i, x in enumerate(labels)}
-        return attribution.weighted_member_target("r", samples_of([]), lambda _t: None, truths)(0)
+        found = found_of("r", [], lambda _t: None, truths)
+        return attribution.weighted_member_target("r", lambda _t: None, truths, found=found)(0)
 
     def test_mixed_human_and_automatic_empty_is_automatic_at_minimum_confidence(self):
         human, auto_ = ("not_present", "human", 1.0), ("not_present", "automatic", 0.7)
@@ -610,7 +633,7 @@ class SensorLevelTests(unittest.TestCase):
             {"a": device("unknown"), "b": device(automatic=auto("present", 0.7))},
         ):
             with self.subTest(inputs=inputs):
-                expected = evidence.room_label(inputs, 50)
+                expected = room_scenes.room_label(inputs, 50)
                 self.assertEqual(self.assessed(view("area:office"), inputs), expected)
                 self.assertEqual(self.assessed(sensor_room(end=40), inputs), expected)
 

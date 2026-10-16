@@ -3,13 +3,15 @@
 from functools import lru_cache
 from hashlib import blake2b
 
+from ..calibration import thresholds as threshold_domain
+from ..calibration.constants import SAMPLE_SECONDS
 from ..calibration.duration import DurationGroup
 from ..calibration.intervals import WeightedTime, across
 from ..calibration.metrics import threshold_masks
-from ..calibration.scoring import automatic_share, blended_cost, error_cost
+from ..calibration.scoring import automatic_share, blended_cost, episode_share, error_cost
 from ..calibration.separation import gate_preference
 from ..calibration.settings import DEFAULT_AUTOMATIC_WEIGHT
-from . import attribution, evidence, replay, roles, truth
+from . import adaptive, attribution, evidence, replay, roles, truth
 from .intervals import Timeline
 
 # Projections of a radar kept for reuse: the other radars do not change while one is searched.
@@ -23,11 +25,48 @@ def fingerprint(bits):
     return blake2b(bits.to_bytes((bits.bit_length() + 7) // 8, "little"), digest_size=16).digest()
 
 
+def _supported_tables(rows, key, tables, supported):
+    """Gate eligibility depends on 101 bins, independent of retained sample count."""
+    flags = bytes(0x31 if value in supported else 0x30 for value in range(256))
+    column = rows.column(key)
+    allowed = int(column.translate(flags)[::-1], 2) if column else 0
+    return tuple(bits & allowed for bits in tables)
+
+
+def _held(rows):
+    """How long each row held, in six-second units (a sampled row: one sample)."""
+    if rows.ends is None:
+        return [1] * len(rows)
+    return [
+        (end - start) / SAMPLE_SECONDS for start, end in zip(rows.times, rows.ends, strict=True)
+    ]
+
+
 class Radar:
-    def __init__(self, item, inputs):
+    def __init__(self, item, inputs, quality=None):
         rows, barriers = inputs["rows"], inputs["barriers"]
         self.current = item["thresholds"]
+        self.allowed = {
+            key: threshold_domain.allowed(item.get("constraints", {}).get(key))
+            for key in self.current
+        }
         self.tables = {key: threshold_masks(rows, key) for key in self.current}
+        self.supported_values = (
+            {}
+            if quality is None
+            else {
+                key: frozenset(value for value in range(101) if quality.supports(key, value))
+                for key in self.current
+            }
+        )
+        self.automatic_tables = (
+            self.tables
+            if quality is None
+            else {
+                key: _supported_tables(rows, key, tables, self.supported_values[key])
+                for key, tables in self.tables.items()
+            }
+        )
         self.positive = DurationGroup(rows, item["timing"], barriers=barriers, measured=False)
         self.negative = DurationGroup(
             rows, item["timing"], absent=True, barriers=barriers, measured=False
@@ -42,6 +81,12 @@ class Radar:
             result |= self.tables[key][value]
         return result
 
+    def automatic_bits(self, thresholds):
+        result = 0
+        for key, value in thresholds.items():
+            result |= self.automatic_tables[key][value]
+        return result
+
     def name(self, thresholds):
         """The ``fingerprint`` of the hit mask ``thresholds`` give, kept for the thresholds: a
         search asks about the same few thousand again and again."""
@@ -50,8 +95,28 @@ class Radar:
         if found is None:
             if len(self.named) > NAMED:
                 self.named.clear()
-            found = self.named[key] = fingerprint(self.bits(thresholds))
+            found = self.named[key] = (
+                fingerprint(self.bits(thresholds)),
+                fingerprint(self.automatic_bits(thresholds)),
+            )
         return found
+
+
+def _shares(objective, label, spans):
+    """Each source's share of its ``label`` mass inside its ``spans`` (None without mass);
+    sources given the same spans are integrated together (their masses share their times),
+    with the same results."""
+    found, groups = {}, {}
+    for source, chosen in spans.items():
+        if objective.totals[source, label]:
+            groups.setdefault(id(chosen), (chosen, []))[1].append(source)
+        else:
+            found[source] = None
+    for chosen, sources in groups.values():
+        masses = [objective.mass[source, label] for source in sources]
+        for source, total in zip(sources, across(masses, *chosen), strict=True):
+            found[source] = total / objective.totals[source, label]
+    return found
 
 
 def room_mass(context, coverage, start, end):
@@ -81,7 +146,16 @@ def room_mass(context, coverage, start, end):
 
 class Objective:
     def __init__(
-        self, members, start, end, room=None, shared=None, automatic_weight=DEFAULT_AUTOMATIC_WEIGHT
+        self,
+        members,
+        start,
+        end,
+        room=None,
+        shared=None,
+        automatic_weight=DEFAULT_AUTOMATIC_WEIGHT,
+        *,
+        quality=None,
+        reference=False,
     ):
         """``shared`` ({device_id: (inputs, Radar)}) lets linked groups read and replay a
         radar once; room truth and preferences stay per group. Attribution is the learner's
@@ -89,20 +163,63 @@ class Objective:
         ``automatic_weight`` blends automatic room truth into the ranked cost, as in the
         device learner (``scoring.automatic_share``)."""
         self.start, self.end = start, end
+        self.quality = None if quality is None else adaptive.models(quality)
+        self.reference = self.quality is not None and (reference or automatic_weight == 0)
         owner = shared is None  # A linked group leaves the samples to its set.
         shared = {} if shared is None else shared
-        for key, item in members.items():
-            if key not in shared:
-                inputs = evidence.read(item["view"], key, item["thresholds"], start, end)
-                shared[key] = inputs, Radar(item, inputs)
-        self.inputs = {key: shared[key][0] for key in members}
-        self.truth = truth.for_view(room, self.inputs)
-        self.radars = {key: shared[key][1] for key in members}
+        self._members(members, shared, start, end)
+        self.truth = (
+            truth.for_view(room, self.inputs)
+            if self.quality is None
+            else adaptive.corrected_truth(room, self.inputs)
+        )
         self.current = {key: dict(item["thresholds"]) for key, item in members.items()}
         coverage = replay.shared(radar.projector.coverage for radar in self.radars.values())
         self.known = {}  # Rates by the hit masks that gave them.
         self.mass = room_mass(self.truth, coverage, start, end)
         self.totals = {key: value.between(start, end) for key, value in self.mass.items()}
+        self._sources(automatic_weight)
+        self.preferences = self._member_preferences(members, room)
+        self.preferred = {
+            device: {
+                key: min(
+                    self.radars[device].allowed[key],
+                    key=lambda candidate: (
+                        abs(candidate - value["preferred_threshold"]),
+                        -candidate,
+                    ),
+                )
+                for key, value in gates.items()
+            }
+            for device, gates in self.preferences.items()
+        }
+        if owner:
+            self.drop_rows()
+
+    def _members(self, members, shared, start, end):
+        for key, item in members.items():
+            if key not in shared:
+                model = self.quality[key] if self.quality is not None else None
+                inputs, radar = self._radar(item, key, start, end, model)
+                shared[key] = inputs, radar
+        self.inputs = {key: shared[key][0] for key in members}
+        self.radars = {key: shared[key][1] for key in members}
+
+    @staticmethod
+    def _radar(item, key, start, end, model):
+        if "adaptive_inputs" in item:
+            return dict(item["adaptive_inputs"]), item["adaptive_radar"]
+        inputs = evidence.read(
+            item["view"],
+            key,
+            item["thresholds"],
+            start,
+            end,
+            automatic_reader=adaptive.CorrectedReader(model) if model else None,
+        )
+        return inputs, Radar(item, inputs, model)
+
+    def _sources(self, automatic_weight):
         self.counted = tuple(  # The sources with mass in each class.
             [source for source in SOURCES if self.totals[source, label]]
             for label in evidence.LABELS
@@ -116,26 +233,39 @@ class Objective:
         self.automatic_room = "human" not in self.sources
         self.shares = tuple(
             0
-            if self.automatic_room
-            else automatic_share(
-                automatic_weight, self.totals["human", label], self.totals["automatic", label]
+            if self.automatic_room or self.reference
+            else (automatic_share if self.quality is None else episode_share)(
+                automatic_weight, *self._support(label)
             )
             for label in evidence.LABELS
         )
-        self.preferences = {
-            key: self._preferences(key, roles.target(members, room, key)) for key in members
+
+    def _member_preferences(self, members, room):
+        return {
+            key: self._preferences(
+                key,
+                roles.target(members, room, key)
+                if self.quality is None
+                else adaptive.target(members, room, key, self.quality),
+            )
+            for key in members
         }
-        self.preferred = {
-            device: {key: value["preferred_threshold"] for key, value in gates.items()}
-            for device, gates in self.preferences.items()
-        }
-        if owner:
-            self.drop_rows()
 
     def drop_rows(self):
         """Let go of the samples once the preferences are made: a search reads hit masks."""
         for inputs in self.inputs.values():
             inputs["rows"] = ()
+
+    def _support(self, label):
+        if self.quality is None:
+            return self.totals["human", label], self.totals["automatic", label]
+        mass = self.mass["automatic", label]
+        _, automatic = adaptive.episode_support(self.quality, self.radars, label, mass)
+        weights = self.mass["human", label].weights
+        human = sum(
+            value > 0 and (i == 0 or weights[i - 1] == 0) for i, value in enumerate(weights)
+        )
+        return human, automatic
 
     def _preferences(self, device_id, target):
         """Gate preferences from room truth as this radar's evidence; ``target`` is the
@@ -143,14 +273,37 @@ class Objective:
         groups = {source: {label: [] for label in evidence.LABELS} for source in SOURCES}
         rows = self.inputs[device_id]["rows"]
         labels = dict(zip(rows.times, truth.room_truths(self.truth, rows.times), strict=True))
-        for row in rows:
+        for row, weight in zip(rows, _held(rows), strict=True):
             label = _member_label(labels[row[0]], target, row[0])
             if label:
                 state, source, confidence = label
-                groups[source][state].append((row[0], row[1], state, confidence))
+                if (
+                    self.quality is not None
+                    and source == "automatic"
+                    and labels[row[0]][1] == "human"
+                ):
+                    model = self.quality[device_id]
+                    confidence = model.correct(confidence, model.context.basis_at(row[0]), state)
+                groups[source][state].append((row[0], row[1], state, confidence, weight))
         return {
-            key: gate_preference(key, groups["human"], groups["automatic"], value)
+            key: gate_preference(
+                key, groups["human"], self._automatic_preferences(device_id, key, groups), value
+            )
             for key, value in self.current[device_id].items()
+        }
+
+    def _automatic_preferences(self, device, key, groups):
+        if self.quality is None:
+            return groups["automatic"]
+        radar = self.radars[device]
+        return {
+            state: [
+                row
+                for row in rows
+                if not (self.reference and self.totals["human", state])
+                and (state != "present" or row[1].get(key) in radar.supported_values[key])
+            ]
+            for state, rows in groups["automatic"].items()
         }
 
     def rates(self, thresholds):
@@ -158,25 +311,36 @@ class Objective:
         the same hit masks, so it is worked out once for them."""
         name = tuple(radar.name(thresholds[key]) for key, radar in self.radars.items())
         if name not in self.known:
-            masks = [radar.bits(thresholds[key]) for key, radar in self.radars.items()]
+            masks = [
+                (radar.bits(thresholds[key]), radar.automatic_bits(thresholds[key]))
+                for key, radar in self.radars.items()
+            ]
             self.known[name] = self._rates(masks)
         return self.known[name]
 
     def _rates(self, masks):
         projected = [
-            radar.project(mask) for radar, mask in zip(self.radars.values(), masks, strict=True)
+            radar.project(mask[0]) for radar, mask in zip(self.radars.values(), masks, strict=True)
         ]
         detected = replay.united([item["lower"] for item in projected])
         false = replay.united([item["upper"] for item in projected])
-        rates = {source: [0, 0] for source in SOURCES}
-        for index, (label, spans) in enumerate((("present", detected), ("not_present", false))):
-            counted = self.counted[index]
-            if counted:
-                masses = [self.mass[source, label] for source in counted]
-                for source, total in zip(counted, across(masses, *spans), strict=True):
-                    share = total / self.totals[source, label]
-                    rates[source][index] = 1 - share if index == 0 else share
-        return {source: tuple(pair) for source, pair in rates.items()}
+        automatic = replay.united(
+            [
+                found["lower"] if mask[1] == mask[0] else radar.project(mask[1])["lower"]
+                for radar, mask, found in zip(self.radars.values(), masks, projected, strict=True)
+            ]
+        )
+        return self._source_rates(detected, false, automatic)
+
+    def _source_rates(self, detected, false, automatic):
+        present = _shares(
+            self, "present", {s: automatic if s == "automatic" else detected for s in SOURCES}
+        )
+        empty = _shares(self, "not_present", dict.fromkeys(SOURCES, false))
+        return {
+            source: (0 if present[source] is None else 1 - present[source], empty[source] or 0)
+            for source in SOURCES
+        }
 
     def costs(self, thresholds):
         rates = self.rates(thresholds)
@@ -200,7 +364,12 @@ class Objective:
         through ``derived``, then the full ``automatic`` cost. A fully automatic room has no
         human class, so its automatic-sourced cost is the primary."""
         human, derived = self.parts(rates)
-        automatic = error_cost(*rates["automatic"])
+        automatic = error_cost(
+            *(
+                value if not self.reference or self.sources[index] == "automatic" else 0
+                for index, value in enumerate(rates["automatic"])
+            )
+        )
         cost = derived if self.automatic_room else human
         return blended_cost(cost, self.shares, rates["automatic"]), cost, derived, automatic
 
@@ -248,11 +417,31 @@ class LinkedObjective:
     room truth (attribution is the learner's), over the union of member radars, so a shared
     radar has one value. Costs and ranks are per-group sums; one group is its ``Objective``."""
 
-    def __init__(self, groups, start, end, rooms=None, automatic_weight=DEFAULT_AUTOMATIC_WEIGHT):
+    def __init__(
+        self,
+        groups,
+        start,
+        end,
+        rooms=None,
+        automatic_weight=DEFAULT_AUTOMATIC_WEIGHT,
+        *,
+        quality=None,
+        reference=False,
+    ):
         rooms = rooms or {}
         shared = {}
+        quality = None if quality is None else adaptive.models(quality)
         self.groups = {
-            gid: Objective(groups[gid], start, end, rooms.get(gid), shared, automatic_weight)
+            gid: Objective(
+                groups[gid],
+                start,
+                end,
+                rooms.get(gid),
+                shared,
+                automatic_weight,
+                quality=quality,
+                reference=reference,
+            )
             for gid in sorted(groups)
         }
         for objective in self.groups.values():

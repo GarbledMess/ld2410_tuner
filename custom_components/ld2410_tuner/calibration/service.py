@@ -5,16 +5,19 @@ from __future__ import annotations
 import logging
 import math
 import time
+from copy import deepcopy
 from typing import Any
 
 from homeassistant.helpers import entity_registry as er
 
 from .. import entity_index
 from ..const import GATE_RE, HISTORY_KEYS
-from ..rooms import attribution
-from . import device_io, jobs, recovery, results, settings
-from .evidence import collect_samples
-from .fitting import METHOD, fit_thresholds
+from ..history import policy
+from ..rooms import attribution, truth
+from . import device_io, jobs, ownership, recovery, results, settings
+from . import thresholds as threshold_domain
+from .constants import METHOD
+from .event_fitting import fit as fit_event_thresholds
 from .timing_config import read_timing, timing_signature
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,9 +47,15 @@ async def set_gate_threshold(runtime, device_id: str, key: str, value: float) ->
         raise ValueError("Unknown gate key")
     if not math.isfinite(float(value)) or not 0 <= float(value) <= 100:
         raise ValueError("Threshold must be between 0 and 100")
-    value = round(float(value))
+    entity_id = runtime._find_threshold_entity(device_id, key)
+    domain = threshold_domain.from_state(runtime.hass.states.get(entity_id))
+    if not domain["min"] <= float(value) <= domain["max"]:
+        raise ValueError("Threshold is outside this gate's permitted range")
+    value = threshold_domain.normalize(float(value), domain)
     with device_io.device_operation(runtime, device_id):
         button = await device_io.prepare_device(runtime, device_id, [key])
+        if domain != threshold_domain.from_state(runtime.hass.states.get(entity_id)):
+            raise ValueError("Gate constraints changed while preparing; retry the threshold change")
         return await device_io.write_threshold(runtime, device_id, key, value, button)
 
 
@@ -58,14 +67,16 @@ async def _learn_once(runtime, device_id):
     entities, current = await recovery.prepare_learning(runtime, device_id)
     timing = read_timing(runtime, device_id)
     view = attribution.prepared_view(runtime, device_id)
+    sources = _learning_sources(runtime, device_id)
     view._fit_timing = timing
+    constraints = threshold_domain.read(runtime, entities)
+    view._fit_constraints = constraints
     device = runtime.data["devices"][device_id]
     revision = device.get("label_revision", 0)
     jobs.stage(runtime, device_id, "fitting")
     learned = await runtime.hass.async_add_executor_job(
         view._fit_history, device_id, entities, current
     )
-    attribution.remember(runtime, view)
     if revision != device.get("label_revision", 0):
         raise LearningEvidenceChanged("Training labels changed while learning; learn again")
     if timing_signature(read_timing(runtime, device_id)) != timing_signature(timing):
@@ -74,25 +85,63 @@ async def _learn_once(runtime, device_id):
         raise LearningEvidenceChanged(
             "Automatic evidence weight changed while learning; learn again"
         )
+    if not ownership.intact(view, runtime):
+        raise LearningEvidenceChanged("Training history changed while learning; learn again")
+    if sources != _learning_sources(runtime, device_id):
+        raise LearningEvidenceChanged("Training sources changed while learning; learn again")
+    if constraints != threshold_domain.read(runtime, entities):
+        raise LearningEvidenceChanged("Gate constraints changed while learning; learn again")
     learned["timing_configuration"] = timing
     learned["label_revision"] = revision
+    learned["evidence_sources"] = sources
     return learned
 
 
+def _learning_sources(runtime, device_id):
+    """Configuration and explicit revisions, excluding ordinary sensor transitions."""
+    saved = attribution.snapshot(runtime, device_id) or {}
+    members = {device_id, *saved.get("members", {})}
+    related = truth.related_to(saved.get("groups", {}), saved.get("own", []))
+    return deepcopy(
+        {
+            "groups": saved.get("groups", {}),
+            "members": {
+                key: {
+                    "sources": runtime.data["devices"].get(key, {}).get("presence_sources", {}),
+                    "labels": attribution.member_signature(runtime.data["devices"].get(key, {})),
+                }
+                for key in members
+            },
+            "rooms": {
+                key: {
+                    "sources": runtime.data.get("room_presence_sources", {}).get(key, {}),
+                    "revision": runtime.data.get("room_label_revision", {}).get(key, 0),
+                }
+                for key in related
+            },
+            "retention": policy.settings(runtime.data),
+        }
+    )
+
+
 def _fit_history(runtime, device_id, entities, current):
-    rows, guesses = collect_samples(runtime, device_id, entities)
-    attribution.release([runtime])
-    learned = fit_thresholds(
-        rows,
+    constraints = getattr(runtime, "_fit_constraints", None)
+    if constraints is None:
+        constraints = threshold_domain.read(runtime, entities)
+    learned = fit_event_thresholds(
+        runtime,
+        device_id,
         list(entities),
         current,
-        guesses,
         getattr(runtime, "_fit_timing", None),
         settings.automatic_weight(runtime.data),
+        constraints=constraints,
     )
+    attribution.release([runtime])
     learned.update(settings.signature(runtime.data))  # Stale once the setting changes.
     learned["configuration"] = current
     learned["entities"] = entities
+    learned["threshold_constraints"] = constraints
     learned["created_at"] = time.time()
     return learned
 
@@ -158,8 +207,10 @@ async def _apply_validated(
             "Apply this complete joint recommendation from Rooms and zones; one radar alone cannot reproduce its result"
         )
     _validate_learning(device, learned, check_revision=slot is None)
+    _validate_current_evidence(runtime, device_id, learned)
     button = await device_io.prepare_device(runtime, device_id, learned["entities"])
     _validate_learning(device, learned, check_revision=slot is None)
+    _validate_current_evidence(runtime, device_id, learned)
     if guard:
         guard({})
     entities, current = runtime._threshold_configuration(device_id)
@@ -223,6 +274,26 @@ def _validate_proposals(learned):
             raise ValueError("Invalid learned threshold; learn again")
 
 
+def _validate_current_evidence(runtime, device_id, learned):
+    constraints = threshold_domain.read(runtime, learned["entities"])
+    # Changed constraints first: they are why a saved threshold may now be off the grid.
+    if learned.get("threshold_constraints", constraints) != constraints:
+        raise ValueError("Gate constraints changed; learn again before applying")
+    if any(
+        proposal["threshold"] not in threshold_domain.allowed(constraints[key])
+        for key, proposal in learned["proposals"].items()
+    ):
+        raise ValueError("Learned threshold is not permitted by this gate; learn again")
+    if "evidence_sources" in learned and learned["evidence_sources"] != _learning_sources(
+        runtime, device_id
+    ):
+        raise ValueError("Training sources changed; learn again before applying")
+    if learned.get("source") != "device" and any(
+        learned.get(key) != value for key, value in settings.signature(runtime.data).items()
+    ):
+        raise ValueError("Automatic evidence policy changed; learn again before applying")
+
+
 def _read_threshold_configuration(runtime, device_id, registry, entities, current, limits):
     for entity in entity_index.read(runtime, registry).by_device.get(device_id, ()):
         if entity.domain != "number":
@@ -265,6 +336,7 @@ async def _apply_changes(
             if guard:
                 guard(applied)
             _validate_learning(runtime.data["devices"][device_id], learned, check_revision)
+            _validate_current_evidence(runtime, device_id, learned)
             await device_io.write_threshold(runtime, device_id, key, value, button)
             device_io.check_reported(runtime, entities, applied)
             applied[key] = value
