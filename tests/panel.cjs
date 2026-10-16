@@ -39,6 +39,7 @@ const { execFileSync } = require("node:child_process");
     const page = await browser.newPage({
       viewport: { width: 1400, height: 1000 },
       timezoneId: "Europe/London",
+      locale: "en-GB", // Dates and times as the assertions expect, on any machine.
     });
     page.setDefaultTimeout(5000);
     const errors = [];
