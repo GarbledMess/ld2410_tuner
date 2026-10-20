@@ -18,24 +18,32 @@ def _namespace():
 def main():
     """Read one capped request file and emit exactly one versioned result."""
     _namespace()
+    from ld2410_child.worker.diagnostics import describe, emit, safely
     from ld2410_child.worker.limits import Budget, install
 
     if len(sys.argv) not in (3, 4) or (len(sys.argv) == 4 and sys.argv[3] != "storage"):
         raise ValueError("Expected request path and parent PID")
-    install(Budget(512 * 1024 * 1024, 120, 16 * 1024 * 1024), expected_parent=int(sys.argv[2]))
+    controls = install(
+        Budget(512 * 1024 * 1024, 120, 16 * 1024 * 1024), expected_parent=int(sys.argv[2])
+    )
+    emit("protected", limits=controls)
     from ld2410_child.worker import calculations, codec, protocol
 
     if len(sys.argv) == 4:
         from ld2410_child.worker import transactions
 
         request = transactions._read(sys.argv[1], "learn")
+        emit("storage_calculating", **safely(describe, request, Path(sys.argv[1]).stat().st_size))
         sys.stdout.buffer.write(transactions.execute(request))
+        emit("result_ready")
         sys.stdout.buffer.flush()
         return
     with open(sys.argv[1], "rb") as stream:
         raw = stream.read(MAX_BYTES + 1)
     request = protocol.unpack(raw, "learn", max_bytes=MAX_BYTES)
+    emit("calculating", **safely(describe, request, len(raw)))
     result = calculations.execute(request)
+    emit("result_ready")
     sys.stdout.buffer.write(codec.pack_result(result, max_bytes=MAX_BYTES))
     sys.stdout.buffer.flush()
 

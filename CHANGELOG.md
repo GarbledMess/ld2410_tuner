@@ -18,8 +18,11 @@ Fix regressions observed after the worker-isolation update.
   restarting or enabling it later does not trigger a missed overnight run.
 - Report CPU-budget exhaustion before the existing 120-second hard ceiling.
   The 512-MiB address-space limit and low process priority remain in place.
+- Include parent-observed CPU/memory, wall time, shared OOM-counter changes,
+  installed limits, operation/input counts and child milestones in worker failure
+  diagnostics, including abrupt SIGKILL exits.
 
-Validation: 2,193 tests passed with 97.04% coverage in constrained Home Assistant;
+Validation: 2,204 tests passed with 97.04% coverage in constrained Home Assistant;
 full browser regressions, dense legacy learning and live HTTP probes passed.
 
 ## 1.25.0 - 2026-10-20

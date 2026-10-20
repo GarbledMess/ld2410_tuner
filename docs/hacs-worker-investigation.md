@@ -79,6 +79,22 @@ a bounded normalizer, without weakening the numerical protocol. History date
 queries use an in-memory inventory populated during startup and updated after
 successful publication, so synchronous snapshots do not scan directories.
 
+Worker failures include a parent-side diagnostic record even when SIGKILL prevents
+the child from writing an error. Bounded off-loop `/proc` sampling every 0.5 seconds
+retains the last CPU time, RSS, high-water RSS and virtual size; failure records also
+include wall time/deadline, PID, host available memory, and before/after shared-cgroup
+memory limits/usage/OOM counters. Missing counters are explicitly unavailable.
+Child stderr milestones include installed limits, operation, view/day/file counts,
+input bytes and the last reached phase. They contain no device IDs, room names,
+history values or recording paths, and success does not add HA log noise.
+
+SIGKILL is named explicitly. An OOM-counter increase is evidence from the shared
+cgroup or host, not proof that this particular child was OOM-killed; the last CPU
+sample and installed limits also help investigate hard CPU exhaustion. Resource
+samples are approximate; the nominal interval is 0.5 seconds, but the last sample
+can be older when collection is delayed or unavailable.
+Diagnostics are best effort and do not relax protection or replace owned cleanup.
+
 ## Storage budgets
 
 Storage requests/results are capped at 16 MiB and 1,048,576 metadata nodes.

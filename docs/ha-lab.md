@@ -74,3 +74,15 @@ These representative synthetic checks do not determine the exact cause of a
 previous production SIGKILL or guarantee that every workload fits its budgets.
 
 Diagnostics: `machine/runs/ld2410_tuner-1340dbebdf00/20261020-145949-2a77437a2d8eb440`.
+
+The subsequent failure-diagnostics update passed **2,204 tests with 97.04% coverage**.
+A real Linux child allocated memory, consumed CPU, emitted an operation/phase
+milestone, and deliberately terminated itself with SIGKILL. Its failure retained
+the parent's nonzero CPU/RSS samples and the child's last milestone. Synthetic
+cgroup counters also verify OOM-event deltas without claiming per-process
+attribution. Missing counters and diagnostic probe errors remain nonfatal.
+The HTTP probe answered 281 requests (p95 14.440 ms, maximum 40.943 ms), and
+dense legacy learning used 5.840 CPU seconds and 100,416 KiB peak RSS with
+diagnostics enabled. Lint, formatting, complexity and packaging checks passed.
+
+Diagnostics: `machine/runs/ld2410_tuner-1340dbebdf00/20261020-151454-2f85fea1decb5d69`.

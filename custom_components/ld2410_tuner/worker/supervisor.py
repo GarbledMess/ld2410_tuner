@@ -6,12 +6,15 @@ before it runs; queued requests must retain only small IDs, not history snapshot
 """
 
 import asyncio
+import json
 import math
 import os
 import signal
 import subprocess
 import sys
 from pathlib import Path
+
+from .diagnostics import Observation, safely
 
 _POSIX = os.name == "posix"
 
@@ -33,10 +36,25 @@ class CleanupFailed(Exception):
 
 
 class WorkerFailed(Exception):
-    def __init__(self, returncode, stderr):
+    def __init__(self, returncode, stderr, *, diagnostics=None):
         detail = stderr[:2048].decode("utf-8", errors="replace").strip()
-        super().__init__(f"Worker exited with status {returncode}: {detail}")
+        self.diagnostics = {} if diagnostics is None else diagnostics
+        reason = _exit_reason(returncode)
+        evidence = "" if not self.diagnostics else "; diagnostics=" + json.dumps(self.diagnostics)
+        super().__init__(f"Worker exited with status {returncode}{reason}: {detail}{evidence}")
         self.returncode, self.stderr = returncode, stderr
+
+
+def _exit_reason(code):
+    if code >= 0:
+        return ""
+    try:
+        name = signal.Signals(-code).name
+    except ValueError:
+        # Linux production signals may be inspected by tools on a Windows host.
+        name = {9: "SIGKILL", 24: "SIGXCPU", 25: "SIGXFSZ"}.get(-code, "unknown signal")
+    detail = "; cause unconfirmed" if code == -9 else ""
+    return f" ({name}{detail})"
 
 
 async def _capture(stream, maximum):
@@ -228,6 +246,12 @@ class Supervisor:
                     raise asyncio.CancelledError
 
     async def _process(self, args):
+        observation = Observation()
+        if sys.platform == "linux":
+            await owned_preparation(asyncio.to_thread(safely, observation.start))
+        else:
+            observation.start()
+        stopped, sampler = asyncio.Event(), None
         options = (
             {"start_new_session": True}
             if _POSIX
@@ -251,6 +275,7 @@ class Supervisor:
         readers = []
         try:
             process = await asyncio.shield(spawning)
+            sampler = asyncio.create_task(_observe(observation, process.pid, stopped))
             readers = [
                 asyncio.create_task(_capture(process.stdout, self.stdout_bytes)),
                 asyncio.create_task(_capture(process.stderr, self.stderr_bytes)),
@@ -258,10 +283,15 @@ class Supervisor:
             ]
             out, err, code = await asyncio.gather(*readers)
             if code:
-                raise WorkerFailed(code, err)
+                stopped.set()
+                await owned_preparation(sampler)
+                evidence = await owned_preparation(asyncio.to_thread(safely, observation.report))
+                evidence.update(pid=process.pid, wall_deadline_seconds=self.deadline)
+                raise WorkerFailed(code, err, diagnostics=evidence)
             return out
         finally:
-            cleanup = asyncio.create_task(_cleanup(spawning, readers, self.grace))
+            stopped.set()
+            cleanup = asyncio.create_task(_observed_cleanup(spawning, readers, self.grace, sampler))
             if await _finish_cleanup(cleanup):
                 raise asyncio.CancelledError
 
@@ -276,6 +306,23 @@ class Supervisor:
         await asyncio.shield(self._closing)
         if self._failure is not None:
             raise self._failure
+
+
+async def _observe(observation, pid, stopped):
+    while not stopped.is_set():
+        await owned_preparation(asyncio.to_thread(safely, observation.sample, pid))
+        try:
+            await asyncio.wait_for(stopped.wait(), 0.5)
+        except TimeoutError:
+            pass
+
+
+async def _observed_cleanup(spawning, readers, grace, sampler):
+    try:
+        await _cleanup(spawning, readers, grace)
+    finally:
+        if sampler is not None:
+            await sampler
 
 
 async def _finalize(finish):
