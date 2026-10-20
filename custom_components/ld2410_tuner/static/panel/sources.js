@@ -10,7 +10,7 @@ export const panelSources = {
     const intro = groupId
       ? "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor to label this whole room. Their output is stored as read-only sensor room labels; your manual room labels always win."
       : "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor. Choose independent sources, not this radar's own presence output.";
-    return `<details class="presence-sources" ${open}><summary>${groupId ? "Room presence sources" : "Automatic labels from other entities"}</summary>
+    return `<details class="presence-sources" ${open}><summary>${groupId ? "Room presence sources" : "Automatic labels from other entities"}<span class="section-description">Create presence labels from cameras and other sensors.</span></summary>
       <p class="muted">${intro} Any positive source starts or continues a presence period.</p>
       <div class="source-rows">${(config.sources || []).map((source, index) => this._sourceRowHtml(id, source, index)).join("")}</div>
       <button data-action="source-add" type="button" ${(config.sources || []).length >= 16 ? "disabled" : ""}>Add source</button>

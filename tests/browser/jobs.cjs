@@ -51,6 +51,7 @@ module.exports = async function testJobs(page, screenshotDir) {
     document.body.append(panel);
     panel.hass = hass;
   });
+  await page.locator('[data-leaf-id="all"] > summary').click();
   await card.locator(".learning-job-status progress").waitFor();
   assert.equal(
     await card
@@ -62,6 +63,9 @@ module.exports = async function testJobs(page, screenshotDir) {
   assert.equal(await page.evaluate(() => jobStarts), 1);
   assert.equal(await card.locator('[data-action="learn"]').isDisabled(), true);
   await card.locator('[data-action="toggle"]').click();
+  await card
+    .locator('[data-action="section-toggle"][data-section="training"]')
+    .click();
   await card.locator('[data-action="timeout-hours"]').focus();
   await page.evaluate(async () => {
     window.jobFocusedField = panel.shadowRoot.activeElement;

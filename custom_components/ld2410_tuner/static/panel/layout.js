@@ -116,7 +116,7 @@ export const panelLayout = {
   },
 
   _layoutIsOpen(key) {
-    return this._layoutOpen.get(key) ?? true;
+    return this._layoutOpen.get(key) ?? false;
   },
 
   // Remember which copy of a radar was last edited so drafts are captured
@@ -186,7 +186,7 @@ export const panelLayout = {
       const details = element(
         "details",
         className,
-        `<summary><${heading}></${heading}></summary>`,
+        `<summary><${heading}></${heading}><span class="section-description"></span></summary>`,
       );
       details.open = this._layoutIsOpen(key);
       // The toggle event is queued, so a poll could redraw first and undo a
@@ -216,6 +216,10 @@ export const panelLayout = {
     );
     const summary = details.firstElementChild;
     setText(summary.firstElementChild, node.name);
+    setText(
+      summary.lastElementChild,
+      "Zones, radars, presence history and room settings.",
+    );
     const children = node.children || [];
     const parts = [
       summary,
@@ -280,6 +284,10 @@ export const panelLayout = {
     );
     const summary = details.firstElementChild;
     setText(summary.firstElementChild, leaf.name);
+    setText(
+      summary.lastElementChild,
+      `${(leaf.devices || []).length} radars · presence history and tuning.`,
+    );
     this._layoutLeafBody(
       details,
       [summary, ...this._groupHeaderElement(details, leaf)],
@@ -400,7 +408,7 @@ export const panelLayout = {
     const zoneList = zones.length
       ? `<span class="group-zones"> · Zones: ${zones.join(", ")}</span>`
       : "";
-    return `<b>Presence &amp; history</b><span class="group-context">${this._groupKindLabel(group, rooms)} · ${count} radar${count === 1 ? "" : "s"}</span><span class="group-score">${this._scoreText(report.room)}${this._roomAssessmentMarker(report)}</span>${zoneList}`;
+    return `<b>Presence &amp; history</b><span class="section-description">View radar signals and label occupied or empty periods.</span><span class="group-context">${this._groupKindLabel(group, rooms)} · ${count} radar${count === 1 ? "" : "s"}</span><span class="group-score">${this._scoreText(report.room)}${this._roomAssessmentMarker(report)}</span>${zoneList}`;
   },
 
   _roomAssessmentMarker(report) {
@@ -437,7 +445,7 @@ export const panelLayout = {
         ? `<div class="room-editor">${this._roomEditorHtml(rooms)}</div>`
         : "";
     return `${this._roomTimelineHtml(id, group)}
-      <details class="room-settings" ${this._sectionState.get(`${id}:room-settings`) || this._roomEditorAt === id ? "open" : ""}><summary>Assessment &amp; room settings</summary>
+      <details class="room-settings" ${this._sectionState.get(`${id}:room-settings`) || this._roomEditorAt === id ? "open" : ""}><summary>Assessment &amp; room settings<span class="section-description">Membership, coverage assessment and presence sources.</span></summary>
       <p class="muted">${this._esc(area)} · ${this._esc(names)}${group.automatic ? " · Uses recording radars in this area" : " · Manual membership"}</p>
       <div class="chart-controls"><label>History <select data-room-hours><option value="24">24 hours</option><option value="72">3 days</option><option value="168">7 days</option></select></label>
       <button data-room-action="assess" ${busy ? 'disabled class="is-busy"' : ""}>Assess current settings</button>

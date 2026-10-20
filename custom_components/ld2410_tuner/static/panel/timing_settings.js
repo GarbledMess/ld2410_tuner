@@ -18,7 +18,7 @@ export const panelTimingSettings = {
       this._data?.timing_settings || { mode: "device" };
     this._updateHtml(
       container,
-      `<details ${this._timingOpen ? "open" : ""}><summary>Learning timing</summary>
+      `<details ${this._timingOpen ? "open" : ""}><summary>Learning timing<span class="section-description">Radar delays and how learning accounts for them.</span></summary>
       <div class="storage-fields"><label>Timing model<select data-action="timing-mode">${TIMING_MODES.map(([value, label]) => `<option value="${value}" ${values.mode === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
       <p>Applies to manual and overnight learning on every device. Device values take priority; defaults fill only missing or unreadable values and are reported as assumptions.</p>
       <div class="storage-fields">${TIMING_FIELDS.map(([key, label, fallback]) => `<label>${label}<input type="number" data-timing="${key}" min="0" max="65535" step="any" required value="${this._esc(values[key] ?? fallback)}" ${values.mode === "fallback" ? "" : "disabled"}></label>`).join("")}</div>
@@ -111,7 +111,7 @@ export const panelTimingSettings = {
     const changed = this._timingChanged(learning, current)
       ? "<p><b>Device timing has changed or the global timing policy was updated. Learn again to assess the current settings; the saved result still uses the values shown here.</b></p>"
       : "";
-    return `<div class="notice timing-report"><b>${source}</b><div>${values}</div><p>${scope}</p>${this._paragraphHtml(this._timingPolicyNote(timing))}${changed}${learning?.status === "uncertain" ? "<p>Sampling uncertainty: recordings do not establish every transition time, and very short periods may have no measurable duration. This can remain even when all three device timing settings are known. The estimates and sample counts below show what was measured.</p>" : ""}${uncertaintyHtml}<details data-detail="timing-assumptions"><summary>Sampling and timing assumptions</summary>
+    return `<div class="notice timing-report"><b>${source}</b><div>${values}</div><p>${scope}</p>${this._paragraphHtml(this._timingPolicyNote(timing))}${changed}${learning?.status === "uncertain" ? "<p>Sampling uncertainty: recordings do not establish every transition time, and very short periods may have no measurable duration. This can remain even when all three device timing settings are known. The estimates and sample counts below show what was measured.</p>" : ""}${uncertaintyHtml}<details data-detail="timing-assumptions"><summary>Sampling and timing assumptions<span class="section-description">How recorded samples and device delays affect the result.</span></summary>
       ${this._timingAssumptionsHtml(learning)}</details></div>`;
   },
 

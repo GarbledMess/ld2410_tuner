@@ -1,4 +1,4 @@
-import { SECTION_DEFAULTS } from "./constants.js";
+import { SECTION_DEFAULTS, SECTION_DESCRIPTIONS } from "./constants.js";
 import { CARD_STYLES } from "./card_styles.js";
 
 export const panelView = {
@@ -316,8 +316,7 @@ export const panelView = {
         <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         </header>
         <details class="panel-card global-settings-card">
-          <summary><h2 id="global-settings-title">Global settings</h2></summary>
-          <div class="muted">Learning and recording settings for all devices.</div>
+          <summary><h2 id="global-settings-title">Global settings</h2><span class="section-description">Learning schedules, recording storage and timing.</span></summary>
           <section class="settings-section" aria-labelledby="overnight-settings-title">
             <h3 id="overnight-settings-title">Learning and automatic Apply</h3>
             <div id="learning-schedule" class="learning-schedule"></div>
@@ -325,7 +324,7 @@ export const panelView = {
           <div class="settings-section"><div id="timing-controls" class="global-settings"></div></div>
           <div class="settings-section"><div id="storage-controls" class="global-settings"></div></div>
         </details>
-        <details class="panel-card layout-help"><summary><h2>How rooms and zones work</h2></summary>
+        <details class="panel-card layout-help"><summary><h2>How rooms and zones work</h2><span class="section-description">Coverage, shared radars and how presence labels combine.</span></summary>
           <p>Assess complementary radar coverage using current thresholds. An area can contain zones, each with its own occupancy: an occupied zone does not make its neighbours occupied. Whole-area assessment combines the selected area radars.</p>
           <p class="muted">Room labels describe the whole room: open a group and label when it was occupied or empty on its timeline. A zone labelled Present makes its area Present; an area labelled Empty makes every zone in it Empty. Where a room has no label of its own, its members' radar labels decide (any Present means occupied; Empty needs every member empty), then room presence sources (cameras, on/off entities, Bermuda), then the room estimate from the radars' own guesses. Human labels always outrank automatic evidence.</p>
           <p class="muted">A radar's own label means "should this radar detect here". For each occupied period the group shows "Seen by" chips: which radars saw it (high, low or unknown confidence). Tap a chip to correct it; that saves a label on that radar. A radar is only taught to detect what it saw, and to stay quiet when every room it covers is empty. Conflicting labels are listed in the group for review.</p>
@@ -379,7 +378,7 @@ export const panelView = {
   _section(id, key, title, innerHtml) {
     const collapsed = this._sectionCollapsed(id, key);
     return `<div class="subsection${collapsed ? " collapsed" : ""}" data-section="${key}">
-      <div class="subsection-head" data-action="section-toggle" data-section="${key}" role="button" tabindex="0" aria-expanded="${!collapsed}"><span>${this._esc(title)}</span><button class="sub-toggle" aria-expanded="${!collapsed}">${collapsed ? "▸" : "▾"}</button></div>
+      <div class="subsection-head" data-action="section-toggle" data-section="${key}" role="button" tabindex="0" aria-expanded="${!collapsed}"><span>${this._esc(title)}<span class="section-description">${this._esc(SECTION_DESCRIPTIONS[key])}</span></span><button class="sub-toggle" aria-expanded="${!collapsed}">${collapsed ? "▸" : "▾"}</button></div>
       <div class="subsection-body">${innerHtml}</div>
     </div>`;
   },

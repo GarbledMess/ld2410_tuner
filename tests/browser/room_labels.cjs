@@ -639,6 +639,7 @@ async function testRemoveAsksWhenLabelled(page) {
   // would be dismissed and nothing would be sent).
   await page.evaluate(() => {
     panel._groupOpen.add("group:spare");
+    panel._layoutOpen.set("group:spare", true);
     return panel._load(true);
   });
   await header(page, "group:spare").locator(".room-settings > summary").click();

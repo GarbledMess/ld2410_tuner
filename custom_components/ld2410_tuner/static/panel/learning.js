@@ -259,12 +259,12 @@ export const panelLearning = {
       review.period_count > review.periods.length
         ? `Showing the ${review.periods.length} largest periods, with space reserved for both label states.`
         : "";
-    return `${influence}<details class="evidence-review" data-detail="evidence-review"><summary>Review ${review.period_count} ${review.period_count === 1 ? "period that disagrees with its label" : "periods that disagree with their labels"}</summary>
+    return `${influence}<details class="evidence-review" data-detail="evidence-review"><summary>Review ${review.period_count} ${review.period_count === 1 ? "period that disagrees with its label" : "periods that disagree with their labels"}<span class="section-description">Label disagreements that may affect learning.</span></summary>
       <p>These are review suggestions, not proof of incorrect labels. Brief activity could be a person, a pet or noise; energy readings alone cannot tell which. No period below was automatically excluded.</p>
       <p>Open a period on the graph, check its times, then correct its status or choose Unknown / exclude. Learn again after saving.</p>
       <ul class="review-periods">${review.periods.map((period) => this._reviewPeriodHtml(period)).join("")}</ul>
       ${this._paragraphHtml(limited)}
-      <details data-detail="review-sessions"><summary>By recording session</summary><ul>${this._listItemsHtml(sessions)}</ul></details></details>`;
+      <details data-detail="review-sessions"><summary>By recording session<span class="section-description">Disagreements grouped by recording session.</span></summary><ul>${this._listItemsHtml(sessions)}</ul></details></details>`;
   },
 
   _validationHtml(learning, currentTiming) {
@@ -275,7 +275,7 @@ export const panelLearning = {
     return `<section class="learning-report outcome-${outcome.level}" aria-label="Recommendation quality"><b>${outcome.label}</b>
       ${learning.method !== "human_priority_v10" ? '<p class="notice">This saved result used an older learning model. Its recorded scores have not been recalculated. Learn again before applying it with the current model.</p>' : ""}
       ${this._humanValidationHtml(learning)}${this._feasibilityHtml(learning)}${this._reviewEvidenceHtml(learning)}
-      <details class="learning-diagnostics" data-detail="learning-diagnostics"><summary>Calculation details</summary>
+      <details class="learning-diagnostics" data-detail="learning-diagnostics"><summary>Calculation details<span class="section-description">Evidence counts, exclusions and calculation diagnostics.</span></summary>
       ${this._outlierFilterHtml(learning)}${this._backtestHtml(learning.validation)}${this._automaticValidationHtml(learning)}${this._falsePositiveSourcesHtml(learning)}${this._inferenceHtml(learning.automatic_evidence)}${this._learningWarningHtml(learning)}</details></section>`;
   },
 
@@ -424,7 +424,7 @@ export const panelLearning = {
         : this._validationHtml(learning, d.timing_configuration);
     return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}${this._comparisonHtml(id, d)}${this._deviceApplySettingsHtml(d)}${this._learnApplyHtml(id, d, outcome, set)}
       ${this._timingHtml(learning, d.timing_configuration)}${validation}
-      <details class="gate-results"><summary>Gate thresholds and sample counts</summary>${this._detailsHtml(d)}</details>`;
+      <details class="gate-results"><summary>Gate thresholds and sample counts<span class="section-description">Current and learned gate levels, with supporting samples.</span></summary>${this._detailsHtml(d)}</details>`;
   },
 
   // Radars in a learning set learn and apply with it (room_learning.js).

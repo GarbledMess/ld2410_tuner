@@ -23,6 +23,7 @@ const testSavedResults = require("./browser/saved_results.cjs");
 const testAutomaticWeight = require("./browser/automatic_weight.cjs");
 const testLayout = require("./browser/layout.cjs");
 const testCardConsistency = require("./browser/consistency.cjs");
+const testCollapsedDefaults = require("./browser/collapsed.cjs");
 const { execFileSync } = require("node:child_process");
 (async () => {
   const registration = JSON.parse(
@@ -190,6 +191,14 @@ const { execFileSync } = require("node:child_process");
           return {};
         },
       };
+    });
+    await testCollapsedDefaults(page);
+    // The remaining interaction recipes explicitly exercise these sections open.
+    await page.evaluate(() => {
+      for (const id of Object.keys(fixture.devices))
+        for (const key of ["training", "chart", "details"])
+          panel._setSectionCollapsed(id, key, false);
+      panel._draw();
     });
     const nativeSegments = await page.evaluate(() =>
       panel

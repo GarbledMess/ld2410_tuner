@@ -29,10 +29,19 @@ export const GATE_COLORS = [
 ];
 
 export const SECTION_DEFAULTS = {
-  training: false,
-  chart: false,
+  training: true,
+  chart: true,
   history: true,
   auto: true,
-  details: false,
+  details: true,
   actions: true,
+};
+
+export const SECTION_DESCRIPTIONS = {
+  training: "Label whether someone is here now.",
+  chart: "Recorded signals and gate levels.",
+  history: "Review recordings and label past periods.",
+  auto: "Presence estimates, confidence and reference updates.",
+  details: "Learn, compare and apply gate thresholds.",
+  actions: "Download recordings or remove stored data.",
 };

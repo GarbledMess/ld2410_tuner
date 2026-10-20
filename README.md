@@ -4,6 +4,10 @@ Home Assistant custom integration for labelled radar calibration and gate histor
 
 [Release notes](CHANGELOG.md) - 1.26.0 adds nested room cards, room history graphs and priority for live worker requests.
 
+All collapsible sections start closed. Each heading describes what is inside;
+sections you open stay open during panel refreshes. History and Recommendations
+shortcuts open the relevant device section directly.
+
 ## Installation
 
 ### Manual installation (private repository)

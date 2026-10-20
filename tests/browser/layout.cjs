@@ -451,6 +451,16 @@ module.exports = async function testLayout(page, screenshotDir) {
     panel._collapsed.delete("door");
     panel._draw();
   });
+  await page.evaluate(() => {
+    for (const node of fixture.layout) {
+      panel._layoutOpen.set(node.id, true);
+      for (const child of node.children || [])
+        panel._layoutOpen.set(child.id, true);
+    }
+    for (const key of ["training", "chart", "details"])
+      panel._setSectionCollapsed("door", key, false);
+    panel._draw();
+  });
   await testTree(page);
   await testSharedChart(page);
   await testJobStatus(page);

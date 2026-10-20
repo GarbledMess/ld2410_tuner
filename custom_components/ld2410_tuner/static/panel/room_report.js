@@ -49,7 +49,7 @@ export const panelRoomReport = {
   },
 
   _ownScoreHtml(d) {
-    return `<details class="own-score" data-detail="own-score"><summary>Radar on its own</summary><p class="muted">Individual learner score on this radar's own labels: a different measure, not comparable with room scores.</p>${this._comparisonHeaderHtml(d)}</details>`;
+    return `<details class="own-score" data-detail="own-score"><summary>Radar on its own<span class="section-description">Individual performance using this radar's own labels.</span></summary><p class="muted">Individual learner score on this radar's own labels: a different measure, not comparable with room scores.</p>${this._comparisonHeaderHtml(d)}</details>`;
   },
 
   // One decimal throughout, trailing ".0" dropped (71%, 0.4%). Only exactly

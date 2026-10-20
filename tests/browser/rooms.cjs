@@ -199,11 +199,11 @@ async function testHeaders(page) {
   assert.equal(await desk.evaluate((node) => node.open), false);
   assert.match(
     await office.locator(".group-summary").innerText(),
-    /Presence & history.*Whole area · 2 radars[\s\S]*—/,
+    /Presence & history[\s\S]*Whole area · 2 radars[\s\S]*—/,
   );
   assert.match(
     await desk.locator(".group-summary").innerText(),
-    /Presence & history.*Zone · 1 radar[\s\S]*—$/,
+    /Presence & history[\s\S]*Zone · 1 radar[\s\S]*—$/,
   );
   assert.match(
     await office.locator(".group-summary").innerText(),
@@ -342,9 +342,10 @@ async function testAddZone(page) {
   assert.deepEqual(saved.device_ids, ["b"]);
   assert.equal(saved.area_id, "office");
   await page.waitForFunction(() => !panel._roomDraft);
+  await page.locator('[data-leaf-id="zone:new"] > summary').click();
   assert.match(
     await header(page, "zone:new").locator(".group-summary").innerText(),
-    /Presence & history.*Zone/,
+    /Presence & history[\s\S]*Zone/,
   );
 }
 
@@ -672,13 +673,15 @@ async function testManualAndRemovedArea(page) {
     ];
     panel._groupOpen.add("zone:manual");
     panel._groupOpen.add("area:gone");
+    panel._layoutOpen.set("zone:manual", true);
+    panel._layoutOpen.set("area:gone", true);
     return panel._load(true);
   });
   const manual = header(page, "zone:manual");
   await manual.locator(".room-settings > summary").click();
   assert.match(
     await manual.locator(".group-summary").innerText(),
-    /Presence & history.*Manual group · 1 radar[\s\S]*—$/,
+    /Presence & history[\s\S]*Manual group · 1 radar[\s\S]*—$/,
   );
   assert.match(
     await manual.locator(".room-settings > p").first().innerText(),
@@ -1016,6 +1019,7 @@ async function testZoneHeadersUseTheSet(page) {
   await page.evaluate(() => {
     panel._groupOpen.add("zone:desk");
     panel._groupOpen.add("zone:sofa");
+    panel._layoutOpen.set("zone:sofa", true);
     panel._groupOpen.add("area:office");
     return panel._load(true);
   });
@@ -1442,6 +1446,7 @@ async function installScoreboard(page) {
 }
 
 async function testScoreboard(page) {
+  await page.locator('[data-leaf-id="zone:sofa"] > summary').click();
   assert.match(
     await copyOf(page, "zone:desk", "b").locator(".top").innerText(),
     /Desk · Not assessed yet/,
@@ -1472,7 +1477,10 @@ async function testScoreboard(page) {
     "no empty time shows — instead of dividing by zero",
   );
   const own = desk.locator('details[data-detail="own-score"]');
-  assert.equal(await own.locator("summary").innerText(), "Radar on its own");
+  assert.equal(
+    await own.locator("summary").innerText(),
+    "Radar on its own\nIndividual performance using this radar's own labels.",
+  );
   const collapsed = () =>
     desk.locator(".body").evaluate((body) => body.matches(".collapsed"));
   const before = await collapsed();
@@ -1598,6 +1606,7 @@ async function testScoreboardMembership(page) {
     ];
     return panel._load(true);
   });
+  await page.locator('[data-node-id="area:hall"] > summary').click();
   const hallMember = await copyOf(page, "area:hall", "c")
     .locator(".top")
     .innerText();
@@ -1710,6 +1719,14 @@ async function testLearningSets(page) {
 
 module.exports = async function testRooms(page) {
   await installFixture(page);
+  await page.evaluate(() => {
+    for (const node of fixture.layout) {
+      panel._layoutOpen.set(node.id, true);
+      for (const child of node.children || [])
+        panel._layoutOpen.set(child.id, true);
+    }
+    panel._draw();
+  });
   await testHeaders(page);
   await testTreeToggleRace(page);
   await testEditMembers(page);

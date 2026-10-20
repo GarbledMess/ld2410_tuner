@@ -1,5 +1,6 @@
 // Shared containment and rhythm for the room → zone → radar hierarchy.
 export const CARD_STYLES = `
+.section-description { display:block; margin-top:3px; font-size:12px; font-weight:400; color:var(--secondary-text-color); line-height:1.4; }
 :host { padding:16px; font-size:14px; line-height:1.5; }
 *, *::before, *::after { box-sizing:border-box; }
 .card, .panel-card { min-width:0; max-width:100%; border:1px solid var(--divider-color,#ddd); border-radius:14px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 1px 3px rgba(0,0,0,.06)); overflow-wrap:anywhere; }

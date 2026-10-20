@@ -2,6 +2,9 @@
 
 ## 1.26.0 - 2026-10-20
 
+- Start every collapsible room, zone, device section and nested settings/help panel
+  closed, with a short contents description on its heading. User choices persist
+  during snapshot refreshes.
 - Keep rooms, their zones and their radars inside nested cards, with consistent
   controls and layouts for desktop and narrow mobile screens.
 - Add room signal graphs beside presence labelling, with day and signal controls,
@@ -18,7 +21,7 @@
 - Retain subprocess resource limits and low priority; numerical work stays outside
   Home Assistant's event loop.
 
-Validation: 2,214 Python tests passed with 97.06% coverage in constrained Home
+Validation: the full Python suite passed with 97.06% coverage in constrained Home
 Assistant. Production worker/recovery and dense legacy-history probes passed.
 Full Linux browser regressions passed, including populated room graphs and
 room/zone/radar containment at 320, 390, 768 and 1440 pixels.

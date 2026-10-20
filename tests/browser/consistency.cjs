@@ -101,6 +101,38 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
   });
   const area = page.locator('[data-node-id="area:ux"]');
   const zone = page.locator('[data-leaf-id="zone:ux"]');
+  assert.equal(
+    await area.evaluate((node) => node.open),
+    false,
+    "new rooms start closed",
+  );
+  assert.equal(
+    await zone.evaluate((node) => node.open),
+    false,
+    "new zones start closed",
+  );
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await area.evaluate((node) => node.scrollIntoView({ block: "start" }));
+    await page.screenshot({
+      path: path.join(screenshotDir, `default-overview-${width}.png`),
+    });
+  }
+  await page.setViewportSize({ width: 1400, height: 1000 });
+  await area.locator(":scope > summary").click();
+  await zone.locator(":scope > summary").click();
+  assert.deepEqual(
+    await page.evaluate(() =>
+      [...panel.shadowRoot.querySelectorAll("summary, .subsection-head")]
+        .filter(
+          (node) =>
+            !node.querySelector(".section-description")?.textContent.trim(),
+        )
+        .map((node) => node.textContent),
+    ),
+    [],
+    "room, zone and device disclosures all describe their contents",
+  );
   for (const element of [area, zone, page.locator("[data-layout-footer]")])
     assert.equal(
       await element.evaluate((node) => node.matches(".panel-card")),

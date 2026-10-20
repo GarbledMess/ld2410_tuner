@@ -42,7 +42,7 @@ export const panelCards = {
       autoState !== "unknown"
         ? " · " + Math.round((al.confidence || 0) * 100) + "%"
         : "";
-    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}${options.notRecording ? '<span class="pill not-recording">Not recording</span>' : ""}</div><div class="area">${group ? "" : this._esc(this._roomsData().areas[d.area_id] || d.area_id || "No area")}</div>${group ? this._roomRoleHtml(id, group) : this._comparisonHeaderHtml(d)}</div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>${group ? this._ownScoreHtml(d) : ""}`;
+    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}${options.notRecording ? '<span class="pill not-recording">Not recording</span>' : ""}</div><div class="area">${group ? "" : this._esc(this._roomsData().areas[d.area_id] || d.area_id || "No area")}</div>${group ? this._roomRoleHtml(id, group) : this._comparisonHeaderHtml(d)}<span class="section-description">Live presence, recorded history and tuning recommendations.</span></div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>${group ? this._ownScoreHtml(d) : ""}`;
   },
 
   _cardBodyHtml(id, d, info) {

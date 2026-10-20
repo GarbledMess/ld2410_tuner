@@ -26,9 +26,7 @@ import { panelView } from "./panel/view.js";
 // One distinct color per gate (0-8), shared between "move" and "still" views
 // so a gate keeps its identity when you switch kind.
 
-// Which card subsections start collapsed the first time a device is drawn.
-// Training + the chart are the two things you actually need to glance at
-// while tuning, so those two start open; everything else is one tap away.
+// Every disclosure starts closed; user choices survive snapshot updates.
 
 class LD2410TunerPanel extends HTMLElement {
   constructor() {
