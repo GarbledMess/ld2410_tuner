@@ -2,13 +2,13 @@ import {
   CHART_W,
   CHART_H,
   CHART_MARGIN,
-  CHART_PLOT_W,
   CHART_PLOT_H,
   GATE_COLORS,
 } from "./constants.js";
 
 export const panelVisualization = {
-  _buildChartSvg(d, cs) {
+  _buildChartSvg(d, cs, width = CHART_W) {
+    const plotWidth = width - CHART_MARGIN.left - CHART_MARGIN.right;
     const data = cs.data;
     const activeKey = `g${cs.gate}_${cs.kind}`;
     const currentThreshold = d.current_thresholds?.[activeKey];
@@ -28,14 +28,14 @@ export const panelVisualization = {
 
     const span = Math.max(1, data.end - data.start);
     const xScale = (t) =>
-      CHART_MARGIN.left + ((t - data.start) / span) * CHART_PLOT_W;
+      CHART_MARGIN.left + ((t - data.start) / span) * plotWidth;
     const yScale = (v) =>
       CHART_MARGIN.top +
       (1 - Math.max(0, Math.min(100, v)) / 100) * CHART_PLOT_H;
     const thresholdLine = (value, style, label) => {
       if (value == null || !Number.isFinite(Number(value))) return "";
       const y = yScale(Number(value));
-      return `<line x1="${CHART_MARGIN.left}" y1="${y}" x2="${CHART_W - CHART_MARGIN.right}" y2="${y}" class="threshold-line ${style}"></line><text x="${CHART_MARGIN.left + 4}" y="${Math.max(9, y - 3)}" class="axis-label ${style}">${this._esc(label)} ${this._fmt(value)}</text>`;
+      return `<line x1="${CHART_MARGIN.left}" y1="${y}" x2="${width - CHART_MARGIN.right}" y2="${y}" class="threshold-line ${style}"></line><text x="${CHART_MARGIN.left + 4}" y="${Math.max(9, y - 3)}" class="axis-label ${style}">${this._esc(label)} ${this._fmt(value)}</text>`;
     };
 
     const bandColor = {
@@ -56,16 +56,18 @@ export const panelVisualization = {
     const yTicks = [0, 25, 50, 75, 100]
       .map((v) => {
         const y = yScale(v);
-        return `<line x1="${CHART_MARGIN.left}" y1="${y.toFixed(1)}" x2="${CHART_W - CHART_MARGIN.right}" y2="${y.toFixed(1)}" class="grid-line"></line><text x="${CHART_MARGIN.left - 6}" y="${(y + 3).toFixed(1)}" class="axis-label" text-anchor="end">${v}</text>`;
+        return `<line x1="${CHART_MARGIN.left}" y1="${y.toFixed(1)}" x2="${width - CHART_MARGIN.right}" y2="${y.toFixed(1)}" class="grid-line"></line><text x="${CHART_MARGIN.left - 6}" y="${(y + 3).toFixed(1)}" class="axis-label" text-anchor="end">${v}</text>`;
       })
       .join("");
 
     const spanHours = span / 3600;
-    const tickCount = 5;
+    const tickCount = width < 500 ? 3 : 5;
     const timeFmt = (t) => {
       const dt = new Date(t * 1000);
       return dt.toLocaleString(undefined, {
-        ...(spanHours >= 12 ? { month: "short", day: "numeric" } : {}),
+        ...(spanHours >= 12 && width >= 500
+          ? { month: "short", day: "numeric" }
+          : {}),
         hour: "2-digit",
         minute: "2-digit",
       });
@@ -91,8 +93,8 @@ export const panelVisualization = {
 
     const toolbarHtml = this._selectionToolbarHtml(cs);
 
-    return `${this._learnStatusHtml(learnedProposal, cs, d.last_learning, d.timing_configuration)}<svg viewBox="0 0 ${CHART_W} ${CHART_H}" preserveAspectRatio="xMidYMid meet">
-      <rect x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${CHART_PLOT_W}" height="${CHART_PLOT_H}" class="plot-bg"></rect>
+    return `${this._learnStatusHtml(learnedProposal, cs, d.last_learning, d.timing_configuration)}<svg viewBox="0 0 ${width} ${CHART_H}" preserveAspectRatio="xMidYMid meet">
+      <rect x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}" class="plot-bg"></rect>
       ${bands}
       ${yTicks}
       ${xTicks}
@@ -102,7 +104,7 @@ export const panelVisualization = {
       ${thresholdLine(learnedThreshold, learnedStyle, learnedLabel)}
       ${thresholdLine(currentThreshold, "current", "Current")}
       ${thresholdLine(noiseCeiling, "noise-ceiling", "Noise max")}
-      <rect data-role="selection-hit" class="selection-hit" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${CHART_PLOT_W}" height="${CHART_PLOT_H}"></rect>
+      <rect data-role="selection-hit" class="selection-hit" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}"></rect>
       ${selectionSvg}
     </svg>${toolbarHtml}`;
   },

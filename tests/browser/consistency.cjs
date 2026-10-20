@@ -161,6 +161,23 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
   );
   const radar = zone.locator('[data-device-id="a"]');
   await radar.locator('[data-action="open-history"]').click();
+  await page.evaluate(async () => {
+    const card = panel.shadowRoot.querySelector(
+      '[data-leaf-id="zone:ux"] [data-device-id="a"]',
+    );
+    const state = panel._chartState.get("a");
+    state.kind = "still";
+    state.cache?.clear();
+    panel._historyStateFor("a").day = "2026-09-23";
+    panel._showHistoryWindow(card, "a", panel._historyDayBounds("2026-09-23"));
+    await panel._fetchChartData("a", true);
+  });
+  assert.ok(
+    (await radar.locator(".value-line.active").first().getAttribute("d")).split(
+      "L",
+    ).length > 100,
+    "radar history renders the populated fixture rather than an earlier test's sparse cache",
+  );
   assert.equal(
     await radar
       .locator(".body")
@@ -229,6 +246,16 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
       path: path.join(screenshotDir, `room-overview-${width}.png`),
     });
     if ([1440, 390].includes(width)) {
+      await page.waitForFunction(() => {
+        const svg = panel.shadowRoot.querySelector(
+          '[data-leaf-id="zone:ux"] [data-device-id="a"] .chart-canvas svg',
+        );
+        return (
+          svg &&
+          svg.getBoundingClientRect().height >= 160 &&
+          svg.querySelector(".axis-label").getBoundingClientRect().height >= 9
+        );
+      });
       await zone.evaluate((node) => node.scrollIntoView({ block: "start" }));
       await page.screenshot({
         path: path.join(screenshotDir, `zone-overview-${width}.png`),
@@ -293,14 +320,16 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
     await page.evaluate(async () => {
       const original = panel._call;
       let attempts = 0;
-      panel._call = async () => {
+      panel._call = async (method, parameters, ...rest) => {
+        if (parameters?.device_id !== "busy-test")
+          return original.call(panel, method, parameters, ...rest);
         attempts++;
         if (attempts < 3)
           throw Object.assign(new Error("Busy"), { code: "busy" });
         return { series: {} };
       };
       try {
-        await panel._chartCall({});
+        await panel._chartCall({ device_id: "busy-test" });
         return attempts;
       } finally {
         panel._call = original;

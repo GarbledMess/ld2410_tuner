@@ -1,4 +1,4 @@
-import { CHART_W, CHART_MARGIN, CHART_PLOT_W } from "./constants.js";
+import { CHART_W, CHART_MARGIN } from "./constants.js";
 
 export const panelSelection = {
   _toLocalInputValue(ts) {
@@ -94,9 +94,11 @@ export const panelSelection = {
   _wireChartSelection(id, container, d, cs) {
     const svg = container.querySelector("svg");
     if (!svg) return;
+    const chartWidth = svg.viewBox.baseVal.width || CHART_W;
+    const plotWidth = chartWidth - CHART_MARGIN.left - CHART_MARGIN.right;
     // Keep handle targets finger-sized even when the SVG is scaled on a phone.
     const width = svg.getBoundingClientRect().width || CHART_W;
-    const handleWidth = Math.max(22, (44 * CHART_W) / width);
+    const handleWidth = Math.max(22, (44 * chartWidth) / width);
     container.querySelectorAll(".handle-hit").forEach((hit) => {
       const center =
         Number(hit.getAttribute("x")) + Number(hit.getAttribute("width")) / 2;
@@ -111,15 +113,18 @@ export const panelSelection = {
     const data = cs.data;
     const span = Math.max(1, data.end - data.start);
     const xScale = (t) =>
-      CHART_MARGIN.left + ((t - data.start) / span) * CHART_PLOT_W;
+      CHART_MARGIN.left + ((t - data.start) / span) * plotWidth;
     const xToTime = (x) =>
-      data.start + ((x - CHART_MARGIN.left) / CHART_PLOT_W) * span;
+      data.start + ((x - CHART_MARGIN.left) / plotWidth) * span;
     const pxFromClientX = (clientX) => {
       const rect = svg.getBoundingClientRect();
-      const scale = rect.width ? CHART_W / rect.width : 1;
+      const scale = rect.width ? chartWidth / rect.width : 1;
       return Math.max(
         CHART_MARGIN.left,
-        Math.min(CHART_W - CHART_MARGIN.right, (clientX - rect.left) * scale),
+        Math.min(
+          chartWidth - CHART_MARGIN.right,
+          (clientX - rect.left) * scale,
+        ),
       );
     };
 

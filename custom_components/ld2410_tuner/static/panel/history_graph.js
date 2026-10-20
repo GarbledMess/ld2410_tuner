@@ -67,6 +67,7 @@ export const panelHistoryGraph = {
     cs.plotObserver?.disconnect();
     // Resolve the card each time: polling moves a canvas into a new card.
     cs.plotObserver = new ResizeObserver((entries) => {
+      this._renderChartCanvas(id);
       for (const entry of entries) {
         const card = entry.target.closest("[data-device-id]");
         if (card) this._syncHistoryTimeline(card, id);

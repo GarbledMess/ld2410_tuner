@@ -8,6 +8,8 @@
   range selection and direct links to each radar's history.
 - Put room assessment and configuration behind a labelled disclosure; add radar
   shortcuts for history and recommendations and reduce repeated explanations.
+- Size individual radar plots, axis labels and touch-selection coordinates for
+  each card's available width, including nested cards on mobile screens.
 - Give live interaction the next available worker turn ahead of background jobs.
   Background learning, attribution and periodic storage work wait and resume;
   active operations keep ownership until their cleanup completes.

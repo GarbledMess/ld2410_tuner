@@ -3,7 +3,7 @@ export const CARD_STYLES = `
 :host { padding:16px; font-size:14px; line-height:1.5; }
 *, *::before, *::after { box-sizing:border-box; }
 .card, .panel-card { min-width:0; max-width:100%; border:1px solid var(--divider-color,#ddd); border-radius:14px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 1px 3px rgba(0,0,0,.06)); overflow-wrap:anywhere; }
-.layout-node, .layout-leaf { margin:0; }
+.layout-node, .layout-leaf { margin:0; width:100%; align-self:stretch; }
 .layout-node > summary, .layout-leaf > summary { padding:0 0 8px; }
 .layout-node > .layout-leaf { margin-top:16px; }
 .layout-node > .group-header, .layout-leaf > .group-header { margin:8px 0 14px; background:var(--secondary-background-color,#f7f8fa); box-shadow:none; }
@@ -24,6 +24,7 @@ export const CARD_STYLES = `
 .room-label-band.unknown { fill:rgba(255,193,7,.13); }
 .room-signal-canvas [hidden] { display:none; }
 .room-signal-canvas .axis-label { font-size:12px; }
+.chart-canvas .axis-label { font-size:12px; }
 .room-graph-status { min-height:3em; margin:6px 0; font-size:12px; }
 .room-graph-legend, .device-shortcuts { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
 .room-graph-legend button { display:flex; flex-wrap:wrap; align-items:center; gap:6px; min-width:0; max-width:100%; text-align:start; white-space:normal; }

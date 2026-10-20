@@ -197,6 +197,7 @@ export const panelChart = {
   },
 
   _renderChartCopy(id, el, cs, d, force) {
+    if (!el.isConnected || !el.clientWidth) return;
     const active = this.shadowRoot.activeElement;
     if (cs.panelOpen && el.contains(active) && active?.tagName === "INPUT")
       return;
@@ -204,6 +205,7 @@ export const panelChart = {
     this._syncChartControls(card, cs);
     const activeKey = `g${cs.gate}_${cs.kind}`;
     const signature = JSON.stringify([
+      Math.round(el.clientWidth),
       cs.gate,
       cs.kind,
       cs.hours,
@@ -263,7 +265,11 @@ export const panelChart = {
       return;
     }
     try {
-      el.innerHTML = this._buildChartSvg(d, cs);
+      el.innerHTML = this._buildChartSvg(
+        d,
+        cs,
+        Math.max(240, Math.min(760, Math.round(el.clientWidth) || 760)),
+      );
       this._wireChartSelection(id, el, d, cs);
       const review = el.querySelector('[data-action="review-results"]');
       if (review)
