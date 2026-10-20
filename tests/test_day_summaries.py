@@ -22,6 +22,24 @@ def synthetic_day(seed=27):
     return builder.day()
 
 
+def test_summary_cache_size_includes_the_legacy_day_it_keeps_alive():
+    from tuner_under_test.history import summaries
+
+    rows = 1000
+    day = dayfile.Day(
+        0,
+        rows,
+        array("d", range(rows)),
+        array("d", range(1, rows + 1)),
+        [array("f", [10.25]) * rows for _ in range(18)],
+        [],
+    )
+    summary = summaries.Summary(day)
+    physical_bytes = rows * (16 + 18 * 4)
+    prefix_bytes = (rows + 1) * 8 * 2
+    assert summary.nbytes >= physical_bytes + prefix_bytes
+
+
 def test_day_summary_histograms_equal_full_replay_for_arbitrary_windows():
     from tuner_under_test.history import summaries
 
@@ -151,6 +169,7 @@ def test_ensure_prepares_persistent_indexes_in_executor_for_restart(tmp_path):
     expected = runtime._label_counts["a"].raw
     assert runtime._days._path("a", date, ".sum").exists()
     runtime._days = daystore.DayStore(runtime._days.root)
+    asyncio.run(asyncio.to_thread(runtime._days.open, 700))
     runtime._label_counts.clear()
     with (
         patch.object(label_counts.time, "time", return_value=700),

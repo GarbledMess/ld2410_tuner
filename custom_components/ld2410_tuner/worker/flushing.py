@@ -290,9 +290,17 @@ def publish(store, result, ownership, directory):
         except BaseException:
             _restore_backups(saved)
             raise
+        _inventory(store, effects, ownership)
         accepted = {effect[0] for effect in effects}
         _ack(store, ownership, accepted)
     return result["written"]
+
+
+def _inventory(store, effects, ownership):
+    with store._lock:
+        for key, iso, suffix, present in effects:
+            if ownership["generations"].get(key, 0) == store._generations.get(key, 0):
+                store.inventory(key, datetime.date.fromisoformat(iso), suffix, present)
 
 
 async def _flush(runtime):

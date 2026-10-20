@@ -195,14 +195,19 @@ class Summary:
 
     @property
     def nbytes(self):
+        # A cached summary strongly owns its physical day, including legacy
+        # float columns. Those arrays survive eviction from the day-store LRU.
         arrays = [self.prefix, self.coverage, self.known, self.coverage_starts, self.coverage_ends]
+        arrays.extend((self.day.times, self.day.ends, *self.day.columns))
         arrays.extend(
             part
             for bins in self.gates
             for stream in bins.values()
             for part in (stream.starts, stream.ends, stream.mass)
         )
-        return sum(len(part) * getattr(part, "itemsize", 1) + 128 for part in arrays)
+        return sum(len(part) * getattr(part, "itemsize", 1) + 128 for part in arrays) + 256 * len(
+            self.day.guesses
+        )
 
 
 def of_day(day):

@@ -1,5 +1,27 @@
 # Release notes
 
+## 1.25.1 - 2026-10-20
+
+Fix regressions observed after the worker-isolation update.
+
+- Remove history-directory scans from Home Assistant snapshots using a date
+  inventory maintained by startup and storage publication.
+- Accept dense legacy float history with bounded per-day decoding and a resident
+  LRU, instead of treating all retained days as simultaneous memory usage.
+- Restore derived-result reuse within each worker and account for physical day
+  arrays retained by the summary cache.
+- Save learned tuples and numeric mapping keys using HA-compatible JSON values,
+  retaining strict worker protocol validation and source budgets.
+- Wait for bounded worker admission for background Seen-by/reference refreshes,
+  avoiding empty cached attribution caused by queue saturation.
+- Dispatch scheduled learning only within 15 minutes of its configured start;
+  restarting or enabling it later does not trigger a missed overnight run.
+- Report CPU-budget exhaustion before the existing 120-second hard ceiling.
+  The 512-MiB address-space limit and low process priority remain in place.
+
+Validation: 2,193 tests passed with 97.04% coverage in constrained Home Assistant;
+full browser regressions, dense legacy learning and live HTTP probes passed.
+
 ## 1.25.0 - 2026-10-20
 
 Substantial performance and safety update. The existing HACS installation and

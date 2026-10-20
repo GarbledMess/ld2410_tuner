@@ -159,6 +159,7 @@ def test_a_corrupt_day_file_does_not_poison_valid_counts():
     second = runtime._days.folder("arbitrary") / f"{daystore.date_of(DAY).isoformat()}.day"
     second.write_bytes(b"corrupt")
     runtime._days = daystore.DayStore(runtime._days.root)  # A restart: nothing cached.
+    runtime._days.open(now=2 * DAY + 10)
     found = counted(runtime, device, 2 * DAY + 10)
     assert found["g0_move"]["present"][10] == 1
     assert sum(found["g0_move"]["present"]) == 1

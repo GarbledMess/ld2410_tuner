@@ -85,6 +85,7 @@ class DayStore:
         self._pending = {}
         self._clear_pending = {}
         self._publication_error = None
+        self._files = {}  # Device -> date -> durable suffixes; HA date reads are memory-only.
 
     def folder(self, device_id):
         return self.root / _folder_name(device_id)
@@ -107,6 +108,36 @@ class DayStore:
             for log in sorted(folder.glob("*.log")):
                 pace.rest()
                 self._recover(unquote(folder.name), log, date_of(now))
+        self.reconcile()
+
+    def reconcile(self):
+        """Refresh durable date inventory after startup recovery (executor only)."""
+        with self._fs_lock:
+            files = {}
+            for path in self.root.glob("*/*"):
+                if path.suffix not in (".day", ".log") or not path.is_file():
+                    continue
+                try:
+                    date = datetime.date.fromisoformat(path.stem)
+                except ValueError:
+                    continue
+                files.setdefault(unquote(path.parent.name), {}).setdefault(date, set()).add(
+                    path.suffix
+                )
+            with self._lock:
+                self._files = files
+
+    def inventory(self, device_id, date, suffix, present):
+        """Record a completed file operation without querying the filesystem."""
+        with self._lock:
+            dates = self._files.setdefault(device_id, {})
+            suffixes = dates.setdefault(date, set())
+            if present:
+                suffixes.add(suffix)
+            else:
+                suffixes.discard(suffix)
+            if not suffixes:
+                dates.pop(date, None)
 
     def _recover(self, device_id, log, today):
         date = datetime.date.fromisoformat(log.stem)
@@ -221,6 +252,9 @@ class DayStore:
             with path.open("ab") as log:
                 log.write(data)
             live.written = records[-1].time
+            with self._lock:
+                if live.generation == self._generations.get(device_id, 0):
+                    self.inventory(device_id, live.date, ".log", True)
         return len(data)
 
     def _finish(self, device_id, live):
@@ -233,6 +267,7 @@ class DayStore:
             if live.generation != self._generations.get(device_id, 0):
                 return
             self._path(device_id, live.date, ".log").unlink(missing_ok=True)
+            self.inventory(device_id, live.date, ".log", False)
         with self._lock:
             self._closing.get(device_id, {}).pop(live.date, None)
 
@@ -263,6 +298,7 @@ class DayStore:
             summary_cache.invalidate(path)
         with self._lock:
             if generation == self._generations.get(device_id, 0):
+                self.inventory(device_id, date, ".day", True)
                 self._remember((device_id, date), day)
                 self._changed((device_id, date))
                 self._revise(device_id)
@@ -393,15 +429,9 @@ class DayStore:
         return result
 
     def days(self, device_id):
-        dates = set()
-        folder = self.folder(device_id)
-        if folder.exists():
-            dates.update(
-                datetime.date.fromisoformat(path.name[:10])
-                for path in folder.iterdir()
-                if path.suffix in (".day", ".log")
-            )
+        """Dates visible to HA snapshots; never performs filesystem operations."""
         with self._lock:
+            dates = set(self._files.get(device_id, {}))
             if device_id in self._live:
                 dates.add(self._live[device_id].date)
             dates.update(self._closing.get(device_id, {}))
@@ -462,6 +492,7 @@ class DayStore:
                     path.unlink(missing_ok=True)
                     temporary.unlink(missing_ok=True)
                     self._forget((key, date))
+                self.inventory(key, date, ".day", _has_data(day))
                 self._changed((key, date))
                 self._revise(key)
                 self._rewrite(key)
@@ -478,6 +509,7 @@ class DayStore:
                 summary_cache.invalidate(self._path(device_id, date, ".day"))
                 for suffix in (".day", ".log"):
                     self._path(device_id, date, suffix).unlink(missing_ok=True)
+                    self.inventory(device_id, date, suffix, False)
                 self._forget((device_id, date))
                 self._changed((device_id, date))
             self._revise(device_id)
@@ -494,6 +526,7 @@ class DayStore:
             self._generations[device_id] = self._generations.get(device_id, 0) + 1
             self._clear_pending[device_id] = self._generations[device_id]
             self._live.pop(device_id, None)
+            self._files.pop(device_id, None)
             self._closing.pop(device_id, None)
             self._late.pop(device_id, None)
             for key in [key for key in self._pending if key[0] == device_id]:
@@ -581,6 +614,7 @@ class DayStore:
             temporary.unlink(missing_ok=True)
         with self._lock:
             if self._pending.get((key, date), (None, None))[1] is token:
+                self.inventory(key, date, ".day", present)
                 self._pending.pop((key, date))
                 if generation == self._generations.get(key, 0) and present:
                     self._remember((key, date), day)

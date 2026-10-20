@@ -128,6 +128,60 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         if self.runtime._nightly_task:
             await self.runtime._nightly_task
 
+    async def test_midday_restart_does_not_catch_up_missed_overnight_learning(self):
+        self.configure()
+        await self.tick("2026-09-26T13:54:00+00:00")
+        self.runtime.async_learn.assert_not_awaited()
+        self.assertNotIn("last_day", self.runtime.data["learning_schedule"])
+        await self.tick("2026-09-27T02:00:00+00:00")
+        self.runtime.async_learn.assert_awaited_once_with("a", source="automatic")
+
+    async def test_dispatch_grace_ends_fifteen_minutes_after_scheduled_time(self):
+        self.configure()
+        await self.tick("2026-09-26T02:15:00+00:00")
+        self.runtime.async_learn.assert_not_awaited()
+        await self.tick("2026-09-27T02:14:59+00:00")
+        self.runtime.async_learn.assert_awaited_once()
+
+    async def test_spring_gap_dispatch_grace_starts_at_first_valid_minute(self):
+        self.configure("01:30")
+        await self.tick("2027-03-28T01:15:00+00:00")
+        self.runtime.async_learn.assert_not_awaited()
+        await self.tick("2028-03-26T01:14:59+00:00")
+        self.runtime.async_learn.assert_awaited_once()
+
+    async def test_midnight_dispatch_grace_retains_previous_days_claim(self):
+        self.configure("23:55")
+        await self.tick("2026-09-26T23:01:00+00:00")
+        self.runtime.async_learn.assert_awaited_once()
+        self.assertEqual(self.device["nightly_learning"]["day"], "2026-09-26")
+
+    def test_dispatch_uses_absolute_time_across_clock_and_timezone_changes(self):
+        cases = (
+            ("UTC", "03:00", "2026-09-26T02:59:59+00:00", None),
+            ("UTC", "03:00", "2026-09-26T03:00:00+00:00", "2026-09-26"),
+            ("UTC", "03:00", "2026-09-26T03:15:00+00:00", None),
+            ("Europe/London", "03:00", "2026-09-26T03:00:00+00:00", None),
+            ("Europe/London", "01:30", "2026-10-25T00:30:00+00:00", "2026-10-25"),
+            ("Europe/London", "01:30", "2026-10-25T01:30:00+00:00", None),
+            ("Australia/Lord_Howe", "02:15", "2026-10-03T15:30:00+00:00", "2026-10-04"),
+            ("Australia/Lord_Howe", "02:15", "2026-10-03T15:45:00+00:00", None),
+        )
+        for timezone, at, instant, expected in cases:
+            with self.subTest(timezone=timezone, instant=instant):
+                config = {"enabled": True, "timezone": timezone, "time": at}
+                self.assertEqual(
+                    schedule._due_day(config, datetime.fromisoformat(instant)), expected
+                )
+
+    async def test_enabling_after_window_does_not_start_learning(self):
+        self.configure()
+        self.runtime.configure_learning_schedule(False, "03:00")
+        await self.tick("2026-09-26T02:00:00+00:00")
+        self.runtime.configure_learning_schedule(True, "03:00")
+        await self.tick("2026-09-26T13:54:00+00:00")
+        self.runtime.async_learn.assert_not_awaited()
+
     async def test_disabled_and_before_time_do_not_run_then_restart_does_not_repeat(self):
         await self.tick("2026-09-26T05:00:00+00:00")
         self.assertIsNone(self.runtime._nightly_task)
@@ -141,7 +195,7 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.runtime._nightly_task = None  # Same persisted data after restart.
         await self.tick("2026-09-26T09:00:00+00:00")
         self.assertEqual(self.runtime.async_learn.await_count, 1)
-        await self.tick("2026-09-27T03:00:00+00:00")
+        await self.tick("2026-09-27T02:00:00+00:00")
         self.assertEqual(self.runtime.async_learn.await_count, 2)
         self.hass.services.async_call.assert_not_awaited()
 

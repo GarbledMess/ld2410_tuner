@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..history import dayfile, daystore, worker_snapshot
-from . import codec, protocol
+from . import codec, history, protocol
 
 ATTRIBUTES = (
     "_history_until",
@@ -19,11 +19,11 @@ ATTRIBUTES = (
 @dataclass(frozen=True)
 class CaptureLimits:
     max_devices: int = 16
-    max_days: int = 128
+    max_days: int = 512
     max_rows: int = 1048576
     max_guesses: int = 32768
     max_raw_bytes: int = 32 * 1024 * 1024
-    max_file_bytes: int = 32 * 1024 * 1024
+    max_file_bytes: int = 512 * 1024 * 1024
 
     def __post_init__(self):
         if any(type(value) is not int or value <= 0 for value in vars(self).values()):
@@ -225,9 +225,9 @@ def _acquire(store, key, date, view, remaining):
         date,
         getattr(view, "_history_until", None),
         limits=worker_snapshot.Limits(
-            min(131072, remaining["rows"]),
+            min(history.DAY_ROWS, remaining["rows"]),
             min(4096, remaining["guesses"]),
-            min(4 * 1024 * 1024, remaining["raw"]),
+            min(history.DAY_BYTES, remaining["raw"]),
         ),
     )
     remaining["guesses"] -= len(snapshot.late_guesses)

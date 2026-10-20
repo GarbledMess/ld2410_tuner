@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from homeassistant.core import callback
@@ -14,6 +14,7 @@ from ..calibration.service import LearningEvidenceChanged
 from ..presence import rebuilds
 
 _LOGGER = logging.getLogger(__name__)
+_DISPATCH_GRACE = timedelta(minutes=15)
 
 
 def settings(runtime):
@@ -65,11 +66,37 @@ def tick(runtime, now):
 
 
 def _due_day(config, now):
-    """The local day if the schedule time has passed today, else None."""
+    """Learning starts near its scheduled time, never as an afternoon catch-up."""
     local = now.astimezone(ZoneInfo(config["timezone"]))
-    if local.strftime("%H:%M") < config["time"]:
-        return None
-    return local.date().isoformat()
+    if not config["enabled"]:
+        # Reference maintenance remains a once-daily refresh after missed schedules.
+        return local.date().isoformat() if local.strftime("%H:%M") >= config["time"] else None
+    for day in (local, local - timedelta(days=1)):
+        scheduled = _scheduled_instant(day, config["time"])
+        elapsed = now.astimezone(UTC) - scheduled.astimezone(UTC)
+        if timedelta(0) <= elapsed < _DISPATCH_GRACE:
+            return day.date().isoformat()
+    return None
+
+
+def _scheduled_instant(local, at):
+    """Use the first occurrence of a repeated time, or the first minute after a DST gap."""
+    hour, minute = map(int, at.split(":"))
+    requested = local.replace(hour=hour, minute=minute, second=0, microsecond=0, fold=0)
+    normalized = requested.astimezone(UTC).astimezone(local.tzinfo)
+    if normalized.replace(tzinfo=None) == requested.replace(tzinfo=None):
+        return requested
+    # Find the gap's end, rather than shifting e.g. missing 01:30 to 02:30.
+    low, high = 0, int((normalized - requested).total_seconds() // 60)
+    while low < high:
+        middle = (low + high) // 2
+        probe = requested + timedelta(minutes=middle)
+        roundtrip = probe.astimezone(UTC).astimezone(local.tzinfo)
+        if roundtrip.replace(tzinfo=None) == probe.replace(tzinfo=None):
+            high = middle
+        else:
+            low = middle + 1
+    return requested + timedelta(minutes=low)
 
 
 def _start_learning(runtime, config, day):
@@ -81,7 +108,7 @@ def _start_learning(runtime, config, day):
 
 def _refresh_references(runtime, day):
     """With learning off, stale references still rebuild once a day; claimed separately
-    from learning's ``last_day`` so enabling learning later that day still learns."""
+    so enabling learning during the dispatch window can still start its own pass."""
     saved = runtime.data.setdefault("learning_schedule", {})
     if saved.get("references_day") == day:
         return

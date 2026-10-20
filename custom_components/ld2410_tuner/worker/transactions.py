@@ -1,6 +1,5 @@
 """Owned, bounded storage transactions against a private same-filesystem tree."""
 
-import asyncio
 import os
 import shutil
 import stat
@@ -9,8 +8,8 @@ import threading
 import time
 from pathlib import Path
 
-from . import bridge, protocol
-from .supervisor import Busy, Supervisor, owned_preparation
+from . import bridge, protocol, storage_values
+from .supervisor import Supervisor, owned_preparation
 
 MESSAGE_BYTES = 16 * 1024 * 1024
 MESSAGE_NODES = 1024 * 1024
@@ -19,7 +18,8 @@ TREE_FILES = 8192
 
 
 def _message(kind, data):
-    return protocol.pack(kind, data, max_bytes=MESSAGE_BYTES, max_nodes=MESSAGE_NODES)
+    normalized = storage_values.normalize(data, max_bytes=MESSAGE_BYTES, max_nodes=MESSAGE_NODES)
+    return protocol.pack(kind, normalized, max_bytes=MESSAGE_BYTES, max_nodes=MESSAGE_NODES)
 
 
 def _read(path, kind):
@@ -129,7 +129,7 @@ async def run(runtime, operation, data, accept, *, snapshot=None):
     holder = {}
 
     async def prepare():
-        protocol._check(data, MESSAGE_BYTES, MESSAGE_NODES)
+        storage_values.validate(data, max_bytes=MESSAGE_BYTES, max_nodes=MESSAGE_NODES)
         return await owned_preparation(
             runtime.hass.async_add_executor_job(
                 _prepare,
@@ -208,8 +208,4 @@ async def final_save(runtime):
 
 async def _admit(service, prepare, consume, finish):
     """The serialized storage caller waits without dropping durability work or copying it."""
-    while True:
-        try:
-            return await service.run(prepare, consume=consume, finish=finish)
-        except Busy:
-            await asyncio.wait(tuple(service._jobs), return_when=asyncio.FIRST_COMPLETED)
+    return await service.run_when_available(prepare, consume=consume, finish=finish)

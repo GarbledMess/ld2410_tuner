@@ -17,6 +17,7 @@ RUNTIME_FILES = (
     "worker/protocol.py",
     "history/commit.py",
     "worker/transactions.py",
+    "worker/storage_values.py",
     "worker/startup.py",
     "worker/maintenance.py",
     "worker/flushing.py",

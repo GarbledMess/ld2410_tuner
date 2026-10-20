@@ -771,14 +771,14 @@ class DailyReferenceRefreshTests(unittest.IsolatedAsyncioTestCase):
         assert learned == [("b", "2026-09-26")]
         assert "references_day" not in self.runtime.data["learning_schedule"]
 
-    async def test_enabling_learning_after_the_daily_refresh_still_learns_that_day(self):
+    async def test_enabling_learning_within_dispatch_window_after_reference_refresh(self):
         rebuilds = self.schedule()
         learned = await self.learning()
         rebuilds.mark_stale(self.runtime, {"b"}, 100.0)
         await self.tick("2026-09-26T02:00:00+00:00")
         assert self.rebuilt == ["b"] and learned == []
         self.runtime.data["learning_schedule"]["enabled"] = True
-        await self.tick("2026-09-26T05:00:00+00:00")
+        await self.tick("2026-09-26T02:01:00+00:00")
         assert learned == [("b", "2026-09-26")]
         assert self.rebuilt == ["b"], "references were current: nothing rebuilt twice"
 

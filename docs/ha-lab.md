@@ -55,3 +55,22 @@ See [the worker implementation and safety boundary](hacs-worker-investigation.md
 No publication or production installation was made during this verification.
 The iteration was subsequently accepted for local closeout; see
 [the closeout](iteration-closeout.md).
+
+## 1.25.1 production regression verification
+
+The final regression run passed **2,193 tests with 97.04% coverage** in the same
+constrained HA container. This includes real CPU-budget exhaustion, legacy
+float-day decoding, bounded cache retention, a real learning-through-storage
+save, saturated background admission and a full populated snapshot with
+filesystem calls forbidden. Lint, formatting, complexity and package checks passed.
+The complete panel browser recipe and browser formatting passed with no browser errors.
+
+The production HTTP probe preserved 6,000 rows across four learning and four
+storage children; HA answered 288 requests with p95 11.640 ms and maximum
+37.489 ms. A separate protected worker learned from 86,400 rows and 18 legacy
+float gates in 5.641 CPU seconds / 5.781 wall seconds, with 100,028 KiB peak RSS.
+The mandatory 512-MiB address-space and 120-second hard CPU ceilings remain.
+These representative synthetic checks do not determine the exact cause of a
+previous production SIGKILL or guarantee that every workload fits its budgets.
+
+Diagnostics: `machine/runs/ld2410_tuner-1340dbebdf00/20261020-145949-2a77437a2d8eb440`.

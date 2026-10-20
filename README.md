@@ -271,10 +271,13 @@ below the selector, saves immediately, and survives restarts and clearing record
 The overnight schedule remains global: an override does not enable a disabled
 schedule, bypass paused recording, or bypass the improvement and write guards.
 Existing installations inherit their current global settings without migration.
-If Home Assistant was offline at the scheduled time,
-the pass runs after startup. A persisted daily marker avoids duplicate runs after
-restarts or during the repeated autumn clock-change hour. A skipped springtime
-clock hour runs at the first check after the jump. Disabling the schedule lets an
+An overnight pass may start during the 15 minutes following the configured time.
+If Home Assistant restarts or the schedule is enabled outside that window, it waits
+for the next scheduled day instead of catching up during the day. The window limits
+when a pass starts; a started pass may finish after it closes. A persisted daily
+marker avoids duplicate runs after restarts or during the repeated autumn clock-change
+hour. A skipped springtime clock hour uses the first valid minute after the jump,
+with the same 15-minute dispatch window. Disabling the schedule lets an
 in-progress device finish and stops before the next device.
 
 After a fit allowed by the sensor’s effective setting, automatic Apply compares the saved recommendation with the

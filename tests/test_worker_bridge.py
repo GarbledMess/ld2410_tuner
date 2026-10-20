@@ -84,3 +84,82 @@ def test_seen_by_defers_view_copy_until_admission(monkeypatch):
         await bridge.stop(owner)
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("operation", ["seen_by", "references"])
+def test_background_calculation_waits_for_saturated_worker_without_copying(operation, monkeypatch):
+    from tuner_under_test.worker import codec
+
+    async def run():
+        owner = runtime()
+        service = bridge._service(owner)
+        entered, release = asyncio.Event(), asyncio.Event()
+        prepared = []
+
+        async def process(args):
+            entered.set()
+            await release.wait()
+            return codec.pack_result({"episodes": [1]})
+
+        async def prepare_slot():
+            return ()
+
+        monkeypatch.setattr(service, "_process", process)
+        monkeypatch.setattr(bridge, "_build", lambda *args: ())
+        active = asyncio.create_task(service.run(prepare_slot))
+        await entered.wait()
+        pending = asyncio.create_task(service.run(prepare_slot))
+        await asyncio.sleep(0)
+
+        def prepare():
+            prepared.append(True)
+            return {}
+
+        waiting = asyncio.create_task(bridge.calculate(owner, operation, prepare))
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        assert prepared == []
+        release.set()
+        assert await waiting == {"episodes": [1]}
+        await asyncio.gather(active, pending)
+        assert prepared == [True]
+        await bridge.stop(owner)
+
+    asyncio.run(run())
+
+
+def test_cancelling_background_admission_keeps_active_work_owned(monkeypatch):
+    async def run():
+        owner = runtime()
+        service = bridge._service(owner)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def process(args):
+            entered.set()
+            await release.wait()
+            return b"done"
+
+        async def prepare():
+            return ()
+
+        monkeypatch.setattr(service, "_process", process)
+        active = asyncio.create_task(service.run(prepare))
+        await entered.wait()
+        pending = asyncio.create_task(service.run(prepare))
+        await asyncio.sleep(0)
+        with pytest.raises(supervisor.Busy):
+            await bridge.calculate(owner, "learn", lambda: pytest.fail("copied on rejection"))
+        waiting = asyncio.create_task(
+            bridge.calculate(owner, "seen_by", lambda: pytest.fail("copied while waiting"))
+        )
+        await asyncio.sleep(0)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert not active.done()
+        release.set()
+        assert await active == b"done"
+        assert await pending == b"done"
+        await bridge.stop(owner)
+
+    asyncio.run(run())

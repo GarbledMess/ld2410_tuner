@@ -44,9 +44,12 @@ One numerical operation is active per runtime, with at most one pending request.
 Admission precedes view creation. The serialized storage caller waits on existing
 jobs when the queue is full, preserving pending durability work without making
 early history copies or increasing the worker count. Metadata is checked before copies; aggregate
-history capture allows at most 16 devices, 128 days, 1,048,576 rows, 32,768 guesses
-and 32 MiB of raw columns. Each mutable day is capped at 131,072 rows,
-4,096 guesses and 4 MiB of raw columns. Source metadata allows up to 128
+history capture allows at most 16 devices, 512 days, 1,048,576 mutable rows,
+32,768 mutable guesses and 32 MiB of mutable columns. Each mutable day is capped
+at 131,072 rows, 4,096 guesses and 12 MiB of raw columns. Finished history uses
+a 32-MiB resident LRU and a separate 512-MiB total file-work allowance, so reading
+retained days does not accumulate decoded arrays without limit. Summary cache
+accounting includes the physical day arrays it retains. Source metadata allows up to 128
 devices, but each captured job keeps its separate 16-device limit.
 Finished history remains identity-checked file references; mutable data belongs
 to a private temporary job directory. The child bounds decoding and allocation.
@@ -54,7 +57,8 @@ to a private temporary job directory. The child bounds decoding and allocation.
 The same Python interpreter starts with `-I -S -B`, avoiding integration startup
 and site dependencies. Before numerical imports or input decoding, the child
 requires Linux controls: nice 19, OOM adjustment at least +500, parent-death
-SIGKILL, 512 MiB address space, 120 CPU seconds, 16 MiB file size, 64 open files
+SIGKILL, 512 MiB address space, 120 CPU seconds (a diagnostic signal at 119 seconds),
+16 MiB file size, 64 open files
 and no core dumps. The supervisor enforces a 180-second deadline and capped
 output. Requests and results use bounded versioned JSON, without pickle or
 arbitrary object reconstruction. Unsupported hosts or missing controls fail
@@ -66,6 +70,14 @@ admitted; cleanup failure closes admission. Shutdown stops and reaps workers.
 Already-running bounded executor preparation can extend cancellation cleanup
 past the request deadline; ownership is preferred over abandoning work.
 Oversized jobs fail explicitly rather than expanding their budget automatically.
+
+Background Seen-by and reference refreshes share the existing caller semaphore
+and deduplication. If active and pending worker slots are occupied, they wait
+before acquiring views; interactive jobs retain fail-fast admission. Storage
+metadata accepts native JSON-compatible tuples and scalar mapping keys through
+a bounded normalizer, without weakening the numerical protocol. History date
+queries use an in-memory inventory populated during startup and updated after
+successful publication, so synchronous snapshots do not scan directories.
 
 ## Storage budgets
 

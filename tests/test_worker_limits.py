@@ -44,7 +44,7 @@ def boundary(monkeypatch, tmp_path):
         PRIO_PROCESS=0,
     )
     monkeypatch.setattr(limits, "os", system)
-    monkeypatch.setattr(limits, "signal", SimpleNamespace(SIGKILL=9))
+    monkeypatch.setattr(limits, "signal", SimpleNamespace(SIGKILL=9, SIGXCPU=24, signal=Mock()))
     libc = SimpleNamespace(prctl=Mock(return_value=0))
     monkeypatch.setattr(limits.ctypes, "CDLL", Mock(return_value=libc))
     score = tmp_path / "oom_score_adj"
@@ -64,12 +64,33 @@ def test_installs_and_reports_all_required_controls(boundary):
     assert report["parent_pid"] == 42
     assert boundary.values == {
         0: (402653184,) * 2,
-        1: (30,) * 2,
+        1: (29, 30),
         2: (1048576,) * 2,
         3: (0, 0),
         4: (64, 64),
     }
     boundary.libc.prctl.assert_called_once_with(1, 9, 0, 0, 0)
+
+
+def test_cpu_soft_limit_reports_exhaustion_before_unchanged_hard_ceiling(boundary):
+    limits.install(budget(), expected_parent=42)
+    handler = limits.signal.signal.call_args.args[1]
+    with pytest.raises(limits.CpuBudgetExceeded, match="CPU time budget exhausted"):
+        handler(limits.signal.SIGXCPU, None)
+    assert boundary.values[boundary.resource.RLIMIT_CPU] == (29, 30)
+
+
+def test_stricter_existing_cpu_soft_limit_is_never_raised(boundary):
+    boundary.values[boundary.resource.RLIMIT_CPU] = (10, 15)
+    report = limits.install(budget(), expected_parent=42)
+    assert report["cpu_seconds"] == 10
+    assert boundary.values[boundary.resource.RLIMIT_CPU] == (9, 10)
+
+
+def test_missing_cpu_warning_handler_refuses_execution(boundary):
+    limits.signal.signal.side_effect = ValueError("Signal handler unavailable")
+    with pytest.raises(limits.IsolationUnavailable):
+        limits.install(budget(), expected_parent=42)
 
 
 @pytest.mark.parametrize("kind", range(5))
@@ -176,6 +197,45 @@ else:
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
     assert report.get("allocation_blocked") if sys.platform == "linux" else report["unsupported"]
+
+
+def test_real_busy_child_reports_cpu_exhaustion_before_hard_kill(tmp_path):
+    script = tmp_path / "cpu_exhaustion.py"
+    script.write_text("""
+import importlib.util, json, os, sys, time
+spec = importlib.util.spec_from_file_location('child_limits', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+try:
+    report = module.install(module.Budget(384*1024**2, 2, 1024**2), expected_parent=int(sys.argv[2]))
+except module.IsolationUnavailable:
+    assert sys.platform != 'linux'
+    print(json.dumps({'unsupported': True}))
+else:
+    try:
+        while True:
+            pass
+    except module.CpuBudgetExceeded as error:
+        print(json.dumps({'cpu_seconds': time.process_time(), 'hard_seconds': report['cpu_seconds']}))
+        os.write(2, f'Worker refused: {type(error).__name__}: {error}'.encode())
+        sys.exit(1)
+""")
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", str(script), limits.__file__, str(os.getpid())],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    report = json.loads(result.stdout)
+    if sys.platform == "linux":
+        assert result.returncode == 1, result.stderr
+        assert "CpuBudgetExceeded: CPU time budget exhausted" in result.stderr
+        assert report["hard_seconds"] == 2
+        assert 0.5 <= report["cpu_seconds"] < 2
+    else:
+        assert result.returncode == 0, result.stderr
+        assert report == {"unsupported": True}
 
 
 def test_real_parent_death_kills_and_reaps_protected_child(tmp_path):

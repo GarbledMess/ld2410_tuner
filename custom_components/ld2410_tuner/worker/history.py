@@ -5,6 +5,11 @@ import zlib
 
 from ..history import dayfile
 
+# 131072 rows at the legacy maximum (18 float32 gates and two float64
+# timestamp columns) occupy 11 MiB. This bounds one valid full-rate day.
+DAY_ROWS = 131072
+DAY_BYTES = 12 * 1024 * 1024
+
 
 class HistoryRejected(ValueError):
     """A history input is malformed or exceeds the worker job budget."""
@@ -55,6 +60,8 @@ def decode(
         ends, position = dayfile._times(raw, position, rows, start)
         columns, position = dayfile._columns(raw, position, rows, flags)
         runs, _ = dayfile._runs(raw, position, guesses, start)
+    except HistoryRejected:
+        raise
     except (zlib.error, ValueError, IndexError, struct.error) as error:
         raise HistoryRejected("Invalid or oversized worker history") from error
     return dayfile.Day(dayfile._seconds(start), dayfile._seconds(end), times, ends, columns, runs)

@@ -81,6 +81,27 @@ def test_production_capture_allows_a_dense_week_within_raw_budget():
     assert limits.max_rows >= 7 * 86400
 
 
+def test_production_capture_accepts_a_month_for_all_supported_radars(tmp_path):
+    import datetime
+
+    from tuner_under_test.history import daystore
+
+    store = daystore.DayStore(tmp_path / "history")
+    devices = {f"radar{index}": {} for index in range(16)}
+    for key in devices:
+        for offset in range(31):
+            date = datetime.date(1970, 1, 1) + datetime.timedelta(days=offset)
+            path = store._path(key, date, ".day")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(dayfile.encode_day(dayfile.DayBuilder(*daystore.bounds(date)).day()))
+    # Refresh public finished-file inventory after constructing the disk fixture.
+    store = daystore.DayStore(store.root)
+    run(store.open, 40 * 86400)
+    source = SimpleNamespace(data={"devices": devices}, _days=store)
+    request = run(capture.prepare, source, "all", tmp_path / "capture")
+    assert len(request["days"]) == 16 * 31
+
+
 @pytest.mark.parametrize("multiple", [False, True])
 def test_device_or_view_cardinality_rejected_before_acquisition(tmp_path, multiple):
     source = SimpleNamespace(data={"devices": {"a": {}, "b": {}}})

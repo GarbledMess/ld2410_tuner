@@ -2,6 +2,8 @@
 
 import datetime
 import time
+import uuid
+from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,12 +12,45 @@ from . import codec, history
 
 
 class JobHistory:
-    """One allocation ledger and decoded cache shared across every view of a job."""
+    """A bounded resident cache shared across every view of a job."""
 
     def __init__(self):
-        self.cache = {}
+        self.cache = OrderedDict()
+        self.root = "worker-" + uuid.uuid4().hex
+        self.files = set()
         self.attribution_guesses = {}
         self.rows = self.guesses = self.raw_bytes = self.file_bytes = 0
+
+    def retain(self, mark, day, budgets):
+        counts = _counts(day)
+        if any(actual > budgets[name] for name, actual in counts.items()):
+            raise history.HistoryRejected("One decoded day exceeds the resident history budget")
+        while self.cache and any(
+            getattr(self, _LEDGERS[name]) + actual > budgets[name]
+            for name, actual in counts.items()
+        ):
+            _, previous = self.cache.popitem(last=False)
+            for name, actual in _counts(previous).items():
+                attribute = _LEDGERS[name]
+                setattr(self, attribute, getattr(self, attribute) - actual)
+        for name, actual in counts.items():
+            attribute = _LEDGERS[name]
+            setattr(self, attribute, getattr(self, attribute) + actual)
+        self.cache[mark] = day
+
+
+_LEDGERS = {"max_rows": "rows", "max_guesses": "guesses", "max_raw_bytes": "raw_bytes"}
+
+
+def _counts(day):
+    return {
+        "max_rows": len(day.times),
+        "max_guesses": len(day.guesses),
+        "max_raw_bytes": sum(
+            len(column) * getattr(column, "itemsize", 1)
+            for column in (day.times, day.ends, *day.columns)
+        ),
+    }
 
 
 class ReadOnlyDays:
@@ -29,6 +64,7 @@ class ReadOnlyDays:
         self.live_dates = request.get("live_dates", {})
         self.budgets = request["budgets"]
         self.shared = JobHistory() if shared is None else shared
+        self.root = self.shared.root
 
     def days(self, device_id):
         return sorted(date for key, date in self.entries if key == device_id)
@@ -38,7 +74,16 @@ class ReadOnlyDays:
         return None if value is None else datetime.date.fromisoformat(value)
 
     def identity(self, device_id, date):
-        return None  # No cross-job cache: all references belong to this one private job.
+        # Live inputs have already been copied to private immutable files too. A
+        # job-specific root permits bounded derived-result reuse without leaking
+        # evidence between requests or ignoring changed physical file identities.
+        entry = self.entries.get((device_id, date))
+        if entry is None or entry["path"] is None:
+            return None
+        expected = tuple(map(int, entry["identity"]))
+        if history._identity(Path(entry["path"]).stat()) != expected:
+            raise history.HistoryRejected("History changed before derived result acquisition")
+        return entry["path"], expected, tuple(tuple(span) for span in entry["late"])
 
     def day(self, device_id, date, until=None):
         key = device_id, date
@@ -52,22 +97,10 @@ class ReadOnlyDays:
             tuple(tuple(span) for span in entry["late"]),
         )
         if mark in self.shared.cache:
+            self.shared.cache.move_to_end(mark)
             return self.shared.cache[mark]
         day = self._read(entry, date)
-        self.shared.rows += len(day.times)
-        self.shared.guesses += len(day.guesses)
-        self.shared.raw_bytes += sum(
-            len(column) * getattr(column, "itemsize", 1)
-            for column in (day.times, day.ends, *day.columns)
-        )
-        for name, actual in (
-            ("max_rows", self.shared.rows),
-            ("max_guesses", self.shared.guesses),
-            ("max_raw_bytes", self.shared.raw_bytes),
-        ):
-            if actual > self.budgets[name]:
-                raise history.HistoryRejected("Aggregate decoded history budget exceeded")
-        self.shared.cache[mark] = day
+        self.shared.retain(mark, day, self.budgets)
         return day
 
     def summary(self, device_id, date, until=None):
@@ -95,7 +128,10 @@ class ReadOnlyDays:
         if entry["path"] is None:
             day = dayfile.DayBuilder(*daystore.bounds(date)).day()
         else:
-            self.shared.file_bytes += int(entry["identity"][3])
+            physical = entry["path"], tuple(entry["identity"])
+            if physical not in self.shared.files:
+                self.shared.file_bytes += int(entry["identity"][3])
+                self.shared.files.add(physical)
             if self.shared.file_bytes > self.budgets["max_file_bytes"]:
                 raise history.HistoryRejected("Aggregate history file budget exceeded")
             reference = worker_snapshot.FileReference(
@@ -103,14 +139,13 @@ class ReadOnlyDays:
             )
             day = history.read(
                 reference,
-                max_rows=min(131072, self.budgets["max_rows"] - self.shared.rows),
-                max_guesses=min(4096, self.budgets["max_guesses"] - self.shared.guesses),
-                max_raw_bytes=min(
-                    4 * 1024 * 1024, self.budgets["max_raw_bytes"] - self.shared.raw_bytes
-                ),
+                max_rows=min(history.DAY_ROWS, self.budgets["max_rows"]),
+                max_guesses=min(4096, self.budgets["max_guesses"]),
+                max_raw_bytes=min(history.DAY_BYTES, self.budgets["max_raw_bytes"]),
+                max_compressed_bytes=history.DAY_BYTES,
             )
         late = [dayfile.GuessSpan(*span) for span in entry["late"]]
-        if len(late) + len(day.guesses) > self.budgets["max_guesses"] - self.shared.guesses:
+        if len(late) + len(day.guesses) > self.budgets["max_guesses"]:
             raise history.HistoryRejected("Aggregate late guess budget exceeded")
         return dayfile.splice(day, late)
 

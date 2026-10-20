@@ -33,6 +33,7 @@
     "limits": "chroot /work/os docker exec ha-lab python3 /lab/scripts/limits_check.py",
     "http_ready": "chroot /work/os docker exec ha-lab python3 /lab/scripts/ha_smoke.py",
     "production_worker_http": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/production_checks.py",
+    "dense_legacy_learning": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/dense_history_checks.py",
     "python_qa": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/qa.py"
   }
 }

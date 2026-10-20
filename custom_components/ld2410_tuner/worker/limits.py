@@ -17,6 +17,14 @@ class IsolationUnavailable(RuntimeError):
     """The child cannot establish every required protection."""
 
 
+class CpuBudgetExceeded(RuntimeError):
+    """The worker exhausted its CPU allowance before the uncatchable hard limit."""
+
+
+def _cpu_exhausted(_signal, _frame):
+    raise CpuBudgetExceeded("CPU time budget exhausted; worker stopped before the hard CPU limit")
+
+
 @dataclass(frozen=True)
 class Budget:
     memory_bytes: int
@@ -53,11 +61,12 @@ def _process(expected_parent):
     return actual
 
 
-def _limit(resource, kind, requested):
+def _limit(resource, kind, requested, *, warning=False):
     existing = resource.getrlimit(kind)
     ceiling = min([requested, *(value for value in existing if value != resource.RLIM_INFINITY)])
-    resource.setrlimit(kind, (ceiling, ceiling))
-    if resource.getrlimit(kind) != (ceiling, ceiling):
+    soft = max(0, ceiling - 1) if warning else ceiling
+    resource.setrlimit(kind, (soft, ceiling))
+    if resource.getrlimit(kind) != (soft, ceiling):
         raise IsolationUnavailable("Kernel did not retain the required hard limit")
     return ceiling
 
@@ -79,6 +88,7 @@ def install(budget: Budget, *, expected_parent: int):
         import resource
 
         oom = _process(expected_parent)
+        signal.signal(signal.SIGXCPU, _cpu_exhausted)
         controls = {
             "memory_bytes": (resource.RLIMIT_AS, budget.memory_bytes),
             "cpu_seconds": (resource.RLIMIT_CPU, budget.cpu_seconds),
@@ -86,7 +96,10 @@ def install(budget: Budget, *, expected_parent: int):
             "core_bytes": (resource.RLIMIT_CORE, 0),
             "open_files": (resource.RLIMIT_NOFILE, budget.open_files),
         }
-        installed = {name: _limit(resource, *values) for name, values in controls.items()}
+        installed = {
+            name: _limit(resource, *values, warning=name == "cpu_seconds")
+            for name, values in controls.items()
+        }
     except (OSError, ValueError, ImportError, AttributeError) as error:
         raise IsolationUnavailable("Required child protection could not be installed") from error
     return {"nice": 19, "oom_score_adj": oom, "parent_pid": expected_parent, **installed}

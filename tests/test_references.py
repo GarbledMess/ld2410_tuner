@@ -886,6 +886,7 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
         self.runtime._days.flush(self.base + 86400)
         # A new store starts with a cold decoded-day cache.
         self.runtime._days = daystore.DayStore(self.runtime._days.root)
+        await self.runtime.hass.async_add_executor_job(self.runtime._days.open, self.base + 86400)
         with patch.object(history, "decode", wraps=history.decode) as decode:
             await rebuilds.refresh(self.runtime, {"a", "b"}, reason="test")
         assert decode.call_count == 2

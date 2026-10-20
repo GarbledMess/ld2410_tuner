@@ -183,6 +183,14 @@ class Supervisor:
             self._cancel(work)
             raise
 
+    async def run_when_available(self, prepare, *, finish=None, consume=None):
+        """Wait without preparing; callers must separately bound/deduplicate waiters."""
+        while True:
+            try:
+                return await self.run(prepare, finish=finish, consume=consume)
+            except Busy:
+                await asyncio.wait(tuple(self._jobs), return_when=asyncio.FIRST_COMPLETED)
+
     def _cancel(self, work):
         if work not in self._cancelled:
             self._cancelled.add(work)

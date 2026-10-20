@@ -79,7 +79,10 @@ async def calculate(runtime, operation, prepare):
         if directory := holder.get("directory"):
             await owned_preparation(runtime.hass.async_add_executor_job(shutil.rmtree, directory))
 
-    raw = await service.run(admitted, finish=finish)
+    # These refresh callers already deduplicate IDs and bound waiting tasks with
+    # their own semaphores. Saturation must not install an empty attribution cache.
+    run = service.run_when_available if operation in {"seen_by", "references"} else service.run
+    raw = await run(admitted, finish=finish)
     from .codec import unpack_result
 
     return await owned_preparation(runtime.hass.async_add_executor_job(unpack_result, raw))

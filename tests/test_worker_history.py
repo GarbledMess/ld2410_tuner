@@ -62,6 +62,11 @@ def test_legacy_float_columns_and_guesses_preserved():
     assert history.decode(dayfile.encode_day(original)) == original
 
 
+def test_specific_budget_refusal_is_not_reported_as_corrupt_history():
+    with pytest.raises(history.HistoryRejected, match="History count budget exceeded"):
+        history.decode(encoded(rows=32769))
+
+
 @pytest.mark.parametrize(
     "option", ["max_rows", "max_guesses", "max_raw_bytes", "max_compressed_bytes"]
 )

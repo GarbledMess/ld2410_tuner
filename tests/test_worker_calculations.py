@@ -114,6 +114,128 @@ def test_views_share_decoded_days_and_budget(tmp_path):
     assert shared.rows == 1
 
 
+def test_full_second_resolution_legacy_day_is_valid_worker_history(tmp_path):
+    import datetime
+    from array import array
+
+    from tuner_under_test.history import dayfile, worker_snapshot
+
+    rows = 86400
+    day = dayfile.Day(
+        0,
+        86400,
+        array("d", range(rows)),
+        array("d", range(1, rows + 1)),
+        [array("f", [gate + 0.25]) * rows for gate in range(18)],
+        [],
+    )
+    path = tmp_path / "legacy.day"
+    path.write_bytes(dayfile.encode_day(day))
+    ref = worker_snapshot._reference(path)
+    request = {
+        "days": [
+            {
+                "device_id": "radar",
+                "date": "1970-01-01",
+                "path": str(path),
+                "identity": ref.identity,
+                "late": [],
+            }
+        ],
+        "budgets": vars(capture.CaptureLimits()),
+    }
+    actual = calculations.ReadOnlyDays(request).day("radar", datetime.date(1970, 1, 1))
+    assert actual == day
+
+
+def test_history_budget_bounds_resident_cache_not_entire_retention(tmp_path):
+    import datetime
+    from dataclasses import replace
+
+    from tuner_under_test.history import dayfile, worker_snapshot
+
+    entries = []
+    for offset in range(31):
+        date = datetime.date(1970, 1, 1) + datetime.timedelta(days=offset)
+        builder = dayfile.DayBuilder(offset * 86400, (offset + 1) * 86400)
+        builder.add(dayfile.Change(offset * 86400 + 1, {0: offset}))
+        path = tmp_path / f"{offset}.day"
+        path.write_bytes(dayfile.encode_day(builder.day()))
+        ref = worker_snapshot._reference(path)
+        entries.append(
+            {
+                "device_id": "radar",
+                "date": str(date),
+                "path": str(path),
+                "identity": ref.identity,
+                "late": [],
+            }
+        )
+    limits = replace(
+        capture.CaptureLimits(),
+        max_rows=2,
+        max_raw_bytes=100,
+        max_file_bytes=sum(entry["identity"][3] for entry in entries),
+    )
+    store = calculations.ReadOnlyDays({"days": entries, "budgets": vars(limits)})
+    for date in store.days("radar"):
+        assert len(store.day("radar", date).times) == 1
+        assert store.shared.rows <= 2
+        assert store.shared.raw_bytes <= 100
+    assert len(store.shared.cache) <= 2
+    assert store.day("radar", datetime.date(1970, 1, 1)).vector(0)[0] == 0
+
+
+def test_one_day_must_still_fit_resident_budget():
+    from array import array
+
+    from tuner_under_test.history import dayfile
+    from tuner_under_test.worker.history import HistoryRejected
+
+    day = dayfile.Day(0, 1, array("d", [0]), array("d", [1]), [b"\0"] * 18, [])
+    shared = calculations.JobHistory()
+    with pytest.raises(HistoryRejected, match="One decoded day"):
+        shared.retain("day", day, {"max_rows": 1, "max_guesses": 1, "max_raw_bytes": 33})
+    assert not shared.cache
+    assert shared.rows == shared.raw_bytes == 0
+
+
+def test_job_private_immutable_history_reuses_derived_results(tmp_path):
+    from tuner_under_test.history import day_results
+
+    source = view([block(0, 600, 40)], [])
+    with ThreadPoolExecutor() as executor:
+        request = executor.submit(capture.prepare, source, "any-name", tmp_path).result()
+    restored = calculations.restore(request)
+    date = restored._days.days("any-name")[0]
+    calls = []
+
+    def derive():
+        calls.append(True)
+        return len(restored._days.day("any-name", date).times)
+
+    for _ in range(3):
+        assert day_results.remembered(restored._days, "any-name", date, "row-test", (), derive) == 1
+    assert calls == [True]
+
+
+def test_derived_cache_rechecks_source_identity_before_reuse(tmp_path):
+    from tuner_under_test.history import day_results
+    from tuner_under_test.worker.history import HistoryRejected
+
+    source = view([block(0, 600, 40)], [])
+    with ThreadPoolExecutor() as executor:
+        request = executor.submit(capture.prepare, source, "any-name", tmp_path).result()
+    restored = calculations.restore(request)
+    date = restored._days.days("any-name")[0]
+    assert day_results.remembered(restored._days, "any-name", date, "constant", (), lambda: 1) == 1
+    from pathlib import Path
+
+    Path(request["days"][0]["path"]).write_bytes(b"replacement")
+    with pytest.raises(HistoryRejected, match="History changed before derived"):
+        day_results.remembered(restored._days, "any-name", date, "constant", (), lambda: 2)
+
+
 def test_child_entrypoint_bootstraps_only_pure_package(tmp_path, monkeypatch):
     import importlib
     import io

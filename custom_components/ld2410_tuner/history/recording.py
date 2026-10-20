@@ -111,7 +111,7 @@ def _device_id(runtime, device):
 
 def history_summary(runtime, device_id):
     """``{"days", "oldest_day", "newest"}`` of a radar's recorded history for the snapshot:
-    how many days hold recordings (the folder listing; no file is read), the first of them
+    how many days hold recordings (the in-memory inventory), the first of them
     and the end of the newest observation."""
     days = getattr(runtime, "_days", None)
     dates = days.days(device_id) if days is not None else []

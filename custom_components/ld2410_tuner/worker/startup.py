@@ -246,6 +246,7 @@ def publish(runtime, owner, result, directory):
             backup.replace(owner.root)
         raise
     owner._live, owner._generations = recovered._live, recovered._generations
+    owner.reconcile()
     _apply_patches(runtime.data, result["patches"])
     if existed:
         shutil.rmtree(backup)
