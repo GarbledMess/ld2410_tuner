@@ -37,6 +37,7 @@ from copy import deepcopy
 
 from ..history import pace, recording
 from ..rooms import attribution, truth
+from ..worker import bridge
 from . import reference_training
 from .references import STALE
 
@@ -129,11 +130,22 @@ async def _pass(runtime, device_ids):
     marks already taken are put back and nothing installs: a failing rebuild must not be
     retried in a loop."""
     jobs, shared = [], {}  # ``shared``: the members' guesses, built once for the job.
-    try:
+
+    def prepare():
         for key in device_ids:
             if (job := _prepare(runtime, key, shared)) is not None:
                 jobs.append(job)
-        results = await pace.run(runtime.hass, compute, jobs)
+        return {
+            "views": {job["device_id"]: job["view"] for job in jobs},
+            "parameters": {
+                "jobs": [
+                    {"device_id": job["device_id"], "view_key": job["device_id"]} for job in jobs
+                ]
+            },
+        }
+
+    try:
+        results = await bridge.calculate(runtime, "references", prepare)
     except (asyncio.CancelledError, pace.Stopped):
         _restore_all(runtime, jobs)
         raise

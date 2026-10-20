@@ -6,7 +6,7 @@ from copy import deepcopy
 
 from ..const import TRAINING_FIELDS
 from ..rooms import groups, membership
-from . import budget, ingest, pace, policy, summary_cache
+from . import budget, commit, ingest, pace, policy, summary_cache
 
 _LOGGER = logging.getLogger(__name__)
 GUARDED = ("history_labels", "label_revision", *TRAINING_FIELDS)
@@ -67,7 +67,9 @@ async def _persist(runtime, *, values=None, clean=False, target=None, persist=Tr
     live.settle(runtime)  # Saved references include the evidence waiting for its batch.
     async with runtime._storage_lock:
         if runtime._days is not None:
-            await runtime.hass.async_add_executor_job(runtime._days.flush)
+            from ..worker import flushing
+
+            await flushing.flush(runtime, locked=True)
         runtime._storage_status["busy"] = True
         try:
             return await _prepare_and_save(runtime, values, clean, target, persist)
@@ -117,37 +119,42 @@ def _prepare_save(store, candidate, now, clean, target):
     return prepared, changes, report, store.stage(changes)
 
 
-async def _prepare_for_save(runtime, candidate, clean, target):
-    args = (runtime._days, candidate, time.time(), clean, target)
-    if getattr(runtime, "_sampling_stopped", False) and not clean:
-        # Unload's final state save cannot wait behind work that is being abandoned.
-        return await runtime.hass.async_add_executor_job(_prepare_save, *args)
-    return await pace.run(runtime.hass, _prepare_day_save, *args)
-
-
 async def _save_days(runtime, values, clean, target, persist=True):
+    from ..worker import protocol, transactions
+
     for _attempt in range(3):
+        protocol._check(runtime.data, transactions.MESSAGE_BYTES, transactions.MESSAGE_NODES)
         original = budget.copy_data(runtime.data)
         marks = {key: _observation_mark(runtime, key) for key in original["devices"]}
         candidate = original if values is None else {**original, "storage_settings": values}
-        prepared, changes, report, staged = await _prepare_for_save(
-            runtime, candidate, clean, target
+
+        def snapshot(directory):
+            return {"clean": clean, "target": target, "live": _live_metadata(runtime._days)}
+
+        accept = _accept_worker(runtime, original, marks, values, clean, persist)
+
+        report = await transactions.run(
+            runtime, "maintenance", candidate, accept, snapshot=snapshot
         )
-        relabelled = _relabelled(original, prepared)
-        touched = {key for key, _date, _day in changes} | relabelled
-        if not _days_unchanged(runtime, original, marks, touched):
-            runtime._days.discard(staged)
-            continue
-        runtime._days.commit(staged)
-        _accept_days(runtime, prepared, changes, values)
-        _accept_labels(runtime, prepared, relabelled)
-        _record_maintenance(runtime, prepared, report, clean)
-        if persist:
-            await runtime.store.async_save(prepared)
-        return report
+        if report is not None:
+            return report
     raise ValueError(
         "Recording or labels changed during trimming. No stale cleanup was applied; retry Trim now."
     )
+
+
+def _live_metadata(store):
+    with store._lock:
+        return {
+            key: {
+                "date": str(live.date),
+                "last": live.last,
+                "seen": live.seen,
+                "current": None if live.builder.current is None else list(live.builder.current),
+                "run": None if live.builder.run is None else list(live.builder.run),
+            }
+            for key, live in store._live.items()
+        }
 
 
 def _relabelled(original, prepared):
@@ -210,3 +217,39 @@ def _accept_days(runtime, prepared, changes, values):
         runtime._label_counts.pop(key, None)
     if changes or values is not None:
         runtime._history_cache.clear()
+
+
+def _prune_indexes(root):
+    summary_cache.prune(root, max_bytes=0)
+
+
+def _accept_worker(runtime, original, marks, values, clean, persist):
+    from ..worker import maintenance
+    from ..worker.supervisor import owned_preparation
+
+    async def accept(result, directory):
+        prepared, changes, report, staged = await owned_preparation(
+            runtime.hass.async_add_executor_job(maintenance.load, result, directory)
+        )
+        relabelled = _relabelled(original, prepared)
+        touched = {key for key, _date, _day in changes} | relabelled
+
+        def valid():
+            return _days_unchanged(runtime, original, marks, touched)
+
+        def install():
+            _accept_days(runtime, prepared, changes, values)
+            _accept_labels(runtime, prepared, relabelled)
+            _record_maintenance(runtime, prepared, report, clean)
+
+        if result.get("prune"):
+            await owned_preparation(
+                runtime.hass.async_add_executor_job(_prune_indexes, runtime._days.root)
+            )
+        if not await commit.publish(runtime, staged, valid, install):
+            return None
+        if persist:
+            await runtime.store.async_save(prepared)
+        return report
+
+    return accept

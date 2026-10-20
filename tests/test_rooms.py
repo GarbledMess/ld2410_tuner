@@ -361,7 +361,7 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
             await finish.wait()
             return {"room": {"score": 100}}
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.respond = executor
         jobs.start(self.runtime, "area:office", 1)
         task = self.runtime._room_jobs["area:office"]
         await started.wait()
@@ -382,7 +382,7 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
             started.set()
             await asyncio.Event().wait()
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.before = executor
         jobs.start(self.runtime, "area:office", 1)
         task = self.runtime._room_jobs["area:office"]
         await started.wait()
@@ -560,16 +560,21 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         self.record(3, quiet_b=True)
         first, second = (attribution.prepared_view(self.runtime, "a") for _ in range(2))
 
-        def job(view):
-            one = attribution.radar_attribution(view, "a", view.data["room_snapshot"])["found"]
-            two = attribution.radar_attribution(view, "a", view.data["room_snapshot"])["found"]
-            self.assertIs(one, two)
-            return one
+        def members(view):
+            return {"a": {"view": view, "thresholds": {"g0_move": 20}, "timing": {}}}
+
+        one, two = members(first), members(second)
 
         with patch.object(event_attribution, "_found", wraps=event_attribution._found) as spy:
-            found = await jobs.on_views(self.runtime, {"g": {"a": {"view": first}}}, job, first)
-            again = await jobs.on_views(self.runtime, {"g": {"a": {"view": second}}}, job, second)
-        self.assertEqual(spy.call_count, 2, "each frozen job computes once")
+            found = await jobs.on_views(
+                self.runtime, {"g": one}, assessment.calculate, one, self.now - 1000, self.now, None
+            )
+            first_calls = spy.call_count
+            again = await jobs.on_views(
+                self.runtime, {"g": two}, assessment.calculate, two, self.now - 1000, self.now, None
+            )
+        self.assertEqual(first_calls, 2, "human and full truth each compute once per frozen job")
+        self.assertEqual(spy.call_count, 2 * first_calls, "each frozen job owns its attribution")
         self.assertEqual(again, found)
 
     async def test_every_input_of_a_radars_baseline_is_in_the_signature(self):
@@ -633,15 +638,14 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         self.record(2)
         active, peak = 0, 0
 
-        async def executor(fn, *args):
+        async def executor(request):
             nonlocal active, peak
             active += 1
             peak = max(peak, active)
             await asyncio.sleep(0.01)
             active -= 1
-            return fn(*args)
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.before = executor
         await self.poll()
         self.assertEqual(len(self.runtime._room_attribution), 2)
         self.assertEqual(peak, 1)
@@ -980,7 +984,6 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         from tuner_under_test.calibration import service
 
         await self.learn_office_set()
-        self.runtime.hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *a: fn(*a))
         entities, current = {"g0_move": "number.a_g0_move"}, {"g0_move": 20}
         with (
             patch.object(
@@ -1036,7 +1039,6 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         from tuner_under_test.rooms import attribution
 
         await self.learn_office_set()
-        self.runtime.hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *a: fn(*a))
         entities, current = {"g0_move": "number.a_g0_move"}, {"g0_move": 20}
         views = []
 
@@ -1188,13 +1190,12 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         started, finish = asyncio.Event(), asyncio.Event()
         calls = []
 
-        async def executor(fn, *args):
-            calls.append(args[2])
+        async def executor(request):
+            calls.append(request["parameters"]["group_id"])
             started.set()
             await finish.wait()
-            return fn(*args)
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.before = executor
         self.runtime.snapshot()
         await asyncio.wait_for(started.wait(), 5)
         await asyncio.sleep(0)
@@ -1218,7 +1219,7 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
             started.set()
             await asyncio.Event().wait()
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.before = executor
         self.runtime.snapshot()
         await asyncio.wait_for(started.wait(), 5)
         tasks = list(self.runtime._room_attribution_jobs.values())

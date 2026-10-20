@@ -1,0 +1,23 @@
+{
+  "source_paths": [
+    "custom_components",
+    "tests",
+    "node_modules",
+    "package.json",
+    "package-lock.json"
+  ],
+  "domains": [
+    "ld2410_tuner"
+  ],
+  "smoke_api_paths": [
+    "/api/config",
+    "/api/states"
+  ],
+  "commands": {
+    "limits": "chroot /work/os docker exec ha-lab python3 /lab/scripts/limits_check.py",
+    "setup": "chroot /work/os docker exec ha-lab python3 /lab/scripts/ha_smoke.py",
+    "browser_format": "chroot /work/os /bin/sh -c 'cd /workspace/project; node node_modules/prettier/bin/prettier.cjs --check \"custom_components/ld2410_tuner/static/**/*.js\" \"tests/**/*.cjs\"'",
+    "browser": "chroot /work/os /bin/sh -c 'cd /workspace/project; NODE_PATH=/workspace/project/node_modules PLAYWRIGHT_MODULE=/lab-input/scripts/system-playwright.cjs node tests/panel.cjs'",
+    "ha_logs": "chroot /work/os docker logs ha-lab"
+  }
+}

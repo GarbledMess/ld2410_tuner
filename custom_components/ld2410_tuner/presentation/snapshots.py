@@ -20,6 +20,8 @@ from ..presence import rebuilds, sources
 from ..rooms import jobs as room_jobs
 from ..rooms import layout, seen_by
 from ..runtime.schedule import settings
+from ..worker import bridge, codec
+from ..worker.display import check_export
 
 
 def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
@@ -31,13 +33,52 @@ def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
 
 async def async_export_data(runtime, device_id=None):
     """Resolve HA registry metadata on the loop, encode recorded history on our worker."""
-    exported = _export_metadata(runtime, device_id)
-    if device_id in exported["devices"]:
-        view = runtime._history_view(device_id, members=False)
-        exported["devices"][device_id]["history"]["day_files"] = await pace.run(
-            runtime.hass, _recorded_days, view, device_id
-        )
+    _export_preflight(runtime)
+    if device_id not in runtime.data.get("devices", {}):
+        exported = _export_metadata(runtime, device_id)
+    else:
+        exported = {}
+
+        def prepare():
+            _export_preflight(runtime)
+            exported.update(_export_metadata(runtime, device_id))
+            return {
+                "views": {device_id: runtime._history_view(device_id, members=False)},
+                "parameters": {"device_id": device_id},
+            }
+
+        days = await bridge.calculate(runtime, "export_days", prepare)
+        if device_id in exported["devices"]:
+            exported["devices"][device_id]["history"]["day_files"] = days
+    check_export(exported)
+    codec.pack_result(exported)  # The assembled metadata plus days must fit one bounded response.
     return exported
+
+
+def _export_preflight(runtime):
+    """Cap metadata sources before registry refresh and result summarization."""
+    bridge.preflight(runtime)
+    fields = (
+        "histograms",
+        "history_labels",
+        "presence_sources",
+        "last_learning",
+        "learning_results",
+        "nightly_learning",
+        "learning_job",
+        "configuration_recovery",
+        "last_applied",
+        "auto",
+        "reference_profile",
+        "comparison",
+        "timing_configuration",
+    )
+    check_export(
+        {
+            key: {field: device.get(field) for field in fields}
+            for key, device in runtime.data.get("devices", {}).items()
+        }
+    )
 
 
 def _export_metadata(runtime, device_id):

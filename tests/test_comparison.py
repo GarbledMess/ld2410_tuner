@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 import test_tuner as harness
+from tuner_under_test.worker import calculations, codec
 
 scoring = sys.modules["tuner_under_test.calibration.scoring"]
 comparison = sys.modules["tuner_under_test.calibration.comparison"]
@@ -150,13 +151,12 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def scoring_executor(self):
         calls = []
 
-        async def execute(fn, *args):
-            if getattr(fn, "__wrapped__", fn) is comparison.calculate:
-                calls.append(copy.deepcopy(args[-1]))
-                return assessment(args[-1])
-            return await asyncio.to_thread(fn, *args)
+        async def execute(request):
+            context = codec.decode(request["parameters"])["context"]
+            calls.append(copy.deepcopy(context))
+            return assessment(context)
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         return calls
 
     async def test_scores_survive_actual_save_and_runtime_restart(self):
@@ -181,13 +181,11 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.configuration()
         views = []
 
-        async def execute(fn, *args):
-            if getattr(fn, "__wrapped__", fn) is comparison.calculate:
-                views.append(args[0])
-                return assessment(args[-1])
-            return await asyncio.to_thread(fn, *args)
+        async def execute(request):
+            views.append(calculations.restore(request["views"]["a"]))
+            return assessment(codec.decode(request["parameters"])["context"])
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         await self.runtime.compare_results("a")
         # Prepared: its members' guesses are built once for the job (``attribution.prepare``).
         assert getattr(views[0], "_attribution_guesses", None) is not None
@@ -196,7 +194,9 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         """Regression: the view's guesses and truth readers were freed on the event loop
         after the job."""
         self.configuration()
-        view = jobs.attribution.prepared_view(self.runtime, "a")
+        from tuner_under_test.rooms import attribution
+
+        view = attribution.prepared_view(self.runtime, "a")
         view._attribution_guesses["a"] = object()
         context, _ = jobs._context(self.runtime, "a")
         comparison.calculate(view, "a", context)
@@ -295,15 +295,15 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.configuration()
         calls = []
 
-        async def execute(fn, *args):
-            calls.append(args)
-            report = assessment(args[-1])
+        async def execute(request):
+            calls.append(codec.decode(request["parameters"])["context"])
+            report = assessment(codec.decode(request["parameters"])["context"])
             for item in report["patterns"].values():
                 item["score"] = None
                 item["reason"] = "Not enough evidence"
             return report
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         await self.runtime.compare_results("a")
         assert jobs.summary(self.runtime, "a")["state"] == "ready"
         await self.runtime.compare_results("a")
@@ -316,13 +316,13 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         started, release = asyncio.Event(), asyncio.Event()
         calls = []
 
-        async def execute(fn, *args):
-            calls.append(args)
+        async def execute(request):
+            calls.append(codec.decode(request["parameters"])["context"])
             started.set()
             await release.wait()
-            return assessment(args[-1])
+            return assessment(codec.decode(request["parameters"])["context"])
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         request = asyncio.create_task(self.runtime.compare_results("a"))
         await started.wait()
         assert jobs.summary(self.runtime, "a")["state"] == "running"
@@ -338,11 +338,11 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_labels_changing_mid_comparison_discards_result(self):
         self.configuration()
 
-        async def execute(fn, *args):
+        async def execute(request):
             self.device["label_revision"] = 123
-            return assessment(args[-1])
+            return assessment(codec.decode(request["parameters"])["context"])
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         assert await self.runtime.compare_results("a") == {"state": "pending"}
         assert not self.device.get("comparison_scores")
 
@@ -352,7 +352,7 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         async def execute(*args):
             raise RuntimeError("Cannot decode recording")
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         report = await self.runtime.compare_results("a")
         assert report["state"] == "error"
         assert "Cannot decode" in report["reason"]

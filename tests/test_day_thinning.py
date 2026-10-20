@@ -159,18 +159,15 @@ class TestDayStorage(unittest.IsolatedAsyncioTestCase):
 
     async def test_label_edit_while_preparing_cannot_remove_newly_human_time(self):
         self.recorded()
-        execute = self.hass.async_add_executor_job
         raced = False
 
-        async def race(fn, *args):
+        async def race(request):
             nonlocal raced
-            result = await execute(fn, *args)
-            if not raced and fn.__name__ == "_prepare_day_save":
+            if not raced and request["operation"] == "maintenance":
                 raced = True
                 self.runtime.label_history_range("a", START, START + 120, "present")
-            return result
 
-        self.hass.async_add_executor_job = race
+        self.worker_transport.after = race
         report = await self.runtime.trim_storage()
         assert raced
         assert report["removed_human_seconds"] == 0
@@ -227,19 +224,16 @@ class TestDayStorage(unittest.IsolatedAsyncioTestCase):
         ]
         for timestamp in (self.now - 60, self.now - 6):
             self.runtime._record_history_sample("a", {"g0_move": 20}, timestamp)
-        execute = self.hass.async_add_executor_job
         raced = False
 
-        async def race(fn, *args):
+        async def race(request):
             nonlocal raced
-            result = await execute(fn, *args)
-            if not raced and fn.__name__ == "_prepare_day_save":
+            if not raced and request["operation"] == "maintenance":
                 raced = True
                 self.clock.return_value = self.now + 6
                 self.runtime._record_history_sample("a", {"g0_move": 20}, self.now + 6)
-            return result
 
-        self.hass.async_add_executor_job = race
+        self.worker_transport.after = race
         await self.runtime.trim_storage()
         assert raced
         assert sum(self.device["histograms"]["g0_move"]["present"]) == 11

@@ -406,6 +406,13 @@ With no Timeout it estimates raw-crossing durations between snapshots. Learn and
 
 ### Gate rounding
 
+All 18 gate energies and both aggregate energies publish whole percentages with
+`accuracy_decimals: 0`. Finite fractional results are rounded upward after the configured
+gate rounding, with values bounded to 0–100; unavailable readings remain unavailable.
+ESPHome’s native sensor API still carries numeric states as floats; this change makes
+the reported values whole and supplies HA with zero-decimal precision metadata. The
+integration also normalizes recordings from devices that do not use this package.
+
 The package defaults to rounding all 18 per-gate energy readings and threshold
 writes to the nearest **10** on the ESP. Home Assistant threshold controls use
 the same increment, offering 0, 10, 20, through 100. Duplicate rounded energy

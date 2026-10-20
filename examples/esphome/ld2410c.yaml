@@ -83,15 +83,23 @@ sensor:
     moving_energy:
       id: ${ld2410_id}_moving_energy
       name: Moving Energy
+      accuracy_decimals: 0
       device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
+        - lambda: |-
+            if (!std::isfinite(x)) return x;
+            return ceilf(fminf(100.0f, fmaxf(0.0f, x)));
     still_energy:
       id: ${ld2410_id}_still_energy
       name: Still Energy
+      accuracy_decimals: 0
       device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
+        - lambda: |-
+            if (!std::isfinite(x)) return x;
+            return ceilf(fminf(100.0f, fmaxf(0.0f, x)));
     detection_distance:
       id: ${ld2410_id}_detection_distance
       name: Detection Distance
@@ -102,6 +110,7 @@ sensor:
       move_energy:
         id: ${ld2410_id}_g0_move_energy
         name: G0 Move Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -109,11 +118,12 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g0_still_energy
         name: G0 Still Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -121,12 +131,13 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
     g1:
       move_energy:
         id: ${ld2410_id}_g1_move_energy
         name: G1 Move Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -134,11 +145,12 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g1_still_energy
         name: G1 Still Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -146,12 +158,13 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
     g2:
       move_energy:
         id: ${ld2410_id}_g2_move_energy
         name: G2 Move Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -159,11 +172,12 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g2_still_energy
         name: G2 Still Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -171,12 +185,13 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
     g3:
       move_energy:
         id: ${ld2410_id}_g3_move_energy
         name: G3 Move Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -184,11 +199,12 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g3_still_energy
         name: G3 Still Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -196,12 +212,13 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
     g4:
       move_energy:
         id: ${ld2410_id}_g4_move_energy
         name: G4 Move Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -209,11 +226,12 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g4_still_energy
         name: G4 Still Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -221,12 +239,13 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
     g5:
       move_energy:
         id: ${ld2410_id}_g5_move_energy
         name: G5 Move Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -234,11 +253,12 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g5_still_energy
         name: G5 Still Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -246,12 +266,13 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
     g6:
       move_energy:
         id: ${ld2410_id}_g6_move_energy
         name: G6 Move Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -259,11 +280,12 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g6_still_energy
         name: G6 Still Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -271,12 +293,13 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
     g7:
       move_energy:
         id: ${ld2410_id}_g7_move_energy
         name: G7 Move Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -284,11 +307,12 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g7_still_energy
         name: G7 Still Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -296,12 +320,13 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
     g8:
       move_energy:
         id: ${ld2410_id}_g8_move_energy
         name: G8 Move Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -309,11 +334,12 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g8_still_energy
         name: G8 Still Energy
+        accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
           - throttle: ${ld2410_gate_throttle}
@@ -321,7 +347,7 @@ sensor:
               if (!std::isfinite(x)) return x;
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
-              return fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment));
+              return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
 
 number:

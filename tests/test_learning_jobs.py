@@ -37,7 +37,7 @@ class LearningJobTests(unittest.IsolatedAsyncioTestCase):
                 raise error
             return learned
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
 
     async def test_cancelled_request_still_saves_and_exposes_result(self):
         self.pending_fit()

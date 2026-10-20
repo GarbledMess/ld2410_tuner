@@ -57,14 +57,13 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
         self.calls = []
         self.release = asyncio.Event()
 
-        async def executor(fn, *args):
-            if fn.__name__ != "compute":
-                return fn(*args)
-            self.calls.append((fn, deepcopy(self.b.get("reference_profile"))))
+        async def executor(request):
+            if request["operation"] != "references":
+                return
+            self.calls.append((request["operation"], deepcopy(self.b.get("reference_profile"))))
             await self.release.wait()
-            return fn(*args)
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.before = executor
 
     async def started(self, count=1):
         for _ in range(100):
@@ -110,9 +109,7 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
             assert spy.call_count == 0, "room attribution ran on the event loop"
             assert self.inferred(self.b) == set()
             await self.started()
-            from tuner_under_test.presence import rebuilds
-
-            assert [fn.__wrapped__ for fn, _ in self.calls] == [rebuilds.compute]
+            assert [operation for operation, _ in self.calls] == ["references"]
             self.release.set()
             await self.finish()
             assert spy.called
@@ -472,10 +469,10 @@ class StaleReferenceTests(unittest.IsolatedAsyncioTestCase):
         self.scenario()
         self.present()
         rebuilds.mark_stale(self.runtime, {"b"}, 100.0)
-        with patch.object(rebuilds, "compute", wraps=rebuilds.compute) as compute:
-            assert await self.refresh() == ["b"]
-            assert await self.refresh() == []
-        assert [[job["device_id"] for job in call.args[0]] for call in compute.call_args_list] == [
+        assert await self.refresh() == ["b"]
+        assert await self.refresh() == []
+        requests = self.worker_transport.requests
+        assert [[job["device_id"] for job in item["parameters"]["jobs"]] for item in requests] == [
             ["b"]
         ]
         assert self.inferred(self.b) == {"present"}
@@ -583,10 +580,12 @@ class StaleReferenceTests(unittest.IsolatedAsyncioTestCase):
 
         self.scenario()
         rebuilds.mark_stale(self.runtime, {"b"}, 100.0)
-        with (
-            patch.object(rebuilds, "compute", side_effect=RuntimeError("boom")),
-            self.assertLogs(rebuilds._LOGGER, "ERROR"),
-        ):
+
+        async def failure(request):
+            raise RuntimeError("boom")
+
+        self.worker_transport.before = failure
+        with self.assertLogs(rebuilds._LOGGER, "ERROR"):
             assert await self.refresh(["a", "b"]) == ["a", "b"]
         assert self.b[STALE] == 100.0
         assert STALE not in self.runtime.data["devices"]["a"]
@@ -688,15 +687,12 @@ class DailyReferenceRefreshTests(unittest.IsolatedAsyncioTestCase):
         self.saves = Mock()
         self.runtime._schedule_save = self.saves
         self.rebuilt = []
-        compute = rebuilds.compute
 
-        def spy(jobs):
-            self.rebuilt.extend(job["device_id"] for job in jobs)
-            return compute(jobs)
+        async def spy(request):
+            if request["operation"] == "references":
+                self.rebuilt.extend(job["device_id"] for job in request["parameters"]["jobs"])
 
-        patcher = patch.object(rebuilds, "compute", side_effect=spy)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.worker_transport.before = spy
         return rebuilds
 
     async def tick(self, instant):

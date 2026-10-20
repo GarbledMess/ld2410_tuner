@@ -14,9 +14,9 @@ from ..calibration.constants import (
     MIN_AUTO_CONFIDENCE,
 )
 from ..const import HISTORY_KEYS, TRAINING_FIELDS
-from ..history import guesses, recording
+from ..history import guesses
 from ..history.label_lookup import index_reader, label_index
-from . import groups, truth
+from . import truth
 
 GAP = guesses.GAP
 MEMBERSHIP_TTL = 300.0
@@ -262,6 +262,8 @@ def _inputs(runtime, device_id, definitions, copy):
 def snapshot(runtime, device_id):
     """Copy, on the event loop, the room labels and member labels that decide this radar's
     targets; None when the radar is in no multi-radar group (its evidence is unchanged)."""
+    from . import groups
+
     _, _, definitions = groups.definitions(runtime)
     if device_id not in grouped(definitions):
         return None
@@ -414,6 +416,8 @@ def _source(learned, name):
 
 def history_fingerprint(runtime, key, device):
     """Changes with every record or finished-day change (``recording.history_mark``)."""
+    from ..history import recording
+
     return recording.history_mark(runtime, key)
 
 
@@ -541,6 +545,8 @@ def membership(definitions, now) -> dict:
 
 
 def _membership(runtime):
+    from . import groups
+
     # Area moves in the HA device registry have no event hook here, so the cache also expires.
     now = time.monotonic()
     known = getattr(runtime, "_room_membership", None)

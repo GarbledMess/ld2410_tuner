@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import test_tuner as harness
 from test_comparison import calculate, context
+from tuner_under_test.worker import calculations
 
 automatic = sys.modules["tuner_under_test.calibration.automatic"]
 schedule = sys.modules["tuner_under_test.runtime.schedule"]
@@ -109,11 +110,11 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
         """Regression: unprepared, the job attributed its radar twice and kept nothing."""
         views = []
 
-        async def execute(fn, *args):
-            views.append(args[0])
-            return fn(*args)
+        async def execute(request):
+            views.append(calculations.restore(request["views"]["a"]))
+            return await asyncio.to_thread(calculations.execute, request)
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         await self.run_apply()
         # Prepared: its members' guesses are built once for the job (``attribution.prepare``).
         assert getattr(views[0], "_attribution_guesses", None) is not None
@@ -127,12 +128,12 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
         self.hass.services.async_call.assert_not_awaited()
 
     async def test_labels_thresholds_timing_or_policy_changing_during_compare_prevent_writes(self):
-        async def execute(fn, *args):
-            measured = fn(*args)
+        async def execute(request):
+            measured = await asyncio.to_thread(calculations.execute, request)
             self.change()
             return measured
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         changes = [
             lambda: self.device.update(label_revision=1),
             lambda: setattr(self.states["number.radar_g0_move_threshold"], "state", "11"),
@@ -239,7 +240,7 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
             (RuntimeError("decode failed"), "error"),
             (asyncio.CancelledError(), "interrupted"),
         ):
-            self.hass.async_add_executor_job = AsyncMock(side_effect=error)
+            self.worker_transport.respond = AsyncMock(side_effect=error)
             if status == "interrupted":
                 with pytest.raises(asyncio.CancelledError):
                     await self.run_apply()
@@ -293,12 +294,12 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.configure_learning_schedule(True, "03:00", True, "all")
         self.runtime._learn_once = AsyncMock(return_value=deepcopy(self.learned))
 
-        async def execute(fn, *args):
-            measured = fn(*args)
+        async def execute(request):
+            measured = await asyncio.to_thread(calculations.execute, request)
             self.runtime.configure_learning_schedule(True, "03:00", True, "overnight")
             return measured
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         await self.runtime.async_learn("a")
         application = self.device["learning_job"]["automatic_apply"]
         assert application["status"] == "skipped"
@@ -327,13 +328,13 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
         entered, release = asyncio.Event(), asyncio.Event()
         calls = []
 
-        async def execute(fn, *args):
-            calls.append(fn)
+        async def execute(request):
+            calls.append(request)
             entered.set()
             await release.wait()
-            return fn(*args)
+            return await asyncio.to_thread(calculations.execute, request)
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         caller = asyncio.create_task(self.runtime.async_learn("a"))
         await entered.wait()
         task = self.runtime._learning_jobs["a"]
@@ -363,13 +364,13 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
         self.runtime._learn_once = AsyncMock(return_value=deepcopy(self.learned))
         jobs = sys.modules["tuner_under_test.calibration.jobs"]
 
-        async def execute(fn, *args):
-            measured = fn(*args)
+        async def execute(request):
+            measured = await asyncio.to_thread(calculations.execute, request)
             jobs.start(self.runtime, "a", "automatic")
             self.runtime.clear_samples("a")
             return measured
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         with pytest.raises(ValueError, match="cleared or replaced"):
             await self.runtime.async_learn("a")
         assert not self.device.get("learning_results")

@@ -484,7 +484,7 @@ class DeviceLearnTests(unittest.IsolatedAsyncioTestCase):
             self.runtime.data["learning_schedule"]["automatic_weight"] = OTHER
             return {}
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.respond = executor
         with (
             patch.object(service, "read_timing", return_value={}),
             patch.object(service.recovery, "prepare_learning", AsyncMock(return_value=({}, {}))),

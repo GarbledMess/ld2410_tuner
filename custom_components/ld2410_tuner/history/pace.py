@@ -1,16 +1,14 @@
-"""Run expensive integration work serially, at low priority, with cooperative CPU pacing.
+"""Cooperative pacing for synchronous compatibility and offline calculation helpers.
 
-History cleanup, label recounts, reference rebuilds, Seen-by, comparisons and learning are
-``background`` jobs. ``run`` admits one job asynchronously before borrowing an HA executor
-thread. ``background`` moves its computation onto our single owned worker, so lowering OS
-priority can never change the priority of an HA worker reused for unrelated work. The
-worker is paced by ``rest``: its loops call ``rest``
-between units of work, and once the thread has spent ``SLICE`` seconds of its own CPU time it
-sleeps four times as long, keeping the turn. ``SHARE`` (a fifth) is a cooperative CPU target,
-not a hard resource limit: a unit of work can overrun ``SLICE`` before its next checkpoint.
-Idle time is not work. Event-loop callbacks and short day-log flushes are not throttled.
-``stop`` (integration unload) abandons the jobs waiting or running then, at their next
-``rest``; jobs started afterwards (a reload) run normally.
+Production numerical and storage jobs use mandatory limited subprocesses. This
+helper remains for synchronous callers and offline tools; it is not their process
+isolation boundary. ``run`` admits one paced job before borrowing an HA executor
+thread. ``background`` uses a single owned thread, so lowering its priority never
+changes an HA thread reused for unrelated work. ``rest`` yields after a CPU slice;
+this cooperative target supplies no hard CPU or memory guarantee.
+
+``stop`` abandons paced jobs at their next checkpoint. Process shutdown and
+resource limits are owned separately by the worker supervisor.
 """
 
 import asyncio

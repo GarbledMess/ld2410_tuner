@@ -91,12 +91,13 @@ class SavedLearningTests(unittest.IsolatedAsyncioTestCase):
         self.configuration()
         learned = deepcopy(self.device["last_learning"])
         learned.update(label_revision=0, created_at=self.now)
-        self.runtime._fit_history = Mock(return_value=learned)
-        self.runtime._history_view = lambda _: self.runtime
+        self.worker_transport.respond = AsyncMock(return_value=learned)
         user, auto = await asyncio.gather(
             self.runtime.async_learn("a"), self.runtime.async_learn("a", source="automatic")
         )
-        self.runtime._fit_history.assert_called_once()
+        self.worker_transport.respond.assert_awaited_once()
+        self.assertEqual(len(self.worker_transport.requests), 1)
+        self.assertEqual(self.worker_transport.requests[0]["operation"], "learn")
         self.assertEqual(user["source"], "user")
         self.assertEqual(auto["source"], "automatic")
         self.assertEqual(self.device["last_learning"]["id"], user["id"])

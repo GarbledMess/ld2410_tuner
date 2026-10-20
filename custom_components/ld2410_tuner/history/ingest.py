@@ -10,6 +10,7 @@ missing. A clock that steps back records at the newest recorded time, never befo
 import time
 
 from ..const import HISTORY_KEYS
+from ..engine.columns import percentage
 from . import dayfile, guesses
 
 GATE = {key: index for index, key in enumerate(HISTORY_KEYS)}
@@ -35,9 +36,9 @@ def change(runtime, device_id, updates, timestamp):
 
 
 def _changed(current, live, updates):
-    gates = {GATE[key]: value for key, value in updates.items() if key in GATE}
+    gates = {GATE[key]: percentage(value) for key, value in updates.items() if key in GATE}
     if current is None:  # A new session: everything currently known.
-        vector = {gate: live.get(key) for key, gate in GATE.items()}
+        vector = {gate: percentage(live.get(key)) for key, gate in GATE.items()}
         vector.update(gates)
         return vector if any(value is not None for value in vector.values()) else None
     return {gate: value for gate, value in gates.items() if current[gate] != value}

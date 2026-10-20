@@ -3,7 +3,6 @@
 import time
 from bisect import bisect_left, bisect_right
 from collections import Counter
-from copy import deepcopy
 from itertools import pairwise
 
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
@@ -222,14 +221,18 @@ def reset_entities(device):
 
 async def initialize(runtime):
     """Import timestamped human history once, off the Home Assistant event loop."""
+    from ..worker import bridge
+
     for device_id, device in runtime.data["devices"].items():
         if device.get("reference_profile", {}).get("version") == references.VERSION:
             continue
-        snapshot = deepcopy(device)
-        view = runtime._history_view(device_id)
-        view.data["devices"][device_id] = snapshot
-        await pace.run(runtime.hass, _import_history, view, snapshot)
-        device["reference_profile"] = snapshot["reference_profile"]
+        result = await bridge.device(
+            runtime,
+            "references",
+            device_id,
+            {"jobs": [{"device_id": device_id, "view_key": device_id}]},
+        )
+        device["reference_profile"] = {**references.empty(), "periods": result[0]["periods"]}
 
 
 @pace.background

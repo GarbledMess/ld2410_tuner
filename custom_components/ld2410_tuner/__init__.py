@@ -28,12 +28,13 @@ from .const import (
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
 )
-from .history import convert, ingest, pace
+from .history import ingest, pace
 from .history.daystore import DayStore
 from .presence import rebuilds, reference_training
 from .runtime import engineering, schedule
 from .runtime.coordinator import TunerRuntime
 from .runtime.websocket import _register_websocket_commands
+from .worker import bridge, startup
 
 _LOGGER = logging.getLogger(__name__)
 _STARTUP = f"{DOMAIN}_startup"
@@ -45,19 +46,11 @@ class TunerStore(Store):
     Home Assistant's Store raises NotImplementedError from _async_migrate_func() whenever the
     stored file's version differs from STORAGE_VERSION. Nothing needs reshaping here: history
     of any earlier layout is converted into day files once at startup (``history/convert.py``),
-    in the executor, before anything reads it.
+    in a resource-limited worker, before anything reads it.
     """
 
     async def _async_migrate_func(self, old_major_version, old_minor_version, old_data):
         return old_data
-
-
-@pace.background
-def _open_history(runtime):
-    """Recover the day store, then move any history still in the JSON store into it, once."""
-    now = time.time()
-    runtime._days.open(now)
-    convert.run(runtime.data, runtime._days, now)
 
 
 async def async_setup_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
@@ -89,9 +82,17 @@ async def _start_runtime(hass):
     data = await store.async_load() or {"devices": {}, "training": {}}
     runtime = TunerRuntime(hass, store, data)
     runtime._days = DayStore(Path(hass.config.path(".storage", DOMAIN, "history")))
-    await pace.run(hass, _open_history, runtime)
+    try:
+        await startup.initialize(runtime)
+    except BaseException:
+        await bridge.stop(runtime)
+        raise
     schedule.restore(runtime)
-    await reference_training.initialize(runtime)
+    try:
+        await reference_training.initialize(runtime)
+    except BaseException:
+        await bridge.stop(runtime)
+        raise
     try:
         await runtime.async_save()
     except ValueError:
@@ -168,6 +169,7 @@ async def _stop_runtime(runtime):
 async def _shutdown(runtime):
     runtime._sampling_stopped = True
     pace.stop()  # Background work is abandoned at its next step, never awaited to the end.
+    await bridge.stop(runtime)  # Close admission and reap numerical children before unload.
     await engineering.stop(runtime)
     await schedule.stop(runtime)
     if runtime.unsub:
@@ -190,4 +192,8 @@ async def _shutdown(runtime):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
     ingest.stop(runtime, time.time())  # Nothing is observed while stopped.
-    await runtime.async_save()
+    from .history import commit
+    from .worker import transactions
+
+    await commit.drain(runtime)
+    await transactions.final_save(runtime)

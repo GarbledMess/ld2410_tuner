@@ -39,6 +39,8 @@ def remembered(store, device_id, date, name, args, compute):
 
 def _keep(key, value, size):
     global _bytes
+    if size > MAX_BYTES:
+        return  # Useful to this caller, but retaining it would exceed the cache budget.
     with _lock:
         if key in _kept:
             _bytes -= _kept.pop(key)[1]

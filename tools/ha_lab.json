@@ -1,0 +1,38 @@
+{
+  "profile": {
+    "memory_mib": 2048,
+    "vcpus": 2,
+    "container_cpus": 1,
+    "container_memory_mib": 1536,
+    "disk_gib": 24,
+    "port": 0
+  },
+  "source_paths": [
+    "custom_components",
+    "tests",
+    "tools",
+    "examples",
+    "node_modules",
+    "README.md",
+    "hacs.json",
+    "pyproject.toml",
+    "requirements-dev.txt",
+    "package.json",
+    "package-lock.json"
+  ],
+  "domains": [
+    "ld2410_tuner"
+  ],
+  "smoke_api_paths": [
+    "/api/config",
+    "/api/states"
+  ],
+  "command_timeout": 1800,
+  "commands": {
+    "container_python": "chroot /work/os docker exec ha-lab python3 -c 'import sys,os; print(sys.version); print(os.getpriority(os.PRIO_PROCESS,0)); print(open(\"/proc/self/oom_score_adj\").read())'",
+    "limits": "chroot /work/os docker exec ha-lab python3 /lab/scripts/limits_check.py",
+    "http_ready": "chroot /work/os docker exec ha-lab python3 /lab/scripts/ha_smoke.py",
+    "production_worker_http": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/production_checks.py",
+    "python_qa": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/qa.py"
+  }
+}

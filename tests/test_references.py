@@ -476,7 +476,7 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
             self.label(0, 40, "not_present")  # A room edit lands while the fit runs.
             return {}
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.respond = executor
         with (
             patch.object(service, "read_timing", return_value={}),
             patch.object(service.recovery, "prepare_learning", AsyncMock(return_value=({}, {}))),
@@ -877,15 +877,16 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_decodes_each_members_finished_day_once(self):
         """Views and attribution share decoded finished day columns, including guesses."""
-        from tuner_under_test.history import dayfile, daystore, ingest
+        from tuner_under_test.history import daystore, ingest
         from tuner_under_test.presence import rebuilds
+        from tuner_under_test.worker import history
 
         self.scenario()
         ingest.stop(self.runtime, self.clock.return_value)
         self.runtime._days.flush(self.base + 86400)
         # A new store starts with a cold decoded-day cache.
         self.runtime._days = daystore.DayStore(self.runtime._days.root)
-        with patch.object(dayfile, "decode_day", wraps=dayfile.decode_day) as decode:
+        with patch.object(history, "decode", wraps=history.decode) as decode:
             await rebuilds.refresh(self.runtime, {"a", "b"}, reason="test")
         assert decode.call_count == 2
 

@@ -869,6 +869,17 @@ class InferenceTests(unittest.TestCase):
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        from tuner_under_test.worker.supervisor import Supervisor
+        from worker_transport import Transport
+
+        self.worker_transport = Transport()
+
+        async def process(service, args):
+            return await self.worker_transport.process(args)
+
+        self.worker_patch = patch.object(Supervisor, "_process", process)
+        self.worker_patch.start()
+        self.addCleanup(self.worker_patch.stop)
         self.states = {}
         self.report_write = types.MethodType(RuntimeTests.report_write, self)
         io = sys.modules["tuner_under_test.calibration.device_io"]
@@ -910,6 +921,11 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.states[data["entity_id"]] = types.SimpleNamespace(state=str(data["value"]))
 
     async def asyncTearDown(self):
+        from tuner_under_test.history import commit
+        from tuner_under_test.worker import bridge
+
+        await bridge.stop(self.runtime)
+        await commit.drain(self.runtime)
         tasks = list(self.runtime._timeout_tasks.values())
         for task in tasks:
             task.cancel()
@@ -940,12 +956,11 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.sample(self.now - 6)
         calls = []
 
-        async def execute(fn, *args):
-            calls.append(fn)
+        async def execute(request):
+            calls.append(request["operation"])
             await asyncio.sleep(0.01)
-            return fn(*args)
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.before = execute
         args = ("a", ["g0_move"], 6, 400, self.now)
         first, second = await asyncio.gather(
             self.runtime.async_history_series(*args), self.runtime.async_history_series(*args)
@@ -1252,11 +1267,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_changed_labels_discard_inflight_learning(self):
         self.configuration()
 
-        async def execute(fn, *args):
+        async def execute(request):
             self.runtime.clear_samples("a")
-            return fn(*args)
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.before = execute
         with self.assertRaisesRegex(ValueError, "labels changed"):
             await self.runtime.async_learn("a")
         self.assertNotIn("last_learning", self.device)
@@ -1393,7 +1407,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             "status": "ok",
         }
         saved = self.device["last_learning"]
-        self.hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
         await self.runtime.async_clean_history(persist=False)
         self.assertIs(self.device["last_learning"], saved)
         self.assertIn("history_cleanup", self.device)
@@ -1406,7 +1419,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             "method": sys.modules["tuner_under_test.calibration.constants"].METHOD,
             "status": "ok",
         }
-        self.hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
         convert.run(self.runtime.data, self.runtime._days, self.now)
         self.assertEqual(self.device["history_cleanup"]["invalid_blocks"], 1)
         await self.runtime.async_clean_history(persist=False)
@@ -1417,8 +1429,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_reading_recorded_during_cleanup_is_kept(self):
         self.sample(self.now - 10)
 
-        def executor(fn, *args):
-            result = fn(*args)
+        async def executor(fn, *args):
+            result = await asyncio.to_thread(fn, *args)
             self.sample(self.now, 30)
             return result
 

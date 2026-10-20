@@ -115,15 +115,15 @@ class TimingPolicyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         assert policy.settings(types.SimpleNamespace(data=persisted))["timeout"] == 2
         captured = []
 
-        async def fit(fn, *args):
-            captured.append(copy.deepcopy(fn.__wrapped__.__self__._fit_timing))
+        async def fit(request):
+            captured.append(copy.deepcopy(request["parameters"]["timing"]))
             return {
                 "status": "ok",
                 "proposals": {},
                 "timing": timing_report(captured[-1], {}),
             }
 
-        self.hass.async_add_executor_job = fit
+        self.worker_transport.respond = fit
         for source in ("user", "automatic"):
             await self.runtime.async_learn("a", source=source)
         assert captured[0] == captured[1]
@@ -137,15 +137,15 @@ class TimingPolicyRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.runtime.configure_timing({**policy.DEFAULTS, "mode": "disabled"})
             return {"status": "ok", "proposals": {}}
 
-        self.hass.async_add_executor_job = fit
+        self.worker_transport.respond = fit
         with self.assertRaisesRegex(ValueError, "Device timing changed"):
             await self.runtime.async_learn("a")
 
     async def test_missing_timing_does_not_fail_overnight_job(self):
         self.configuration()
 
-        async def fit(fn, *args):
-            timing = fn.__wrapped__.__self__._fit_timing
+        async def fit(request):
+            timing = request["parameters"]["timing"]
             assert timing["on_delay"] is None
             return {
                 "status": "uncertain",
@@ -160,7 +160,7 @@ class TimingPolicyRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
 
-        self.hass.async_add_executor_job = fit
+        self.worker_transport.respond = fit
         await schedule._learn_device(self.runtime, "a", self.device, "2026-09-29")
         attempt = self.device["nightly_learning"]
         assert attempt["status"] == "uncertain"

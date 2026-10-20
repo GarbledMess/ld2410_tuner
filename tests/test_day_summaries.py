@@ -126,6 +126,13 @@ def test_ensure_prepares_persistent_indexes_in_executor_for_restart(tmp_path):
     import asyncio
 
     from tuner_under_test.history import daystore, summaries
+    from tuner_under_test.worker import supervisor
+    from worker_transport import Transport
+
+    transport = Transport()
+
+    async def process(service, args):
+        return await transport.process(args)
 
     device = {"history_labels": [{"start": 0, "end": 500, "state": "present"}]}
     runtime = SimpleNamespace(
@@ -136,7 +143,10 @@ def test_ensure_prepares_persistent_indexes_in_executor_for_restart(tmp_path):
     )
     date = daystore.date_of(0)
     runtime._days.replace("a", date, synthetic_day())
-    with patch.object(label_counts.time, "time", return_value=700):
+    with (
+        patch.object(label_counts.time, "time", return_value=700),
+        patch.object(supervisor.Supervisor, "_process", process),
+    ):
         asyncio.run(label_counts.ensure(runtime, "a"))
     expected = runtime._label_counts["a"].raw
     assert runtime._days._path("a", date, ".sum").exists()
@@ -145,6 +155,7 @@ def test_ensure_prepares_persistent_indexes_in_executor_for_restart(tmp_path):
     with (
         patch.object(label_counts.time, "time", return_value=700),
         patch.object(summaries.Summary, "__init__", side_effect=AssertionError("rebuilt")),
+        patch.object(supervisor.Supervisor, "_process", process),
     ):
         asyncio.run(label_counts.ensure(runtime, "a"))
     assert runtime._label_counts["a"].raw == expected

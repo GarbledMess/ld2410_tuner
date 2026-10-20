@@ -37,6 +37,16 @@ def test_session_starts_with_the_full_current_vector(tmp_path):
     assert rows(live, START + 2) == [(START + 1, START + 2, (11, 20))]
 
 
+def test_fractional_energy_changes_within_one_percentage_bin_do_not_add_rows(tmp_path):
+    live = runtime(tmp_path, g0_move=40.01, g0_still=99.9)
+    ingest.change(live, "radar", {}, START + 1)
+    ingest.change(live, "radar", {"g0_move": 40.9}, START + 2)
+    ingest.change(live, "radar", {"g0_move": 41}, START + 3)
+    assert rows(live, START + 4) == [(START + 1, START + 4, (41, 100))]
+    day = live._days.day("radar", DAY, until=START + 4)
+    assert all(isinstance(column, bytes) for column in day.columns)
+
+
 def test_pulse_keeps_event_times_and_unchanged_values_store_nothing(tmp_path):
     live = runtime(tmp_path, g0_move=0)
     for at, value in [(1.125, 0), (1.175, 40), (1.225, 0), (1.5, 0)]:

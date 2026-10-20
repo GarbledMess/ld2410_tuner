@@ -5,7 +5,7 @@ import asyncio
 import threading
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import test_tuner  # noqa: F401
@@ -249,7 +249,10 @@ def test_stopping_a_reference_rebuild_is_not_reported_as_a_failure():
 
     async def scenario():
         runtime = SimpleNamespace(hass=SimpleNamespace(async_add_executor_job=executor))
-        with patch.object(rebuilds._LOGGER, "exception") as failure:
+        with (
+            patch.object(rebuilds._LOGGER, "exception") as failure,
+            patch.object(rebuilds.bridge, "calculate", AsyncMock(side_effect=pace.Stopped)),
+        ):
             with pytest.raises(pace.Stopped):
                 await rebuilds._pass(runtime, [])
             failure.assert_not_called()

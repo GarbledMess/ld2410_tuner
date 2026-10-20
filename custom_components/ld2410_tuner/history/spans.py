@@ -4,6 +4,7 @@ import math
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
+from ..engine.columns import quantize
 from . import daystore, pace
 
 
@@ -148,6 +149,41 @@ def events(view, device_id, *, start=-math.inf, end=math.inf):
     start = max(start, getattr(view, "_physical_history_start", -math.inf))
     end = min(end, getattr(view, "_attribution_until", math.inf))
     return _disjoint(_stored(view, device_id, start, end)) if end > start else iter(())
+
+
+def search_events(view, device_id, indices, *, end=math.inf):
+    """Selected gate bytes with the same clipping and coverage as physical events.
+
+    Quantization is chunked to bound temporary allocations and retain governor checks.
+    Raw fractional readings remain unchanged for non-search callers.
+    """
+    if math.isnan(end):
+        raise ValueError("Invalid physical history window")
+    start = getattr(view, "_physical_history_start", -math.inf)
+    end = min(end, getattr(view, "_attribution_until", math.inf))
+    return _disjoint(_search_stored(view, device_id, indices, start, end))
+
+
+def _search_stored(view, device_id, indices, start, end):
+    if end <= start:
+        return
+    for day, selected in _selected_days(view, device_id, start, end):
+        for low, high in selected:
+            yield from _search_day(day, low, high, indices)
+
+
+def _search_day(day, start, end, indices):
+    first, after = bisect_right(day.ends, start), bisect_left(day.times, end)
+    for low in range(first, after, 4096):
+        pace.rest()
+        high = min(low + 4096, after)
+        columns = [quantize(day.columns[gate], low, high) for gate in indices]
+        for index in range(low, high):
+            pace.rest()
+            a, b = max(start, day.times[index]), min(end, day.ends[index])
+            if b > a:
+                values = bytes(column[index - low] for column in columns)
+                yield Span(a, b, values, "event")
 
 
 def _disjoint(items):

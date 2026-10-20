@@ -203,3 +203,21 @@ def test_kept_results_are_bounded_by_size(tmp_path, monkeypatch):
     calls = []
     day_results.remembered(store, "radar", DATE, "big", (9,), lambda: calls.append(1))
     assert not calls  # The newest stays.
+
+
+def test_oversized_result_is_returned_without_evicting_useful_cache(tmp_path, monkeypatch):
+    store = finished_store(tmp_path)
+    monkeypatch.setattr(day_results, "MAX_BYTES", 1024)
+    small = day_results.remembered(store, "radar", DATE, "small", (), lambda: b"useful")
+    before = day_results.kept_bytes()
+    calls = []
+
+    def oversized():
+        calls.append(1)
+        return bytes(2048)
+
+    for _ in range(2):
+        assert len(day_results.remembered(store, "radar", DATE, "huge", (), oversized)) == 2048
+        assert day_results.kept_bytes() == before
+    assert calls == [1, 1]
+    assert day_results.remembered(store, "radar", DATE, "small", (), lambda: None) == small

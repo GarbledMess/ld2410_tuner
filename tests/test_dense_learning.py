@@ -32,6 +32,45 @@ def test_summary_quality_keeps_full_native_report_except_physical_cache_fingerpr
     assert without_fingerprint(dense) == without_fingerprint(baseline)
 
 
+def test_medium_history_uses_indexed_quality_without_changing_chronological_validation():
+    rows = [
+        (
+            1000 + i * 6,
+            {"g0_move": (40.01 if (i // 400) % 2 else 5.01) + i % 3},
+            "present" if (i // 400) % 2 else "not_present",
+        )
+        for i in range(8000)
+    ]
+    with patch.object(event_fitting, "SUMMARY_ROWS", 10**9):
+        baseline = harness.fit(rows, ["g0_move"])
+    with patch.object(event_fitting, "collect", side_effect=AssertionError("row quality replay")):
+        indexed = harness.fit(rows, ["g0_move"])
+    assert indexed["status"] == "ok"
+    assert indexed["adaptive_policy"]["validated"]
+    assert without_fingerprint(indexed) == without_fingerprint(baseline)
+
+
+def test_whole_percentage_history_preserves_the_complete_fractional_learning_report():
+    from math import ceil
+
+    rows = [
+        (
+            1000 + i * 6,
+            {"g0_move": (40.125 if (i // 100) % 2 else 5.125) + i % 3},
+            "present" if (i // 100) % 2 else "not_present",
+        )
+        for i in range(1000)
+    ]
+    integers = [
+        (at, {key: ceil(value) for key, value in values.items()}, label)
+        for at, values, label in rows
+    ]
+    fractional = harness.fit(rows, ["g0_move"])
+    whole = harness.fit(integers, ["g0_move"])
+    assert whole["status"] == fractional["status"] == "ok"
+    assert without_fingerprint(whole) == without_fingerprint(fractional)
+
+
 def test_fully_own_labelled_dense_learning_does_not_compute_unused_room_attribution():
     rows = [
         (1000 + i * 6, {"g0_move": 40 if i < 60 else 5}, "present" if i < 60 else "not_present")

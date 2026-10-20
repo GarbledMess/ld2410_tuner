@@ -18,7 +18,7 @@ from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import quote, unquote
 
-from . import dayfile, pace, summaries, summary_cache
+from . import dayfile, pace, summaries, summary_cache, worker_snapshot
 
 DAY = datetime.timedelta(days=1)
 MIB = 1024 * 1024
@@ -81,6 +81,10 @@ class DayStore:
         self._revision = {}  # Device id -> count of finished-day writes, rewrites and deletes.
         self._rewrites = {}  # Device id -> count of rewrites and deletes only.
         self._lock = threading.RLock()
+        self._fs_lock = threading.RLock()
+        self._pending = {}
+        self._clear_pending = {}
+        self._publication_error = None
 
     def folder(self, device_id):
         return self.root / _folder_name(device_id)
@@ -198,17 +202,19 @@ class DayStore:
     def _write_late(self, device_id, date, spans, generation):
         """Splice ``spans`` into the finished ``date`` unless the radar was cleared since they
         were taken (``generation``)."""
-        if generation != self._generations.get(device_id, 0):
-            return
-        day = self.day(device_id, date) or dayfile.DayBuilder(*bounds(date)).day()
-        spliced = dayfile.splice(day, spans)
-        if spliced is not day:
-            self._write_day(device_id, date, spliced, generation=generation)
+        with self._fs_lock:
+            if generation != self._generations.get(device_id, 0):
+                return
+            day = self.day(device_id, date) or dayfile.DayBuilder(*bounds(date)).day()
+            spliced = dayfile.splice(day, spans)
+            if spliced is not day:
+                self._write_day(device_id, date, spliced, generation=generation)
 
     def _write_log(self, device_id, live, records):
         data = dayfile.encode_records(records, live.written)
         path = self._path(device_id, live.date, ".log")
-        with self._lock:
+        with self._fs_lock:
+            self._remove_files(device_id)
             if live.generation != self._generations.get(device_id, 0):
                 return 0
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,10 +228,12 @@ class DayStore:
         if len(day.times) or day.guesses:  # A day with no coverage at all keeps no file.
             if not self._write_day(device_id, live.date, day, generation=live.generation):
                 return
-        with self._lock:
+        with self._fs_lock:
+            self._remove_files(device_id)
             if live.generation != self._generations.get(device_id, 0):
                 return
             self._path(device_id, live.date, ".log").unlink(missing_ok=True)
+        with self._lock:
             self._closing.get(device_id, {}).pop(live.date, None)
 
     def _write_day(self, device_id, date, day, generation=None):
@@ -245,17 +253,20 @@ class DayStore:
                 temporary.unlink(missing_ok=True)
 
     def _publish_day(self, device_id, date, day, temporary, generation):
-        with self._lock:
+        with self._fs_lock:
+            self._remove_files(device_id)
             if generation != self._generations.get(device_id, 0):
                 return False
             path = self._path(device_id, date, ".day")
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary.replace(path)
             summary_cache.invalidate(path)
-            self._remember((device_id, date), day)
-            self._changed((device_id, date))
-            self._revise(device_id)
-            return True
+        with self._lock:
+            if generation == self._generations.get(device_id, 0):
+                self._remember((device_id, date), day)
+                self._changed((device_id, date))
+                self._revise(device_id)
+        return True
 
     # ----------------------------------------------------------------- reading
 
@@ -326,19 +337,31 @@ class DayStore:
                 limit = max(time.time(), live.seen) if until is None else until
                 return live.builder.view(min(max(limit, start), end))
             late = list(self._late.get(device_id, {}).get(date, ()))
+            pending = self._pending.get((device_id, date))
+            if pending is not None:
+                return _visible_pending(pending[0], late)
             closing = self._closing.get(device_id, {}).get(date)
             if closing is not None:
                 return dayfile.splice(closing.builder.day(), late)
+            if device_id in self._clear_pending:
+                return None
             cached = self._cache.get((device_id, date))
             if cached is not None:
                 self._cache.move_to_end((device_id, date))
                 return dayfile.splice(cached, late)
+        return self._finished_day(device_id, date, late)
+
+    def _finished_day(self, device_id, date, late):
         path = self._path(device_id, date, ".day")
         if not path.exists():
             return dayfile.splice(dayfile.DayBuilder(*bounds(date)).day(), late) if late else None
         day = dayfile.decode_day(path.read_bytes())
         self._remember((device_id, date), day)
         return dayfile.splice(day, late)
+
+    def worker_snapshot(self, device_id, date, until=None, *, limits=None):
+        """Acquire one bounded detached day or finished-file reference (executor only)."""
+        return worker_snapshot.acquire(self, device_id, date, until, limits=limits)
 
     def summary(self, device_id, date, until=None):
         """Acquire a physical index in an executor; generic day reads do no cache I/O.
@@ -383,7 +406,22 @@ class DayStore:
                 dates.add(self._live[device_id].date)
             dates.update(self._closing.get(device_id, {}))
             dates.update(self._late.get(device_id, {}))
+            self._accepted_dates(device_id, dates)
         return sorted(dates)
+
+    def _accepted_dates(self, device_id, dates):
+        if device_id in self._clear_pending:
+            dates.clear()
+            dates.update(self._closing.get(device_id, {}))
+            dates.update(self._late.get(device_id, {}))
+            if device_id in self._live:
+                dates.add(self._live[device_id].date)
+        for (key, date), (day, _token) in self._pending.items():
+            if key == device_id:
+                if _has_data(day):
+                    dates.add(date)
+                else:
+                    dates.discard(date)
 
     # ----------------------------------------------------------------- maintenance
 
@@ -413,19 +451,20 @@ class DayStore:
 
     def commit(self, staged):
         """Publish already encoded days without yielding between validation and rename."""
-        for key, date, day, temporary in staged:
-            path = self._path(key, date, ".day")
-            summary_cache.invalidate(path)
-            if len(day.times) or day.guesses:
-                temporary.replace(path)
-                self._remember((key, date), day)
-            else:
-                path.unlink(missing_ok=True)
-                temporary.unlink(missing_ok=True)
-                self._forget((key, date))
-            self._changed((key, date))
-            self._revise(key)
-            self._rewrite(key)
+        with self._fs_lock:
+            for key, date, day, temporary in staged:
+                path = self._path(key, date, ".day")
+                summary_cache.invalidate(path)
+                if len(day.times) or day.guesses:
+                    temporary.replace(path)
+                    self._remember((key, date), day)
+                else:
+                    path.unlink(missing_ok=True)
+                    temporary.unlink(missing_ok=True)
+                    self._forget((key, date))
+                self._changed((key, date))
+                self._revise(key)
+                self._rewrite(key)
 
     @staticmethod
     def discard(staged):
@@ -433,32 +472,118 @@ class DayStore:
             temporary.unlink(missing_ok=True)
 
     def delete(self, device_id, dates):
-        for date in dates:
-            self._refuse_live(device_id, date)
-            summary_cache.invalidate(self._path(device_id, date, ".day"))
-            for suffix in (".day", ".log"):
-                self._path(device_id, date, suffix).unlink(missing_ok=True)
-            self._forget((device_id, date))
-            self._changed((device_id, date))
-        self._revise(device_id)
-        self._rewrite(device_id)
+        with self._fs_lock:
+            for date in dates:
+                self._refuse_live(device_id, date)
+                summary_cache.invalidate(self._path(device_id, date, ".day"))
+                for suffix in (".day", ".log"):
+                    self._path(device_id, date, suffix).unlink(missing_ok=True)
+                self._forget((device_id, date))
+                self._changed((device_id, date))
+            self._revise(device_id)
+            self._rewrite(device_id)
 
     def _refuse_live(self, device_id, date):
         live = self._live.get(device_id)
         if live is not None and live.date == date:
             raise ValueError("The day being recorded cannot be rewritten")
 
-    def remove_device(self, device_id):
+    def forget_device(self, device_id):
+        """Invalidate recordings and queued publications immediately; memory only."""
         with self._lock:
             self._generations[device_id] = self._generations.get(device_id, 0) + 1
+            self._clear_pending[device_id] = self._generations[device_id]
             self._live.pop(device_id, None)
             self._closing.pop(device_id, None)
             self._late.pop(device_id, None)
+            for key in [key for key in self._pending if key[0] == device_id]:
+                self._pending.pop(key)
             for key in [key for key in self._cache if key[0] == device_id]:
                 self._forget(key)
-        shutil.rmtree(self.folder(device_id), ignore_errors=True)
-        self._revise(device_id)
-        self._rewrite(device_id)
+            self._revise(device_id)
+            self._rewrite(device_id)
+
+    def _remove_files(self, device_id):
+        """Drain a requested clear under the filesystem lock, never the recording lock."""
+        with self._fs_lock:
+            with self._lock:
+                generation = self._clear_pending.get(device_id)
+            if generation is None:
+                return
+            try:
+                shutil.rmtree(self.folder(device_id))
+            except FileNotFoundError:
+                pass
+            with self._lock:
+                if self._clear_pending.get(device_id) == generation:
+                    self._clear_pending.pop(device_id, None)
+
+    def remove_device(self, device_id):
+        """Synchronous compatibility path; live HA calls use commit.clear_device."""
+        self.forget_device(device_id)
+        self._remove_files(device_id)
+
+    def reserve(self, staged):
+        """Accept replacement views before asynchronous filesystem publication."""
+        with self._lock:
+            if self._publication_error is not None:
+                raise ValueError("History publication failed; restart after restoring disk access")
+            token = object()
+            entries = []
+            for key, date, day, temporary in staged:
+                self._refuse_live(key, date)
+                if (key, date) in self._pending:
+                    raise ValueError("History publication is already pending")
+                entries.append((key, date, day, temporary, self._generations.get(key, 0)))
+            for key, date, day, _temporary, _generation in entries:
+                self._pending[key, date] = day, token
+                self._forget((key, date))
+                self._changed((key, date))
+                self._revise(key)
+                self._rewrite(key)
+            return token, entries
+
+    def abort_reserved(self, reservation):
+        """Withdraw a view when synchronous metadata acceptance failed before any I/O."""
+        token, entries = reservation
+        with self._lock:
+            for key, date, _day, _temporary, _generation in entries:
+                if self._pending.get((key, date), (None, None))[1] is token:
+                    self._pending.pop((key, date))
+                    self._changed((key, date))
+                    self._revise(key)
+                    self._rewrite(key)
+
+    def publish_reserved(self, reservation):
+        """Publish accepted replacements in an executor; failed stages remain recoverable."""
+        token, entries = reservation
+        try:
+            with self._fs_lock:
+                for entry in entries:
+                    self._publish_reserved_day(token, entry)
+        except BaseException as error:
+            self._publication_error = error
+            raise
+
+    def _publish_reserved_day(self, token, entry):
+        key, date, day, temporary, generation = entry
+        self._remove_files(key)
+        if generation != self._generations.get(key, 0):
+            temporary.unlink(missing_ok=True)
+            return
+        path = self._path(key, date, ".day")
+        summary_cache.invalidate(path)
+        present = bool(len(day.times) or day.guesses)
+        if present:
+            temporary.replace(path)
+        else:
+            path.unlink(missing_ok=True)
+            temporary.unlink(missing_ok=True)
+        with self._lock:
+            if self._pending.get((key, date), (None, None))[1] is token:
+                self._pending.pop((key, date))
+                if generation == self._generations.get(key, 0) and present:
+                    self._remember((key, date), day)
 
     def _changed(self, key):
         with self._lock:
@@ -473,6 +598,8 @@ class DayStore:
                 (live is not None and live.date == date)
                 or date in self._closing.get(device_id, {})
                 or date in self._late.get(device_id, {})
+                or (device_id, date) in self._pending
+                or device_id in self._clear_pending
             ):
                 return None
             known = self._generations.get(device_id, 0), self._changes.get((device_id, date), 0)
@@ -530,3 +657,11 @@ def _bytes(day):
         len(column) * column.itemsize if hasattr(column, "itemsize") else len(column)
         for column in day.columns
     )
+
+
+def _visible_pending(day, late):
+    return dayfile.splice(day, late) if len(day.times) or day.guesses or late else None
+
+
+def _has_data(day):
+    return bool(len(day.times) or day.guesses)

@@ -193,7 +193,6 @@ async def _compare_zones(runtime, learned):
     """Fresh live-versus-candidate results for every zone of the set, on the same recordings."""
     group_ids = _group_ids(learned)
     members, _signature = jobs.set_context(runtime, group_ids)
-    jobs.set_views(runtime, members)
     rooms = {group_id: truth.view(runtime, group_id) for group_id in group_ids}
     end = time()
     async with runtime._comparison_semaphore:

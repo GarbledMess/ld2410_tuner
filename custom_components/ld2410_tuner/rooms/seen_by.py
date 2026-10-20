@@ -30,8 +30,9 @@ from copy import deepcopy
 from math import inf, nextafter
 
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
-from ..history import pace, recording
+from ..history import pace
 from ..runtime.tasks import finish_task
+from ..worker import bridge
 from . import attribution, truth
 
 _LOGGER = logging.getLogger(__name__)
@@ -84,6 +85,8 @@ def _view(runtime, definitions, group_id):
     snapshot); None when no member has recorded anything."""
     devices = runtime.data["devices"]
     own = [key for key in definitions[group_id]["device_ids"] if key in devices]
+    from ..history import recording
+
     if not any(recording.has_history(runtime, key) for key in own):
         return None
     # Shares the learner's attribution cache.
@@ -225,7 +228,15 @@ def build(views, definitions, group_id):
 async def _run(runtime, definitions, group_id, current, view, started):
     try:
         async with runtime._room_attribution_semaphore:
-            episodes = await pace.run(runtime.hass, build, view, definitions, group_id)
+
+            def prepare():
+                acquired = _view(runtime, definitions, group_id) if view is None else view
+                return {
+                    "views": acquired or {},
+                    "parameters": {"definitions": deepcopy(definitions), "group_id": group_id},
+                }
+
+            episodes = await bridge.calculate(runtime, "seen_by", prepare)
     except asyncio.CancelledError:
         raise
     except Exception:  # A failing build must not be retried on every poll.
@@ -248,13 +259,10 @@ def _refresh(runtime, definitions, group_id, current, now):
     jobs = runtime._room_attribution_jobs
     if group_id in jobs:
         return  # The next poll after it lands compares signatures again.
-    view = _view(runtime, definitions, group_id)
-    if view is None:
+    if not _has_recording(runtime, definitions, group_id):
         _store(runtime, group_id, current, [], now)
         return
-    task = runtime.hass.async_create_task(
-        _run(runtime, deepcopy(definitions), group_id, current, view, now)
-    )
+    task = runtime.hass.async_create_task(_run(runtime, definitions, group_id, current, None, now))
     jobs[group_id] = task
     task.add_done_callback(lambda done: finish_task(jobs, group_id, done))
 
@@ -281,3 +289,13 @@ def snapshot(runtime, definitions) -> dict[str, list]:
             entry = cache.get(group_id)
         result[group_id] = entry["episodes"] if entry else []
     return result
+
+
+def _has_recording(runtime, definitions, group_id):
+    from ..history import recording
+
+    return any(
+        recording.has_history(runtime, key)
+        for key in definitions[group_id]["device_ids"]
+        if key in runtime.data["devices"]
+    )

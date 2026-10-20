@@ -1,5 +1,6 @@
 """Device overrides inherit changing defaults and gate every automatic write path."""
 
+import asyncio
 import sys
 import types
 import unittest
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import test_automatic_apply as harness
+from tuner_under_test.worker import calculations
 
 automatic = harness.automatic
 schedule = harness.schedule
@@ -85,12 +87,12 @@ class DeviceApplyPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.configure_device_auto_apply("a", "all")
         self.runtime._learn_once = AsyncMock(return_value=deepcopy(self.learned))
 
-        async def execute(fn, *args):
-            measured = fn(*args)
+        async def execute(request):
+            measured = await asyncio.to_thread(calculations.execute, request)
             self.runtime.configure_device_auto_apply("a", "off")
             return measured
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         await self.runtime.async_learn("a")
         assert self.device["learning_job"]["automatic_apply"]["status"] == "skipped"
         self.hass.services.async_call.assert_not_awaited()

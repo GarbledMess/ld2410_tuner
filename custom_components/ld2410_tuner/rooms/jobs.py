@@ -9,8 +9,9 @@ from ..calibration import settings
 from ..calibration import thresholds as threshold_domain
 from ..calibration.timing_config import read_timing, timing_signature
 from ..const import TRAINING_FIELDS
-from ..history import pace, policy
+from ..history import policy
 from ..runtime.tasks import finish_task
+from ..worker import bridge
 from . import assessment, attribution, groups, room_labels, room_sources, sets, truth
 
 
@@ -114,17 +115,56 @@ def set_views(runtime, members, since=None):
 
 
 async def on_views(runtime, members, job, *args):
-    """Run ``job(*args)`` in the executor on ``set_views`` views."""
-    views = [item["view"] for found in members.values() for item in found.values()]
+    """Run the allowlisted room computations on private process-owned views."""
+    from . import application, learning
 
-    @pace.background
-    def run():
-        try:
-            return job(*args)
-        finally:
-            attribution.release(views)
+    operations = {
+        assessment.calculate: "room_assess",
+        learning._fit_set: "room_fit",
+        application._compare_all: "room_compare",
+    }
+    if job not in operations:
+        raise ValueError("Unsupported room worker operation")
 
-    return await pace.run(runtime.hass, run)
+    def prepare():
+        since = (
+            (time.time() - learning.ATTRIBUTION_DAYS * 86400) // 3600 * 3600
+            if operations[job] == "room_fit" and learning.ATTRIBUTION_DAYS is not None
+            else None
+        )
+        set_views(runtime, members, since)
+        views = {key: item["view"] for found in members.values() for key, item in found.items()}
+        metadata = {
+            group: {
+                key: {
+                    **{name: value for name, value in item.items() if name != "view"},
+                    "view_key": key,
+                }
+                for key, item in found.items()
+            }
+            for group, found in members.items()
+        }
+        parameters = _worker_parameters(operations[job], metadata, args)
+        return {"views": views, "parameters": parameters}
+
+    return await bridge.calculate(runtime, operations[job], prepare)
+
+
+def _worker_parameters(operation, metadata, args):
+    if operation == "room_assess":
+        _, start, end, room = args
+        return {"members": next(iter(metadata.values())), "start": start, "end": end, "room": room}
+    if operation == "room_fit":
+        _, start, end, rooms, weight = args
+        return {"members": metadata, "start": start, "end": end, "rooms": rooms, "weight": weight}
+    _, thresholds, start, end, rooms = args
+    return {
+        "members": metadata,
+        "thresholds": thresholds,
+        "start": start,
+        "end": end,
+        "rooms": rooms,
+    }
 
 
 def summary(runtime, group_id):
@@ -203,7 +243,6 @@ async def _run(runtime, group_id, members, signature, hours, room=None):
     async with runtime._comparison_semaphore:
         end = time.time()
         try:
-            set_views(runtime, {group_id: members})
             report = await on_views(
                 runtime,
                 {group_id: members},

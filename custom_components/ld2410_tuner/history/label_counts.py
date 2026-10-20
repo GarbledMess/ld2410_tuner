@@ -20,7 +20,7 @@ from bisect import bisect_left, bisect_right, insort
 
 from ..calibration.constants import SAMPLE_SECONDS
 from ..const import HISTOGRAM_BINS, HISTORY_KEYS, MAX_HISTOGRAM_COUNT
-from . import daystore, label_lookup, pace, recording, summaries
+from . import daystore, label_lookup, pace, summaries
 from .policy import retention_seconds
 
 STATES = ("present", "not_present")
@@ -196,7 +196,10 @@ class Counts:
 
     def count_live(self, live, read, cutoff, sign):
         if live is not None:
-            self.count(_native_spans(pending=live), read, cutoff, sign)
+            if isinstance(live, dict) and "counted_seconds" in live:
+                _combine(self.seconds, live["counted_seconds"], sign)
+            else:
+                self.count(_native_spans(pending=live), read, cutoff, sign)
 
 
 def _changed(old, new):
@@ -236,6 +239,8 @@ def count(history, cutoff, index, live=None):
 def current(runtime, device):
     """The labelled recorded time of ``device`` now, in six-second units, as a full recount
     would give it: from the kept counts when there are some."""
+    from . import recording
+
     device_id = recording._device_id(runtime, device)
     cutoff = max(0, time.time() - retention_seconds(runtime.data))
     index = label_lookup.label_index(device)
@@ -251,7 +256,7 @@ def current(runtime, device):
     return counts.raw
 
 
-def _day_blocks(runtime, device_id):
+def _day_blocks(runtime, device_id, max_days=None):
     """Each finished recorded day as a block: the same object while the radar's finished days
     are unchanged (``DayStore.mark``), so kept counts are not recounted."""
     days = getattr(runtime, "_days", None)
@@ -263,6 +268,7 @@ def _day_blocks(runtime, device_id):
     for date in days.days(device_id):
         if live is not None and date == live[0]:
             continue
+        _check_day_budget(len(blocks), max_days)
         known = kept.get((device_id, date))
         if known is None or known[0] != revision:
             start, end = daystore.bounds(date)
@@ -307,14 +313,79 @@ async def ensure(runtime, device_id):
     device = runtime.data["devices"].get(device_id)
     if device is None or device_id in runtime._label_counts:
         return
-    history, live = _day_blocks(runtime, device_id), _live_day(runtime, device_id)
-    cutoff = max(0, time.time() - retention_seconds(runtime.data))
-    index = label_lookup.label_index(device)
-    counts = await pace.run(runtime.hass, _worker_count, history, cutoff, index, live)
+    from ..worker import bridge
+    from . import recording
+
+    prepared = {}
+
+    def prepare():
+        history = _day_blocks(runtime, device_id, max_days=128)
+        cutoff = max(0, time.time() - retention_seconds(runtime.data))
+        index = label_lookup.label_index(runtime.data["devices"][device_id])
+        days = getattr(runtime, "_days", None)
+        live = None if days is None else days.live_date(device_id)
+        prepared.update(history=history, cutoff=cutoff, index=index)
+        return {
+            "views": {device_id: recording._history_view(runtime, device_id, members=False)},
+            "parameters": {
+                "device_id": device_id,
+                "cutoff": cutoff,
+                "index": _finite_index(index),
+                "dates": [block["date"].isoformat() for block in history],
+                "live_date": None if live is None else live.isoformat(),
+            },
+        }
+
+    result = await bridge.calculate(runtime, "recount", prepare)
+    counts = _from_worker(prepared["history"], prepared["cutoff"], prepared["index"], result)
     if device_id not in runtime._label_counts:
         runtime._label_counts[device_id] = counts
+
+
+def _finite_index(index):
+    """An open live label ends at infinity; that endpoint cannot affect a finite day."""
+    times, states = index
+    pairs = [
+        (point, state) for point, state in zip(times, states, strict=True) if math.isfinite(point)
+    ]
+    return ([point for point, _ in pairs], [state for _, state in pairs])
+
+
+def _combine(target, source, sign=1):
+    for key in HISTORY_KEYS:
+        for state in STATES:
+            target[key][state] = [
+                max(0.0, left + sign * right)
+                for left, right in zip(target[key][state], source[key][state], strict=True)
+            ]
+
+
+def _from_worker(history, cutoff, index, result):
+    """Restore parent block identities; the live histogram is subtracted on first update."""
+    counts = Counts(index, cutoff)
+    counts.seconds = result["seconds"]
+    inert = set(result["inert"])
+    for block in history:
+        if block["date"].isoformat() in inert:
+            counts.inert[id(block)] = block
+            continue
+        counts.regular[id(block)] = (block, block["start"], block["end"])
+        counts.lows.append((block["start"], id(block)))
+        counts.width = max(counts.width, block["end"] - block["start"])
+    counts.lows.sort()
+    if result["live"] is not None:
+        _combine(counts.seconds, result["live"])
+        counts.live = {"counted_seconds": result["live"]}
+    return counts
 
 
 def forget(runtime, device_id):
     """Drop a radar's kept counts (its history was cleared)."""
     getattr(runtime, "_label_counts", {}).pop(device_id, None)
+
+
+def _check_day_budget(count, maximum):
+    if maximum is not None and count >= maximum:
+        from .worker_snapshot import SnapshotTooLarge
+
+        raise SnapshotTooLarge("Worker day budget exceeded")

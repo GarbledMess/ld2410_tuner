@@ -2,7 +2,6 @@
 
 from array import array
 from itertools import islice
-from math import ceil
 from operator import le
 
 from ..calibration.constants import AGREEING_MEMBERS
@@ -142,16 +141,15 @@ def _recorded(view, device_id, keys, end):
     indices = [HISTORY_KEYS.index(key) for key in keys]
     times, ends, barriers = array("d"), array("d"), []
     columns = [bytearray() for _ in keys]
-    for cell in spans.events(view, device_id, end=end):  # In time order.
-        read = [cell.values[index] for index in indices]
-        if all(value is None for value in read):
+    for cell in spans.search_events(view, device_id, indices, end=end):  # In time order.
+        read = cell.values
+        if all(value == MISSING for value in read):
             barriers.append(cell.start)
             continue
         times.append(cell.start)
         ends.append(cell.end)
         for column, value in zip(columns, read, strict=True):
-            # For integer thresholds, ceil(value) > threshold iff the raw value > threshold.
-            column.append(MISSING if value is None else ceil(value))
+            column.append(value)
     layout = {key: position for position, key in enumerate(keys)}
     rows = Rows(times, [bytes(column) for column in columns], layout, ends=ends)
     return rows, sorted(set(barriers))

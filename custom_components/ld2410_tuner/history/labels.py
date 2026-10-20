@@ -307,7 +307,9 @@ def clear_samples(runtime, device_id: str) -> None:
         runtime._source_runtime.pop(device_id, None)
         runtime._history_runtime.pop(device_id, None)
         if runtime._days is not None:
-            runtime._days.remove_device(device_id)
+            from . import commit
+
+            commit.clear_device(runtime, device_id)
         label_counts.forget(runtime, device_id)
         runtime._schedule_save()
 

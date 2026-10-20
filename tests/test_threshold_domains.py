@@ -140,7 +140,7 @@ class RuntimeThresholdTests(unittest.IsolatedAsyncioTestCase):
             self.states[entities["g0_move"]].attributes["step"] = 20
             return {}
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.respond = executor
         with (
             patch.object(service, "read_timing", return_value={}),
             patch.object(

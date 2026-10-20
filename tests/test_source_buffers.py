@@ -211,11 +211,18 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
 
 def run_case(body):
     case = BufferTests()
-    case.setUp()
+    case._setupAsyncioRunner()
     try:
+        case.setUp()
         body(case)
     finally:
-        case.doCleanups()
+        try:
+            case._asyncioRunner.run(case.asyncTearDown())
+        finally:
+            try:
+                assert case.doCleanups(), "Manual fixture cleanup failed"
+            finally:
+                case._tearDownAsyncioRunner()
 
 
 @pytest.mark.parametrize("duration", [6, 12, 18, 20])
@@ -294,3 +301,11 @@ class ConfirmTests(unittest.TestCase):
             source_labels.confirm_presence(self.runtime, "a", 1, 3, 90)
         assert self.runs() == before
         assert "auto" not in self.runtime.data["devices"]["a"]
+
+
+def test_manual_buffer_case_releases_its_process_transport_patch():
+    from tuner_under_test.worker.supervisor import Supervisor
+
+    original = Supervisor._process
+    run_case(lambda case: None)
+    assert Supervisor._process is original

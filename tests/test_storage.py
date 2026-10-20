@@ -251,21 +251,19 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_trim_retries_a_concurrent_label_edit_without_overwriting_it(self):
         self.finished_sample(self.now - 10 * policy.DAY)
-        execute = self.hass.async_add_executor_job
         calls = 0
 
-        async def race(fn, *args):
+        async def race(request):
             nonlocal calls
-            result = await execute(fn, *args)
-            if getattr(fn, "__wrapped__", fn) is storage._prepare_day_save and calls == 0:
+            if request["operation"] != "maintenance":
+                return
+            if calls == 0:
                 self.runtime.label_history_range(
                     "a", self.now - 11 * policy.DAY, self.now, "present"
                 )
-            if getattr(fn, "__wrapped__", fn) is storage._prepare_day_save:
-                calls += 1
-            return result
+            calls += 1
 
-        self.hass.async_add_executor_job = race
+        self.worker_transport.after = race
         await self.runtime.trim_storage()
         assert calls == 2
         assert sum(span.end - span.start for span in spans.events(self.runtime, "a")) == 6
@@ -273,15 +271,12 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_stale_write_when_every_cleanup_races(self):
         self.finished_sample(self.now - 10 * policy.DAY)
-        execute = self.hass.async_add_executor_job
 
-        async def race(fn, *args):
-            result = await execute(fn, *args)
-            if getattr(fn, "__wrapped__", fn) is storage._prepare_day_save:
+        async def race(request):
+            if request["operation"] == "maintenance":
                 self.device["label_revision"] = self.device.get("label_revision", 0) + 1
-            return result
 
-        self.hass.async_add_executor_job = race
+        self.worker_transport.after = race
         with self.assertRaisesRegex(ValueError, "changed during trimming"):
             await self.runtime.trim_storage()
         self.runtime.store.async_save.assert_not_awaited()
@@ -313,22 +308,19 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
         live["histograms"] = {"g0_move": {"present": [0] * 101, "not_present": [0] * 101}}
         live.setdefault("history_labels", [])
         expected = deepcopy(self.runtime.data)
-        execute = self.hass.async_add_executor_job
         seen = {}
 
-        async def concurrent(fn, *args):
-            result = await execute(fn, *args)
-            if getattr(fn, "__wrapped__", fn) is storage._prepare_day_save and not seen:
-                seen["candidate"] = args[1]
+        async def concurrent(request):
+            if request["operation"] == "maintenance" and not seen:
+                seen["candidate"] = request["data"]
                 date = self.runtime._days.days("a")[-1]
                 seen["day"] = self.runtime._days.day("a", date, until=NOW)
                 seen["day_before"] = deepcopy(seen["day"])
                 self.sample(self.now, 81)
                 live["histograms"]["g0_move"]["present"][3] += 7
                 live["history_labels"].append({"start": 1, "end": 2, "state": "present"})
-            return result
 
-        self.hass.async_add_executor_job = concurrent
+        self.worker_transport.after = concurrent
         with patch("tuner_under_test.history.storage.time.time", return_value=NOW):
             await self.runtime.async_save()
         saved = self.runtime.store.async_save.call_args.args[0]

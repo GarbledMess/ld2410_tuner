@@ -11,7 +11,7 @@ from typing import Any, TypedDict
 
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
 from ..history.label_lookup import _label_events, _label_index
-from . import evidence, groups
+from . import evidence
 
 MANUAL = frozenset({"manual"})
 SENSOR = frozenset({"sensor"})
@@ -85,6 +85,8 @@ def revisions(runtime, definitions, group_id, sensor=True) -> dict[str, int]:
 
 def view(runtime, group_id) -> dict[str, Any]:
     """Snapshot the definitions and relevant room labels on the event loop for a job."""
+    from . import groups
+
     _, _, definitions = groups.definitions(runtime)
     saved = runtime.data.get("room_labels", {})
     labels = {

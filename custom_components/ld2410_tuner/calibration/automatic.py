@@ -4,8 +4,7 @@ import asyncio
 from copy import deepcopy
 from time import time
 
-from ..history import pace
-from ..rooms import attribution
+from ..worker import bridge
 from . import comparison, comparison_jobs, device_io
 from .scoring import improves
 
@@ -120,9 +119,8 @@ async def _compare_and_apply(runtime, device_id, learned, report, source):
     runtime._schedule_save()
     # Stored display scores may use different recordings. Never use them to authorize writes.
     context["patterns"] = {name: context["patterns"][name] for name in ("live", source)}
-    view = attribution.prepared_view(runtime, device_id)
     async with runtime._comparison_semaphore:
-        measured = await pace.run(runtime.hass, comparison.calculate, view, device_id, context)
+        measured = await bridge.device(runtime, "comparison", device_id, {"context": context})
     report.update(assessment=measured, scorer_version=comparison.SCORER_VERSION)
 
     def guard(applied):

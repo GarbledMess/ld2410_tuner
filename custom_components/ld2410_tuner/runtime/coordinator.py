@@ -108,10 +108,11 @@ class TunerRuntime:
         )
 
     async def _delayed_flush(self) -> None:
+        from ..worker import flushing
+
         await asyncio.sleep(STORE_DELAY)
         if self._days is not None:
-            async with self._storage_lock:
-                await self.hass.async_add_executor_job(self._days.flush)
+            await flushing.flush(self)
 
     def _schedule_state_save(self, now) -> None:
         """Recording state in the JSON store (classifications, live histograms) is saved at

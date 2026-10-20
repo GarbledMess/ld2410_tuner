@@ -14,6 +14,7 @@ from .. import entity_index
 from ..const import GATE_RE, HISTORY_KEYS
 from ..history import pace, policy
 from ..rooms import attribution, truth
+from ..worker import bridge
 from . import device_io, jobs, ownership, recovery, results, settings
 from . import thresholds as threshold_domain
 from .constants import METHOD
@@ -66,15 +67,28 @@ start_learning = jobs.start_learning
 async def _learn_once(runtime, device_id):
     entities, current = await recovery.prepare_learning(runtime, device_id)
     timing = read_timing(runtime, device_id)
-    view = attribution.prepared_view(runtime, device_id)
-    sources = _learning_sources(runtime, device_id)
-    view._fit_timing = timing
-    constraints = threshold_domain.read(runtime, entities)
-    view._fit_constraints = constraints
     device = runtime.data["devices"][device_id]
     revision = device.get("label_revision", 0)
+    owned = {}
+
+    def prepare():
+        view = attribution.prepared_view(runtime, device_id)
+        owned.update(view=view, sources=_learning_sources(runtime, device_id))
+        return {
+            "views": {device_id: view},
+            "parameters": {
+                "device_id": device_id,
+                "entities": entities,
+                "current": current,
+                "timing": timing,
+                "constraints": constraints,
+            },
+        }
+
+    constraints = threshold_domain.read(runtime, entities)
     jobs.stage(runtime, device_id, "fitting")
-    learned = await pace.run(runtime.hass, view._fit_history, device_id, entities, current)
+    learned = await bridge.calculate(runtime, "learn", prepare)
+    view, sources = owned["view"], owned["sources"]
     if revision != device.get("label_revision", 0):
         raise LearningEvidenceChanged("Training labels changed while learning; learn again")
     if timing_signature(read_timing(runtime, device_id)) != timing_signature(timing):

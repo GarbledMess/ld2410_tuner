@@ -1,4 +1,4 @@
-"""Delivered HA events preserve precise energies through the sole native day-store path."""
+"""Delivered HA events preserve pulse timing and whole-percentage gate energies."""
 
 import datetime
 import time
@@ -52,14 +52,15 @@ class AcquisitionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(time, "time", return_value=START + offset):
             self.runtime.sample_devices()
 
-    def test_fifty_millisecond_float_pulse_survives_without_activation_flag(self):
+    def test_fifty_millisecond_pulse_survives_whole_percentage_quantization(self):
         assert not hasattr(ingest, "ACTIVE")
         for offset, value in [(1.125, 0), (1.175, 40.125), (1.225, 0)]:
             self.send(offset, value)
         rows = self.rows(2)
         for row, expected in zip(rows, [1.125, 1.175, 1.225], strict=True):
             self.assertAlmostEqual(row[0], expected, places=6)
-        assert rows[1][2][0] == 40.125
+        assert rows[1][2][0] == 41
+        assert isinstance(self.runtime._days.day("a", DAY, until=START + 2).columns[0], bytes)
         self.assertAlmostEqual(rows[1][1] - rows[1][0], 0.05, places=6)
 
     def test_session_baseline_contains_all_current_gates(self):
@@ -198,7 +199,8 @@ class AcquisitionTests(unittest.IsolatedAsyncioTestCase):
         day = reopened.day("a", DAY, until=START + 4001)
         assert len(day.times) == 4000
         assert sum(e - t for t, e in zip(day.times, day.ends, strict=True)) == 4000
-        assert day.vector(3999)[0] == 99.5
+        assert day.vector(3999)[0] == 100
+        assert all(isinstance(column, bytes) for column in day.columns)
 
 
 class ReferenceBatchTests(AcquisitionTests):

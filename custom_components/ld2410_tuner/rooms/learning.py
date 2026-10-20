@@ -83,12 +83,6 @@ async def _prepare(runtime, chosen):
     if current != chosen:
         raise ValueError(CHANGED)
     members, signature = jobs.set_context(runtime, list(chosen))
-    since = (
-        None
-        if ATTRIBUTION_DAYS is None
-        else (time.time() - ATTRIBUTION_DAYS * 86400) // 3600 * 3600
-    )
-    jobs.set_views(runtime, members, since)
     return members, signature, {group_id: truth.view(runtime, group_id) for group_id in chosen}
 
 
@@ -117,7 +111,7 @@ async def _run(runtime, set_id, chosen, report):
                 rooms,
                 settings.automatic_weight(runtime.data),
             )
-            await pace.run(runtime.hass, _check_history, runtime, members)
+            _check_history(runtime, members)
         _unchanged(runtime, list(chosen), signature)
         learned.update(
             id=report["id"],

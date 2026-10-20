@@ -117,22 +117,27 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_export_builds_recorded_days_off_the_event_loop(self):
-        from tuner_under_test.history import pace
-        from tuner_under_test.presentation import snapshots
+        import base64
+
+        from tuner_under_test.history import dayfile
+        from tuner_under_test.worker import display
 
         self.registry_device()
+        self.runtime._record_history_sample("a", {"g0_move": 37}, self.now - 6)
         loop_thread = threading.get_ident()
 
-        def encoded_days(view, device_id):
+        def encoded_days(view, device_id, real=display.recorded_days):
             self.assertNotEqual(threading.get_ident(), loop_thread)
-            self.assertTrue(pace._active())
-            return {"2026-01-01": "synthetic"}
+            return real(view, device_id)
 
-        with patch.object(snapshots, "_recorded_days", pace.background(encoded_days)):
+        with patch.object(display, "recorded_days", side_effect=encoded_days) as encoded:
             exported = await self.runtime.async_export_data("a")
-        self.assertEqual(
-            exported["devices"]["a"]["history"]["day_files"], {"2026-01-01": "synthetic"}
-        )
+        self.assertEqual(encoded.call_count, 1)
+        files = exported["devices"]["a"]["history"]["day_files"]
+        self.assertEqual(len(files), 1)
+        recorded = dayfile.decode_day(base64.b64decode(next(iter(files.values()))))
+        self.assertEqual(recorded.columns[0][0], 37)
+        self.assertEqual(self.worker_transport.requests[-1]["operation"], "export_days")
         self.assertEqual((await self.runtime.async_export_data("missing"))["devices"], {})
         self.assertNotIn(
             "day_files", (await self.runtime.async_export_data())["devices"]["a"]["history"]
@@ -424,12 +429,11 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
         self.sample(self.now - 6)
         added = {"entities": {}}
 
-        async def execute(function, *args):
-            if function.__name__ == "_prepare_day_save":
+        async def execute(request):
+            if request["operation"] == "maintenance":
                 self.runtime.data["devices"]["new"] = added
-            return function(*args)
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.after = execute
         await self.runtime.async_clean_history(persist=False)
         self.assertEqual(set(self.runtime.data["devices"]), {"a", "new"})
         self.assertNotIn("history_cleanup", added)

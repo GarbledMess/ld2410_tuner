@@ -126,11 +126,10 @@ class RuntimeAdaptiveTests(unittest.IsolatedAsyncioTestCase):
 
         entities, current = self.labelled()
 
-        async def executor(fn, *args):
+        async def executor(request):
             self.runtime._days.remove_device("a")  # The radar's history is cleared meanwhile.
-            return {}
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.before = executor
         with (
             patch.object(service, "read_timing", return_value={}),
             patch.object(
@@ -147,13 +146,12 @@ class RuntimeAdaptiveTests(unittest.IsolatedAsyncioTestCase):
 
         entities, current = self.labelled()
 
-        async def executor(fn, *args):
+        async def executor(request):
             from tuner_under_test.history import dayfile
 
             self.runtime._days.append("a", dayfile.Change(self.now, {0: 5}))
-            return {"proposals": {}}
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.before = executor
         with (
             patch.object(service, "read_timing", return_value={}),
             patch.object(
@@ -170,11 +168,10 @@ class RuntimeAdaptiveTests(unittest.IsolatedAsyncioTestCase):
 
         entities, current = self.labelled()
 
-        async def executor(fn, *args):
+        async def executor(request):
             self.device["presence_sources"] = {"external": ["binary_sensor.changed"]}
-            return {}
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.before = executor
         with (
             patch.object(service, "read_timing", return_value={}),
             patch.object(

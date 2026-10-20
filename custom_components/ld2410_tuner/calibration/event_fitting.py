@@ -354,7 +354,8 @@ class _Within:
         ]
 
 
-SUMMARY_ROWS = 50_000
+# Indexed quality also wins for medium histories; this does not change the search budget.
+SUMMARY_ROWS = 3_000
 LEARNING_ROWS = 50_000
 
 

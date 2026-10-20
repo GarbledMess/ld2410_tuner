@@ -7,6 +7,20 @@ import yaml
 PACKAGE = Path(__file__).resolve().parents[1] / "examples/esphome/ld2410c.yaml"
 
 
+def test_all_energy_sensors_publish_whole_percentages():
+    package = yaml.load(PACKAGE.read_text(), Loader=yaml.BaseLoader)
+    radar = package["sensor"][0]
+    energies = [radar["moving_energy"], radar["still_energy"]]
+    energies.extend(
+        radar[f"g{gate}"][f"{kind}_energy"] for gate in range(9) for kind in ("move", "still")
+    )
+    for sensor in energies:
+        assert sensor["accuracy_decimals"] == "0"
+        code = next(f["lambda"] for f in sensor["filters"] if "lambda" in f)
+        assert "std::isfinite(x)" in code
+        assert "return ceilf(" in code
+
+
 def test_gate_rounding_default_and_all_energy_filters():
     package = yaml.load(PACKAGE.read_text(), Loader=yaml.BaseLoader)
     assert package["substitutions"]["ld2410_gate_rounding"] == "10"

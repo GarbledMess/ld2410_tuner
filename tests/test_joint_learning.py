@@ -419,6 +419,23 @@ class JointRuntimeTests(unittest.IsolatedAsyncioTestCase):
     # Reuse the synthetic HA boundary without inheriting its test methods.
     __test__ = True
 
+    async def admitted_members(self, chosen):
+        from tuner_under_test.rooms import jobs
+
+        members, _, rooms = await learning._prepare(self.runtime, chosen)
+        self.assertTrue(
+            all("view" not in item for found in members.values() for item in found.values())
+        )
+        previous = self.worker_transport.respond
+        self.worker_transport.respond = AsyncMock(return_value={})
+        try:
+            await jobs.on_views(
+                self.runtime, members, learning._fit_set, members, 0, 1200, rooms, 0
+            )
+        finally:
+            self.worker_transport.respond = previous
+        return members
+
     async def test_prepared_attribution_reads_the_last_week_by_default(self):
         self.office()
         chosen = groups.learning_set(self.runtime, "area:office")[2]
@@ -427,7 +444,7 @@ class JointRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(learning.recovery, "prepare_learning", AsyncMock()),
             patch.object(learning.time, "time", return_value=now),
         ):
-            members, _, _ = await learning._prepare(self.runtime, chosen)
+            members = await self.admitted_members(chosen)
         expected = (now - 7 * 86400) // 3600 * 3600
         for found in members.values():
             for item in found.values():
@@ -440,7 +457,7 @@ class JointRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(learning.recovery, "prepare_learning", AsyncMock()),
             patch.object(learning, "ATTRIBUTION_DAYS", None),
         ):
-            members, _, _ = await learning._prepare(self.runtime, chosen)
+            members = await self.admitted_members(chosen)
         for found in members.values():
             for item in found.values():
                 self.assertEqual(item["view"]._attribution_since, 0)
@@ -457,7 +474,7 @@ class JointRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(learning.time, "time", return_value=1_800_000_123),
                 patch.object(learning, "ATTRIBUTION_DAYS", days),
             ):
-                members, _, _ = await learning._prepare(self.runtime, chosen)
+                members = await self.admitted_members(chosen)
             view = next(iter(next(iter(members.values())).values()))["view"]
             # Each window's view attributes only its own window (its job-local memo).
             keys.append(view._attribution_since)

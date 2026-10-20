@@ -429,17 +429,17 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
         all history on the event loop (1.2 s at 30 days; 9 s on a Pi)."""
         import threading
 
-        from tuner_under_test.history import label_counts
+        from tuner_under_test.worker import recount
 
         self.history()
         loop_thread, where = threading.current_thread(), []
-        real = label_counts._worker_count
+        real = recount.calculate
 
-        def spy(*args):
+        def spy(*args, **kwargs):
             where.append(threading.current_thread() is loop_thread)
-            return real(*args)
+            return real(*args, **kwargs)
 
-        with patch.object(label_counts, "_worker_count", spy):
+        with patch.object(recount, "calculate", spy):
             result = await self.edit()
             await self.edit()
         # Readings a minute apart are separate observations of half a sample (3 s) each:
@@ -451,7 +451,7 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
     async def test_cleanup_discarded_by_new_samples_still_keeps_the_counts(self, clock):
         """Regression: a cleanup result dropped because a sample arrived meanwhile also
         dropped the counts it had made."""
-        from tuner_under_test.history import dayfile, spans, storage
+        from tuner_under_test.history import dayfile, spans
 
         self.now = NOW
         store = self.runtime._days
@@ -462,21 +462,18 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
         self.device["history_labels"] = [
             {"start": NOW - 3 * DAY, "end": NOW + 60, "state": "present"}
         ]
-        real = self.hass.async_add_executor_job
         preparations, injected = 0, False
 
-        async def executor(fn, *args):
+        async def executor(request):
             nonlocal preparations, injected
-            result = await real(fn, *args)
-            if getattr(fn, "__wrapped__", fn) is storage._prepare_day_save:
+            if request["operation"] == "maintenance":
                 preparations += 1
                 if not injected:
                     self.runtime._record_history_sample("a", {"g0_move": 9}, self.now)
                     clock.return_value = NOW + 6
                     injected = True
-            return result
 
-        self.hass.async_add_executor_job = executor
+        self.worker_transport.after = executor
         await self.runtime.async_clean_history(persist=False)
         self.assertTrue(injected, "arrival races the actual staged native cleanup")
         self.assertEqual(preparations, 2, "changed history discards the first cleanup plan")

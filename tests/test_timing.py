@@ -330,11 +330,11 @@ class TimingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.add_timeout(15)
         captured = []
 
-        async def execute(fn, *args):
-            captured.append(fn.__wrapped__.__self__._fit_timing)
+        async def execute(request):
+            captured.append(request["parameters"]["timing"])
             return {"status": "insufficient", "proposals": {}}
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         result = await self.runtime.async_learn("a")
         assert result["timing_configuration"]["timeout"] == 15
         assert captured[0]["scope"] == "radar"
@@ -348,7 +348,7 @@ class TimingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.states[key] = state(5)
             return {"status": "ok", "proposals": {}}
 
-        self.hass.async_add_executor_job = execute
+        self.worker_transport.respond = execute
         with self.assertRaisesRegex(ValueError, "Device timing changed"):
             await self.runtime.async_learn("a")
         assert self.runtime._learning_jobs == {}

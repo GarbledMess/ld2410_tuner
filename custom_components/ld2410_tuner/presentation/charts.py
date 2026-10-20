@@ -11,6 +11,7 @@ from ..calibration.constants import SAMPLE_SECONDS
 from ..const import HISTORY_KEYS
 from ..history import pace, spans
 from ..history.policy import settings
+from ..worker import bridge
 
 
 @pace.background
@@ -97,13 +98,22 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
         runtime._history_cache.move_to_end(cache_key)
         return runtime._history_cache[cache_key]
     if cache_key not in runtime._history_jobs:
-        view = runtime._history_view(device_id, members=False)
+
+        def prepare():
+            return {
+                "views": {device_id: runtime._history_view(device_id, members=False)},
+                "parameters": {
+                    "device_id": device_id,
+                    "keys": keys,
+                    "hours": hours,
+                    "max_points": max_points,
+                    "end": end,
+                },
+            }
 
         async def build():
             try:
-                result = await pace.run(
-                    runtime.hass, view.history_series_multi, device_id, keys, hours, max_points, end
-                )
+                result = await bridge.calculate(runtime, "charts", prepare)
                 runtime._history_cache[cache_key] = result
                 while len(runtime._history_cache) > 16:
                     runtime._history_cache.popitem(last=False)
