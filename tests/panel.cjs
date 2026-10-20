@@ -22,6 +22,7 @@ const testHistoryGraph = require("./browser/history_graph.cjs");
 const testSavedResults = require("./browser/saved_results.cjs");
 const testAutomaticWeight = require("./browser/automatic_weight.cjs");
 const testLayout = require("./browser/layout.cjs");
+const testCardConsistency = require("./browser/consistency.cjs");
 const { execFileSync } = require("node:child_process");
 (async () => {
   const registration = JSON.parse(
@@ -734,6 +735,7 @@ const { execFileSync } = require("node:child_process");
     await testStorage(page, screenshotDir);
     await testRooms(page);
     await testRoomLabels(page);
+    await testCardConsistency(page, screenshotDir);
     await testSources(page, screenshotDir);
     await testLayout(page, screenshotDir);
     await page.setViewportSize({ width: 390, height: 844 });

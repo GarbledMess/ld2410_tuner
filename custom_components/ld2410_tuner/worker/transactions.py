@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import bridge, protocol, storage_values
+from . import bridge, priority, protocol, storage_values
 from .supervisor import Supervisor, owned_preparation
 
 MESSAGE_BYTES = 16 * 1024 * 1024
@@ -208,4 +208,6 @@ async def final_save(runtime):
 
 async def _admit(service, prepare, consume, finish):
     """The serialized storage caller waits without dropping durability work or copying it."""
-    return await service.run_when_available(prepare, consume=consume, finish=finish)
+    return await service.run_when_available(
+        prepare, consume=consume, finish=finish, background=priority.is_background()
+    )

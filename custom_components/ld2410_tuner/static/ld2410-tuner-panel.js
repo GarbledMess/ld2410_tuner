@@ -20,6 +20,7 @@ import { panelRoomLearning } from "./panel/room_learning.js";
 import { panelLayout, PlacementCollapse } from "./panel/layout.js";
 import { panelRoomReport } from "./panel/room_report.js";
 import { panelRoomTimeline } from "./panel/room_timeline.js";
+import { panelRoomGraph } from "./panel/room_graph.js";
 import { panelView } from "./panel/view.js";
 
 // One distinct color per gate (0-8), shared between "move" and "still" views
@@ -93,6 +94,12 @@ class LD2410TunerPanel extends HTMLElement {
   }
 
   disconnectedCallback() {
+    for (const state of this._roomCharts?.values() || []) {
+      state.observer?.disconnect();
+      state.element = null;
+      state.request++;
+      state.pendingKey = null;
+    }
     for (const cs of this._chartState.values()) {
       cs.plotObserver?.disconnect();
       cs.plotObserver = null;
@@ -264,6 +271,7 @@ Object.assign(
   panelLayout,
   panelRoomReport,
   panelRoomTimeline,
+  panelRoomGraph,
   panelView,
   panelCards,
   panelControls,

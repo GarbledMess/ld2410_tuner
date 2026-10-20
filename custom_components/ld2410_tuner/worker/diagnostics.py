@@ -108,17 +108,21 @@ class Observation:
 
 
 def emit(phase, **details):
-    """Trusted child milestones survive SIGKILL in the supervisor's capped stderr pipe."""
-    import resource
+    """Best-effort milestones use the supervisor's capped stderr pipe after protection."""
+    record = {"phase": phase, **details}
+    try:
+        import resource
 
-    usage = resource.getrusage(resource.RUSAGE_SELF)
-    record = {
-        "phase": phase,
-        "cpu_seconds": round(usage.ru_utime + usage.ru_stime, 3),
-        "peak_rss_kib": usage.ru_maxrss,
-        **details,
-    }
-    os.write(2, (PREFIX + json.dumps(record, separators=(",", ":")) + "\n").encode("ascii"))
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        record.update(
+            cpu_seconds=round(usage.ru_utime + usage.ru_stime, 3), peak_rss_kib=usage.ru_maxrss
+        )
+    except (ImportError, OSError):
+        record["resource_unavailable"] = True
+    try:
+        os.write(2, (PREFIX + json.dumps(record, separators=(",", ":")) + "\n").encode("ascii"))
+    except OSError:
+        pass  # Missing telemetry must not fail an otherwise protected operation.
 
 
 def describe(request, request_bytes):

@@ -17,6 +17,9 @@ export const panelControls = {
       const sub = copy.querySelector(`.subsection[data-section="${key}"]`);
       if (!sub) continue;
       sub.classList.toggle("collapsed", collapsed);
+      sub
+        .querySelector(".subsection-head")
+        .setAttribute("aria-expanded", String(!collapsed));
       const btn = sub.querySelector(".sub-toggle");
       btn.textContent = collapsed ? "▸" : "▾";
       btn.setAttribute("aria-expanded", String(!collapsed));
@@ -37,6 +40,23 @@ export const panelControls = {
     this._wireChartControls(card, id);
     this._restoreDraft(card, id);
     this._wireHistoryRange(card, id);
+    for (const [action, section] of [
+      ["open-history", "history"],
+      ["open-recommendations", "details"],
+    ])
+      card.querySelector(`[data-action="${action}"]`).onclick = () =>
+        this._openDeviceSection(card, id, section);
+  },
+  _openDeviceSection(card, id, section) {
+    this._openAncestors(card);
+    if (this._cardCollapsed(card.dataset.placement))
+      card.querySelector('[data-action="toggle"]').click();
+    const heading = card.querySelector(
+      `[data-action="section-toggle"][data-section="${section}"]`,
+    );
+    if (this._sectionCollapsed(id, section)) heading.click();
+    heading.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    heading.focus({ preventScroll: true });
   },
   _wireCollapse(card, id, d) {
     const toggleBody = () => {
@@ -75,6 +95,12 @@ export const panelControls = {
           else this._chartState.get(id).historyLinked = false;
         }
         if (key === "chart" && !willCollapse) this._maybeFetchChart(id, d);
+      };
+      head.onkeydown = (event) => {
+        if (event.target === head && ["Enter", " "].includes(event.key)) {
+          event.preventDefault();
+          head.click();
+        }
       };
     });
   },

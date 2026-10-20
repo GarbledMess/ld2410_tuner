@@ -7,6 +7,7 @@ from homeassistant.components import websocket_api
 
 from ..const import DOMAIN, TRAINING_STATES
 from ..history import label_counts
+from ..worker.supervisor import Busy, Closed
 
 
 def _websocket_routes():
@@ -305,6 +306,18 @@ async def _websocket_result(runtime, method, fields, message):
     return await result if inspect.isawaitable(result) else result
 
 
+def _websocket_error(connection, message_id, error, error_code):
+    if isinstance(error, Busy):
+        error_code, detail = "busy", "Tuner is busy; please retry shortly"
+    elif isinstance(error, Closed):
+        error_code, detail = "unavailable", "Tuner workers are unavailable"
+    elif error_code is None:
+        raise error
+    else:
+        detail = str(error)
+    connection.send_error(message_id, error_code, detail)
+
+
 def _websocket_handler(route):
     name, schema, method, fields, error_code, acknowledge = route
 
@@ -315,10 +328,8 @@ def _websocket_handler(route):
             return
         try:
             result = await _websocket_result(runtime, method, fields, message)
-        except ValueError as error:
-            if error_code is None:
-                raise
-            connection.send_error(message["id"], error_code, str(error))
+        except (Busy, Closed, ValueError) as error:
+            _websocket_error(connection, message["id"], error, error_code)
             return
         connection.send_result(message["id"], {"ok": True} if acknowledge else result)
 

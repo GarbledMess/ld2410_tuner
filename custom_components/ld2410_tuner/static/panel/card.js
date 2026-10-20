@@ -13,6 +13,7 @@ export const panelCards = {
     const isCollapsed = this._cardCollapsed(placement);
     card.innerHTML =
       this._cardHeaderHtml(id, d, info, isCollapsed, options) +
+      `<nav class="device-shortcuts" aria-label="${this._esc(d.name)} controls"><button type="button" data-action="open-history">History</button><button type="button" data-action="open-recommendations">Recommendations</button></nav>` +
       this._recordingHtml(d) +
       `<div class="action-status muted" role="status" aria-live="polite"></div>` +
       `<div class="learning-job-status" role="status" aria-live="polite">${this._learningJobHtml(d)}</div>` +
@@ -41,7 +42,7 @@ export const panelCards = {
       autoState !== "unknown"
         ? " · " + Math.round((al.confidence || 0) * 100) + "%"
         : "";
-    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}${options.notRecording ? '<span class="pill not-recording">Not recording</span>' : ""}</div><div class="area">${this._esc(d.area_id || "No area")}</div>${group ? this._roomRoleHtml(id, group) : this._comparisonHeaderHtml(d)}</div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>${group ? this._ownScoreHtml(d) : ""}`;
+    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}${options.notRecording ? '<span class="pill not-recording">Not recording</span>' : ""}</div><div class="area">${group ? "" : this._esc(this._roomsData().areas[d.area_id] || d.area_id || "No area")}</div>${group ? this._roomRoleHtml(id, group) : this._comparisonHeaderHtml(d)}</div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>${group ? this._ownScoreHtml(d) : ""}`;
   },
 
   _cardBodyHtml(id, d, info) {
@@ -83,7 +84,7 @@ export const panelCards = {
     const expiry = d.training_expires_at
       ? `<span class="area">Expires ${this._timeLeft(d.training_expires_at)}</span>`
       : "";
-    return `<div class="training"><label>Training state</label><select data-action="state"><option value="unknown" ${state === "unknown" ? "selected" : ""}>UNKNOWN</option><option value="present" ${state === "present" ? "selected" : ""}>PRESENT</option><option value="not_present" ${state === "not_present" ? "selected" : ""}>NOT PRESENT</option></select><label>Timeout</label><div class="duration"><input data-action="timeout-hours" type="number" min="0" step="1" inputmode="numeric" placeholder="Hours"><span>h</span><input data-action="timeout-minutes" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="Minutes"><span>m</span></div>${expiry}</div>`;
+    return `<div class="training"><label>Presence now</label><select data-action="state"><option value="unknown" ${state === "unknown" ? "selected" : ""}>UNKNOWN</option><option value="present" ${state === "present" ? "selected" : ""}>PRESENT</option><option value="not_present" ${state === "not_present" ? "selected" : ""}>NOT PRESENT</option></select><label>Keep label for</label><div class="duration"><input data-action="timeout-hours" aria-label="Label duration in hours" type="number" min="0" step="1" inputmode="numeric" placeholder="Hours"><span>h</span><input data-action="timeout-minutes" aria-label="Label duration in minutes" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="Minutes"><span>m</span></div>${expiry}</div>`;
   },
 
   _autoInfo(auto) {

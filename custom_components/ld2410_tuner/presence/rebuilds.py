@@ -37,7 +37,7 @@ from copy import deepcopy
 
 from ..history import pace, recording
 from ..rooms import attribution, truth
-from ..worker import bridge
+from ..worker import bridge, priority
 from . import reference_training
 from .references import STALE
 
@@ -97,7 +97,8 @@ async def refresh_references(runtime, device_id=None) -> dict:
     if device_id is not None and device_id not in runtime.data["devices"]:
         raise ValueError("Unknown device")
     ids = None if device_id is None else [device_id]
-    return {"queued": queue(runtime, ids, reason="requested")}
+    with priority.interactive():
+        return {"queued": queue(runtime, ids, reason="requested")}
 
 
 async def stop(runtime) -> None:

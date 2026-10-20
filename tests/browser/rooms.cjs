@@ -199,11 +199,11 @@ async function testHeaders(page) {
   assert.equal(await desk.evaluate((node) => node.open), false);
   assert.match(
     await office.locator(".group-summary").innerText(),
-    /Office · Whole area · — · 2 radars/,
+    /Presence & history.*Whole area · 2 radars[\s\S]*—/,
   );
   assert.match(
     await desk.locator(".group-summary").innerText(),
-    /Desk · Zone · — · 1 radar$/,
+    /Presence & history.*Zone · 1 radar[\s\S]*—$/,
   );
   assert.match(
     await office.locator(".group-summary").innerText(),
@@ -232,6 +232,8 @@ async function testHeaders(page) {
     true,
     "header open state survives polling",
   );
+  await office.locator(".room-settings > summary").click();
+  await desk.locator(".room-settings > summary").click();
   assert.match(
     await desk.innerText(),
     /Office · Desk radar · Manual membership/,
@@ -342,7 +344,7 @@ async function testAddZone(page) {
   await page.waitForFunction(() => !panel._roomDraft);
   assert.match(
     await header(page, "zone:new").locator(".group-summary").innerText(),
-    /Sofa <private> · Zone/,
+    /Presence & history.*Zone/,
   );
 }
 
@@ -673,18 +675,20 @@ async function testManualAndRemovedArea(page) {
     return panel._load(true);
   });
   const manual = header(page, "zone:manual");
+  await manual.locator(".room-settings > summary").click();
   assert.match(
     await manual.locator(".group-summary").innerText(),
-    /^Hallway · Manual group · — · 1 radar$/,
+    /Presence & history.*Manual group · 1 radar[\s\S]*—$/,
   );
   assert.match(
-    await manual.locator(".group-body").innerText(),
+    await manual.locator(".room-settings > p").first().innerText(),
     /^Manual group ·/,
   );
   const gone = header(page, "area:gone");
+  await gone.locator(".room-settings > summary").click();
   assert.match(await gone.locator(".group-summary").innerText(), /Whole area/);
   assert.match(
-    await gone.locator(".group-body").innerText(),
+    await gone.locator(".room-settings > p").first().innerText(),
     /^Area removed ·/,
   );
   assert.equal(
@@ -749,6 +753,7 @@ async function testJointResultFromCard(page) {
 }
 
 async function testEditorFallsBackToFooter(page) {
+  await header(page, "zone:new").locator(".room-settings > summary").click();
   await header(page, "zone:new").locator('[data-room-action="edit"]').click();
   const name = header(page, "zone:new").locator('[name="room-name"]');
   await name.fill("Sofa renamed");
@@ -1493,7 +1498,7 @@ async function testScoreboard(page) {
   );
   assert.match(
     await header(page, "area:office").locator(".group-summary").innerText(),
-    /Office · Whole area · 90\.00\/100.*Zones: Desk 88\.00\/100, Sofa 77\.00\/100/,
+    /Whole area[\s\S]*90\.00\/100[\s\S]*Zones: Desk 88\.00\/100, Sofa 77\.00\/100/,
   );
   assert.match(
     await band(page).innerText(),

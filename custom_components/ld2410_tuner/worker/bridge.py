@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from ..const import TRAINING_FIELDS
-from . import protocol
+from . import priority, protocol
 from .supervisor import Closed, Supervisor, owned_preparation
 
 METADATA_BYTES = 1024 * 1024
@@ -79,10 +79,13 @@ async def calculate(runtime, operation, prepare):
         if directory := holder.get("directory"):
             await owned_preparation(runtime.hass.async_add_executor_job(shutil.rmtree, directory))
 
-    # These refresh callers already deduplicate IDs and bound waiting tasks with
-    # their own semaphores. Saturation must not install an empty attribution cache.
-    run = service.run_when_available if operation in {"seen_by", "references"} else service.run
-    raw = await run(admitted, finish=finish)
+    # These refresh callers already deduplicate and bound their waiting tasks.
+    # Saturation must not fail chart refreshes or install an empty attribution cache.
+    background = priority.is_background(operation)
+    if background or operation in {"charts", "references", "seen_by"}:
+        raw = await service.run_when_available(admitted, finish=finish, background=background)
+    else:
+        raw = await service.run(admitted, finish=finish)
     from .codec import unpack_result
 
     return await owned_preparation(runtime.hass.async_add_executor_job(unpack_result, raw))

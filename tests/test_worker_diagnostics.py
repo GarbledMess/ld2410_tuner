@@ -189,3 +189,48 @@ def test_child_milestone_is_small_and_contains_resource_use(monkeypatch):
         "cpu_seconds": 3.0,
         "peak_rss_kib": 1234,
     }
+
+
+@pytest.mark.parametrize("missing_module", [True, False])
+def test_unavailable_resource_probe_still_emits_bounded_milestone(monkeypatch, missing_module):
+    from types import SimpleNamespace
+
+    from tuner_under_test.worker import diagnostics
+
+    def unavailable(_):
+        raise OSError("private resource probe detail")
+
+    resource = None if missing_module else SimpleNamespace(RUSAGE_SELF=0, getrusage=unavailable)
+    monkeypatch.setitem(sys.modules, "resource", resource)
+    records = []
+    monkeypatch.setattr(diagnostics.os, "write", lambda fd, data: records.append((fd, data)))
+    diagnostics.emit("protected", operation="charts")
+    fd, raw = records[0]
+    assert fd == 2 and len(raw) < 256
+    assert raw.startswith(diagnostics.PREFIX.encode())
+    assert json.loads(raw[len(diagnostics.PREFIX) :]) == {
+        "phase": "protected",
+        "operation": "charts",
+        "resource_unavailable": True,
+    }
+
+
+def test_unavailable_stderr_does_not_fail_child_milestone(monkeypatch):
+    from types import SimpleNamespace
+
+    from tuner_under_test.worker import diagnostics
+
+    monkeypatch.setitem(
+        sys.modules,
+        "resource",
+        SimpleNamespace(
+            RUSAGE_SELF=0,
+            getrusage=lambda _: SimpleNamespace(ru_utime=0, ru_stime=0, ru_maxrss=0),
+        ),
+    )
+
+    def unavailable(fd, raw):
+        raise OSError("stderr is closed")
+
+    monkeypatch.setattr(diagnostics.os, "write", unavailable)
+    diagnostics.emit("protected")

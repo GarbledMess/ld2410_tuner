@@ -1,5 +1,26 @@
 # Release notes
 
+## 1.26.0 - 2026-10-20
+
+- Keep rooms, their zones and their radars inside nested cards, with consistent
+  controls and layouts for desktop and narrow mobile screens.
+- Add room signal graphs beside presence labelling, with day and signal controls,
+  range selection and direct links to each radar's history.
+- Put room assessment and configuration behind a labelled disclosure; add radar
+  shortcuts for history and recommendations and reduce repeated explanations.
+- Give live interaction the next available worker turn ahead of background jobs.
+  Background learning, attribution and periodic storage work wait and resume;
+  active operations keep ownership until their cleanup completes.
+- Bound and coalesce chart requests, wait for worker admission, retry transient
+  chart saturation and return useful WebSocket errors when admission is unavailable.
+- Retain subprocess resource limits and low priority; numerical work stays outside
+  Home Assistant's event loop.
+
+Validation: 2,214 Python tests passed with 97.06% coverage in constrained Home
+Assistant. Production worker/recovery and dense legacy-history probes passed.
+Full Linux browser regressions passed, including populated room graphs and
+room/zone/radar containment at 320, 390, 768 and 1440 pixels.
+
 ## 1.25.1 - 2026-10-20
 
 Fix regressions observed after the worker-isolation update.

@@ -2,7 +2,7 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
-[Release notes](CHANGELOG.md) - 1.25.0 adds bounded, low-priority numerical and storage workers.
+[Release notes](CHANGELOG.md) - 1.26.0 adds nested room cards, room history graphs and priority for live worker requests.
 
 ## Installation
 

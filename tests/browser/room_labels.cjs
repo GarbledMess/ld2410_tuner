@@ -473,6 +473,11 @@ async function testSeenByChips(page) {
 }
 
 async function testRoomSources(page) {
+  await header(page, "zone:desk")
+    .locator(".room-settings")
+    .evaluate((node) => {
+      node.open = true;
+    });
   const sources = header(page, "zone:desk").locator(".presence-sources");
   assert.match(await sources.locator("summary").innerText(), /Room presence/);
   await sources.locator("summary").click();
@@ -609,6 +614,7 @@ async function testEstimateFeedback(page) {
 }
 
 async function testRemoveAsksWhenLabelled(page) {
+  await header(page, "area:office").locator(".room-settings > summary").click();
   const count = () =>
     page.evaluate(
       () => requests.filter((r) => r.type.endsWith("/remove_room")).length,
@@ -635,6 +641,7 @@ async function testRemoveAsksWhenLabelled(page) {
     panel._groupOpen.add("group:spare");
     return panel._load(true);
   });
+  await header(page, "group:spare").locator(".room-settings > summary").click();
   await header(page, "group:spare")
     .locator('[data-room-action="remove"]')
     .click();
@@ -645,6 +652,11 @@ async function testRemoveAsksWhenLabelled(page) {
     fixture.rooms.groups["area:office"].automatic = false;
     return panel._load(true);
   });
+  await header(page, "area:office")
+    .locator(".room-settings")
+    .evaluate((node) => {
+      node.open = true;
+    });
   await header(page, "area:office")
     .locator('[data-room-action="remove"]')
     .first()

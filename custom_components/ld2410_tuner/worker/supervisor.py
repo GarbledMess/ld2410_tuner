@@ -176,38 +176,37 @@ class Supervisor:
         self.deadline, self.grace = deadline, grace
         self.stdout_bytes, self.stderr_bytes = stdout_bytes, stderr_bytes
         self.max_pending = max_pending
-        self._turn = asyncio.Lock()
+        self._queue, self._waiting = [], set()
+        self._active = None
         self._jobs, self._cancelled = set(), set()
         self._closed, self._closing = False, None
         self._failure = None
 
     async def run(self, prepare, *, finish=None, consume=None):
-        """Admit async ``prepare`` returning string arguments; retain any executor work.
+        """Fail-fast admission; preparation waits for the chosen priority turn."""
+        return await self._submit(prepare, finish, consume, deferred=False, background=False)
 
-        Preparers using an executor must await it through ``owned_preparation``.
-        A preparation deadline cancels the request, but ownership remains until
-        bounded preparation and process cleanup actually finish.
+    async def run_when_available(self, prepare, *, finish=None, consume=None, background=False):
+        """Queue only lightweight callables; callers must bound/deduplicate waiters.
+
+        Foreground work takes the next turn. Background work remains deferred,
+        preserving durability; a priority change never cancels an active child.
         """
+        return await self._submit(prepare, finish, consume, deferred=True, background=background)
+
+    async def _submit(self, prepare, finish, consume, *, deferred, background):
         if self._closed:
             raise Closed("Worker supervisor is closed")
-        if len(self._jobs) >= 1 + self.max_pending:
+        if not deferred and len(self._jobs) >= 1 + self.max_pending:
             raise Busy("Worker pending queue is full")
-        work = asyncio.create_task(self._execute(prepare, finish, consume))
-        self._jobs.add(work)
+        work = asyncio.create_task(self._execute(prepare, finish, consume, background))
+        (self._waiting if deferred else self._jobs).add(work)
         work.add_done_callback(self._finished)
         try:
             return await asyncio.shield(work)
         except asyncio.CancelledError:
             self._cancel(work)
             raise
-
-    async def run_when_available(self, prepare, *, finish=None, consume=None):
-        """Wait without preparing; callers must separately bound/deduplicate waiters."""
-        while True:
-            try:
-                return await self.run(prepare, finish=finish, consume=consume)
-            except Busy:
-                await asyncio.wait(tuple(self._jobs), return_when=asyncio.FIRST_COMPLETED)
 
     def _cancel(self, work):
         if work not in self._cancelled:
@@ -216,20 +215,45 @@ class Supervisor:
 
     def _finished(self, work):
         self._jobs.discard(work)
+        self._waiting.discard(work)
         self._cancelled.discard(work)
         if not work.cancelled():
             work.exception()
 
-    async def _execute(self, prepare, finish, consume):
-        async with self._turn:
+    def _dispatch(self):
+        if self._active is not None:
+            return
+        self._queue[:] = [ticket for ticket in self._queue if not ticket[1].done()]
+        if not self._queue:
+            return
+        ticket = next((item for item in self._queue if not item[0]), self._queue[0])
+        self._queue.remove(ticket)
+        self._active = ticket[1]
+        ticket[1].set_result(None)
+
+    async def _execute(self, prepare, finish, consume, background):
+        ticket = background, asyncio.get_running_loop().create_future()
+        self._queue.append(ticket)
+        self._dispatch()
+        try:
+            await ticket[1]
             if self._closed:
                 raise Closed("Worker supervisor is closed")
+            self._waiting.discard(asyncio.current_task())
+            self._jobs.add(asyncio.current_task())
             try:
                 return await self._owned(prepare, finish, consume)
             except CleanupFailed as error:
                 self._closed = True
                 self._failure = error
                 raise
+        finally:
+            self._jobs.discard(asyncio.current_task())
+            if ticket in self._queue:
+                self._queue.remove(ticket)
+            if self._active is ticket[1]:
+                self._active = None
+            self._dispatch()
 
     async def _owned(self, prepare, finish, consume):
         try:
@@ -299,7 +323,7 @@ class Supervisor:
         """Stop accepting work and finish owned cleanup even if the shutdown caller cancels."""
         self._closed = True
         if self._closing is None:
-            jobs = tuple(self._jobs)
+            jobs = tuple(self._jobs | self._waiting)
             for work in jobs:
                 self._cancel(work)
             self._closing = asyncio.ensure_future(asyncio.gather(*jobs, return_exceptions=True))

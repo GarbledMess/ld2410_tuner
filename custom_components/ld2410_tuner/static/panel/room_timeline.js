@@ -37,14 +37,15 @@ export const panelRoomTimeline = {
           `<option value="${state}" ${fields.state === state ? "selected" : ""}>${name}</option>`,
       )
       .join("");
-    return `<section class="room-labels" data-room-timeline="${this._esc(gid)}"><h4>Room labels</h4>
-      <p class="muted">Label when this whole room was occupied or empty. A radar's own labels say what that radar should detect.</p>
+    return `<section class="room-labels" data-room-timeline="${this._esc(gid)}"><h4>Room presence</h4>
+      <p class="muted">Review the signals, then label when this ${group.kind === "zone" ? "zone" : "room"} was present or empty.</p>
       <div class="history-navigation">
         <button type="button" data-room-label-action="previous" aria-label="Previous day">‹</button>
         <label>Day<input type="date" data-room-label-action="day" value="${ui.day}"></label>
         <button type="button" data-room-label-action="next" aria-label="Next day">›</button>
         <button type="button" data-room-label-action="today">Today</button>
       </div>
+      ${this._roomGraphHtml(gid)}
       <div class="history-timeline-editor">${this._historyRangeHtml(this._historySegmentsHtml(manual, bounds), ui.day)}
       <div class="history-axis"><span>${this._esc(this._historyTime(bounds.start))}</span><span>${this._esc(this._historyTime(bounds.end))} (next day)</span></div></div>
       ${this._roomSensorBarHtml(sensor, bounds)}
@@ -218,6 +219,7 @@ export const panelRoomTimeline = {
     this._wireHistoryRange(section, rid);
     this._wireSeenBy(section, gid);
     this._wireRoomEstimate(section, gid);
+    this._wireRoomGraph(section, gid, group);
     this._wireSources(
       body,
       rid,

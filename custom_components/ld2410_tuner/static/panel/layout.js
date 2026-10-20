@@ -140,6 +140,12 @@ export const panelLayout = {
   },
 
   _drawLayout() {
+    for (const [gid, state] of this._roomCharts || []) {
+      if (this._roomsData().groups[gid]) continue;
+      state.request++;
+      state.observer?.disconnect();
+      this._roomCharts.delete(gid);
+    }
     const root = this.shadowRoot.querySelector("#layout");
     this._captureDrafts(root);
     const devices = this._data?.devices || {};
@@ -205,7 +211,7 @@ export const panelLayout = {
       root,
       "data-node-id",
       node.id,
-      "layout-node",
+      "layout-node panel-card",
       "h2",
     );
     const summary = details.firstElementChild;
@@ -244,7 +250,7 @@ export const panelLayout = {
 
   _setBandElement(parent, set) {
     const band = keyedChild(parent, "data-set-id", set.id, () =>
-      element("section", "linked-set"),
+      element("section", "linked-set panel-card"),
     );
     this._updateHtml(band, this._linkedBandHtml(set));
     this._wireSetLearning(band, {
@@ -269,7 +275,7 @@ export const panelLayout = {
       parent,
       "data-leaf-id",
       leaf.id,
-      "layout-leaf",
+      "layout-leaf panel-card",
       "h3",
     );
     const summary = details.firstElementChild;
@@ -336,12 +342,19 @@ export const panelLayout = {
     const header = keyedChild(parent, "data-group-id", id, () => {
       const details = element(
         "details",
-        "group-header",
+        "group-header panel-card",
         '<summary class="group-summary"></summary><div class="group-body"></div>',
       );
       const remember = (open) => {
         if (open) this._groupOpen.add(id);
         else this._groupOpen.delete(id);
+        if (open)
+          requestAnimationFrame(() => {
+            const section = details.querySelector("[data-room-timeline]");
+            const current = this._roomsData().groups[id];
+            if (section && current && details.open)
+              this._wireRoomGraph(section, id, current);
+          });
       };
       // The toggle event is queued, so a poll could redraw first and undo a
       // click; record the new state when the summary is activated as well.
@@ -359,6 +372,8 @@ export const panelLayout = {
     );
     // Room timeline fields are read back first so a poll never resets them.
     this._captureRoomFields(header.lastElementChild);
+    const settings = header.querySelector(".room-settings");
+    if (settings) this._sectionState.set(`${id}:room-settings`, settings.open);
     this._updateHtml(
       header.lastElementChild,
       this._groupBodyHtml(id, group, rooms),
@@ -385,7 +400,7 @@ export const panelLayout = {
     const zoneList = zones.length
       ? `<span class="group-zones"> · Zones: ${zones.join(", ")}</span>`
       : "";
-    return `<b>${this._esc(group.name)}</b> · ${this._groupKindLabel(group, rooms)} · ${this._scoreText(report.room)}${this._roomAssessmentMarker(report)} · ${count} radar${count === 1 ? "" : "s"}${zoneList}`;
+    return `<b>Presence &amp; history</b><span class="group-context">${this._groupKindLabel(group, rooms)} · ${count} radar${count === 1 ? "" : "s"}</span><span class="group-score">${this._scoreText(report.room)}${this._roomAssessmentMarker(report)}</span>${zoneList}`;
   },
 
   _roomAssessmentMarker(report) {
@@ -421,12 +436,14 @@ export const panelLayout = {
       this._roomEditorAt === id
         ? `<div class="room-editor">${this._roomEditorHtml(rooms)}</div>`
         : "";
-    return `<p class="muted">${this._esc(area)} · ${this._esc(names)}${group.automatic ? " · Uses recording radars in this area" : " · Manual membership"}</p>
+    return `${this._roomTimelineHtml(id, group)}
+      <details class="room-settings" ${this._sectionState.get(`${id}:room-settings`) || this._roomEditorAt === id ? "open" : ""}><summary>Assessment &amp; room settings</summary>
+      <p class="muted">${this._esc(area)} · ${this._esc(names)}${group.automatic ? " · Uses recording radars in this area" : " · Manual membership"}</p>
       <div class="chart-controls"><label>History <select data-room-hours><option value="24">24 hours</option><option value="72">3 days</option><option value="168">7 days</option></select></label>
       <button data-room-action="assess" ${busy ? 'disabled class="is-busy"' : ""}>Assess current settings</button>
       <button data-room-action="edit">Edit members</button>${removeButton}${addZone}</div>
       <div role="status" class="muted ${busy ? "is-busy" : ""}">${this._esc(status)}</div>
-      ${editor}${this._roomReportHtml(report, rooms.members)}${this._roomTimelineHtml(id, group)}${this._roomSourcesHtml(id, group)}${this._groupLearningHtml(id, group, rooms)}`;
+      ${editor}${this._roomReportHtml(report, rooms.members)}${this._roomSourcesHtml(id, group)}</details>${this._groupLearningHtml(id, group, rooms)}`;
   },
 
   // Removing a zone or manual group deletes its room labels; restoring an
@@ -477,7 +494,7 @@ export const panelLayout = {
   _layoutFooterElement(root) {
     const rooms = this._roomsData();
     const footer = keyedChild(root, "data-layout-footer", FOOTER, () =>
-      element("div", "layout-footer"),
+      element("div", "layout-footer panel-card"),
     );
     const empty = Object.keys(rooms.groups).length
       ? ""

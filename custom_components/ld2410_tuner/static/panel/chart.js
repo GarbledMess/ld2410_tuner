@@ -1,6 +1,19 @@
 import { CHART_RANGES, GATE_COLORS } from "./constants.js";
 
 export const panelChart = {
+  async _chartCall(parameters) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this._call("history_series_multi", parameters, 180000);
+      } catch (error) {
+        if (error.code !== "busy" || attempt >= 2 || !this.isConnected)
+          throw error;
+        await new Promise((resolve) =>
+          setTimeout(resolve, 500 * (attempt + 1)),
+        );
+      }
+    }
+  },
   _defaultKindAndGate(d) {
     const top = d.auto_learning?.last?.top_gates?.find((gate) =>
       /^g[0-8]_still$/.test(gate.key),
@@ -127,16 +140,12 @@ export const panelChart = {
     try {
       const data = await this._queueChartCall(() => {
         if (request !== cs.request || !this.isConnected) return null;
-        return this._call(
-          "history_series_multi",
-          {
-            device_id: id,
-            keys: this._chartKeys({ kind }),
-            hours,
-            ...(end != null ? { end } : {}),
-          },
-          15000,
-        );
+        return this._chartCall({
+          device_id: id,
+          keys: this._chartKeys({ kind }),
+          hours,
+          ...(end != null ? { end } : {}),
+        });
       });
       if (request !== cs.request || !data) return;
       cs.data = data;

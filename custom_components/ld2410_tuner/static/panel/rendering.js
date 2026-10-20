@@ -45,8 +45,16 @@ function patchNode(target, source) {
     return;
   }
   // The chart renderer owns its canvas, event handlers and selection state.
-  if (target.dataset.chartCanvas !== undefined) return;
+  if (
+    target.dataset.chartCanvas !== undefined ||
+    target.hasAttribute("data-preserve-children")
+  )
+    return;
+  const disclosure = target.matches("details[data-preserve-open]")
+    ? target.open
+    : null;
   patchAttributes(target, source);
+  if (disclosure !== null) target.open = disclosure;
   patchChildren(target, source);
   if (target instanceof HTMLInputElement) {
     if (target.value !== source.value) target.value = source.value;

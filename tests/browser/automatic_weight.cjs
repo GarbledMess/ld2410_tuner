@@ -48,6 +48,7 @@ module.exports = async function testAutomaticWeight(page) {
         ),
     );
   assert.match(await schedule.innerText(), /Automatic evidence weight/);
+  await schedule.locator(".inline-help > summary").click();
   const help = await schedule.innerText();
   assert.match(help, /0 = automatic evidence only breaks ties/);
   assert.match(

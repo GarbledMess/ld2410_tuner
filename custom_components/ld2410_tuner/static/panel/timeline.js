@@ -50,6 +50,7 @@ export const panelTimeline = {
       handle.setAttribute("aria-valuenow", time);
       handle.setAttribute("aria-valuetext", this._historyTime(time));
     }
+    this._paintRoomGraphSelection(card, id, selection);
   },
 
   _setHistoryRange(card, id, selection, newPeriod = false) {

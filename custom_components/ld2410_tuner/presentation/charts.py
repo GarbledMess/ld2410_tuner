@@ -12,6 +12,9 @@ from ..const import HISTORY_KEYS
 from ..history import pace, spans
 from ..history.policy import settings
 from ..worker import bridge
+from ..worker.supervisor import Busy
+
+MAX_HISTORY_JOBS = 2
 
 
 @pace.background
@@ -98,6 +101,10 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
         runtime._history_cache.move_to_end(cache_key)
         return runtime._history_cache[cache_key]
     if cache_key not in runtime._history_jobs:
+        # Keep only two lightweight refresh jobs outside the shared worker queue.
+        # Exact-end requests remain distinct; repeated requests share their task.
+        if len(runtime._history_jobs) >= MAX_HISTORY_JOBS:
+            raise Busy("Chart refresh is busy; retry shortly")
 
         def prepare():
             return {
@@ -111,18 +118,28 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
                 },
             }
 
-        async def build():
-            try:
-                result = await bridge.calculate(runtime, "charts", prepare)
-                runtime._history_cache[cache_key] = result
-                while len(runtime._history_cache) > 16:
-                    runtime._history_cache.popitem(last=False)
-                return result
-            finally:
-                runtime._history_jobs.pop(cache_key, None)
-
-        runtime._history_jobs[cache_key] = asyncio.create_task(build())
+        runtime._history_jobs[cache_key] = asyncio.create_task(
+            _build_history_series(runtime, cache_key, prepare)
+        )
+        # A disconnected websocket may leave no waiter to retrieve a later failure.
+        runtime._history_jobs[cache_key].add_done_callback(_history_done)
     return await asyncio.shield(runtime._history_jobs[cache_key])
+
+
+async def _build_history_series(runtime, cache_key, prepare):
+    try:
+        result = await bridge.calculate(runtime, "charts", prepare)
+        runtime._history_cache[cache_key] = result
+        while len(runtime._history_cache) > 16:
+            runtime._history_cache.popitem(last=False)
+        return result
+    finally:
+        runtime._history_jobs.pop(cache_key, None)
+
+
+def _history_done(task):
+    if not task.cancelled():
+        task.exception()
 
 
 def _chart_labels(device, start, end):

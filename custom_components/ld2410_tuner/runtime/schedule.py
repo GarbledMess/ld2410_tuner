@@ -12,6 +12,7 @@ from homeassistant.core import callback
 from ..calibration import automatic
 from ..calibration.service import LearningEvidenceChanged
 from ..presence import rebuilds
+from ..worker import priority
 
 _LOGGER = logging.getLogger(__name__)
 _DISPATCH_GRACE = timedelta(minutes=15)
@@ -117,6 +118,7 @@ def _refresh_references(runtime, day):
     rebuilds.queue(runtime, reason="daily")
 
 
+@priority.background
 async def _run(runtime, day):
     # Persist the claim before starting: restarts and repeated DST hours do not rerun it.
     await runtime.async_save()

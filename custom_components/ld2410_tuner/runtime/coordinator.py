@@ -24,6 +24,7 @@ from ..rooms import groups as room_groups
 from ..rooms import jobs as room_jobs
 from ..rooms import learning as room_learning
 from ..rooms import room_labels, room_sources
+from ..worker import priority
 from . import discovery, schedule
 
 STATE_SAVE_SECONDS = 300  # Recording state saves; history goes to the day logs.
@@ -107,6 +108,7 @@ class TunerRuntime:
             self._delayed_flush(), "ld2410_tuner history flush"
         )
 
+    @priority.background
     async def _delayed_flush(self) -> None:
         from ..worker import flushing
 
@@ -129,6 +131,7 @@ class TunerRuntime:
             return
         self._save_task = self.hass.async_create_task(self._delayed_save())
 
+    @priority.background
     async def _delayed_save(self) -> None:
         while self._save_dirty:
             self._save_dirty = False

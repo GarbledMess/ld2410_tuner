@@ -1,4 +1,5 @@
 import { SECTION_DEFAULTS } from "./constants.js";
+import { CARD_STYLES } from "./card_styles.js";
 
 export const panelView = {
   _render() {
@@ -305,12 +306,14 @@ export const panelView = {
         .room-estimate { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
         .room-conflicts ul { margin:6px 0 0; }
         .room-conflicts li span { overflow-wrap:anywhere; }
+        ${CARD_STYLES}
       </style>
       <div class="wrap">
-        <div id="error" role="alert" class="notice warn" hidden></div>
+        <div id="error" role="alert" class="notice warn panel-card" hidden></div>
         <header class="panel-card panel-intro">
         <h1>LD2410 Tuner <span class="panel-version" aria-label="Loaded panel version" title="Version requested when this panel loaded. Reload the page after updating.">${this._frontendVersion ? `v${this._esc(this._frontendVersion)}` : "Version unavailable"}</span></h1>
-        <div class="subtitle">Automatic estimates learn from signal patterns over time and carry confidence scores. Add empty-room, moving and quiet-sitting examples to improve them. Learn prioritizes reliable presence across sessions; human labels always take priority over lower-confidence estimates. Inferred data proportions do not block Apply.</div>
+        <div class="subtitle">Review room presence, label recorded periods, and tune your radars. Your labels take priority over automatic estimates.</div>
+        <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         </header>
         <details class="panel-card global-settings-card">
           <summary><h2 id="global-settings-title">Global settings</h2></summary>
@@ -322,7 +325,6 @@ export const panelView = {
           <div class="settings-section"><div id="timing-controls" class="global-settings"></div></div>
           <div class="settings-section"><div id="storage-controls" class="global-settings"></div></div>
         </details>
-        <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         <details class="panel-card layout-help"><summary><h2>How rooms and zones work</h2></summary>
           <p>Assess complementary radar coverage using current thresholds. An area can contain zones, each with its own occupancy: an occupied zone does not make its neighbours occupied. Whole-area assessment combines the selected area radars.</p>
           <p class="muted">Room labels describe the whole room: open a group and label when it was occupied or empty on its timeline. A zone labelled Present makes its area Present; an area labelled Empty makes every zone in it Empty. Where a room has no label of its own, its members' radar labels decide (any Present means occupied; Empty needs every member empty), then room presence sources (cameras, on/off entities, Bermuda), then the room estimate from the radars' own guesses. Human labels always outrank automatic evidence.</p>
@@ -377,7 +379,7 @@ export const panelView = {
   _section(id, key, title, innerHtml) {
     const collapsed = this._sectionCollapsed(id, key);
     return `<div class="subsection${collapsed ? " collapsed" : ""}" data-section="${key}">
-      <div class="subsection-head" data-action="section-toggle" data-section="${key}"><span>${this._esc(title)}</span><button class="sub-toggle" aria-expanded="${!collapsed}">${collapsed ? "▸" : "▾"}</button></div>
+      <div class="subsection-head" data-action="section-toggle" data-section="${key}" role="button" tabindex="0" aria-expanded="${!collapsed}"><span>${this._esc(title)}</span><button class="sub-toggle" aria-expanded="${!collapsed}">${collapsed ? "▸" : "▾"}</button></div>
       <div class="subsection-body">${innerHtml}</div>
     </div>`;
   },
