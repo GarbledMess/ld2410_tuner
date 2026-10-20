@@ -2,6 +2,8 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
+[Release notes](CHANGELOG.md) - 1.25.0 adds bounded, low-priority numerical and storage workers.
+
 ## Installation
 
 ### Manual installation (private repository)
@@ -32,7 +34,7 @@ references and saved results stay in the JSON store unchanged.
   `.storage/ld2410_tuner.data`) and keep it for as long as you may want to go back. To
   downgrade, stop Home Assistant, restore that copy, delete the
   `.storage/ld2410_tuner/` folder, then install the older version.
-- The conversion runs in the background executor at startup and keeps each stored
+- The conversion runs in a resource-limited worker at startup and keeps each stored
   reading at its own time (old recordings keep their six-second resolution; nothing is
   invented between samples). If it is interrupted, the next start converts again from the
   untouched JSON store. Old summaries without timestamps cannot be placed on a day and are
@@ -42,9 +44,10 @@ This applies when upgrading from any earlier version, including 1.22.
 
 History preparation runs at low priority after integration setup returns, so a large
 conversion does not hold up Home Assistant's startup. The panel appears and recording
-starts when preparation finishes; no manual migration step is needed. Expensive work
-shares one paced worker, and periodic polling yields between radars. This reduces
-competition with Home Assistant; it is cooperative pacing, not a hard CPU or memory limit.
+starts when preparation finishes; no manual migration step is needed. Expensive numerical
+and storage work runs in bounded, low-priority Linux subprocesses with mandatory memory,
+CPU-time and wall-time limits. Periodic polling yields between radars. Unsupported
+resource controls or oversized jobs fail explicitly; no unprotected fallback is used.
 
 ### HACS custom repository (requires a public GitHub repository)
 
