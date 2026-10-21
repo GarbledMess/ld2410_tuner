@@ -17,8 +17,8 @@
   copy fallback); only live logs are copied, and the refusal is now free disk space.
 - Remove repeated characterisation runs and an obsolete source-text test.
 
-Validation: 2,269 tests passed with 97.06% coverage in constrained Home Assistant
-(one CPU, 1,536 MiB). Startup recovered 220,000 rows and 44,000 guess runs exactly
+Validation: the released suite passed 2,230 tests with 97.07% coverage; the workspace
+suite passed with 97.06% coverage in constrained Home Assistant (one CPU, 1,536 MiB). Startup recovered 220,000 rows and 44,000 guess runs exactly
 (HA p95 12.491 ms); the production worker probe answered 232 requests (p95 15.314 ms);
 a protected child learned 86,400 rows in 5.071 CPU seconds. Browser regressions passed.
 Jobs that exceed the 120-second CPU limit still fail; resumable work is not yet added.
