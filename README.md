@@ -782,7 +782,7 @@ GitHub Actions checks the local integration package, runs Hassfest, and runs the
 Python, release, coverage, style, complexity, and Chromium regressions on pushes and pull requests.
 It also runs Bandit, a zizmor audit of the workflows (every action is pinned to a
 commit) and a redacted gitleaks scan of the full history; these gate releases too.
-CodeQL, pip-audit and npm audit run on pull requests, `main` and weekly, and report
+CodeQL (security queries), pip-audit and npm audit run on pull requests, `main` and weekly, and report
 without gating releases. Dependabot proposes weekly pip, npm and action updates.
 SonarQube Cloud analysis runs only once a `SONAR_TOKEN` repository secret exists.
 A successful push to

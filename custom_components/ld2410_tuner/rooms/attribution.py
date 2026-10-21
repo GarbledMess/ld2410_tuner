@@ -342,9 +342,6 @@ def _estimate(ids, others):
     return tagged
 
 
-_NAN = object()
-
-
 def _cuts(times, edges):
     """The index of the first sample at or after each of the ``edges``, once each, in order."""
     found, last = array("I"), -1
