@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import re
-import subprocess
+import subprocess  # nosec B404
 import urllib.error
 import urllib.request
 import zipfile
@@ -18,7 +18,8 @@ ASSET = f"{DOMAIN}.zip"
 
 
 def git(root, *args):
-    return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+    # Read-only git queries with arguments chosen by this script; no shell.
+    return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()  # nosec B603 B607
 
 
 def version_tuple(version):

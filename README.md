@@ -749,11 +749,18 @@ python3 -m ruff check custom_components tools tests
 python3 -m ruff format --check custom_components tools tests
 python3 tools/check_complexity.py
 python3 -m pytest --cov --cov-report=xml --cov-report=term-missing
+python3 -m bandit -r custom_components tools
 npm ci
 npx playwright install chromium
 npm run format:check
 npm test
 ```
+
+`pre-commit install` adds a git hook that runs ruff, Bandit, prettier, gitleaks and
+basic file checks (including LF line endings) on each commit; `pre-commit run
+--all-files` runs them on demand. Hook versions match `requirements-dev.txt` and
+`package.json`. Bandit fails on any finding; an intentional exception needs a
+`# nosec <test id>` comment with its reason on the line above.
 
 Python checks use synthetic data and stub Home Assistant boundaries. Coverage must
 be at least 85% across the entire integration and Python tools. Every production
@@ -772,7 +779,13 @@ screenshots as `desktop.png` and `mobile.png` inside a private, uniquely named
 These checks do not exercise a deployed Home Assistant instance or physical radar.
 
 GitHub Actions checks the local integration package, runs Hassfest, and runs the
-Python, release, coverage, style, complexity, and Chromium regressions on pushes and pull requests. A successful push to
+Python, release, coverage, style, complexity, and Chromium regressions on pushes and pull requests.
+It also runs Bandit, a zizmor audit of the workflows (every action is pinned to a
+commit) and a redacted gitleaks scan of the full history; these gate releases too.
+CodeQL, pip-audit and npm audit run on pull requests, `main` and weekly, and report
+without gating releases. Dependabot proposes weekly pip, npm and action updates.
+SonarQube Cloud analysis runs only once a `SONAR_TOKEN` repository secret exists.
+A successful push to
 `main` publishes a GitHub release only when `manifest.json` has an increased
 `major.minor.patch` version compared with the previous pushed commit. No workflow
 submits this repository to the HACS catalogue. Run the local package check with:

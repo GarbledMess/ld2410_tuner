@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "SonarQube project keys are public identifiers, not credentials"
+regexTarget = "line"
+regexes = ['''sonar\.projectKey=[\w.-]+$''']

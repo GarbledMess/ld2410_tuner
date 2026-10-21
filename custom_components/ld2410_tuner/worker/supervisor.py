@@ -6,11 +6,12 @@ before it runs; queued requests must retain only small IDs, not history snapshot
 """
 
 import asyncio
+import contextlib
 import json
 import math
 import os
 import signal
-import subprocess
+import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
@@ -113,11 +114,10 @@ async def _cleanup(spawning, readers, grace):
     except CleanupFailed:
         raise
     except Exception as error:
-        try:
+        # Preserve the first failure; quarantine still prevents replacement work.
+        with contextlib.suppress(Exception):
             _signal(process, force=True)
             await asyncio.wait_for(process.wait(), grace)
-        except Exception:
-            pass  # Preserve the first failure; quarantine still prevents replacement work.
         raise CleanupFailed("Worker cleanup failed") from error
     finally:
         for drain in drains:

@@ -5,7 +5,7 @@ in a temporary directory. This does not compile or flash firmware.
 """
 
 import json
-import subprocess
+import subprocess  # nosec B404
 import sys
 from collections import Counter
 from pathlib import Path
@@ -16,6 +16,16 @@ import yaml
 PACKAGE = Path(__file__).resolve().parents[1] / "examples/esphome/ld2410c.yaml"
 OVERRIDE_PRESENCE_NAME = "Existing Presence"
 DOMAINS = ("binary_sensor", "sensor", "number", "select", "switch", "text_sensor", "button")
+
+
+class ValidationError(Exception):
+    """ESPHome accepted the package but produced unexpected configuration."""
+
+
+def _require(condition, detail="unexpected ESPHome configuration (see traceback)"):
+    # Explicit rather than assert, so python -O cannot skip validation.
+    if not condition:
+        raise ValidationError(detail)
 
 
 def _node(count, override=False):
@@ -31,7 +41,7 @@ def _node(count, override=False):
             "board": "esp32dev" if count == 3 else "esp32-c3-devkitm-1",
             "framework": {"type": "esp-idf"},
         }
-        node["wifi"] = {"ssid": "test-only", "password": "test-only"}
+        node["wifi"] = {"ssid": "test-only", "password": "test-only"}  # nosec B105
     if count == 1:
         node["uart"] = {"tx_pin": "GPIO4", "rx_pin": "GPIO3"}
     else:
@@ -97,20 +107,20 @@ def _entities(value):
 
 
 def _check(config, count, expected_names, override=False):
-    assert len(config["ld2410"]) == count
-    assert len(config["uart"]) == count
-    assert len(config["script"]) == 2 * count
-    assert len(config["globals"]) == 4 * count
+    _require(len(config["ld2410"]) == count)
+    _require(len(config["uart"]) == count)
+    _require(len(config["script"]) == 2 * count)
+    _require(len(config["globals"]) == 4 * count)
     for index, radar in enumerate(config["ld2410"]):
         prefix = f"radar_{index}" if index else "ld2410"
-        assert str(radar["id"]) == f"{prefix}_radar"
-        assert str(radar["uart_id"]) == str(config["uart"][index]["id"])
+        _require(str(radar["id"]) == f"{prefix}_radar")
+        _require(str(radar["uart_id"]) == str(config["uart"][index]["id"]))
         device = f"device_{index}" if index else "None"
         for domain in DOMAINS:
             entities = [e for e in _entities(config[domain]) if str(e.get("device_id")) == device]
             names = _expected_names(expected_names, domain, override)
-            assert Counter(e["name"] for e in entities) == names, (index, domain)
-            assert all(str(e["id"]).startswith(f"{prefix}_") for e in entities if e["name"])
+            _require(Counter(e["name"] for e in entities) == names, (index, domain))
+            _require(all(str(e["id"]).startswith(f"{prefix}_") for e in entities if e["name"]))
 
 
 def _expected_names(expected_names, domain, override):
@@ -139,14 +149,15 @@ def main():
             CORE.reset()
             CORE.config_path = path
             config = read_config({})
-            assert config is not None, f"ESPHome rejected {path.name}"
+            _require(config is not None, f"ESPHome rejected {path.name}")
             if expected_names is None:
                 expected_names = {
                     d: Counter(e["name"] for e in _entities(config[d])) for d in DOMAINS
                 }
             _check(config, count, expected_names, override)
             _check_options(config, count, override)
-            subprocess.run(
+            # Fixed command; the only variable argument is our own temporary file.
+            subprocess.run(  # nosec B603
                 [sys.executable, "-m", "esphome", "compile", "--only-generate", str(path)],
                 check=True,
             )
@@ -155,19 +166,19 @@ def main():
 
 def _check_options(config, count, override):
     presence = config["binary_sensor"][0]["has_target"]
-    assert presence["filters"][0]["delayed_on"].total_milliseconds == (3000 if override else 500)
-    assert config["uart"][0]["baud_rate"] == (115200 if override or count > 3 else 256000)
-    assert config["uart"][0]["rx_buffer_size"] == (2048 if override else 1024)
+    _require(presence["filters"][0]["delayed_on"].total_milliseconds == (3000 if override else 500))
+    _require(config["uart"][0]["baud_rate"] == (115200 if override or count > 3 else 256000))
+    _require(config["uart"][0]["rx_buffer_size"] == (2048 if override else 1024))
     if count == 1:
         _check_legacy_options(config, presence, override)
     energies = {f"G{gate} {kind} Energy" for gate in range(9) for kind in ("Move", "Still")}
-    assert energies <= {e["name"] for e in _entities(config["sensor"])}
+    _require(energies <= {e["name"] for e in _entities(config["sensor"])})
     _check_rounding(config, override)
     for index in range(1, count):
         sensor = next(
             x for x in config["binary_sensor"] if str(x.get("ld2410_id")) == f"radar_{index}_radar"
         )
-        assert (
+        _require(
             sensor["has_target"]["filters"][0]["delayed_on"].total_milliseconds
             == (index + 1) * 1000
         )
@@ -180,9 +191,9 @@ def _check_rounding(config, override):
         rounding = _expected_rounding(index, override)
         prefix = f"radar_{index}" if index else "ld2410"
         control = next(n for n in config["number"] if str(n["id"]) == f"{prefix}_gate_rounding")
-        assert control["initial_value"] == rounding
-        assert control["restore_value"]
-        assert tuple(control[k] for k in ("min_value", "max_value", "step")) == (1, 100, 1)
+        _require(control["initial_value"] == rounding)
+        _require(control["restore_value"])
+        _require(tuple(control[k] for k in ("min_value", "max_value", "step")) == (1, 100, 1))
         _check_gate_controls(config, sensor, prefix, rounding, override)
 
 
@@ -196,34 +207,38 @@ def _check_gate_controls(config, sensor, prefix, rounding, override):
     for gate in range(9):
         for kind in ("move", "still"):
             filters = sensor[f"g{gate}"][f"{kind}_energy"]["filters"]
-            assert f"id({prefix}_gate_rounding).state" in str(filters[1]["lambda"])
-            assert filters[2]["delta"] == 1
+            _require(f"id({prefix}_gate_rounding).state" in str(filters[1]["lambda"]))
+            _require(filters[2]["delta"] == 1)
             number = next(n for n in config["number"] if str(n["id"]) == f"{prefix}_g{gate}_{kind}")
             expected = (
                 (15, 85, 20) if override and gate == 0 and kind == "move" else (0, 100, rounding)
             )
-            assert tuple(number[key] for key in ("min_value", "max_value", "step")) == expected
+            _require(tuple(number[key] for key in ("min_value", "max_value", "step")) == expected)
             action = number["set_action"]["then"][0]["number.set"]
-            assert str(action["id"]) == f"{prefix}_g{gate}_{kind}_raw"
-            assert ".traits.get_step()" in str(action["value"])
+            _require(str(action["id"]) == f"{prefix}_g{gate}_{kind}_raw")
+            _require(".traits.get_step()" in str(action["value"]))
 
 
 def _check_legacy_options(config, presence, override):
-    assert presence["name"] == (OVERRIDE_PRESENCE_NAME if override else "Presence")
-    assert presence["filters"][1]["delayed_off"].total_milliseconds == (10000 if override else 1000)
+    _require(presence["name"] == (OVERRIDE_PRESENCE_NAME if override else "Presence"))
+    _require(
+        presence["filters"][1]["delayed_off"].total_milliseconds == (10000 if override else 1000)
+    )
     bus = config["uart"][0]
-    assert bus["tx_pin"]["number"] == (6 if override else 4)
-    assert bus["rx_pin"]["number"] == (7 if override else 3)
+    _require(bus["tx_pin"]["number"] == (6 if override else 4))
+    _require(bus["rx_pin"]["number"] == (7 if override else 3))
     sensor = config["sensor"][0]
-    assert sensor["moving_energy"]["filters"][0]["throttle"].total_milliseconds == (
-        3000 if override else 1000
+    _require(
+        sensor["moving_energy"]["filters"][0]["throttle"].total_milliseconds
+        == (3000 if override else 1000)
     )
-    assert sensor["g0"]["still_energy"]["filters"][0]["throttle"].total_milliseconds == (
-        4000 if override else 2000
+    _require(
+        sensor["g0"]["still_energy"]["filters"][0]["throttle"].total_milliseconds
+        == (4000 if override else 2000)
     )
-    assert str(config["script"][0]["id"]) == "ld2410_recover_parameters"
-    assert str(config["ld2410"][0]["id"]) == "ld2410_radar"
-    assert not config["esphome"]["devices"]
+    _require(str(config["script"][0]["id"]) == "ld2410_recover_parameters")
+    _require(str(config["ld2410"][0]["id"]) == "ld2410_radar")
+    _require(not config["esphome"]["devices"])
 
 
 if __name__ == "__main__":

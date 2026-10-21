@@ -1,0 +1,44 @@
+# Fast local checks before each commit. Install once with:
+#   python -m pip install -r requirements-dev.txt && pre-commit install
+# Versions match requirements-dev.txt, package.json and CI (tests/test_quality_tooling.py).
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: check-json
+      - id: check-toml
+      - id: check-yaml
+        args: [--unsafe] # ESPHome YAML uses custom tags such as !secret and !lambda.
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff-check
+        files: ^(custom_components|tools|tests)/
+      - id: ruff-format
+        files: ^(custom_components|tools|tests)/
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        files: ^(custom_components|tools)/
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: prettier
+        name: prettier
+        language: node
+        entry: prettier --check
+        additional_dependencies: [prettier@3.9.9]
+        files: ^(custom_components/ld2410_tuner/static/.*\.js|tests/.*\.cjs)$
