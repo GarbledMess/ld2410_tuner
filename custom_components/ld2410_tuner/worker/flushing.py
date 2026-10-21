@@ -12,6 +12,7 @@ from ..history.daystore import DayStore, date_of
 from . import codec, startup
 
 MAX_RECORDS = 131072
+MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
 
 def _record(record):
@@ -84,9 +85,7 @@ def _check(items, late):
     records += sum(len(spans) for dates in late.values() for spans in dates.values())
     if records > MAX_RECORDS:
         raise ValueError("Flush pending-record budget exceeded")
-    raw_bytes = sum(startup._size(_descriptor(live)) for live in closing)
-    if raw_bytes > startup.MAX_BYTES:
-        raise ValueError("Flush raw byte budget exceeded")
+    startup._budget({"live": [_descriptor(live) for live in closing]})
 
 
 def _descriptor(live):
@@ -122,9 +121,9 @@ def capture(store, directory, now):
             for key, dates in late.items()
         },
     }
-    codec.validate(payload, max_nodes=1048576, max_bytes=startup.MAX_BYTES)
+    codec.validate(payload, max_nodes=1048576, max_bytes=MAX_MESSAGE_BYTES)
     raw = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode()
-    if len(raw) > startup.MAX_BYTES:
+    if len(raw) > MAX_MESSAGE_BYTES:
         raise ValueError("Flush record bytes exceeded")
     (directory / "flush-records.json").write_bytes(raw)
     return {"live": descriptors, "generations": ownership["generations"]}, ownership
@@ -135,10 +134,10 @@ def _load(request):
     metadata = request["flush"]
     startup._budget(metadata)
     path = directory / "flush-records.json"
-    if path.stat().st_size > startup.MAX_BYTES:
+    if path.stat().st_size > MAX_MESSAGE_BYTES:
         raise ValueError("Flush record bytes exceeded")
     payload = json.loads(path.read_bytes())
-    codec.validate(payload, max_nodes=1048576, max_bytes=startup.MAX_BYTES)
+    codec.validate(payload, max_nodes=1048576, max_bytes=MAX_MESSAGE_BYTES)
     if len(payload["records"]) != len(metadata["live"]):
         raise ValueError("Flush record count mismatch")
     store = DayStore(root)

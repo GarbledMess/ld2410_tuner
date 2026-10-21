@@ -38,14 +38,14 @@ def load(result, directory):
     changes, staged = [], []
     if len(result["changes"]) > 8192:
         raise ValueError("Storage replacement count budget exceeded")
-    raw_bytes = 0
+    paths = []
     for entry in result["changes"]:
         path = (directory / entry["temporary"]).resolve()
         if not path.is_relative_to(directory) or path.suffix != ".trim":
             raise ValueError("Invalid staged storage path")
-        raw_bytes += startup._size(entry["day"])
-        if raw_bytes > 32 * 1024 * 1024:
-            raise ValueError("Storage raw handoff budget exceeded")
+        paths.append(path)
+    startup._budget({"live": [entry["day"] for entry in result["changes"]]}, max_items=8192)
+    for entry, path in zip(result["changes"], paths, strict=True):
         day = startup.read_day(directory, entry["day"])
         date = datetime.date.fromisoformat(entry["date"])
         changes.append((entry["key"], date, day))

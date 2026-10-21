@@ -23,8 +23,9 @@ def main():
 
     if len(sys.argv) not in (3, 4) or (len(sys.argv) == 4 and sys.argv[3] != "storage"):
         raise ValueError("Expected request path and parent PID")
+    file_mib = 64 if len(sys.argv) == 4 else 16
     controls = install(
-        Budget(512 * 1024 * 1024, 120, 16 * 1024 * 1024), expected_parent=int(sys.argv[2])
+        Budget(512 * 1024 * 1024, 120, file_mib * 1024 * 1024), expected_parent=int(sys.argv[2])
     )
     emit("protected", limits=controls)
     from ld2410_child.worker import calculations, codec, protocol

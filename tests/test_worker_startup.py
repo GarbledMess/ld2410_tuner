@@ -126,7 +126,7 @@ def test_raw_day_round_trip_preserves_fractional_values_and_guesses(tmp_path):
 
 @pytest.mark.parametrize(
     "change",
-    [{"rows": -1}, {"rows": True}, {"guesses": 32769}, {"floats": []}, {"floats": [0] * 18}],
+    [{"rows": -1}, {"rows": True}, {"guesses": 2**63}, {"floats": []}, {"floats": [0] * 18}],
 )
 def test_invalid_handoff_counts_and_flags_are_rejected(tmp_path, change):
     from tuner_under_test.worker import startup

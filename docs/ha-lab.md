@@ -86,3 +86,35 @@ dense legacy learning used 5.840 CPU seconds and 100,416 KiB peak RSS with
 diagnostics enabled. Lint, formatting, complexity and packaging checks passed.
 
 Diagnostics: `machine/runs/ld2410_tuner-1340dbebdf00/20261020-151454-2f85fea1decb5d69`.
+
+## Dense startup recovery regression (1.26.1)
+
+`tests/lab/startup_capacity_checks.py` creates a public synthetic current-day log,
+then uses the actual protected storage worker to recover it. Its 220,000 rows,
+18 legacy float columns and 44,000 guess runs exceed the old per-item counts and
+16 MiB handoff-file ceiling. It appends another reading, flushes, restarts again
+and compares the complete raw columns and guess runs by digest. No production
+history or configuration is used. The default lab recipe includes this check.
+
+Both recoveries passed with a 20,196,000-byte raw handoff and 144,072 KiB child
+peak RSS. The full sequence took 9.826 seconds. HA answered 386 HTTP requests
+throughout it: p95 11.673 ms, maximum 32.072 ms. Workers were reaped and exact
+history preservation passed. These measurements establish this workload's
+headroom; they do not guarantee arbitrary history fits the limits.
+
+The handoff accepts up to 1,048,576 aggregate rows and 64 MiB raw buffers, with a
+separate conservative 192 MiB estimated restored-heap budget. Guess/confirmed
+tuples count toward that estimate because their Python representation is larger
+than their packed bytes. Startup and rollover retain a 128-item cap; maintenance
+retains its existing 8,192-replacement cap. These are admission estimates, not
+peak-memory guarantees. The actual 512 MiB address-space ceiling and 120-second
+CPU ceiling remain mandatory. Only storage's per-file ceiling increases to
+64 MiB; numerical workers retain 16 MiB, and flush JSON remains capped at 32 MiB.
+
+The same constrained HA run passed 2,268 workspace Python tests with 97.07% coverage,
+plus lint, formatting, complexity and package checks. The existing production
+probe also preserved 6,000 rows through four learning and four storage children
+while HA answered 268 requests (p95 12.975 ms, maximum 30.802 ms). Dense legacy
+learning passed at 5.358 CPU seconds and 100,312 KiB child peak RSS.
+The full browser regression suite and browser formatting passed with no browser
+errors. Diagnostics: `machine/runs/ld2410_tuner-1340dbebdf00/20261021-091823-d8ebe2fb6c3c2b2e`.

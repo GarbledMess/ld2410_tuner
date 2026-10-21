@@ -32,6 +32,7 @@
     "container_python": "chroot /work/os docker exec ha-lab python3 -c 'import sys,os; print(sys.version); print(os.getpriority(os.PRIO_PROCESS,0)); print(open(\"/proc/self/oom_score_adj\").read())'",
     "limits": "chroot /work/os docker exec ha-lab python3 /lab/scripts/limits_check.py",
     "http_ready": "chroot /work/os docker exec ha-lab python3 /lab/scripts/ha_smoke.py",
+    "startup_capacity": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/startup_capacity_checks.py",
     "production_worker_http": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/production_checks.py",
     "dense_legacy_learning": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/dense_history_checks.py",
     "python_qa": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/qa.py"

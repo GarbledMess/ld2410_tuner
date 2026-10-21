@@ -14,9 +14,13 @@ from ..history.daystore import DayStore, _Live
 from . import codec
 from .history import _nonblocking
 
-MAX_ROWS = 131072
-MAX_GUESSES = 32768
-MAX_BYTES = 32 * 1024 * 1024
+# A full day can contain more than 131k changes or 32k automatic guess runs.
+# Bound the transferred buffers and their restored heap, rather than assuming
+# that a normal radar records less than once per second.
+MAX_ROWS = 1048576
+MAX_GUESSES = 1048576
+MAX_BYTES = 64 * 1024 * 1024
+MAX_DECODED_BYTES = 192 * 1024 * 1024
 RUN = struct.Struct("<ddBBB")
 CONFIRMED = struct.Struct("<dddBBB")
 FIELDS = (*convert.STORED, *convert.UNTIMED, "label_revision")
@@ -39,6 +43,14 @@ def execute(request):
     patches = _patches(request["data"], data)
     directory = Path(request.get("directory", request["root"]))
     directory.mkdir(parents=True, exist_ok=True)
+    _budget(
+        {
+            "live": [
+                _metadata(key, value, index)
+                for index, (key, value) in enumerate(days._live.items())
+            ]
+        }
+    )
     live = [
         freeze_live(key, value, directory, index)
         for index, (key, value) in enumerate(days._live.items())
@@ -80,10 +92,9 @@ def _confirmed_bytes(runs):
     )
 
 
-def freeze_live(device, live, directory, index):
-    """Write a live builder as raw buffers, never compressed or replayed by HA."""
+def _metadata(device, live, index):
     builder = live.builder
-    metadata = {
+    return {
         "device": device,
         "date": live.date.isoformat(),
         "rows": len(builder.times),
@@ -99,6 +110,12 @@ def freeze_live(device, live, directory, index):
         "version": builder._summary_version,
         "file": f"live-{index}.bin",
     }
+
+
+def freeze_live(device, live, directory, index):
+    """Write a live builder as raw buffers, never compressed or replayed by HA."""
+    builder = live.builder
+    metadata = _metadata(device, live, index)
     _budget({"live": [metadata]})
     with (directory / metadata["file"]).open("xb") as stream:
         for chunk in (builder.times, builder.ends, *builder.columns):
@@ -113,7 +130,10 @@ def _size(item):
     if any(type(count) is not int or count < 0 for count in (rows, guesses, confirmed)):
         raise ValueError("Invalid startup handoff count")
     if rows > MAX_ROWS or guesses + confirmed > MAX_GUESSES:
-        raise ValueError("Startup live count budget exceeded")
+        raise ValueError(
+            f"Startup live count budget exceeded: rows={rows} limit={MAX_ROWS}; "
+            f"guesses={guesses} confirmed={confirmed} combined_limit={MAX_GUESSES}"
+        )
     flags = item.get("floats", [])
     if len(flags) != 18 or any(type(flag) is not bool for flag in flags):
         raise ValueError("Invalid startup column flags")
@@ -124,13 +144,41 @@ def _size(item):
     )
 
 
-def _budget(result):
+def _decoded_size(item):
+    """Conservative restored heap estimate, not an RSS measurement or OS limit.
+
+    Columns remain packed. Guess records become Python tuples/floats/list slots;
+    their binary byte count alone substantially understates the restored heap.
+    """
+    raw_rows = item["rows"] * (16 + sum(4 if flag else 1 for flag in item["floats"]))
+    return (
+        (raw_rows * 9 + 7) // 8
+        + item.get("guesses", 0) * 192
+        + item.get("confirmed", 0) * 256
+        + 4096
+    )
+
+
+def _budget(result, *, max_items=128):
     live = result["live"]
-    if len(live) > 128:
-        raise ValueError("Startup live device budget exceeded")
+    if len(live) > max_items:
+        raise ValueError(
+            f"Startup live device budget exceeded: actual={len(live)} limit={max_items}"
+        )
     total = sum(_size(item) for item in live)
-    if total > MAX_BYTES or sum(item["rows"] for item in live) > 1048576:
-        raise ValueError("Startup handoff byte/row budget exceeded")
+    rows = sum(item["rows"] for item in live)
+    if total > MAX_BYTES or rows > MAX_ROWS:
+        raise ValueError(
+            f"Startup handoff byte/row budget exceeded: raw_bytes={total} limit={MAX_BYTES}; "
+            f"rows={rows} row_limit={MAX_ROWS}"
+        )
+    decoded = sum(_decoded_size(item) for item in live)
+    if decoded > MAX_DECODED_BYTES:
+        raise ValueError(
+            f"Startup decoded heap budget exceeded: actual={decoded} limit={MAX_DECODED_BYTES}; "
+            f"rows={rows} guesses={sum(item.get('guesses', 0) for item in live)} "
+            f"confirmed={sum(item.get('confirmed', 0) for item in live)} raw_bytes={total}"
+        )
 
 
 def _read(directory, item):

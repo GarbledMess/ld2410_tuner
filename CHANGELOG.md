@@ -1,5 +1,23 @@
 # Release notes
 
+## 1.26.1 - 2026-10-21
+
+- Recover dense current-day history without rejecting normal per-second automatic
+  guesses or multiple changes per second at startup.
+- Apply coherent aggregate raw-buffer and estimated restored-memory budgets to
+  startup, day rollover and storage maintenance. Keep the flush JSON limit separate.
+- Allow storage children to write raw handoff files up to 64 MiB; retain the
+  512 MiB address-space ceiling, 120-second CPU ceiling and lowest scheduling priority.
+  Numerical children retain their 16 MiB file ceiling.
+- Report actual counts and limits when a startup handoff cannot fit its budgets.
+
+Validation: the full workspace Python suite passed with 97.07% coverage in constrained Home
+Assistant. A real protected worker recovered 220,000 rows and 44,000 automatic
+guess runs, then preserved the history exactly through append, flush and another
+restart. HA answered 386 requests during this probe (p95 11.673 ms, maximum
+32.072 ms); child peak RSS was 144,072 KiB. Further numerical optimizations remain
+investigation-only.
+
 ## 1.26.0 - 2026-10-20
 
 - Start every collapsible room, zone, device section and nested settings/help panel
