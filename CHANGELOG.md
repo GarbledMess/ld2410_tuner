@@ -1,5 +1,27 @@
 # Release notes
 
+## 1.26.3 - 2026-10-21
+
+- Fix normal multi-gate charts failing the worker result limit. Use bounded,
+  compressed chart transport while preserving the full signal detail and gaps.
+- Capture only the requested chart days instead of all retained history.
+- Keep slow room graph requests alive across polling. Failed requests wait for an
+  explicit refresh, retain any previous graph, and no longer report missing history.
+- Populate room presence time fields by default and reset them when changing days.
+- Replace floating History and Recommendations shortcuts with collapsible section
+  headers beside their content. Replace the detached device triangle with a labelled
+  disclosure immediately above the details it opens.
+- Reduce oversized text and prevent wide graphs from enlarging their axis labels.
+  Keep the room, zone and radar card hierarchy on desktop and mobile.
+
+Validation: the full workspace Python suite passed 2,283 tests, followed by the
+26 focused chart tests including two added transport boundary tests; combined
+coverage was 97.05%. Desktop/mobile browser regressions passed in the constrained
+Linux HA lab (one CPU, 1,536 MiB). A protected chart worker returned all 18 gates
+and 3,636 points during the production job probe; HA HTTP p95 was 15.477 ms and
+maximum 47.145 ms. Formatting, complexity, package, Bandit and offline workflow
+security checks passed.
+
 ## 1.26.2 - 2026-10-21
 
 - Stop rejecting valid history because of its size. Learning, references, charts and

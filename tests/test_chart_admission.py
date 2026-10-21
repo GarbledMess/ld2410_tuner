@@ -13,13 +13,18 @@ from tuner_under_test.worker import bridge, codec, supervisor
 
 
 def test_saturated_chart_refresh_is_bounded_and_deduplicated(monkeypatch):
+    from tuner_under_test.worker import display
+
+    # This test isolates queue admission; transport geometry is covered separately.
+    monkeypatch.setattr(display, "unpack_chart", lambda value: value)
+
     async def run():
         copied = []
         owner = SimpleNamespace(
             data={"devices": {"a": {"label_revision": 1}}},
             _history_cache=OrderedDict(),
             _history_jobs={},
-            _history_view=lambda *args, **kwargs: copied.append(True),
+            _history_view=lambda *args, **kwargs: copied.append(True) or SimpleNamespace(),
             hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
         )
         service = bridge._service(owner)

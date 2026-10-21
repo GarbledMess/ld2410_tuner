@@ -1,7 +1,10 @@
 // Shared containment and rhythm for the room → zone → radar hierarchy.
 export const CARD_STYLES = `
 .section-description { display:block; margin-top:3px; font-size:12px; font-weight:400; color:var(--secondary-text-color); line-height:1.4; }
-:host { padding:16px; font-size:14px; line-height:1.5; }
+:host { padding:16px; font-family:var(--paper-font-body1_-_font-family, var(--ha-font-family-body, Roboto, system-ui, sans-serif)); font-size:14px; line-height:1.5; }
+h2, h3 { font-size:16px; }
+.subsection-head { width:100%; min-height:44px; text-align:start; border:0; border-radius:0; }
+.action-status:empty, .learning-job-status:empty, #snapshot-status:empty { display:none; }
 *, *::before, *::after { box-sizing:border-box; }
 .card, .panel-card { min-width:0; max-width:100%; border:1px solid var(--divider-color,#ddd); border-radius:14px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 1px 3px rgba(0,0,0,.06)); overflow-wrap:anywhere; }
 .layout-node, .layout-leaf { margin:0; width:100%; align-self:stretch; }
@@ -27,11 +30,10 @@ export const CARD_STYLES = `
 .room-signal-canvas .axis-label { font-size:12px; }
 .chart-canvas .axis-label { font-size:12px; }
 .room-graph-status { min-height:3em; margin:6px 0; font-size:12px; }
-.room-graph-legend, .device-shortcuts { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
+.room-graph-legend { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
 .room-graph-legend button { display:flex; flex-wrap:wrap; align-items:center; gap:6px; min-width:0; max-width:100%; text-align:start; white-space:normal; }
 .room-graph-legend i { width:10px; height:10px; border-radius:50%; flex:none; }
 .room-graph-legend button span { color:var(--secondary-text-color); font-size:12px; }
-.device-shortcuts button { flex:1 1 auto; font-size:13px; }
 .card :is(input:not([type="checkbox"]):not([type="radio"]), select), .panel-card :is(input:not([type="checkbox"]):not([type="radio"]), select) { min-width:0; max-width:100%; font:inherit; min-height:44px; border:1px solid var(--divider-color); border-radius:8px; background:var(--card-background-color,#fff); color:var(--primary-text-color); padding:8px; }
 .card :is(label,form,section,details,fieldset,nav), .panel-card :is(label,form,section,details,fieldset,nav) { min-width:0; max-width:100%; }
 .card button, .panel-card button { max-width:100%; overflow-wrap:anywhere; }

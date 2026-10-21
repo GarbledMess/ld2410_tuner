@@ -11,13 +11,21 @@ export const panelCards = {
     card.dataset.placement = placement;
     const info = this._autoInfo(d.auto_learning || {});
     const isCollapsed = this._cardCollapsed(placement);
+    const bodyId = `device-body-${Array.from(placement, (char) => char.codePointAt(0).toString(16)).join("-")}`;
     card.innerHTML =
       this._cardHeaderHtml(id, d, info, isCollapsed, options) +
-      `<nav class="device-shortcuts" aria-label="${this._esc(d.name)} controls"><button type="button" data-action="open-history">History</button><button type="button" data-action="open-recommendations">Recommendations</button></nav>` +
       this._recordingHtml(d) +
       `<div class="action-status muted" role="status" aria-live="polite"></div>` +
       `<div class="learning-job-status" role="status" aria-live="polite">${this._learningJobHtml(d)}</div>` +
-      `<div class="body${isCollapsed ? " collapsed" : ""}">${this._cardBodyHtml(id, d, info)}</div>`;
+      `<button type="button" class="toggle" data-action="toggle" aria-controls="${bodyId}" aria-expanded="${!isCollapsed}">${isCollapsed ? "Show" : "Hide"} device details</button>` +
+      `<div id="${bodyId}" class="body${isCollapsed ? " collapsed" : ""}">${this._cardBodyHtml(id, d, info)}</div>`;
+    for (const section of card.querySelectorAll(".subsection")) {
+      const content = section.querySelector(".subsection-body");
+      content.id = `${bodyId}-${section.dataset.section}`;
+      section
+        .querySelector(".subsection-head")
+        .setAttribute("aria-controls", content.id);
+    }
     card.querySelector(".gate-results").open = !!this._sectionState.get(
       `${id}:gate-table`,
     );
@@ -42,7 +50,7 @@ export const panelCards = {
       autoState !== "unknown"
         ? " · " + Math.round((al.confidence || 0) * 100) + "%"
         : "";
-    return `<div class="top" data-action="toggle-top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}${options.notRecording ? '<span class="pill not-recording">Not recording</span>' : ""}</div><div class="area">${group ? "" : this._esc(this._roomsData().areas[d.area_id] || d.area_id || "No area")}</div>${group ? this._roomRoleHtml(id, group) : this._comparisonHeaderHtml(d)}<span class="section-description">Live presence, recorded history and tuning recommendations.</span></div><button class="toggle" data-action="toggle" aria-label="${isCollapsed ? "Expand" : "Collapse"}" aria-expanded="${!isCollapsed}">${isCollapsed ? "▸" : "▾"}</button></div>${group ? this._ownScoreHtml(d) : ""}`;
+    return `<div class="top"><div><div class="name">${this._esc(d.name)}<span class="pill ${autoState}" title="Latest automatic reading">${autoPill}${confidence}</span>${this._nightlyMarker(d)}${options.notRecording ? '<span class="pill not-recording">Not recording</span>' : ""}</div><div class="area">${group ? "" : this._esc(this._roomsData().areas[d.area_id] || d.area_id || "No area")}</div>${group ? this._roomRoleHtml(id, group) : this._comparisonHeaderHtml(d)}<span class="section-description">Live presence, recorded history and tuning recommendations.</span></div></div>${group ? this._ownScoreHtml(d) : ""}`;
   },
 
   _cardBodyHtml(id, d, info) {
@@ -54,12 +62,7 @@ export const panelCards = {
         this._trainingHtml(d) + this._sourcesHtml(id, d),
       ),
       `<div class="chart-home">${this._section(id, "chart", "Gate visualization", this._chartHtml(id, d))}</div>`,
-      this._section(
-        id,
-        "history",
-        "Past presence labels",
-        this._historyHtml(id, d),
-      ),
+      this._section(id, "history", "History", this._historyHtml(id, d)),
       this._section(
         id,
         "auto",

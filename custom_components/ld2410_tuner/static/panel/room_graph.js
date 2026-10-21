@@ -78,6 +78,7 @@ export const panelRoomGraph = {
     const currentDay =
       Date.now() / 1000 >= bounds.start && Date.now() / 1000 < bounds.end;
     const ids = group.device_ids.filter((id) => this._data.devices[id]);
+    const query = JSON.stringify([day, state.kind, ids]);
     const signature = JSON.stringify([
       day,
       state.kind,
@@ -85,7 +86,8 @@ export const panelRoomGraph = {
     ]);
     if (
       !refresh &&
-      (state.pendingKey === signature ||
+      (state.pendingQuery === query ||
+        state.failedQuery === query ||
         (!currentDay && state.loadedKey === signature))
     )
       return;
@@ -101,6 +103,8 @@ export const panelRoomGraph = {
       return;
     const request = ++state.request;
     state.pendingKey = signature;
+    state.pendingQuery = query;
+    state.failedQuery = null;
     state.loading = true;
     state.error = null;
     state.day = day;
@@ -153,12 +157,15 @@ export const panelRoomGraph = {
         state.cache.delete(state.cache.keys().next().value);
       this._finishRoomGraph(state, signature, day);
     } catch (error) {
-      if (request === state.request)
+      if (request === state.request) {
         state.error = error.message || String(error);
+        state.failedQuery = query;
+      }
     } finally {
       if (request === state.request) {
         state.loading = false;
         state.pendingKey = null;
+        state.pendingQuery = null;
         this._renderRoomGraph(gid);
       }
     }
@@ -172,6 +179,7 @@ export const panelRoomGraph = {
     state.loadedAt = Date.now();
     state.loading = false;
     state.pendingKey = null;
+    state.pendingQuery = null;
   },
 
   _renderRoomGraph(gid) {
@@ -197,20 +205,15 @@ export const panelRoomGraph = {
       !state.data ||
       state.loadedDay !== this._historyStateFor(`room:${gid}`).day
     ) {
-      if (!state.loading)
-        canvas.innerHTML =
-          '<p class="muted">No recorded signals for this day.</p>';
-      else if (
-        state.loadedDay !== this._historyStateFor(`room:${gid}`).day ||
-        !canvas.querySelector("svg")
-      )
-        canvas.innerHTML = '<p class="muted">Loading signals…</p>';
+      canvas.innerHTML =
+        state.loading || state.error
+          ? ""
+          : '<p class="muted">No recorded signals for this day.</p>';
+      delete canvas.dataset.paintKey;
+      section.querySelector(".room-graph-legend").replaceChildren();
       return;
     }
-    const width = Math.max(
-      320,
-      Math.min(CHART_W, canvas.clientWidth || CHART_W),
-    );
+    const width = Math.max(320, canvas.clientWidth || CHART_W);
     const labels = this._roomsData().groups[gid]?.labels || [];
     const paintKey = JSON.stringify([state.version, width, labels]);
     const repaint = canvas.dataset.paintKey !== paintKey;

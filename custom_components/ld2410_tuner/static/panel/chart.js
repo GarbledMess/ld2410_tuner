@@ -268,7 +268,7 @@ export const panelChart = {
       el.innerHTML = this._buildChartSvg(
         d,
         cs,
-        Math.max(240, Math.min(760, Math.round(el.clientWidth) || 760)),
+        Math.max(240, Math.round(el.clientWidth) || 760),
       );
       this._wireChartSelection(id, el, d, cs);
       const review = el.querySelector('[data-action="review-results"]');

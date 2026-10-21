@@ -22,7 +22,6 @@ export const panelControls = {
         .setAttribute("aria-expanded", String(!collapsed));
       const btn = sub.querySelector(".sub-toggle");
       btn.textContent = collapsed ? "▸" : "▾";
-      btn.setAttribute("aria-expanded", String(!collapsed));
     }
     return copies;
   },
@@ -40,12 +39,6 @@ export const panelControls = {
     this._wireChartControls(card, id);
     this._restoreDraft(card, id);
     this._wireHistoryRange(card, id);
-    for (const [action, section] of [
-      ["open-history", "history"],
-      ["open-recommendations", "details"],
-    ])
-      card.querySelector(`[data-action="${action}"]`).onclick = () =>
-        this._openDeviceSection(card, id, section);
   },
   _openDeviceSection(card, id, section) {
     this._openAncestors(card);
@@ -67,16 +60,14 @@ export const panelControls = {
       const body = card.querySelector(".body");
       const btn = card.querySelector('[data-action="toggle"]');
       body.classList.toggle("collapsed", willCollapse);
-      btn.textContent = willCollapse ? "▸" : "▾";
+      btn.textContent = `${willCollapse ? "Show" : "Hide"} device details`;
       btn.setAttribute("aria-expanded", String(!willCollapse));
-      btn.setAttribute("aria-label", willCollapse ? "Expand" : "Collapse");
       if (!willCollapse) this._maybeFetchChart(id, d);
     };
     card.querySelector('[data-action="toggle"]').onclick = (e) => {
       e.stopPropagation();
       toggleBody();
     };
-    card.querySelector('[data-action="toggle-top"]').onclick = toggleBody;
 
     card.querySelectorAll('[data-action="section-toggle"]').forEach((head) => {
       head.onclick = () => {

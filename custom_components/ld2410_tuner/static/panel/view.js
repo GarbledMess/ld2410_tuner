@@ -8,7 +8,7 @@ export const panelView = {
       <style>
         :host { display:block; padding:12px; box-sizing:border-box; color:var(--primary-text-color); }
         .wrap { max-width:1500px; margin:auto; }
-        h1 { font-size:26px; margin:4px 0 6px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+        h1 { font-size:20px; margin:4px 0 6px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
         .panel-version { font-size:12px; font-weight:400; color:var(--secondary-text-color); border:1px solid var(--divider-color); border-radius:6px; padding:3px 6px; }
         .action-status, #snapshot-status { min-height:1.5em; font-size:13px; margin:6px 0; }
         .is-busy::before { content:""; display:inline-block; width:12px; height:12px; border:2px solid var(--divider-color,#ccc); border-top-color:var(--primary-color,#1976d2); border-radius:50%; margin-right:7px; vertical-align:middle; animation:busy-spin .8s linear infinite; }
@@ -48,7 +48,7 @@ export const panelView = {
         #layout { display:flex; flex-direction:column; gap:14px; min-width:0; }
         .layout-node, .layout-leaf, .layout-direct { min-width:0; }
         .layout-node > summary, .layout-leaf > summary { cursor:pointer; min-height:44px; align-content:center; }
-        .layout-node > summary h2 { display:inline; margin:0; font-size:20px; }
+        .layout-node > summary h2 { display:inline; margin:0; font-size:16px; }
         .layout-leaf > summary h3 { display:inline; margin:0; font-size:16px; }
         .layout-node > .layout-leaf, .layout-node > .layout-direct { margin:8px 0 0; }
         .layout-note { margin:4px 0 8px; }
@@ -58,15 +58,15 @@ export const panelView = {
         .panel-intro .subtitle { margin:0; line-height:1.5; }
         .global-settings-card > summary { cursor:pointer; min-height:44px; align-content:center; }
         .global-settings-card > summary h2 { display:inline; }
-        .global-settings-card h2 { margin:0 0 6px; font-size:20px; }
+        .global-settings-card h2 { margin:0 0 6px; font-size:16px; }
         .global-settings-card h3 { margin:0; font-size:15px; }
         .settings-section { border-top:1px solid var(--divider-color); padding-top:12px; margin-top:12px; }
         .settings-section .global-settings { margin:0; }
         .global-settings summary { min-height:44px; box-sizing:border-box; display:list-item; }
-        .top { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; cursor:pointer; user-select:none; }
-        .toggle { min-height:32px; padding:4px 10px; font-size:16px; line-height:1; flex-shrink:0; }
+        .top { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+        .toggle { display:block; width:100%; min-height:44px; margin-top:8px; padding:8px 12px; font-size:14px; text-align:start; }
         .body.collapsed { display:none; }
-        .name { font-size:20px; font-weight:600; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+        .name { font-size:16px; font-weight:600; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
         .area,.muted { color:var(--secondary-text-color); font-size:13px; }
         select,button { font:inherit; min-height:44px; padding:8px 12px; border-radius:9px; border:1px solid var(--divider-color); background:var(--card-background-color); color:var(--primary-text-color); box-sizing:border-box; }
         button { cursor:pointer; }
@@ -237,7 +237,7 @@ export const panelView = {
         .chart-legend .lineswatch.noise { border-color:var(--secondary-text-color); border-top-style:dotted; }
         @media (max-width: 700px) {
           :host { padding:8px; }
-          h1 { font-size:22px; }
+          h1 { font-size:20px; }
           .grid { display:block; }
           .card { margin-bottom:10px; padding:12px; }
           .training { align-items:stretch; }
@@ -378,7 +378,7 @@ export const panelView = {
   _section(id, key, title, innerHtml) {
     const collapsed = this._sectionCollapsed(id, key);
     return `<div class="subsection${collapsed ? " collapsed" : ""}" data-section="${key}">
-      <div class="subsection-head" data-action="section-toggle" data-section="${key}" role="button" tabindex="0" aria-expanded="${!collapsed}"><span>${this._esc(title)}<span class="section-description">${this._esc(SECTION_DESCRIPTIONS[key])}</span></span><button class="sub-toggle" aria-expanded="${!collapsed}">${collapsed ? "▸" : "▾"}</button></div>
+      <button type="button" class="subsection-head" data-action="section-toggle" data-section="${key}" aria-expanded="${!collapsed}"><span>${this._esc(title)}<span class="section-description">${this._esc(SECTION_DESCRIPTIONS[key])}</span></span><span class="sub-toggle" aria-hidden="true">${collapsed ? "▸" : "▾"}</span></button>
       <div class="subsection-body">${innerHtml}</div>
     </div>`;
   },

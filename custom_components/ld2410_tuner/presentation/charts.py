@@ -12,7 +12,7 @@ from ..const import HISTORY_KEYS
 from ..history import pace, spans
 from ..history.policy import settings
 from ..worker import bridge
-from ..worker.supervisor import Busy
+from ..worker.supervisor import Busy, owned_preparation
 
 MAX_HISTORY_JOBS = 2
 
@@ -107,8 +107,12 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
             raise Busy("Chart refresh is busy; retry shortly")
 
         def prepare():
+            view = runtime._history_view(device_id, members=False)
+            requested_hours = max(0.1, min(settings(runtime.data)["human_days"] * 24, float(hours)))
+            view._snapshot_history_start = end - requested_hours * 3600
+            view._history_until = end
             return {
-                "views": {device_id: runtime._history_view(device_id, members=False)},
+                "views": {device_id: view},
                 "parameters": {
                     "device_id": device_id,
                     "keys": keys,
@@ -129,6 +133,9 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
 async def _build_history_series(runtime, cache_key, prepare):
     try:
         result = await bridge.calculate(runtime, "charts", prepare)
+        from ..worker.display import unpack_chart
+
+        result = await owned_preparation(runtime.hass.async_add_executor_job(unpack_chart, result))
         runtime._history_cache[cache_key] = result
         while len(runtime._history_cache) > 16:
             runtime._history_cache.popitem(last=False)

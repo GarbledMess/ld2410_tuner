@@ -68,8 +68,14 @@ export const panelRoomTimeline = {
   // otherwise taken from the selected range or saved period.
   _roomFieldValues(ui) {
     if (ui.fields) return ui.fields;
-    const period = ui.range || ui.edit;
-    const value = (time) => (period ? this._historyInputValue(time) : "");
+    const bounds = this._historyDayBounds(ui.day);
+    const now = Date.now() / 1000;
+    const period = ui.range ||
+      ui.edit || {
+        start: bounds.start,
+        end: now > bounds.start ? Math.min(bounds.end, now) : bounds.end,
+      };
+    const value = (time) => this._historyInputValue(time);
     return {
       start: value(period?.start),
       end: value(period?.end),
@@ -229,7 +235,13 @@ export const panelRoomTimeline = {
   },
 
   _changeRoomDay(rid, value) {
-    this._historyStateFor(rid).day = value.slice(0, 10);
+    const ui = this._historyStateFor(rid);
+    ui.day = value.slice(0, 10);
+    ui.fields = null;
+    ui.range = null;
+    ui.edit = null;
+    const section = this._roomGraphSection(rid.slice(5));
+    if (section) this._setRoomFields(section, this._roomFieldValues(ui));
     this._drawLayout();
   },
 

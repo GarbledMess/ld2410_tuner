@@ -160,6 +160,14 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
     "room plot includes both member radars",
   );
   assert.match(await timeline.innerText(), /signal/i);
+  assert.ok(
+    await timeline.locator('[data-action="history-start"]').inputValue(),
+    "room history starts with a usable time range",
+  );
+  assert.ok(
+    await timeline.locator('[data-action="history-end"]').inputValue(),
+    "the default room range has an end",
+  );
   const before = await page.evaluate(
     () =>
       requests.filter((r) => r.type.endsWith("history_series_multi")).length,
@@ -173,6 +181,85 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
     ),
     before,
     "polling reuses the room graph",
+  );
+  const loading = await page.evaluate(async () => {
+    const gid = "area:ux";
+    const group = panel._roomsData().groups[gid];
+    const original = panel._chartCall;
+    let release;
+    const gate = new Promise((resolve) => (release = resolve));
+    let calls = 0;
+    panel._chartCall = async (parameters) => {
+      calls++;
+      await gate;
+      return original.call(panel, parameters);
+    };
+    try {
+      const first = panel._loadRoomGraph(gid, group, true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      panel._roomGraphState(gid).loadedAt = 0;
+      const request = panel._roomGraphState(gid).request;
+      panel._data.devices.a.history.revision =
+        (panel._data.devices.a.history.revision || 0) + 1;
+      const polled = panel._loadRoomGraph(gid, group);
+      const unchanged = request === panel._roomGraphState(gid).request;
+      release();
+      await Promise.all([first, polled]);
+      return { unchanged, calls };
+    } finally {
+      panel._chartCall = original;
+      release();
+    }
+  });
+  assert.equal(
+    loading.unchanged,
+    true,
+    "polling cannot invalidate an active room request",
+  );
+  assert.equal(loading.calls, 2, "only one request per room radar is queued");
+  const failure = await page.evaluate(async () => {
+    const gid = "area:ux";
+    const group = panel._roomsData().groups[gid];
+    const original = panel._chartCall;
+    let calls = 0;
+    panel._chartCall = async () => {
+      calls++;
+      throw new Error("Unknown error");
+    };
+    try {
+      panel._roomGraphState(gid).loadedKey = null;
+      await panel._loadRoomGraph(gid, group, true);
+      panel._roomGraphState(gid).loadedAt = 0;
+      const before = calls;
+      await panel._loadRoomGraph(gid, group);
+      await panel._loadRoomGraph(gid, group);
+      const section = panel._roomGraphSection(gid);
+      return {
+        retried: calls !== before,
+        text: section.innerText,
+        graph: !!section.querySelector("[data-room-graph] svg"),
+      };
+    } finally {
+      panel._chartCall = original;
+    }
+  });
+  assert.equal(
+    failure.retried,
+    false,
+    "unchanged failed requests wait for explicit retry",
+  );
+  assert.doesNotMatch(
+    failure.text,
+    /No recorded signals for this day/,
+    "errors do not imply missing history",
+  );
+  assert.equal(
+    failure.graph,
+    true,
+    "a failed refresh retains the previous graph",
+  );
+  await page.evaluate(() =>
+    panel._loadRoomGraph("area:ux", panel._roomsData().groups["area:ux"], true),
   );
   const hit = graph.locator("[data-room-plot-hit]");
   await hit.scrollIntoViewIfNeeded();
@@ -192,7 +279,20 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
     /T12:00/,
   );
   const radar = zone.locator('[data-device-id="a"]');
-  await radar.locator('[data-action="open-history"]').click();
+  if (
+    await radar
+      .locator(".body")
+      .evaluate((node) => node.classList.contains("collapsed"))
+  )
+    await radar.locator('[data-action="toggle"]').click();
+  if (
+    await radar
+      .locator('[data-section="history"].subsection')
+      .evaluate((node) => node.classList.contains("collapsed"))
+  )
+    await radar
+      .locator('[data-action="section-toggle"][data-section="history"]')
+      .click();
   await page.evaluate(async () => {
     const card = panel.shadowRoot.querySelector(
       '[data-leaf-id="zone:ux"] [data-device-id="a"]',
@@ -222,7 +322,14 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
       .evaluate((node) => node.classList.contains("collapsed")),
     false,
   );
-  await radar.locator('[data-action="open-recommendations"]').click();
+  if (
+    await radar
+      .locator('[data-section="details"].subsection')
+      .evaluate((node) => node.classList.contains("collapsed"))
+  )
+    await radar
+      .locator('[data-action="section-toggle"][data-section="details"]')
+      .click();
   assert.equal(
     await radar
       .locator('[data-section="details"].subsection')

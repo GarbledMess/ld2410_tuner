@@ -14,8 +14,16 @@ from pathlib import Path
 package = types.ModuleType("probe_tuner")
 package.__path__ = [str(Path(__file__).resolve().parents[2] / "custom_components/ld2410_tuner")]
 sys.modules[package.__name__] = package
+from probe_tuner.const import HISTORY_KEYS  # noqa: E402
 from probe_tuner.history import commit, dayfile, daystore  # noqa: E402
-from probe_tuner.worker import bridge, flushing, maintenance, startup, transactions  # noqa: E402
+from probe_tuner.worker import (  # noqa: E402
+    bridge,
+    display,
+    flushing,
+    maintenance,
+    startup,
+    transactions,
+)
 
 
 def health():
@@ -39,7 +47,7 @@ async def main():
             base = 40 if index < 3000 else 5
             store.append(
                 "probe",
-                dayfile.Change(start + index, dict.fromkeys(range(4), base + index % 5)),
+                dayfile.Change(start + index, dict.fromkeys(range(18), base + index % 5)),
             )
         labels = [
             {"start": start, "end": start + 3000, "state": "present"},
@@ -86,6 +94,24 @@ async def main():
             store.append("probe", dayfile.End(end))
             assert await flushing.flush(runtime) > 0
 
+            chart = await bridge.calculate(
+                runtime,
+                "charts",
+                lambda: {
+                    "views": {"probe": view},
+                    "parameters": {
+                        "device_id": "probe",
+                        "keys": list(HISTORY_KEYS),
+                        "hours": 2,
+                        "max_points": 400,
+                        "end": end,
+                    },
+                },
+            )
+            chart = await asyncio.to_thread(display.unpack_chart, chart)
+            assert set(chart["series"]) == set(HISTORY_KEYS)
+            assert all(len(series["points"]) >= 200 for series in chart["series"].values())
+
             async def accept_storage(result, directory):
                 prepared, changes, report, staged = await asyncio.to_thread(
                     maintenance.load, result, directory
@@ -117,6 +143,10 @@ async def main():
             json.dumps(
                 {
                     "production_learning_children": 4,
+                    "protected_chart_gates": len(chart["series"]),
+                    "protected_chart_points": sum(
+                        len(s["points"]) for s in chart["series"].values()
+                    ),
                     "production_storage_children": 4,
                     "storage_recovered_rows": observed,
                     "synthetic_rows": 6000,
