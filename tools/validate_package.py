@@ -24,6 +24,7 @@ RUNTIME_FILES = (
     "worker/maintenance.py",
     "worker/flushing.py",
     "worker/bridge.py",
+    "worker/manifest.py",
     "worker/capture.py",
     "worker/codec.py",
     "worker/calculations.py",

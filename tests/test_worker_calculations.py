@@ -47,12 +47,28 @@ def test_unknown_operation_fails_before_history_access():
 
 
 def test_multi_view_uses_the_same_captured_file(tmp_path):
+    from tuner_under_test.worker import manifest
+
     source = view([block(0, 600, 40)], [])
+
+    def acquire():
+        with manifest.Writer(tmp_path / "manifest.sqlite") as sink:
+            assert (
+                capture.prepare_multi({"a": source, "b": source}, tmp_path / "private", sink=sink)
+                is None
+            )
+            return str(sink.path)
+
     with ThreadPoolExecutor() as executor:
-        request = executor.submit(
-            capture.prepare_multi, {"a": source, "b": source}, tmp_path
-        ).result()
-    assert request["views"]["a"]["days"] == request["views"]["b"]["days"]
+        path = executor.submit(acquire).result()
+    request = manifest.expand({"manifest": path})
+    shared = calculations.JobHistory()
+    first = calculations.restore(request["views"]["a"], shared)
+    second = calculations.restore(request["views"]["b"], shared)
+    date = first._days.days("any-name")[0]
+    key = "any-name", date
+    assert first._days.entries[key] == second._days.entries[key]
+    assert first._days.day(*key) is second._days.day(*key)
     assert len(list(tmp_path.rglob("*.day"))) == 1
 
 
@@ -114,20 +130,20 @@ def test_views_share_decoded_days_and_budget(tmp_path):
     assert shared.rows == 1
 
 
-def test_full_second_resolution_legacy_day_is_valid_worker_history(tmp_path):
+def test_dense_legacy_day_and_many_guesses_preserve_exact_worker_history(tmp_path):
     import datetime
     from array import array
 
     from tuner_under_test.history import dayfile, worker_snapshot
 
-    rows = 86400
+    rows = 172800
     day = dayfile.Day(
         0,
         86400,
-        array("d", range(rows)),
-        array("d", range(1, rows + 1)),
+        array("d", (index / 2 for index in range(rows))),
+        array("d", (index / 2 for index in range(1, rows + 1))),
         [array("f", [gate + 0.25]) * rows for gate in range(18)],
-        [],
+        [(index, index + 1, "present", 2, 0) for index in range(4097)],
     )
     path = tmp_path / "legacy.day"
     path.write_bytes(dayfile.encode_day(day))
@@ -186,16 +202,14 @@ def test_history_budget_bounds_resident_cache_not_entire_retention(tmp_path):
     assert store.day("radar", datetime.date(1970, 1, 1)).vector(0)[0] == 0
 
 
-def test_one_day_must_still_fit_resident_budget():
+def test_one_day_above_cache_budget_bypasses_retention():
     from array import array
 
     from tuner_under_test.history import dayfile
-    from tuner_under_test.worker.history import HistoryRejected
 
     day = dayfile.Day(0, 1, array("d", [0]), array("d", [1]), [b"\0"] * 18, [])
     shared = calculations.JobHistory()
-    with pytest.raises(HistoryRejected, match="One decoded day"):
-        shared.retain("day", day, {"max_rows": 1, "max_guesses": 1, "max_raw_bytes": 33})
+    shared.retain("day", day, {"max_rows": 1, "max_guesses": 1, "max_raw_bytes": 33})
     assert not shared.cache
     assert shared.rows == shared.raw_bytes == 0
 

@@ -87,16 +87,6 @@ def test_signature_names_default_and_nondefault_policy_explicitly():
     }
 
 
-def test_no_module_level_auto_weight_constant_remains():
-    package = Path(harness.ROOT)
-    offenders = [
-        str(path.relative_to(package))
-        for path in package.rglob("*.py")
-        if "AUTO_WEIGHT" in path.read_text(encoding="utf-8")
-    ]
-    assert offenders == []
-
-
 # Shared blend policy
 
 
@@ -169,13 +159,6 @@ def conflict(slow, weight):
     return result["proposals"]["g0_move"]["threshold"]
 
 
-def test_zero_weight_keeps_automatic_evidence_a_tie_break_only():
-    # Human evidence decides (thresholds 5-24 all detect every row); the automatic rows
-    # cannot separate those, so the reviewed native choice stays fixed.
-    expected = parity()["device"]["conflict_4"]["result"]["proposals"]["g0_move"]["threshold"]
-    assert conflict(4, 0.0) == expected == 17
-
-
 def test_full_weight_automatic_evidence_outweighs_a_small_human_cost():
     # One independent automatic episode at 0.9, corrected by the quality model's conservative
     # prior (0.75) to 0.675, beside one human episode: share 0.25 x 0.675 / 1.675 ~ 0.10, so
@@ -227,6 +210,10 @@ def test_zero_weight_device_fit_with_automatic_evidence_matches_native_baseline(
     # A new day-store recording must produce the same audit fingerprint and full report.
     assert result == harness.fit(rows, keys, automatic=guesses, automatic_weight=0.0)
     assert result == frozen_case["result"]
+    if name == "conflict_4":
+        # Automatic evidence remains a tie-break: all thresholds 5-24 detect every
+        # human row, and the reviewed native choice stays fixed.
+        assert result["proposals"]["g0_move"]["threshold"] == 17
     thresholds = {key: item["threshold"] for key, item in result["proposals"].items()}
     rank = list(scenarios.device_rank(rows, keys, guesses, thresholds, 0.0))
     # Native rank is frozen directly, including every tie-break key.
@@ -239,6 +226,8 @@ def test_zero_weight_room_fit_with_automatic_evidence_matches_native_baseline(na
     slow = int(name.split("_")[1])
     result = fitting.fit(scenarios.room_conflict(slow), 0, 1200, automatic_weight=0.0)
     assert rounded(json.loads(json.dumps(result))) == rounded(frozen_case["result"])
+    if name == "conflict_2":
+        assert result["thresholds"]["a"]["g0_move"] < 25
     objective = Objective(scenarios.room_conflict(slow), 0, 1200, automatic_weight=0.0)
     rank = list(objective.rank(result["thresholds"]))
     assert rank == frozen_case["rank"]
@@ -302,11 +291,6 @@ def test_room_objective_zero_weight_ranks_human_cost_first():
     rates = objective.rates(thresholds)
     human = sum(100 * f * r for f, r in zip((5, 1), rates["human"], strict=True))
     assert objective.rank(thresholds)[0] == round(human, 9)
-
-
-def test_room_fit_zero_weight_keeps_human_preference():
-    result = fitting.fit(room_conflict(2), 0, 1200, automatic_weight=0.0)
-    assert result["thresholds"]["a"]["g0_move"] < 25
 
 
 def test_room_fit_weighted_automatic_empty_evidence_counts():

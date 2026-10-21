@@ -23,10 +23,12 @@ class JobHistory:
 
     def retain(self, mark, day, budgets):
         counts = _counts(day)
-        if any(actual > budgets[name] for name, actual in counts.items()):
-            raise history.HistoryRejected("One decoded day exceeds the resident history budget")
+        if any(
+            budgets[name] is not None and actual > budgets[name] for name, actual in counts.items()
+        ):
+            return
         while self.cache and any(
-            getattr(self, _LEDGERS[name]) + actual > budgets[name]
+            budgets[name] is not None and getattr(self, _LEDGERS[name]) + actual > budgets[name]
             for name, actual in counts.items()
         ):
             _, previous = self.cache.popitem(last=False)
@@ -49,7 +51,8 @@ def _counts(day):
         "max_raw_bytes": sum(
             len(column) * getattr(column, "itemsize", 1)
             for column in (day.times, day.ends, *day.columns)
-        ),
+        )
+        + len(day.guesses) * history.GUESS_BYTES,
     }
 
 
@@ -57,16 +60,23 @@ class ReadOnlyDays:
     """Private worker cache with aggregate allocation limits enforced on first read."""
 
     def __init__(self, request, shared=None):
-        self.entries = {
-            (item["device_id"], datetime.date.fromisoformat(item["date"])): item
-            for item in request["days"]
-        }
+        if isinstance(request["days"], dict):
+            from .manifest import DayEntries
+
+            self.entries = DayEntries(request["days"])
+        else:
+            self.entries = {
+                (item["device_id"], datetime.date.fromisoformat(item["date"])): item
+                for item in request["days"]
+            }
         self.live_dates = request.get("live_dates", {})
         self.budgets = request["budgets"]
         self.shared = JobHistory() if shared is None else shared
         self.root = self.shared.root
 
     def days(self, device_id):
+        if hasattr(self.entries, "dates"):
+            return self.entries.dates(device_id)
         return sorted(date for key, date in self.entries if key == device_id)
 
     def live_date(self, device_id):
@@ -125,29 +135,41 @@ class ReadOnlyDays:
         return summaries.remember(day, result)
 
     def _read(self, entry, date):
+        if self.budgets["max_raw_bytes"] <= 0:
+            raise history.HistoryRejected("Invalid resident history budget")
         if entry["path"] is None:
             day = dayfile.DayBuilder(*daystore.bounds(date)).day()
         else:
-            physical = entry["path"], tuple(entry["identity"])
-            if physical not in self.shared.files:
-                self.shared.file_bytes += int(entry["identity"][3])
-                self.shared.files.add(physical)
-            if self.shared.file_bytes > self.budgets["max_file_bytes"]:
-                raise history.HistoryRejected("Aggregate history file budget exceeded")
-            reference = worker_snapshot.FileReference(
-                Path(entry["path"]), tuple(map(int, entry["identity"]))
-            )
+            reference = self._reference(entry)
             day = history.read(
                 reference,
-                max_rows=min(history.DAY_ROWS, self.budgets["max_rows"]),
-                max_guesses=min(4096, self.budgets["max_guesses"]),
-                max_raw_bytes=min(history.DAY_BYTES, self.budgets["max_raw_bytes"]),
-                max_compressed_bytes=history.DAY_BYTES,
+                max_rows=self.budgets["max_rows"],
+                max_guesses=self.budgets["max_guesses"],
+                max_raw_bytes=history.DAY_BYTES,
+                max_compressed_bytes=None,
             )
         late = [dayfile.GuessSpan(*span) for span in entry["late"]]
-        if len(late) + len(day.guesses) > self.budgets["max_guesses"]:
+        if (
+            self.budgets["max_guesses"] is not None
+            and len(late) + len(day.guesses) > self.budgets["max_guesses"]
+        ):
             raise history.HistoryRejected("Aggregate late guess budget exceeded")
         return dayfile.splice(day, late)
+
+    def _reference(self, entry):
+        physical = entry["path"], tuple(entry["identity"])
+        if self.budgets["max_file_bytes"] is not None and physical not in self.shared.files:
+            self.shared.file_bytes += int(entry["identity"][3])
+            self.shared.files.add(physical)
+        if (
+            self.budgets["max_file_bytes"] is not None
+            and self.shared.file_bytes > self.budgets["max_file_bytes"]
+        ):
+            raise history.HistoryRejected("Aggregate history file budget exceeded")
+        reference = worker_snapshot.FileReference(
+            Path(entry["path"]), tuple(map(int, entry["identity"]))
+        )
+        return reference
 
 
 def restore(request, shared=None):
@@ -198,6 +220,10 @@ def _learn(view, parameters):
 
 def execute(request):
     """Run an allowlisted complete job, never a named Python callable."""
+    if "manifest" in request:
+        from .manifest import expand
+
+        request = expand(request)
     operation = request.get("operation")
     if operation not in (
         "learn",

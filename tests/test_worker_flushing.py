@@ -155,11 +155,12 @@ def test_current_day_columns_are_not_copied_for_journal_flush(tmp_path):
 
     store = DayStore(tmp_path / "source")
     start = bounds(date(2026, 10, 20))[0]
-    for offset in range(100):
-        store.append("a", dayfile.Change(start + offset, {0: offset % 100}))
-    metadata, _ = flushing.capture(store, tmp_path, start + 101)
+    for offset in range(20000):
+        store.append("a", dayfile.Change(start + offset, dict.fromkeys(range(18), offset % 100)))
+    metadata, ownership = flushing.capture(store, tmp_path, start + 20001)
     assert metadata["live"][0]["rows"] == 0
-    assert len(store._live["a"].builder.times) == 100
+    assert 0 < ownership["counts"][0] < 20000  # Codec node allowance bounds this piece.
+    assert len(store._live["a"].builder.times) == 20000
 
 
 def test_closing_raw_byte_budget_is_checked_before_copy(tmp_path):
@@ -213,14 +214,16 @@ def test_pending_record_budget_precedes_copies(tmp_path):
     copied.assert_not_called()
 
 
-def test_excessive_rollover_is_refused_before_work(tmp_path):
+def test_rollover_capture_allocates_only_one_window(tmp_path):
     from tuner_under_test.worker import flushing
 
     store = DayStore(tmp_path)
     now = time.time()
     store.append("a", dayfile.Change(now - 129 * 86400, {0: 20}))
-    with pytest.raises(ValueError, match="date budget"):
+    with patch.object(flushing, "ROLLOVER_DAYS", 2, create=True):
         flushing.capture(store, tmp_path, now)
+    assert len(store._closing["a"]) == 2
+    assert store._live["a"].date == date_of(now - 127 * 86400)
 
 
 def test_corrupted_record_handoff_count_is_refused(tmp_path):
@@ -268,6 +271,63 @@ class ProductionFlushTests(unittest.IsolatedAsyncioTestCase):
         self.worker_transport.before = None
         await flushing.flush(self.runtime, locked=True)
         self.assertEqual(store._live["a"].buffer, [])
+
+    async def test_flush_drains_finite_target_across_worker_turns(self):
+        from tuner_under_test.worker import flushing
+
+        now = time.time()
+        store = self.runtime._days
+        initial = [dayfile.Change(now + n, {0: 20 + n}) for n in range(5)]
+        for record in initial:
+            store.append("a", record)
+        appended = []
+
+        async def concurrent(request):
+            record = dayfile.Change(now + 10 + len(appended), {0: 50 + len(appended)})
+            appended.append(record)
+            store.append("a", record)
+
+        self.worker_transport.before = concurrent
+        with patch.object(flushing, "MAX_RECORDS", 2):
+            await flushing.flush(self.runtime)
+        self.assertEqual(len(self.worker_transport.requests), 3)
+        self.assertEqual(store._live["a"].buffer, appended)
+        raw = store._path("a", date_of(now), ".log").read_bytes()
+        self.assertEqual(dayfile.decode_log(raw, bounds(date_of(now))[0]), initial)
+        self.worker_transport.before = None
+
+    async def test_rollover_drains_to_captured_today_in_bounded_turns(self):
+        from tuner_under_test.worker import flushing
+
+        now = time.time()
+        store = self.runtime._days
+        store.append("a", dayfile.Change(now - 5 * 86400, {0: 20}))
+        closing_sizes = []
+
+        async def inspect(request):
+            closing_sizes.append(sum(len(days) for days in store._closing.values()))
+
+        self.worker_transport.before = inspect
+        with patch.object(flushing, "ROLLOVER_DAYS", 2, create=True):
+            await flushing.flush(self.runtime)
+        self.assertEqual(store.live_date("a"), date_of(now))
+        self.assertFalse(any(store._closing.values()))
+        self.assertFalse(store._live["a"].buffer)
+        self.assertEqual(len(closing_sizes), 3)
+        self.assertLessEqual(max(closing_sizes), 2)
+        self.assertEqual(len(list(store.folder("a").glob("*.day"))), 5)
+        self.worker_transport.before = None
+
+    async def test_device_count_is_batched_instead_of_refused(self):
+        from tuner_under_test.worker import flushing
+
+        now = time.time()
+        store = self.runtime._days
+        for number in range(129):
+            store.append(str(number), dayfile.Change(now, {0: 20}))
+        await flushing.flush(self.runtime)
+        self.assertEqual(len(self.worker_transport.requests), 2)
+        self.assertTrue(all(not live.buffer for live in store._live.values()))
 
     async def test_empty_runtime_needs_no_worker(self):
         from tuner_under_test.worker import flushing
@@ -320,3 +380,83 @@ class ProductionFlushTests(unittest.IsolatedAsyncioTestCase):
         date = store.live_date("a")
         raw = store._path("a", date, ".log").read_bytes()
         self.assertEqual(dayfile.decode_log(raw, bounds(date)[0]), [replacement])
+
+
+def test_bounded_flush_drains_closing_and_late_prefixes(tmp_path):
+    from tuner_under_test.worker import flushing
+
+    store = DayStore(tmp_path / "source")
+    store.root.mkdir()
+    start = bounds(date(2026, 10, 19))[0]
+    records = [dayfile.Change(start + offset, {0: offset}) for offset in range(1, 6)]
+    for record in records:
+        store.append("a", record)
+    store.append("a", dayfile.Change(start + 86401, {0: 30}))
+    spans = [
+        dayfile.GuessSpan(start + 86402 + n, start + n * 2, start + n * 2 + 1, "present", 80, 1)
+        for n in range(3)
+    ]
+    for span in spans:
+        store.append("a", span)
+    with patch.object(flushing, "MAX_RECORDS", 2):
+        for index in range(10):
+            result, ownership = transaction(store, tmp_path / str(index), start + 86410)
+            assert (
+                sum(ownership["counts"])
+                + sum(
+                    len(values) for dates in ownership["late"].values() for values in dates.values()
+                )
+                <= 2
+            )
+            flushing.publish(store, result, ownership, tmp_path / str(index))
+            if not flushing._pending(store):
+                break
+        assert not store._closing.get("a")
+        assert not store._late.get("a")
+        assert not store._live["a"].buffer
+    finished = store.day("a", date(2026, 10, 19))
+    assert list(finished.times) == [record.time for record in records]
+    assert finished.guesses == [(span.start, span.end, "present", 80, 1) for span in spans]
+
+
+def test_record_bytes_choose_prefix_before_copy(tmp_path):
+    from tuner_under_test.worker import flushing
+
+    store = DayStore(tmp_path / "source")
+    store.root.mkdir()
+    now = time.time()
+    first = dayfile.Guess(now, "present", 80, 1)
+    second = dayfile.Guess(now + 1, "absent", 70, 2)
+    store.append("a", first)
+    store.append("a", second)
+    # Leave room for one record after the reserved JSON container overhead.
+    import json
+
+    size = len(json.dumps(flushing._record(first), separators=(",", ":")).encode()) + 1
+    with patch.object(flushing, "MAX_MESSAGE_BYTES", 65536 + size):
+        result, ownership = transaction(store, tmp_path / "job", now + 2)
+        assert ownership["counts"] == [1]
+        assert store._live["a"].buffer == [first, second]
+        flushing.publish(store, result, ownership, tmp_path / "job")
+    assert store._live["a"].buffer == [second]
+
+
+def test_closing_days_share_resident_heap_budget_across_batches(tmp_path):
+    from tuner_under_test.worker import flushing, startup
+
+    store = DayStore(tmp_path / "source")
+    store.root.mkdir()
+    start = bounds(date(2026, 10, 19))[0]
+    for key in ("a", "b"):
+        store.append(key, dayfile.Change(start + 1, {0: 20}))
+        store.append(key, dayfile.Change(start + 86401, {0: 30}))
+    with patch.object(startup, "MAX_DECODED_BYTES", 4 * 4096):
+        result, ownership = transaction(store, tmp_path / "one", start + 86403)
+        assert sum(done for _, _, done in ownership["items"]) == 1
+        flushing.publish(store, result, ownership, tmp_path / "one")
+        assert sum(len(days) for days in store._closing.values()) == 1
+        result, ownership = transaction(store, tmp_path / "two", start + 86403)
+        flushing.publish(store, result, ownership, tmp_path / "two")
+    assert not any(store._closing.values())
+    for key in ("a", "b"):
+        assert store.day(key, date(2026, 10, 19)).vector(0)[0] == 20

@@ -13,8 +13,9 @@ from .supervisor import Supervisor, owned_preparation
 
 MESSAGE_BYTES = 16 * 1024 * 1024
 MESSAGE_NODES = 1024 * 1024
-TREE_BYTES = 256 * 1024 * 1024
-TREE_FILES = 8192
+# The store only ever replaces these atomically, so a private hard link cannot
+# be written through. Logs are appended in place and must be copied.
+LINKED = (".day", ".sum")
 
 
 def _message(kind, data):
@@ -73,27 +74,48 @@ def _regular(root, path):
 
 def _files(root, selected):
     paths = root.rglob("*") if selected is None else (root / item for item in selected)
-    for index, path in enumerate(paths):
-        if index >= TREE_FILES * 2:
-            raise ValueError("Storage directory entry budget exceeded")
+    for path in paths:
         stamp = _regular(root, path)
         if stamp is not None:
             yield path, stamp
 
 
+def _link(source, target, expected):
+    """Share an immutable file's inode; None when this filesystem cannot link."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, target, follow_symlinks=False)
+    except OSError:
+        return None
+    found = target.lstat()
+    if not stat.S_ISREG(found.st_mode) or _stamp(found) != expected:
+        raise ValueError("Storage changed during snapshot")
+    return True
+
+
+def _space(target, files):
+    copied = sum(stamp[-1] for path, stamp in files if path.suffix not in LINKED)
+    existing = target
+    while not existing.exists():
+        existing = existing.parent
+    if copied > shutil.disk_usage(existing).free:
+        raise ValueError(f"Storage snapshot needs {copied} bytes of free space")
+
+
 def copy_tree(root, target, selected=None):
-    """Copy regular bounded source files; never mutate or follow source links."""
+    """Clone regular source files; never mutate or follow source links.
+
+    Size is governed by free space for copied bytes, not a file or byte count:
+    finished files are hard-linked where the filesystem allows it.
+    """
     root, target = Path(root), Path(target)
-    files, total = [], 0
-    if root.exists():
-        for path, stamp in _files(root, selected):
-            total += stamp[-1]
-            if total > TREE_BYTES or len(files) >= TREE_FILES:
-                raise ValueError("Storage snapshot exceeds file/byte budget")
-            files.append((path, stamp))
+    files = list(_files(root, selected)) if root.exists() else []
+    _space(target, files)
     target.mkdir(parents=True, exist_ok=True)
     for path, stamp in files:
-        _copy(path, target / path.relative_to(root), stamp)
+        destination = target / path.relative_to(root)
+        if path.suffix not in LINKED or _link(path, destination, stamp) is None:
+            _copy(path, destination, stamp)
     return files
 
 

@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 import test_tuner as harness
-from tuner_under_test.worker import calculations, codec
+from tuner_under_test.worker import calculations, codec, manifest
 
 scoring = sys.modules["tuner_under_test.calibration.scoring"]
 comparison = sys.modules["tuner_under_test.calibration.comparison"]
@@ -182,7 +182,7 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         views = []
 
         async def execute(request):
-            views.append(calculations.restore(request["views"]["a"]))
+            views.append(calculations.restore(manifest.expand(request)["views"]["a"]))
             return assessment(codec.decode(request["parameters"])["context"])
 
         self.worker_transport.respond = execute

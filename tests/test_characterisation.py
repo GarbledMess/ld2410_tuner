@@ -151,22 +151,17 @@ def check(name):
 
 
 class CharacterisationTests(unittest.TestCase):
-    def test_existing_native_report_fields_unchanged(self):
-        """Role fields are additive to the reviewed native duration report."""
+    def test_room_assessment_two_members(self):
+        """Pin the full report and the additive role-field compatibility contract."""
         report = room_assessment_two_members()
+        golden("room_assessment_two_members", report)
+        self.assertTrue(all(set(roles.FIELDS) <= set(d) for d in report["devices"].values()))
         expected = json.loads((FIXTURES / "room_assessment_two_members.json").read_text())
         for value in (report, expected):
             for device in value["devices"].values():
                 for name in roles.FIELDS:
                     del device[name]
         self.assertEqual(canonical(report), canonical(expected))
-
-    def test_role_fields_are_the_only_additions(self):
-        report = room_assessment_two_members()
-        self.assertTrue(all(set(roles.FIELDS) <= set(d) for d in report["devices"].values()))
-
-    def test_room_assessment_two_members(self):
-        check("room_assessment_two_members")
 
     def test_joint_fit_examples(self):
         check("joint_fit_examples")

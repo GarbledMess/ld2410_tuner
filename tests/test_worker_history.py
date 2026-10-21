@@ -25,7 +25,7 @@ def test_empty_day_roundtrip():
 def test_counts_rejected_before_columns(payload, monkeypatch):
     monkeypatch.setattr(dayfile, "_columns", lambda *args: pytest.fail("allocated columns"))
     with pytest.raises(history.HistoryRejected):
-        history.decode(payload)
+        history.decode(payload, max_rows=32768, max_guesses=4096)
 
 
 def test_expansion_bomb_is_bounded():
@@ -64,7 +64,7 @@ def test_legacy_float_columns_and_guesses_preserved():
 
 def test_specific_budget_refusal_is_not_reported_as_corrupt_history():
     with pytest.raises(history.HistoryRejected, match="History count budget exceeded"):
-        history.decode(encoded(rows=32769))
+        history.decode(encoded(rows=32769), max_rows=32768)
 
 
 @pytest.mark.parametrize(

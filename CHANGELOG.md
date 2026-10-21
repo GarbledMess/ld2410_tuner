@@ -1,5 +1,28 @@
 # Release notes
 
+## 1.26.2 - 2026-10-21
+
+- Stop rejecting valid history because of its size. Learning, references, charts and
+  Seen-by no longer refuse a day above 131,072 rows or 4,096 guess runs, more than
+  16 radars or 512 days, or more than 512 MiB of history files. Each decoded day is
+  instead bounded by its actual memory (128 MiB) inside the unchanged mandatory limits.
+- The resident day cache evicts or bypasses an oversized day instead of failing a job.
+  Job day metadata is spooled to a private on-disk index rather than held in memory.
+- Manual learning and other interactive jobs wait for a worker turn instead of
+  failing when the worker is busy.
+- Flushes write bounded prefixes of a large backlog and keep the rest pending for
+  the next turn, preserving Clear generations and publication rollback.
+- Storage transactions no longer refuse histories above 256 MiB or 8,192 files.
+  Finished day and summary files are hard-linked into the private clone (with a
+  copy fallback); only live logs are copied, and the refusal is now free disk space.
+- Remove repeated characterisation runs and an obsolete source-text test.
+
+Validation: 2,269 tests passed with 97.06% coverage in constrained Home Assistant
+(one CPU, 1,536 MiB). Startup recovered 220,000 rows and 44,000 guess runs exactly
+(HA p95 12.491 ms); the production worker probe answered 232 requests (p95 15.314 ms);
+a protected child learned 86,400 rows in 5.071 CPU seconds. Browser regressions passed.
+Jobs that exceed the 120-second CPU limit still fail; resumable work is not yet added.
+
 ## 1.26.1 - 2026-10-21
 
 - Recover dense current-day history without rejecting normal per-second automatic

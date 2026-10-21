@@ -74,22 +74,15 @@ def test_capture_no_store_and_metadata_is_detached(tmp_path):
     assert calculations.restore(request).data["devices"]["any-name"]["history_labels"] == []
 
 
-def test_production_capture_allows_a_dense_week_within_raw_budget():
-    from tuner_under_test.worker.capture import CaptureLimits
-
-    limits = CaptureLimits()
-    assert limits.max_rows >= 7 * 86400
-
-
-def test_production_capture_accepts_a_month_for_all_supported_radars(tmp_path):
+def test_production_capture_accepts_history_beyond_old_device_and_day_counts(tmp_path):
     import datetime
 
     from tuner_under_test.history import daystore
 
     store = daystore.DayStore(tmp_path / "history")
-    devices = {f"radar{index}": {} for index in range(16)}
+    devices = {f"radar{index}": {} for index in range(17)}
     for key in devices:
-        for offset in range(31):
+        for offset in range(33):
             date = datetime.date(1970, 1, 1) + datetime.timedelta(days=offset)
             path = store._path(key, date, ".day")
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,7 +92,7 @@ def test_production_capture_accepts_a_month_for_all_supported_radars(tmp_path):
     run(store.open, 40 * 86400)
     source = SimpleNamespace(data={"devices": devices}, _days=store)
     request = run(capture.prepare, source, "all", tmp_path / "capture")
-    assert len(request["days"]) == 16 * 31
+    assert len(request["days"]) == 17 * 33
 
 
 @pytest.mark.parametrize("multiple", [False, True])

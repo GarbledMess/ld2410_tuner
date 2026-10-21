@@ -17,12 +17,12 @@ from .history import _nonblocking
 # A full day can contain more than 131k changes or 32k automatic guess runs.
 # Bound the transferred buffers and their restored heap, rather than assuming
 # that a normal radar records less than once per second.
-MAX_ROWS = 1048576
-MAX_GUESSES = 1048576
-MAX_BYTES = 64 * 1024 * 1024
 MAX_DECODED_BYTES = 192 * 1024 * 1024
+MAX_BYTES = MAX_DECODED_BYTES
 RUN = struct.Struct("<ddBBB")
 CONFIRMED = struct.Struct("<dddBBB")
+MAX_ROWS = MAX_BYTES // 34  # Minimum raw bytes per valid row, not a sampling-rate cap.
+MAX_GUESSES = MAX_BYTES // RUN.size
 FIELDS = (*convert.STORED, *convert.UNTIMED, "label_revision")
 
 
@@ -137,11 +137,14 @@ def _size(item):
     flags = item.get("floats", [])
     if len(flags) != 18 or any(type(flag) is not bool for flag in flags):
         raise ValueError("Invalid startup column flags")
-    return (
+    size = (
         rows * (16 + sum(4 if flag else 1 for flag in flags))
         + guesses * RUN.size
         + confirmed * CONFIRMED.size
     )
+    if size > MAX_BYTES:
+        raise ValueError(f"Startup raw file budget exceeded: raw_bytes={size} limit={MAX_BYTES}")
+    return size
 
 
 def _decoded_size(item):
@@ -159,19 +162,14 @@ def _decoded_size(item):
     )
 
 
-def _budget(result, *, max_items=128):
+def _budget(result, *, max_items=None):
     live = result["live"]
-    if len(live) > max_items:
+    if max_items is not None and len(live) > max_items:
         raise ValueError(
             f"Startup live device budget exceeded: actual={len(live)} limit={max_items}"
         )
     total = sum(_size(item) for item in live)
     rows = sum(item["rows"] for item in live)
-    if total > MAX_BYTES or rows > MAX_ROWS:
-        raise ValueError(
-            f"Startup handoff byte/row budget exceeded: raw_bytes={total} limit={MAX_BYTES}; "
-            f"rows={rows} row_limit={MAX_ROWS}"
-        )
     decoded = sum(_decoded_size(item) for item in live)
     if decoded > MAX_DECODED_BYTES:
         raise ValueError(

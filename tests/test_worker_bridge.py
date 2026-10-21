@@ -65,6 +65,46 @@ def test_reference_profile_budget_precedes_reference_view_copy():
         bridge.preflight(owner)
 
 
+def test_job_manifest_pages_day_metadata_without_changing_the_views(tmp_path):
+    import datetime
+
+    from tuner_under_test.worker.calculations import restore
+    from tuner_under_test.worker.manifest import Writer, expand
+
+    path = tmp_path / "history.sqlite"
+    start = datetime.date(2025, 1, 1)
+    days = [
+        {
+            "device_id": "a",
+            "date": str(start + datetime.timedelta(days=i)),
+            "path": None,
+            "identity": None,
+            "late": [],
+        }
+        for i in range(6000)
+    ]
+    request = {
+        "data": {"devices": {"a": {}}},
+        "attributes": {},
+        "days": days,
+        "budgets": {},
+        "live_dates": {},
+    }
+    with Writer(path) as writer:
+        writer("view", request)
+    expanded = expand({"manifest": str(path), "operation": "charts", "parameters": {}})
+    assert list(expanded["views"]) == ["view"]
+    restored = restore(expanded["views"]["view"])
+    assert restored.data == request["data"]
+    assert restored._days.days("a") == [start + datetime.timedelta(days=i) for i in range(6000)]
+    assert restored._days.entries[("a", start)] == days[0]
+    assert restored._days.days("unknown") == []
+    # Executor jobs read from other threads, and the owner removes the job
+    # directory while results may still reference these lazy views.
+    assert asyncio.run(asyncio.to_thread(len, restored._days.entries)) == 6000
+    path.unlink()
+
+
 def test_seen_by_defers_view_copy_until_admission(monkeypatch):
     from tuner_under_test.rooms import seen_by
 
@@ -86,7 +126,7 @@ def test_seen_by_defers_view_copy_until_admission(monkeypatch):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("operation", ["seen_by", "references"])
+@pytest.mark.parametrize("operation", ["seen_by", "references", "learn"])
 def test_background_calculation_waits_for_saturated_worker_without_copying(operation, monkeypatch):
     from tuner_under_test.worker import codec
 
@@ -147,8 +187,14 @@ def test_cancelling_background_admission_keeps_active_work_owned(monkeypatch):
         await entered.wait()
         pending = asyncio.create_task(service.run(prepare))
         await asyncio.sleep(0)
-        with pytest.raises(supervisor.Busy):
-            await bridge.calculate(owner, "learn", lambda: pytest.fail("copied on rejection"))
+        learning = asyncio.create_task(
+            bridge.calculate(owner, "learn", lambda: pytest.fail("copied while waiting"))
+        )
+        await asyncio.sleep(0)
+        assert not learning.done()
+        learning.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await learning
         waiting = asyncio.create_task(
             bridge.calculate(owner, "seen_by", lambda: pytest.fail("copied while waiting"))
         )

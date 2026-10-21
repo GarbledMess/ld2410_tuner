@@ -40,16 +40,24 @@ def test_consumer_runs_after_reap_before_directory_cleanup_and_holds_admission()
     asyncio.run(run())
 
 
-def test_private_tree_copy_refuses_symlinks_and_size_overruns(tmp_path, monkeypatch):
+def test_private_tree_copy_refuses_copies_beyond_free_space(tmp_path, monkeypatch):
+    import shutil
+
     from tuner_under_test.worker import transactions
 
     original, private = tmp_path / "original", tmp_path / "private"
     original.mkdir()
-    (original / "record.day").write_bytes(b"recording")
-    monkeypatch.setattr(transactions, "TREE_BYTES", 4)
-    with pytest.raises(ValueError, match="budget"):
+    (original / "record.log").write_bytes(b"recording")
+    (original / "record.day").write_bytes(b"finished day, linked rather than copied")
+    usage = shutil.disk_usage(tmp_path)
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: usage._replace(free=8))
+    with pytest.raises(ValueError, match="free space"):
         transactions.copy_tree(original, private)
-    assert (original / "record.day").read_bytes() == b"recording"
+    assert not private.exists()
+    assert (original / "record.log").read_bytes() == b"recording"
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: usage._replace(free=9))
+    transactions.copy_tree(original, private)
+    assert (private / "record.log").read_bytes() == b"recording"
 
 
 def test_transaction_failure_removes_private_tree_and_preserves_original(tmp_path):

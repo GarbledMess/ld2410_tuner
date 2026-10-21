@@ -59,15 +59,13 @@ def test_count_failure_reports_counts_and_limits():
 @pytest.mark.parametrize(
     "descriptors,reason",
     [
-        ([{"rows": 1, "floats": [False] * 18}] * 129, "device.*actual=129"),
-        ([{"rows": 600000, "floats": [False] * 18}] * 2, "row.*rows=1200000"),
-        ([{"rows": 800000, "floats": [True] * 18}], "raw_bytes=70400000"),
+        ([{"rows": 1, "floats": [False] * 18}] * 129, "many devices"),
+        ([{"rows": 600000, "floats": [False] * 18}] * 2, "many rows"),
+        ([{"rows": 800000, "floats": [True] * 18}], "large raw day"),
     ],
 )
-def test_aggregate_bounds_reject_before_any_raw_file_read(tmp_path, descriptors, reason):
-    with patch.object(startup, "_read", side_effect=AssertionError("read before budget")):
-        with pytest.raises(ValueError, match=reason):
-            startup.load({"live": descriptors}, tmp_path)
+def test_valid_handoffs_are_governed_by_restored_memory_not_old_counts(descriptors, reason):
+    startup._budget({"live": descriptors})
 
 
 def test_decoded_budget_accepts_exact_boundary_and_rejects_next_record():
@@ -79,7 +77,7 @@ def test_decoded_budget_accepts_exact_boundary_and_rejects_next_record():
             startup._budget({"live": [{**descriptor, "confirmed": 3}]})
 
 
-@pytest.mark.parametrize("mode,expected", [("storage", 64), ("numerical", 16)])
+@pytest.mark.parametrize("mode,expected", [("storage", 192), ("numerical", 16)])
 def test_child_file_limit_matches_storage_handoff_without_changing_cpu_or_memory(mode, expected):
     package = str(startup.__file__.rsplit("worker", 1)[0])
     script = "\n".join(

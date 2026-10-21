@@ -37,25 +37,65 @@ def assert_original(runtime):
     assert (runtime._days.root / "original.day").read_bytes() == b"original history"
 
 
-@pytest.mark.parametrize("limit", ["files", "entries", "depth"])
-def test_snapshot_refuses_file_entry_and_depth_overruns(tmp_path, monkeypatch, limit):
+def test_snapshot_refuses_nested_directories_beyond_the_store_layout(tmp_path):
     root = tmp_path / "history"
-    root.mkdir()
-    if limit == "files":
-        (root / "a.day").write_bytes(b"a")
-        (root / "b.day").write_bytes(b"b")
-        monkeypatch.setattr(transactions, "TREE_FILES", 1)
-    elif limit == "entries":
-        for index in range(3):
-            (root / str(index)).mkdir()
-        monkeypatch.setattr(transactions, "TREE_FILES", 1)
-    else:
-        folder = root / "a" / "b"
-        folder.mkdir(parents=True)
-        (folder / "c.day").write_bytes(b"c")
-    with pytest.raises(ValueError, match="budget"):
+    folder = root / "a" / "b"
+    folder.mkdir(parents=True)
+    (folder / "c.day").write_bytes(b"c")
+    with pytest.raises(ValueError, match="depth"):
         transactions.copy_tree(root, tmp_path / "private")
     assert not (tmp_path / "private").exists()
+
+
+def test_large_snapshot_links_finished_files_and_copies_appendable_logs(tmp_path):
+    root = tmp_path / "history"
+    (root / "a").mkdir(parents=True)
+    # More files than the former 8,192-file refusal; size is no longer a count.
+    for index in range(8200):
+        (root / "a" / f"{index}.day").write_bytes(b"finished")
+    (root / "a" / "0.sum").write_bytes(b"summary")
+    (root / "a" / "live.log").write_bytes(b"open")
+    private = tmp_path / "private"
+    files = transactions.copy_tree(root, private)
+    assert len(files) == 8202
+    for name in ("0.day", "8199.day", "0.sum"):
+        assert os.path.samefile(root / "a" / name, private / "a" / name)
+    assert not os.path.samefile(root / "a" / "live.log", private / "a" / "live.log")
+    with (private / "a" / "live.log").open("ab") as log:
+        log.write(b" appended privately")
+    assert (root / "a" / "live.log").read_bytes() == b"open"
+    (private / "a" / "0.day").unlink()
+    assert (root / "a" / "0.day").read_bytes() == b"finished"
+
+
+def test_snapshot_copies_finished_files_when_links_are_unsupported(tmp_path, monkeypatch):
+    root = tmp_path / "history"
+    root.mkdir()
+    (root / "a.day").write_bytes(b"finished")
+
+    def unsupported(*args, **kwargs):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(os, "link", unsupported)
+    transactions.copy_tree(root, tmp_path / "private")
+    assert (tmp_path / "private" / "a.day").read_bytes() == b"finished"
+    assert not os.path.samefile(root / "a.day", tmp_path / "private" / "a.day")
+
+
+def test_snapshot_detects_a_finished_file_replaced_before_linking(tmp_path, monkeypatch):
+    root = tmp_path / "history"
+    root.mkdir()
+    (root / "a.day").write_bytes(b"finished")
+    link = os.link
+
+    def replaced_first(source, target, **kwargs):
+        (root / "new").write_bytes(b"rewritten after enumeration")
+        (root / "new").replace(source)
+        link(source, target, **kwargs)
+
+    monkeypatch.setattr(os, "link", replaced_first)
+    with pytest.raises(ValueError, match="changed during snapshot"):
+        transactions.copy_tree(root, tmp_path / "private")
 
 
 def test_selected_snapshot_ignores_missing_and_preserves_zero_length_files(tmp_path):

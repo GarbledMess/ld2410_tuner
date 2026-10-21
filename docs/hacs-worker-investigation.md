@@ -43,14 +43,16 @@ immunity from every integration, operating-system or storage failure.
 One numerical operation is active per runtime, with at most one pending request.
 Admission precedes view creation. The serialized storage caller waits on existing
 jobs when the queue is full, preserving pending durability work without making
-early history copies or increasing the worker count. Metadata is checked before copies; aggregate
-history capture allows at most 16 devices, 512 days, 1,048,576 mutable rows,
-32,768 mutable guesses and 32 MiB of mutable columns. Each mutable day is capped
-at 131,072 rows, 4,096 guesses and 12 MiB of raw columns. Finished history uses
-a 32-MiB resident LRU and a separate 512-MiB total file-work allowance, so reading
-retained days does not accumulate decoded arrays without limit. Summary cache
-accounting includes the physical day arrays it retains. Source metadata allows up to 128
-devices, but each captured job keeps its separate 16-device limit.
+early history copies or increasing the worker count. Manual and interactive
+requests also wait for a worker turn instead of failing when it is busy. Copied
+metadata is bounded (1 MiB, 65,536 nodes); radar, day, row and guess counts are not
+admission limits. Each mutable day's columns are capped at 32 MiB, and each decoded
+finished day at 128 MiB of resident representation, within the mandatory 512 MiB
+address-space limit. Wire bytes are inflated through a temporary file. Per-view day
+metadata is spooled to a job-private SQLite index and read lazily in the child.
+Finished history uses a 32-MiB resident LRU that evicts, or bypasses an oversized
+day, rather than failing the job. Summary cache accounting includes the physical
+day arrays it retains.
 Finished history remains identity-checked file references; mutable data belongs
 to a private temporary job directory. The child bounds decoding and allocation.
 
@@ -98,11 +100,14 @@ Diagnostics are best effort and do not relax protection or replace owned cleanup
 ## Storage budgets
 
 Storage requests/results are capped at 16 MiB and 1,048,576 metadata nodes.
-Private source trees allow at most 8,192 regular files, 16,384 directory entries,
-two path components below the history root and 256 MiB. Links and special files
-are refused, and copies verify file identity. Raw state handoffs have a 32-MiB
-aggregate ceiling and bounded day/row/guess counts. No replay or decompression
-is performed when HA installs those raw buffers. Oversized work fails explicitly.
+Private source trees allow two path components below the history root. Finished
+`.day` and `.sum` files, which the store only replaces atomically, are hard-linked
+and identity-checked; appendable `.log` files are copied. Filesystems that cannot
+link fall back to a streamed copy, and the only size refusal is insufficient free
+space for copied bytes. Links and special files are refused. Raw state handoffs are
+governed by restored decoded memory (192 MiB), not aggregate row or device counts.
+Flushes publish owned bounded prefixes and drain the rest in later turns. No replay
+or decompression is performed when HA installs those raw buffers. Oversized work fails explicitly.
 
 ## Verification
 

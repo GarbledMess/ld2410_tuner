@@ -19,13 +19,14 @@ def test_open_live_label_has_the_same_reader_after_finite_wire_conversion():
         )
 
 
-def test_metadata_allows_large_installations_but_still_has_a_count_bound():
+def test_metadata_allows_large_installations_but_still_bounds_copied_metadata():
     from types import SimpleNamespace
 
-    owner = SimpleNamespace(data={"devices": {str(i): {} for i in range(50)}})
+    # Radar count is not a resource; the metadata copied on the HA loop is.
+    owner = SimpleNamespace(data={"devices": {str(i): {} for i in range(129)}})
     bridge.preflight(owner)
-    owner.data["devices"] = {str(i): {} for i in range(129)}
-    with pytest.raises(ValueError, match="device/group budget"):
+    owner.data["devices"] = {str(i): {} for i in range(10000)}
+    with pytest.raises(ValueError, match="node"):
         bridge.preflight(owner)
 
 

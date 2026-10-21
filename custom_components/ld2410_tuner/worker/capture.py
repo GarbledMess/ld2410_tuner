@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..history import dayfile, daystore, worker_snapshot
-from . import codec, history, protocol
+from . import codec, protocol
 
 ATTRIBUTES = (
     "_history_until",
@@ -18,22 +18,25 @@ ATTRIBUTES = (
 
 @dataclass(frozen=True)
 class CaptureLimits:
-    max_devices: int = 16
-    max_days: int = 512
-    max_rows: int = 1048576
-    max_guesses: int = 32768
+    max_devices: int | None = None
+    max_days: int | None = None
+    max_rows: int | None = None
+    max_guesses: int | None = None
     max_raw_bytes: int = 32 * 1024 * 1024
-    max_file_bytes: int = 512 * 1024 * 1024
+    max_file_bytes: int | None = None
 
     def __post_init__(self):
-        if any(type(value) is not int or value <= 0 for value in vars(self).values()):
+        if self.max_raw_bytes is None or any(
+            value is not None and (type(value) is not int or value <= 0)
+            for value in vars(self).values()
+        ):
             raise ValueError("Capture limits must be positive integers")
 
 
 def _dates(view, limits):
     store = getattr(view, "_days", None)
     devices = view.data["devices"]
-    if len(devices) > limits.max_devices:
+    if limits.max_devices is not None and len(devices) > limits.max_devices:
         raise worker_snapshot.SnapshotTooLarge("Worker device budget exceeded")
     found = []
     if store is None:
@@ -41,7 +44,15 @@ def _dates(view, limits):
     start = getattr(view, "_snapshot_history_start", -math.inf)
     until = getattr(view, "_history_until", math.inf)
     for device_id in devices:
-        found.extend(_device_dates(store, device_id, start, until, limits.max_days - len(found)))
+        found.extend(
+            _device_dates(
+                store,
+                device_id,
+                start,
+                until,
+                None if limits.max_days is None else limits.max_days - len(found),
+            )
+        )
     return found
 
 
@@ -51,7 +62,7 @@ def _device_dates(store, device_id, start, until, remaining):
         low, high = daystore.bounds(date)
         if high > start and low < until:
             found.append((device_id, date))
-            if len(found) > remaining:
+            if remaining is not None and len(found) > remaining:
                 raise worker_snapshot.SnapshotTooLarge("Worker day budget exceeded")
     return found
 
@@ -73,7 +84,15 @@ def _preflight(store, dates, limits):
             guesses += counts[1]
             raw += counts[2]
             guesses += len(late)
-            if rows > limits.max_rows or guesses > limits.max_guesses or raw > limits.max_raw_bytes:
+            raw += len(late) * 256
+            if any(
+                bound is not None and actual > bound
+                for actual, bound in zip(
+                    (rows, guesses, counts[2] + len(late) * 256),
+                    (limits.max_rows, limits.max_guesses, limits.max_raw_bytes),
+                    strict=True,
+                )
+            ):
                 raise worker_snapshot.SnapshotTooLarge("Aggregate mutable history budget exceeded")
     return rows, guesses, raw
 
@@ -86,7 +105,7 @@ def _builder_counts(builder):
         for column in (builder.times, builder.ends, *builder.columns)
     )
     guesses = len(builder.guesses) + len(builder.confirmed) + (builder.run is not None)
-    return len(builder.times), guesses, raw
+    return len(builder.times), guesses, raw + guesses * 256
 
 
 def _entry(snapshot, device_id, date, directory, index):
@@ -108,7 +127,7 @@ def _entry(snapshot, device_id, date, directory, index):
     }
 
 
-def prepare(view, device_id, directory, *, limits=None, _shared=None, _remaining=None):
+def prepare(view, device_id, directory, *, limits=None, _shared=None, _remaining=None, sink=None):
     """Capture live columns; retain identity-checked references to finished files.
 
     The caller owns the private directory until its child has been reaped and
@@ -117,7 +136,8 @@ def prepare(view, device_id, directory, *, limits=None, _shared=None, _remaining
     worker_snapshot._executor_only()
     limits = CaptureLimits() if limits is None else limits
     data = codec.encode(view.data)
-    protocol.pack("learn", {"data": data})
+    if sink is None:
+        protocol.pack("learn", {"data": data})
     dates = _dates(view, limits)
     store = getattr(view, "_days", None)
     if store is not None:
@@ -141,6 +161,9 @@ def prepare(view, device_id, directory, *, limits=None, _shared=None, _remaining
             if store is not None and store.live_date(key) is not None
         },
     }
+    if sink is not None:
+        sink(device_id, request)
+        return None
     protocol.pack("learn", request)
     return request
 
@@ -162,28 +185,59 @@ def _capture_days(view, dates, directory, limits, shared, remaining):
             entry = _entry(snapshot, key, date, directory, len(shared))
             shared[mark] = entry
         file_bytes += 0 if entry["identity"] is None else int(entry["identity"][3])
-        if file_bytes > limits.max_file_bytes:
+        if limits.max_file_bytes is not None and file_bytes > limits.max_file_bytes:
             raise worker_snapshot.SnapshotTooLarge("Aggregate history file budget exceeded")
         entries.append(entry)
     return entries
 
 
-def prepare_multi(views, directory, *, limits=None):
+def prepare_multi(views, directory, *, limits=None, sink=None):
     """Capture a job's views once per distinct physical day and cutoff."""
     worker_snapshot._executor_only()
     limits = CaptureLimits() if limits is None else limits
-    if len(views) > limits.max_devices:
+    if limits.max_devices is not None and len(views) > limits.max_devices:
         raise worker_snapshot.SnapshotTooLarge("Worker view budget exceeded")
+    _preflight_multi(views, limits)
+    shared = {}
+    remaining = {
+        "rows": limits.max_rows,
+        "guesses": limits.max_guesses,
+        "raw": limits.max_raw_bytes,
+    }
+    captured = {
+        key: prepare(
+            view, key, directory, limits=limits, _shared=shared, _remaining=remaining, sink=sink
+        )
+        for key, view in views.items()
+    }
+    total = sum(
+        int(item["identity"][3]) for item in shared.values() if item["identity"] is not None
+    )
+    if limits.max_file_bytes is not None and total > limits.max_file_bytes:
+        raise worker_snapshot.SnapshotTooLarge("Aggregate worker file budget exceeded")
+    if sink is not None:
+        return None
+    result = {"views": captured}
+    protocol.pack("learn", result)
+    return result
+
+
+def _unique_days(views, limits):
     unique, stores = {}, {}
     for view in views.values():
         store = getattr(view, "_days", None)
         for device_id, date in _dates(view, limits):
             unique[(id(store), device_id, date)] = (device_id, date)
             stores[id(store)] = store
-    if len(unique) > limits.max_days:
+    return unique, stores
+
+
+def _preflight_multi(views, limits):
+    unique, stores = _unique_days(views, limits)
+    if limits.max_days is not None and len(unique) > limits.max_days:
         raise worker_snapshot.SnapshotTooLarge("Aggregate worker day budget exceeded")
     devices = {key for _, key, _ in unique}
-    if len(devices) > limits.max_devices:
+    if limits.max_devices is not None and len(devices) > limits.max_devices:
         raise worker_snapshot.SnapshotTooLarge("Aggregate worker device budget exceeded")
     totals = [0, 0, 0]
     for store_id, store in stores.items():
@@ -192,30 +246,10 @@ def prepare_multi(views, directory, *, limits=None):
         )
         totals = [a + b for a, b in zip(totals, counts, strict=True)]
     if any(
-        a > b
-        for a, b in zip(
-            totals, (limits.max_rows, limits.max_guesses, limits.max_raw_bytes), strict=True
-        )
+        b is not None and a > b
+        for a, b in zip(totals[:2], (limits.max_rows, limits.max_guesses), strict=True)
     ):
         raise worker_snapshot.SnapshotTooLarge("Aggregate mutable history budget exceeded")
-    shared = {}
-    remaining = {
-        "rows": limits.max_rows,
-        "guesses": limits.max_guesses,
-        "raw": limits.max_raw_bytes,
-    }
-    captured = {
-        key: prepare(view, key, directory, limits=limits, _shared=shared, _remaining=remaining)
-        for key, view in views.items()
-    }
-    total = sum(
-        int(item["identity"][3]) for item in shared.values() if item["identity"] is not None
-    )
-    if total > limits.max_file_bytes:
-        raise worker_snapshot.SnapshotTooLarge("Aggregate worker file budget exceeded")
-    result = {"views": captured}
-    protocol.pack("learn", result)
-    return result
 
 
 def _acquire(store, key, date, view, remaining):
@@ -225,17 +259,16 @@ def _acquire(store, key, date, view, remaining):
         date,
         getattr(view, "_history_until", None),
         limits=worker_snapshot.Limits(
-            min(history.DAY_ROWS, remaining["rows"]),
-            min(4096, remaining["guesses"]),
-            min(history.DAY_BYTES, remaining["raw"]),
+            remaining["rows"],
+            remaining["guesses"],
+            remaining["raw"],
         ),
     )
-    remaining["guesses"] -= len(snapshot.late_guesses)
+    if remaining["guesses"] is not None:
+        remaining["guesses"] -= len(snapshot.late_guesses)
     if snapshot.day is not None:
-        remaining["rows"] -= len(snapshot.day.times)
-        remaining["guesses"] -= len(snapshot.day.guesses)
-        remaining["raw"] -= sum(
-            len(column) * getattr(column, "itemsize", 1)
-            for column in (snapshot.day.times, snapshot.day.ends, *snapshot.day.columns)
-        )
+        if remaining["rows"] is not None:
+            remaining["rows"] -= len(snapshot.day.times)
+        if remaining["guesses"] is not None:
+            remaining["guesses"] -= len(snapshot.day.guesses)
     return snapshot

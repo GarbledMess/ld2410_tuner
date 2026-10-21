@@ -23,13 +23,15 @@ class SnapshotTooLarge(ValueError):
 
 @dataclass(frozen=True)
 class Limits:
-    max_rows: int = 32768
-    max_guesses: int = 4096
+    max_rows: int | None = 32768
+    max_guesses: int | None = 4096
     max_raw_bytes: int = 4 * 1024 * 1024
 
     def __post_init__(self):
+        if self.max_raw_bytes is None:
+            raise ValueError("Snapshot raw-byte limit must be a nonnegative integer")
         for value in (self.max_rows, self.max_guesses, self.max_raw_bytes):
-            if type(value) is not int or value < 0:
+            if value is not None and (type(value) is not int or value < 0):
                 raise ValueError("Snapshot limits must be nonnegative integers")
 
 
@@ -70,7 +72,12 @@ def _preflight(builder, late, limits):
             len(builder.times) * builder.times.itemsize + len(builder.ends) * builder.ends.itemsize
         )
         raw += sum(len(column) * getattr(column, "itemsize", 1) for column in builder.columns)
-    if rows > limits.max_rows or guesses > limits.max_guesses or raw > limits.max_raw_bytes:
+    if (
+        (limits.max_rows is not None and rows > limits.max_rows)
+        or (limits.max_guesses is not None and guesses > limits.max_guesses)
+        or raw > limits.max_raw_bytes
+        or raw + guesses * 256 > 32 * 1024 * 1024
+    ):
         raise SnapshotTooLarge("Worker snapshot exceeds row, guess or raw-column-byte limit")
 
 
@@ -144,9 +151,10 @@ def _preflight_day(day, late, limits):
     raw = len(day.times) * day.times.itemsize + len(day.ends) * day.ends.itemsize
     raw += sum(len(column) * getattr(column, "itemsize", 1) for column in day.columns)
     if (
-        len(day.times) > limits.max_rows
-        or len(day.guesses) + len(late) > limits.max_guesses
+        (limits.max_rows is not None and len(day.times) > limits.max_rows)
+        or (limits.max_guesses is not None and len(day.guesses) + len(late) > limits.max_guesses)
         or raw > limits.max_raw_bytes
+        or raw + (len(day.guesses) + len(late)) * 256 > 32 * 1024 * 1024
     ):
         raise SnapshotTooLarge("Worker snapshot exceeds row, guess or raw-column-byte limit")
 

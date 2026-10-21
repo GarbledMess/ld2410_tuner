@@ -58,11 +58,17 @@ def test_dense_closing_capture_and_maintenance_roundtrip(tmp_path):
     assert changes[0][2].guesses == actual.guesses
 
 
-def test_flushing_decoded_budget_rejected_before_copy(tmp_path):
+def test_flushing_decoded_budget_batches_days_and_rejects_one_oversized_day_before_copy(tmp_path):
+    # An empty closing day restores to 4,096 decoded bytes.
     store = daystore.DayStore(tmp_path)
     store._closing = {"a": {DATE: daystore._Live(DATE)}, "b": {DATE: daystore._Live(DATE)}}
+    with patch.object(startup, "MAX_DECODED_BYTES", 6000):
+        detached, _, ownership = flushing._detached(store, START + 86401)
+    assert [key for key, _, _ in detached] == ["a"]
+    assert [key for key, _, _ in ownership["items"]] == ["a"]
+    assert set(store._closing) == {"a", "b"}  # Both remain owned until publication.
     with (
-        patch.object(startup, "MAX_DECODED_BYTES", 6000),
+        patch.object(startup, "MAX_DECODED_BYTES", 4000),
         patch.object(flushing.copy, "deepcopy", side_effect=AssertionError("copied")),
     ):
         with pytest.raises(ValueError, match="decoded"):

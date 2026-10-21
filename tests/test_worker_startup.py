@@ -136,13 +136,18 @@ def test_invalid_handoff_counts_and_flags_are_rejected(tmp_path, change):
         startup.load({"live": [descriptor]}, tmp_path)
 
 
-@pytest.mark.parametrize("count,rows", [(129, 0), (9, 131072)])
-def test_aggregate_handoff_limits_before_file_reads(tmp_path, count, rows):
+def test_decoded_handoff_budget_rejects_before_file_reads(tmp_path):
+    from unittest.mock import patch
+
     from tuner_under_test.worker import startup
 
-    descriptor = {"rows": rows, "floats": [False] * 18}
-    with pytest.raises(ValueError, match="budget"):
-        startup.load({"live": [descriptor] * count}, tmp_path)
+    # Device and row counts alone no longer reject; restored memory does.
+    # Each 2M-row day fits (~77 MB decoded); three exceed the 192 MiB total.
+    live = [{"device": str(i), "rows": 2_000_000, "floats": [False] * 18} for i in range(3)]
+    startup._budget({"live": live[:2]})
+    with patch.object(startup, "_read", side_effect=AssertionError("read before budget")):
+        with pytest.raises(ValueError, match="decoded heap budget"):
+            startup.load({"live": live}, tmp_path)
 
 
 @pytest.mark.parametrize("name", ["../escape", "other.bin", 3])

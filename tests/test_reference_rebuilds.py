@@ -66,10 +66,12 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
         self.worker_transport.before = executor
 
     async def started(self, count=1):
-        for _ in range(100):
-            if len(self.calls) >= count:
-                return
-            await asyncio.sleep(0)
+        # Preparation runs in executor threads, so a fixed number of loop turns
+        # is not enough on a slow host; wait for the observable condition.
+        deadline = asyncio.get_running_loop().time() + 30
+        while len(self.calls) < count:
+            assert asyncio.get_running_loop().time() < deadline, "rebuild never started"
+            await asyncio.sleep(0.001)
 
     async def request(self, device_ids):
         """Queue a refresh of these radars without waiting for it."""

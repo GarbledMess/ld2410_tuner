@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import test_tuner as harness
 from test_comparison import calculate, context
-from tuner_under_test.worker import calculations
+from tuner_under_test.worker import calculations, manifest
 
 automatic = sys.modules["tuner_under_test.calibration.automatic"]
 schedule = sys.modules["tuner_under_test.runtime.schedule"]
@@ -111,7 +111,7 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
         views = []
 
         async def execute(request):
-            views.append(calculations.restore(request["views"]["a"]))
+            views.append(calculations.restore(manifest.expand(request)["views"]["a"]))
             return await asyncio.to_thread(calculations.execute, request)
 
         self.worker_transport.respond = execute

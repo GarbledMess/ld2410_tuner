@@ -1,5 +1,6 @@
 """Transactional limited-process journal encoding and finished-day compaction."""
 
+import asyncio
 import copy
 import datetime
 import json
@@ -11,6 +12,7 @@ from ..history import dayfile, summary_cache
 from ..history.daystore import DayStore, date_of
 from . import codec, startup
 
+ROLLOVER_DAYS = 16
 MAX_RECORDS = 131072
 MAX_MESSAGE_BYTES = 32 * 1024 * 1024
 
@@ -35,57 +37,177 @@ def _restore(item):
     return kinds[item[0]](*fields)
 
 
-def _roll(store, now):
-    today = date_of(now)
-    if len(store._live) > 128:
-        raise ValueError("Flush device budget exceeded")
-    if any((today - live.date).days > 128 for live in store._live.values()):
-        raise ValueError("Flush date budget exceeded")
-    for key, live in list(store._live.items()):
-        if live.date < today:
-            store._roll(key, live, today)
+def _roll(store, today, owners):
+    """Allocate at most one rollover window; return only newly owned days."""
+    remaining = ROLLOVER_DAYS
+    items = []
+    for key, live in list(owners.items()):
+        if not remaining:
+            break
+        until = min(today, live.date + datetime.timedelta(days=remaining))
+        dates = range((until - live.date).days)
+        following = store._roll(key, live, until)
+        owners[key] = following
+        items.extend(
+            (key, store._closing[key][live.date + datetime.timedelta(days=n)], True) for n in dates
+        )
+        remaining -= len(dates)
+        if following.buffer:
+            items.append((key, following, False))
+    return items
 
 
-def _detached(store, now):
+def _target(store, now):
     with store._lock:
-        _roll(store, now)
+        today = date_of(now)
+        owners = {key: live for key, live in store._live.items() if live.date < today}
+        _roll(store, today, owners)
         items = [(key, live, False) for key, live in store._live.items() if live.buffer]
         items += [
             (key, live, True) for key, days in store._closing.items() for live in days.values()
         ]
-        _check(items, store._late)
-        detached = [(key, _copy_live(live, closing), closing) for key, live, closing in items]
-        late = copy.deepcopy(store._late)
-        ownership = {
+        return {
+            "rollovers": owners,
+            "today": today,
             "items": items,
             "counts": [len(live.buffer) for _, live, _ in items],
+            "late": {
+                key: {date: len(spans) for date, spans in dates.items()}
+                for key, dates in store._late.items()
+            },
+            "generations": dict(store._generations),
+        }
+
+
+class _RecordBudget:
+    def __init__(self):
+        self.records = 0
+        # Reserve container/key overhead before considering individual records.
+        self.nodes = 8192
+        self.bytes = 65536
+
+    def prefix(self, records, limit):
+        count = 0
+        for record in records:
+            if count >= limit or self.records >= MAX_RECORDS:
+                break
+            value = _record(record)
+            nodes = _nodes(value)
+            size = len(json.dumps(value, allow_nan=False, separators=(",", ":")).encode()) + 1
+            if self.nodes + nodes > 1048576 or self.bytes + size > MAX_MESSAGE_BYTES:
+                break
+            self.records += 1
+            self.nodes += nodes
+            self.bytes += size
+            count += 1
+        return count
+
+
+def _nodes(value):
+    if isinstance(value, (list, tuple)):
+        return 1 + sum(_nodes(item) for item in value)
+    return 1
+
+
+def _eligible(store, key, live, closing, count):
+    return live.generation == store._generations.get(key, 0) and (closing or count)
+
+
+def _batch_descriptor(live, compact):
+    if compact:
+        return _descriptor(live)
+    return {"rows": 0, "guesses": 0, "confirmed": 0, "floats": [False] * 18}
+
+
+def _select_items(store, target, budget):
+    items, counts, descriptors = [], [], []
+    for (key, live, closing), limit in zip(target["items"], target["counts"], strict=True):
+        if not _eligible(store, key, live, closing, limit):
+            continue
+        count = budget.prefix(live.buffer, limit)
+        if limit and not count:
+            break
+        compact = closing and count == len(live.buffer)
+        descriptor = _batch_descriptor(live, compact)
+        startup._budget({"live": [descriptor]})
+        try:
+            startup._budget({"live": descriptors + [descriptor]}, max_items=128)
+        except ValueError:
+            break
+        descriptors.append(descriptor)
+        items.append((key, live, compact))
+        counts.append(count)
+    return items, counts
+
+
+def _late_ready(store, key, date, items):
+    closing = store._closing.get(key, {}).get(date)
+    return closing is None or any(live is closing and done for _, live, done in items)
+
+
+def _late_candidates(store, target, items):
+    for key, dates in target["late"].items():
+        if target["generations"].get(key, 0) != store._generations.get(key, 0):
+            continue
+        for date, limit in dates.items():
+            # A late rewrite must follow this day's atomic compaction.
+            if limit and _late_ready(store, key, date, items):
+                yield key, date, limit
+
+
+def _select_late(store, target, items, budget):
+    late = {}
+    days = 0
+    for key, date, limit in _late_candidates(store, target, items):
+        if len(items) + days >= 128:
+            break
+        spans = store._late.get(key, {}).get(date, [])
+        count = budget.prefix(spans, limit)
+        if count:
+            late.setdefault(key, {})[date] = spans[:count]
+            days += 1
+    return late
+
+
+def _select(store, target):
+    budget = _RecordBudget()
+    items, counts = _select_items(store, target, budget)
+    late = _select_late(store, target, items, budget)
+    if not items and not late and _target_pending(store, target):
+        raise ValueError("Flush pending-record budget exceeded for one record")
+    return items, counts, late
+
+
+def _detached(store, now, target=None):
+    with store._lock:
+        if target is None:
+            target = _target(store, now)
+        items, counts, late = _select(store, target)
+        detached = [
+            (key, _copy_live(live, closing, count), closing)
+            for (key, live, closing), count in zip(items, counts, strict=True)
+        ]
+        late = copy.deepcopy(late)
+        affected = {(key, live.date, ".log") for key, live, _ in items}
+        affected.update((key, live.date, ".day") for key, live, done in items if done)
+        affected.update((key, date, ".day") for key, dates in late.items() for date in dates)
+        ownership = {
+            "items": items,
+            "counts": counts,
             "late": late,
             "generations": dict(store._generations),
-            "affected": _affected(store),
+            "affected": affected,
         }
     return detached, late, ownership
 
 
-def _copy_live(live, closing):
+def _copy_live(live, closing, count):
     if closing:
         return copy.deepcopy(live)
-    # An already rolled current day needs only its unwritten record prefix. Its
-    # accumulated columns never cross this boundary until the day closes.
     detached = copy.copy(live)
     detached.builder = dayfile.DayBuilder(live.builder.start, live.builder.end)
-    detached.buffer = copy.deepcopy(live.buffer)
+    detached.buffer = copy.deepcopy(live.buffer[:count])
     return detached
-
-
-def _check(items, late):
-    closing = [live for _, live, finished in items if finished]
-    if len(items) > 128 or sum(len(live.builder.times) for live in closing) > 1048576:
-        raise ValueError("Flush day/row budget exceeded")
-    records = sum(len(live.buffer) for _, live, _ in items)
-    records += sum(len(spans) for dates in late.values() for spans in dates.values())
-    if records > MAX_RECORDS:
-        raise ValueError("Flush pending-record budget exceeded")
-    startup._budget({"live": [_descriptor(live) for live in closing]})
 
 
 def _descriptor(live):
@@ -100,18 +222,19 @@ def _descriptor(live):
     }
 
 
-def capture(store, directory, now):
+def capture(store, directory, now, target=None):
     """Detach bounded raw columns; original buffers remain owned until publication."""
     directory = Path(directory)
-    items, late, ownership = _detached(store, now)
+    items, late, ownership = _detached(store, now, target)
     descriptors = []
     records = []
     for index, (key, live, closing) in enumerate(items):
         descriptor = startup.freeze_live(key, live, directory, index)
         descriptor["closing"] = closing
+        descriptor["finished"] = live.date < date_of(now)
         descriptors.append(descriptor)
         records.append([_record(record) for record in live.buffer])
-    startup._budget({"live": descriptors})
+    startup._budget({"live": descriptors}, max_items=128)
     payload = {
         "records": records,
         "late": {
@@ -132,7 +255,7 @@ def capture(store, directory, now):
 def _load(request):
     root, directory = Path(request["root"]), Path(request["directory"])
     metadata = request["flush"]
-    startup._budget(metadata)
+    startup._budget(metadata, max_items=128)
     path = directory / "flush-records.json"
     if path.stat().st_size > MAX_MESSAGE_BYTES:
         raise ValueError("Flush record bytes exceeded")
@@ -146,7 +269,7 @@ def _load(request):
         live = startup.load_live(directory, descriptor)
         live.buffer = [_restore(item) for item in records]
         key = descriptor["device"]
-        if descriptor["closing"]:
+        if descriptor.get("finished", descriptor["closing"]):
             store._closing.setdefault(key, {})[live.date] = live
         else:
             store._live[key] = live
@@ -166,8 +289,26 @@ def execute(request):
         store = _load(request)
     except (KeyError, TypeError) as error:
         raise ValueError("Invalid flush snapshot") from error
-    affected = _affected(store)
-    written = store.flush(request.get("flush_now", request["now"]))
+    affected = set()
+    written = 0
+    for descriptor in request["flush"]["live"]:
+        key, date = descriptor["device"], datetime.date.fromisoformat(descriptor["date"])
+        live = (
+            store._closing[key][date]
+            if descriptor.get("finished", descriptor["closing"])
+            else store._live[key]
+        )
+        affected.add((key, date, ".log"))
+        if descriptor["closing"]:
+            store._finish(key, live)
+            affected.add((key, date, ".day"))
+        elif live.buffer:
+            written += store._write_log(key, live, live.buffer)
+    late, store._late = store._late, {}
+    for key, dates in late.items():
+        for date, spans in dates.items():
+            store._write_late(key, date, spans, store._generations.get(key, 0))
+            affected.add((key, date, ".day"))
     return {
         "written": written,
         "effects": [
@@ -175,18 +316,6 @@ def execute(request):
             for key, date, suffix in sorted(affected)
         ],
     }
-
-
-def _affected(store):
-    files = {(key, live.date, ".log") for key, live in store._live.items() if live.buffer}
-    files.update(
-        (key, date, suffix)
-        for key, dates in store._closing.items()
-        for date in dates
-        for suffix in (".log", ".day")
-    )
-    files.update((key, date, ".day") for key, dates in store._late.items() for date in dates)
-    return files
 
 
 def _publish_file(store, source, key, date, suffix, present):
@@ -302,7 +431,7 @@ def _inventory(store, effects, ownership):
                 store.inventory(key, datetime.date.fromisoformat(iso), suffix, present)
 
 
-async def _flush(runtime):
+async def _flush(runtime, target=None):
     from . import transactions
     from .supervisor import owned_preparation
 
@@ -317,7 +446,7 @@ async def _flush(runtime):
         for key in pending:
             store._remove_files(key)
         now = time.time()
-        metadata, captured = capture(store, directory, now)
+        metadata, captured = capture(store, directory, now, target)
         ownership.update(captured)
         return {
             "flush": metadata,
@@ -335,7 +464,71 @@ async def _flush(runtime):
             runtime.hass.async_add_executor_job(publish, store, result, ownership, directory)
         )
 
-    return await transactions.run(runtime, "flush", {}, accept, snapshot=snapshot)
+    result = await transactions.run(runtime, "flush", {}, accept, snapshot=snapshot)
+    if target is not None:
+        _advance(target, ownership)
+    return result
+
+
+def _advance_item(target, key, live, compact, count):
+    for index, (_, original, closing) in enumerate(target["items"]):
+        if original is live:
+            target["counts"][index] -= count
+            if compact or not closing and not target["counts"][index]:
+                target["items"][index] = (key, live, False)
+            return
+
+
+def _advance(target, ownership):
+    for (key, live, compact), count in zip(ownership["items"], ownership["counts"], strict=True):
+        _advance_item(target, key, live, compact, count)
+    for key, dates in ownership["late"].items():
+        for date, spans in dates.items():
+            target["late"][key][date] -= len(spans)
+
+
+def _target_pending(store, target):
+    return any(
+        (count or closing) and live.generation == store._generations.get(key, 0)
+        for (key, live, closing), count in zip(target["items"], target["counts"], strict=True)
+    ) or any(
+        count and target["generations"].get(key, 0) == store._generations.get(key, 0)
+        for key, dates in target["late"].items()
+        for count in dates.values()
+    )
+
+
+def _continue_target(store, target):
+    with store._lock:
+        owners = {
+            key: live
+            for key, live in target["rollovers"].items()
+            if store._live.get(key) is live
+            and not live.buffer
+            and live.generation == store._generations.get(key, 0)
+            and live.date < target["today"]
+        }
+        items = _roll(store, target["today"], owners)
+        target["rollovers"] = owners
+        target["items"] = items
+        target["counts"] = [len(live.buffer) for _, live, _ in items]
+        target["late"] = {}
+        return bool(items)
+
+
+async def _drain(runtime):
+    store = runtime._days
+    target = await runtime.hass.async_add_executor_job(_target, store, time.time())
+    written = 0
+    while True:
+        written += await _flush(runtime, target)
+        with store._lock:
+            pending = _target_pending(store, target)
+        if not pending:
+            pending = await runtime.hass.async_add_executor_job(_continue_target, store, target)
+        if not pending:
+            return written
+        await asyncio.sleep(0)
 
 
 async def flush(runtime, *, locked=False):
@@ -343,9 +536,9 @@ async def flush(runtime, *, locked=False):
     if runtime._days is None or not _pending(runtime._days):
         return 0
     if locked:
-        return await _flush(runtime)
+        return await _drain(runtime)
     async with runtime._storage_lock:
-        return await _flush(runtime) if _pending(runtime._days) else 0
+        return await _drain(runtime) if _pending(runtime._days) else 0
 
 
 def _pending(store):

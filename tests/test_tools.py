@@ -280,25 +280,20 @@ class TransportTests(unittest.TestCase):
 
 
 class CharacterisationUpdaterTests(unittest.TestCase):
-    def test_generate_writes_every_case_and_main_reports_them(self):
+    def test_generate_writes_every_reviewed_case_and_main_reports_them(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "nested"
             names = updater.generate(target)
             self.assertEqual(sorted(path.stem for path in target.glob("*.json")), names)
             self.assertEqual(len(names), 5)
-            self.assertNotIn(b"\r", (target / f"{names[0]}.json").read_bytes())
-            self.assertEqual(updater.generate(target), names)
+            for name in names:
+                fresh = (target / f"{name}.json").read_bytes()
+                self.assertNotIn(b"\r", fresh)
+                committed = (updater.FIXTURES / f"{name}.json").read_bytes()
+                self.assertEqual(fresh, committed)
         with (
             patch.object(updater, "generate", return_value=["one"]),
             contextlib.redirect_stdout(io.StringIO()) as out,
         ):
             self.assertEqual(updater.main(), 0)
         self.assertEqual(out.getvalue(), "wrote one.json\n")
-
-    def test_committed_fixtures_match_a_fresh_generation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            names = updater.generate(Path(directory))
-            for name in names:
-                fresh = (Path(directory) / f"{name}.json").read_text(encoding="utf-8")
-                committed = (updater.FIXTURES / f"{name}.json").read_text(encoding="utf-8")
-                self.assertEqual(fresh, committed)

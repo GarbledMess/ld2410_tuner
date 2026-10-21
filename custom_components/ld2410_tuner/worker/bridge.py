@@ -17,8 +17,6 @@ def preflight(runtime):
     """Bound source metadata before legacy view helpers copy it on the HA loop."""
     data = runtime.data
     devices = data.get("devices", {})
-    if len(devices) > 128 or len(data.get("room_groups", {})) > 64:
-        raise ValueError("Tuner worker device/group budget exceeded")
     fields = (
         *TRAINING_FIELDS,
         "history_labels",
@@ -52,10 +50,12 @@ def _service(runtime):
 
 
 def _build(holder, operation, prepared):
-    from . import capture, codec
+    from . import capture, codec, manifest
 
     directory = holder["directory"] = Path(tempfile.mkdtemp(prefix="ld2410-worker-"))
-    request = capture.prepare_multi(prepared["views"], directory)
+    with manifest.Writer(directory / "history.sqlite") as writer:
+        capture.prepare_multi(prepared["views"], directory, sink=writer)
+    request = {"manifest": str(writer.path)}
     request.update(operation=operation, parameters=codec.encode(prepared["parameters"]))
     path = directory / "request.json"
     with path.open("xb") as stream:
@@ -79,13 +79,10 @@ async def calculate(runtime, operation, prepare):
         if directory := holder.get("directory"):
             await owned_preparation(runtime.hass.async_add_executor_job(shutil.rmtree, directory))
 
-    # These refresh callers already deduplicate and bound their waiting tasks.
-    # Saturation must not fail chart refreshes or install an empty attribution cache.
+    # Queue lightweight identities before preparing views. Each caller owns its
+    # request; saturation delays valid work instead of failing an accepted job.
     background = priority.is_background(operation)
-    if background or operation in {"charts", "references", "seen_by"}:
-        raw = await service.run_when_available(admitted, finish=finish, background=background)
-    else:
-        raw = await service.run(admitted, finish=finish)
+    raw = await service.run_when_available(admitted, finish=finish, background=background)
     from .codec import unpack_result
 
     return await owned_preparation(runtime.hass.async_add_executor_job(unpack_result, raw))
