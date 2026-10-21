@@ -6,7 +6,7 @@
     "format:check": "prettier --check \"custom_components/ld2410_tuner/static/**/*.js\" \"tests/**/*.cjs\""
   },
   "devDependencies": {
-    "playwright": "1.63.0",
-    "prettier": "3.9.9"
+    "playwright": "1.64.1",
+    "prettier": "3.9.10"
   }
 }
