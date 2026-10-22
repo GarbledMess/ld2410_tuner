@@ -14,6 +14,7 @@ export const panelComparison = {
     const live = report?.patterns?.live;
     const best = report?.patterns?.[report?.best_slots?.[0]];
     const busy = ["pending", "running"].includes(report?.state);
+    if (!report?.patterns && !busy) return ""; // No stored scores to show yet.
     return `<button type="button" class="comparison-header ${busy ? "is-busy" : ""}" data-action="review-comparison" title="Compare stored scores for the current and saved patterns">Current ${this._scoreText(live)} · Best ${this._scoreText(best)}${report?.stale ? " · refreshing" : ""}</button>`;
   },
 
@@ -24,6 +25,8 @@ export const panelComparison = {
       this._comparisonRequests.has(id) ||
       (!localError && ["pending", "running"].includes(report.state));
     const reason = localError || report.reason;
+    const saved = Object.values(this._savedResults(d)).some(Boolean);
+    if (!report.patterns && !busy && !reason && !saved) return ""; // Nothing to compare.
     const rows = Object.entries(LABELS)
       .map(([slot, label]) => this._comparisonRow(slot, label, report))
       .join("");

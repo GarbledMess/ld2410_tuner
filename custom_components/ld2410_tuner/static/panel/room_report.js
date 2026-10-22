@@ -49,6 +49,7 @@ export const panelRoomReport = {
   },
 
   _ownScoreHtml(d) {
+    if (!this._comparisonHeaderHtml(d)) return "";
     return `<details class="own-score" data-detail="own-score"><summary>Radar on its own<span class="section-description">Individual performance using this radar's own labels.</span></summary><p class="muted">Individual learner score on this radar's own labels: a different measure, not comparable with room scores.</p>${this._comparisonHeaderHtml(d)}</details>`;
   },
 

@@ -119,6 +119,7 @@ export const panelLearning = {
         m.not_present_samples,
       ],
     ];
+    if (items.every(([, low, high]) => low == null && high == null)) return "";
     const basis =
       m.basis === "sampled_timing_estimate"
         ? "Counts after modeled timeout and known delays; timing warm-up is excluded. Ranges reflect unresolved transitions."
@@ -422,9 +423,10 @@ export const panelLearning = {
       set && learning?.joint
         ? ""
         : this._validationHtml(learning, d.timing_configuration);
-    return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}${this._comparisonHtml(id, d)}${this._deviceApplySettingsHtml(d)}${this._learnApplyHtml(id, d, outcome, set)}
-      ${this._timingHtml(learning, d.timing_configuration)}${validation}
-      <details class="gate-results"><summary>Gate thresholds and sample counts<span class="section-description">Current and learned gate levels, with supporting samples.</span></summary>${this._detailsHtml(d)}</details>`;
+    return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}${this._learnApplyHtml(id, d, outcome, set)}${validation}
+      <details class="learning-details" data-detail="learning-details"><summary>Details<span class="section-description">Comparison, automatic Apply, timing and gate thresholds.</span></summary>
+      ${this._comparisonHtml(id, d)}${this._deviceApplySettingsHtml(d)}${this._timingHtml(learning, d.timing_configuration)}
+      <details class="gate-results"><summary>Gate thresholds and sample counts<span class="section-description">Current and learned gate levels, with supporting samples.</span></summary>${this._detailsHtml(d)}</details></details>`;
   },
 
   // Radars in a learning set learn and apply with it (room_learning.js).

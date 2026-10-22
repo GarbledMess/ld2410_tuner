@@ -204,7 +204,11 @@ async function testSections(page) {
 }
 
 async function testDetailsMirror(page) {
-  for (const selector of [".gate-results", '[data-detail="evidence-review"]']) {
+  for (const selector of [
+    '[data-detail="learning-details"]',
+    ".gate-results",
+    '[data-detail="evidence-review"]',
+  ]) {
     await page.locator(`${DESK} ${selector} > summary`).click();
     await page.waitForFunction(
       ([card, target]) =>

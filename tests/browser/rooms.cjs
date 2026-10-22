@@ -1499,10 +1499,10 @@ async function testScoreboard(page) {
   assert.match(ownText, /Current 93\.00\/100 · Best 93\.00\/100/);
   assert.match(ownText, /different measure.*not comparable/i);
   const garage = card(page, "d").locator(".top");
-  assert.match(
-    await garage.locator('[data-action="review-comparison"]').innerText(),
-    /^Current — · Best —$/,
-    "the ungrouped card keeps its headline",
+  assert.equal(
+    await garage.locator('[data-action="review-comparison"]').count(),
+    0,
+    "an ungrouped card without stored scores shows no empty headline",
   );
   assert.equal(
     await card(page, "d").locator(".room-role, .own-score").count(),
@@ -1621,10 +1621,10 @@ async function testScoreboardMembership(page) {
   );
   for (const leaf of ["area:hall", "area:office/rest"]) {
     const paused = copyOf(page, leaf, "d");
-    assert.match(
-      await paused.locator('[data-action="review-comparison"]').innerText(),
-      /^Current — · Best —$/,
-      `${leaf}: a fallback radar outside the group keeps its headline`,
+    assert.equal(
+      await paused.locator('[data-action="review-comparison"]').count(),
+      0,
+      `${leaf}: a fallback radar without stored scores shows no empty headline`,
     );
     assert.match(await paused.locator(".top").innerText(), /Not recording/);
     assert.equal(

@@ -20,6 +20,7 @@ const testStorage = require("./browser/storage.cjs");
 const testRecordedData = require("./browser/recorded_data.cjs");
 const testDisabledReasons = require("./browser/disabled_reasons.cjs");
 const testDedupe = require("./browser/dedupe.cjs");
+const testTrim = require("./browser/trim.cjs");
 const testTimeline = require("./browser/timeline.cjs");
 const testHistoryGraph = require("./browser/history_graph.cjs");
 const testSavedResults = require("./browser/saved_results.cjs");
@@ -210,9 +211,17 @@ const { execFileSync } = require("node:child_process");
     await testChartQueue(page);
     // The remaining interaction recipes explicitly exercise these sections open.
     await page.evaluate(() => {
-      for (const id of Object.keys(fixture.devices))
+      for (const id of Object.keys(fixture.devices)) {
         for (const key of ["training", "chart", "details"])
           panel._setSectionCollapsed(id, key, false);
+        // Recommendations keeps comparison, timing and gate tables in Details.
+        panel._sectionState.set(`${id}:detail-learning-details`, true);
+      }
+      // A redraw reads disclosure state back from the page first (_captureDrafts).
+      for (const details of panel.shadowRoot.querySelectorAll(
+        "details.learning-details",
+      ))
+        details.open = true;
       panel._draw();
     });
     const nativeSegments = await page.evaluate(() =>
@@ -763,6 +772,7 @@ const { execFileSync } = require("node:child_process");
     await testRoomLabels(page);
     await testCardConsistency(page, screenshotDir);
     await testDedupe(page);
+    await testTrim(page);
     await testSources(page, screenshotDir);
     await testLayout(page, screenshotDir);
     await page.setViewportSize({ width: 390, height: 844 });
