@@ -99,6 +99,34 @@ class AcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.send(2, 30)
         assert self.rows(3) == []
 
+    async def test_stable_observations_survive_worker_flush_and_restart(self):
+        from tuner_under_test.worker import flushing
+
+        for value in (0, 100):
+            self.runtime._days = daystore.DayStore(self.runtime._days.root / str(value))
+            self.send(1, value)
+            self.tick(2, value)
+            with patch.object(time, "time", return_value=START + 3):
+                await flushing.flush(self.runtime)
+            self.tick(3600, value)
+            with patch.object(time, "time", return_value=START + 3610):
+                await flushing.flush(self.runtime)
+            reopened = daystore.DayStore(self.runtime._days.root)
+            reopened.open(START + 3620)
+            day = reopened.day("a", DAY, until=START + 3620)
+            assert list(day.times) == [START + 1]
+            assert list(day.ends) == [START + 3600]
+            assert day.vector(0)[0] == value
+            assert len(list(self.runtime._days.root.rglob("*.log"))) == 1
+
+    def test_all_unavailable_poll_schedules_missing_readings_for_flush(self):
+        self.send(1, 20)
+        scheduled = []
+        self.runtime._schedule_flush = lambda: scheduled.append(True)
+        self.tick(2, "unavailable")
+        assert self.runtime._days.current("a")[0] is None
+        assert scheduled == [True]
+
     def test_stable_polls_extend_duration_without_duplicate_vectors_or_json_history(self):
         self.send(0, 20)
         for offset in range(2, 62, 2):

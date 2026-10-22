@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const testRoomGraphResilience = require("./room_graph.cjs");
 
 module.exports = async function testCardConsistency(page, screenshotDir) {
   await page.evaluate(() => {
@@ -11,7 +12,7 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
       requests.push(message);
       const end = message.end ?? Date.now() / 1000;
       const start = end - message.hours * 3600;
-      return {
+      const response = {
         start,
         end,
         bucket_seconds: 300,
@@ -52,6 +53,15 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
           ]),
         ),
       };
+      if (!message.summary) return response;
+      // Gate zero dominates at each instant in this visual fixture.
+      const points = Object.values(response.series)[0]?.points || [];
+      return {
+        start,
+        end,
+        bucket_seconds: response.bucket_seconds,
+        points,
+      };
     };
     const group = (name, kind, ids) => ({
       name,
@@ -70,6 +80,7 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
       },
       groups: {
         "area:ux": group("Office", "area", ["a", "b"]),
+        "area:second": group("Living room", "area", ["c"]),
         "zone:ux": group("Desk", "zone", ["a", "b"]),
       },
     };
@@ -92,6 +103,14 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
         ],
       },
     ];
+    fixture.layout.push({
+      id: "area:second",
+      name: "Living room",
+      kind: "area",
+      group_id: "area:second",
+      devices: ["c"],
+      children: [],
+    });
     fixture.learning_sets = {};
     panel._groupOpen.add("area:ux");
     panel._groupOpen.add("zone:ux");
@@ -121,6 +140,63 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
   await page.setViewportSize({ width: 1400, height: 1000 });
   await area.locator(":scope > summary").click();
   await zone.locator(":scope > summary").click();
+  const secondRoom = page.locator('[data-node-id="area:second"]');
+  await secondRoom.locator(":scope > summary").click();
+  for (const width of [1920, 1440, 1150, 1100, 768, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    const boxes = await page.evaluate(() =>
+      [...panel.shadowRoot.querySelectorAll("#layout > [data-node-id]")].map(
+        (node) => {
+          const { x, y, width, height } = node.getBoundingClientRect();
+          return { x, y, width, height };
+        },
+      ),
+    );
+    if (width >= 1150) {
+      assert.ok(
+        Math.abs(boxes[0].y - boxes[1].y) < 1,
+        "desktop rooms share a row",
+      );
+      assert.ok(
+        boxes[1].x >= boxes[0].x + boxes[0].width,
+        "desktop rooms occupy separate columns",
+      );
+      assert.ok(boxes[0].width >= 540, "each desktop room remains readable");
+      assert.ok(
+        boxes[1].height < boxes[0].height,
+        "shorter room cards do not stretch to their neighbour",
+      );
+    } else {
+      assert.ok(
+        Math.abs(boxes[0].x - boxes[1].x) < 1,
+        "narrow panels stack rooms",
+      );
+      assert.ok(
+        boxes[1].y >= boxes[0].y + boxes[0].height,
+        "stacked rooms do not overlap",
+      );
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => {
+    panel.style.width = "900px";
+  });
+  const sidebarStacked = await page.evaluate(() => {
+    const nodes = panel.shadowRoot.querySelectorAll("#layout > [data-node-id]");
+    return (
+      Math.abs(
+        nodes[0].getBoundingClientRect().x - nodes[1].getBoundingClientRect().x,
+      ) < 1
+    );
+  });
+  assert.equal(
+    sidebarStacked,
+    true,
+    "available panel width controls columns, not desktop viewport",
+  );
+  await page.evaluate(() => {
+    panel.style.width = "";
+  });
   assert.deepEqual(
     await page.evaluate(() =>
       [...panel.shadowRoot.querySelectorAll("summary, .subsection-head")]
@@ -150,7 +226,7 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
   const graph = timeline.locator("[data-room-graph]");
   await graph.locator("svg").waitFor();
   assert.equal(
-    await graph.locator("polyline").count(),
+    await graph.locator(".value-line.active").count(),
     4,
     "both radars show continuous history split at a real recording outage",
   );
@@ -217,50 +293,7 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
     "polling cannot invalidate an active room request",
   );
   assert.equal(loading.calls, 2, "only one request per room radar is queued");
-  const failure = await page.evaluate(async () => {
-    const gid = "area:ux";
-    const group = panel._roomsData().groups[gid];
-    const original = panel._chartCall;
-    let calls = 0;
-    panel._chartCall = async () => {
-      calls++;
-      throw new Error("Unknown error");
-    };
-    try {
-      panel._roomGraphState(gid).loadedKey = null;
-      await panel._loadRoomGraph(gid, group, true);
-      panel._roomGraphState(gid).loadedAt = 0;
-      const before = calls;
-      await panel._loadRoomGraph(gid, group);
-      await panel._loadRoomGraph(gid, group);
-      const section = panel._roomGraphSection(gid);
-      return {
-        retried: calls !== before,
-        text: section.innerText,
-        graph: !!section.querySelector("[data-room-graph] svg"),
-      };
-    } finally {
-      panel._chartCall = original;
-    }
-  });
-  assert.equal(
-    failure.retried,
-    false,
-    "unchanged failed requests wait for explicit retry",
-  );
-  assert.doesNotMatch(
-    failure.text,
-    /No recorded signals for this day/,
-    "errors do not imply missing history",
-  );
-  assert.equal(
-    failure.graph,
-    true,
-    "a failed refresh retains the previous graph",
-  );
-  await page.evaluate(() =>
-    panel._loadRoomGraph("area:ux", panel._roomsData().groups["area:ux"], true),
-  );
+  await testRoomGraphResilience(page);
   const hit = graph.locator("[data-room-plot-hit]");
   await hit.scrollIntoViewIfNeeded();
   const box = await hit.boundingBox();
@@ -336,7 +369,7 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
       .evaluate((node) => node.classList.contains("collapsed")),
     false,
   );
-  for (const width of [1440, 768, 390, 320]) {
+  for (const width of [1440, 1150, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 900 });
     await area.evaluate((node) => node.scrollIntoView({ block: "start" }));
     assert.ok(
@@ -441,6 +474,39 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
     liveRefresh,
     true,
     "current-day graph expires even when labels are unchanged",
+  );
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.evaluate(async () => {
+    fixture.layout = [fixture.layout[0]];
+    fixture.learning_sets = {
+      "linked:columns": {
+        group_ids: ["area:ux", "area:second"],
+        device_ids: ["a", "c"],
+        learning: null,
+      },
+    };
+    await panel._load(true);
+  });
+  const fullWidth = await page.evaluate(() => {
+    const root = panel.shadowRoot
+      .querySelector("#layout")
+      .getBoundingClientRect();
+    return [
+      '[data-node-id="area:ux"]',
+      "[data-layout-footer]",
+      '[data-set-id="linked:columns"]',
+    ].every(
+      (selector) =>
+        Math.abs(
+          panel.shadowRoot.querySelector(selector).getBoundingClientRect()
+            .width - root.width,
+        ) < 1,
+    );
+  });
+  assert.equal(
+    fullWidth,
+    true,
+    "a lone room, shared learning and management controls use the available width",
   );
   await page.setViewportSize({ width: 1400, height: 1000 });
   await page.evaluate(() => {

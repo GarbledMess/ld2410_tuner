@@ -6,21 +6,6 @@ import {
   GATE_COLORS,
 } from "./constants.js";
 
-// Reduce raw gates immediately: room caches retain one signal series per radar,
-// not eighteen copies of the original history response.
-function strongest(data) {
-  const points = new Map();
-  for (const series of Object.values(data.series || {}))
-    for (const point of series.points || []) {
-      const value = point.max ?? point.avg;
-      if (!Number.isFinite(value) || !Number.isFinite(point.t)) continue;
-      const previous = points.get(point.t);
-      if (!previous || previous.avg < value)
-        points.set(point.t, { ...point, avg: value });
-    }
-  return [...points.values()].sort((a, b) => a.t - b.t);
-}
-
 export const panelRoomGraph = {
   _roomGraphState(gid) {
     this._roomCharts ||= new Map();
@@ -41,18 +26,18 @@ export const panelRoomGraph = {
           `<option value="${value}" ${state.kind === value ? "selected" : ""}>${label}</option>`,
       )
       .join("");
-    return `<div class="room-graph"><div class="chart-controls"><label>Signals<select data-room-graph-kind>${options}</select></label><button type="button" data-room-graph-refresh>Refresh graph</button></div><div class="room-graph-status muted" data-preserve-children role="status" aria-live="polite"></div><div class="room-signal-canvas" data-room-graph="${this._esc(gid)}" data-chart-canvas="room:${this._esc(gid)}"></div><div class="room-graph-legend" data-preserve-children aria-label="Radars in this graph"></div><p class="muted">Strongest signal from each radar (0–100). Signals help you review a period; they do not confirm that someone was there.</p></div>`;
+    return `<div class="room-graph"><div class="chart-controls"><label>Signals<select data-room-graph-kind>${options}</select></label><button type="button" data-room-graph-refresh>Refresh graph</button></div><div class="room-graph-status muted" data-preserve-children role="status" aria-live="polite"></div><div class="room-signal-canvas" data-room-graph="${this._esc(gid)}" data-chart-canvas="room:${this._esc(gid)}"></div><div class="room-graph-legend" data-preserve-children aria-label="Radars in this graph"></div><p class="muted">Strongest signal from each radar (0–100): the line shows its average and the shading its recorded range. Signals alone do not confirm presence.</p></div>`;
   },
 
-  _wireRoomGraph(section, gid, group) {
+  _wireRoomGraph(section, gid, group, foreground = false) {
     const state = this._roomGraphState(gid);
     section.querySelector("[data-room-graph-kind]").onchange = (event) => {
       state.kind = event.target.value;
-      this._loadRoomGraph(gid, group);
+      this._loadRoomGraph(gid, group, false, true);
     };
     section.querySelector("[data-room-graph-refresh]").onclick = () =>
       this._loadRoomGraph(gid, group, true);
-    if (this._groupOpen.has(gid)) {
+    if (this._roomGraphVisible(gid)) {
       const canvas = section.querySelector("[data-room-graph]");
       if (state.element !== canvas) {
         state.observer?.disconnect();
@@ -61,7 +46,7 @@ export const panelRoomGraph = {
         state.element = canvas;
       }
       this._renderRoomGraph(gid);
-      this._loadRoomGraph(gid, group);
+      this._loadRoomGraph(gid, group, false, foreground);
     }
   },
 
@@ -71,17 +56,43 @@ export const panelRoomGraph = {
     );
   },
 
-  async _loadRoomGraph(gid, group, refresh = false) {
+  _roomGraphVisible(gid) {
+    const section = this._roomGraphSection(gid);
+    return (
+      this.isConnected && !!section && !section.closest("details:not([open])")
+    );
+  },
+
+  _resumeRoomGraphs(parent) {
+    for (const section of parent.querySelectorAll("[data-room-timeline]")) {
+      const gid = section.dataset.roomTimeline;
+      const group = this._roomsData().groups[gid];
+      if (group && this._roomGraphVisible(gid))
+        this._wireRoomGraph(section, gid, group, true);
+    }
+    for (const id of new Set(
+      [...parent.querySelectorAll("[data-device-id]")].map(
+        (card) => card.dataset.deviceId,
+      ),
+    )) {
+      const device = this._data?.devices?.[id];
+      if (device) this._maybeFetchChart(id, device, false);
+    }
+  },
+
+  async _loadRoomGraph(gid, group, refresh = false, foreground = refresh) {
+    if (!this._roomGraphVisible(gid)) return;
     const state = this._roomGraphState(gid);
     const day = this._historyStateFor(`room:${gid}`).day;
     const bounds = this._historyDayBounds(day);
     const currentDay =
       Date.now() / 1000 >= bounds.start && Date.now() / 1000 < bounds.end;
     const ids = group.device_ids.filter((id) => this._data.devices[id]);
-    const query = JSON.stringify([day, state.kind, ids]);
+    const kind = state.kind;
+    const query = JSON.stringify([day, kind, ids]);
     const signature = JSON.stringify([
       day,
-      state.kind,
+      kind,
       ids.map((id) => [id, this._data.devices[id].history?.revision || 0]),
     ]);
     if (
@@ -91,23 +102,44 @@ export const panelRoomGraph = {
         (!currentDay && state.loadedKey === signature))
     )
       return;
-    // New live readings must not turn each snapshot poll into another chart job.
     if (
       !refresh &&
       state.loadedDay === day &&
-      state.loadedKind === state.kind &&
+      state.loadedKind === kind &&
       JSON.stringify(state.data?.series.map((item) => item.id)) ===
         JSON.stringify(ids) &&
       Date.now() - (state.loadedAt || 0) < 15000
     )
       return;
+    const retry = refresh && state.failedQuery === query && state.errors;
+    const requested = retry
+      ? ids.filter((id) => Object.hasOwn(state.errors, id))
+      : ids;
+    const end = retry
+      ? state.retryEnd
+      : Math.min(bounds.end, Date.now() / 1000);
+    const previous = new Map(
+      state.loadedDay === day && state.loadedKind === kind
+        ? state.data?.series
+            .filter((item) => ids.includes(item.id))
+            .map((item) => [item.id, item])
+        : [],
+    );
+    const results = new Map(previous);
+    const errors = {};
     const request = ++state.request;
-    state.pendingKey = signature;
-    state.pendingQuery = query;
-    state.failedQuery = null;
-    state.loading = true;
-    state.error = null;
-    state.day = day;
+    Object.assign(state, {
+      pendingKey: signature,
+      pendingQuery: query,
+      failedQuery: null,
+      loadedKey: null,
+      partial: false,
+      loading: true,
+      error: null,
+      errors: {},
+      day,
+      retryEnd: end,
+    });
     if (refresh) state.cache.clear();
     if (state.cache.has(signature) && !refresh && !currentDay) {
       state.data = state.cache.get(signature);
@@ -116,50 +148,68 @@ export const panelRoomGraph = {
       return;
     }
     this._renderRoomGraph(gid);
-    const end = Math.min(bounds.end, Date.now() / 1000);
     try {
-      const series =
-        end <= bounds.start
-          ? []
-          : await Promise.all(
-              ids.map(async (id, index) => {
-                const kind = state.kind;
-                const keys = Array.from({ length: 9 }, (_, gate) =>
-                  ["move", "still"]
-                    .filter((item) => kind === "all" || item === kind)
-                    .map((item) => `g${gate}_${item}`),
-                ).flat();
-                const data = await this._queueChartCall(() => {
+      if (end > bounds.start)
+        await Promise.all(
+          requested.map(async (id) => {
+            try {
+              const keys = Array.from({ length: 9 }, (_, gate) =>
+                ["move", "still"]
+                  .filter((item) => kind === "all" || item === kind)
+                  .map((item) => `g${gate}_${item}`),
+              ).flat();
+              const data = await this._queueChartCall(
+                () => {
                   if (!this.isConnected || request !== state.request)
                     return null;
                   return this._chartCall({
                     device_id: id,
                     keys,
+                    summary: true,
                     hours: Math.max(0.1, (end - bounds.start) / 3600),
                     end,
                   });
-                });
-                return (
-                  data && {
-                    id,
-                    name: this._data.devices[id]?.name || "Unavailable radar",
-                    color: GATE_COLORS[index % GATE_COLORS.length],
-                    points: strongest(data),
-                    bucket: data.bucket_seconds,
-                  }
+                },
+                { background: !foreground },
+              );
+              if (!data || request !== state.request) return;
+              if (!Array.isArray(data.points))
+                throw new Error(
+                  "The tuner returned an invalid signal history. Reload the panel and retry.",
                 );
-              }),
-            );
+              results.set(id, {
+                id,
+                name: this._data.devices[id]?.name || "Unavailable radar",
+                color: GATE_COLORS[ids.indexOf(id) % GATE_COLORS.length],
+                points: data.points,
+                bucket: data.bucket_seconds,
+              });
+              this._publishRoomSignals(state, bounds, ids, results, day, kind);
+              this._renderRoomGraph(gid);
+            } catch (error) {
+              if (request === state.request)
+                errors[id] = error.message || String(error);
+            }
+          }),
+        );
       if (request !== state.request) return;
-      state.data = { bounds, series: series.filter(Boolean) };
-      state.cache.set(signature, state.data);
-      while (state.cache.size > 3)
-        state.cache.delete(state.cache.keys().next().value);
-      this._finishRoomGraph(state, signature, day);
-    } catch (error) {
-      if (request === state.request) {
-        state.error = error.message || String(error);
+      state.errors = errors;
+      const failed = Object.keys(errors);
+      if (failed.length) {
         state.failedQuery = query;
+        state.error = failed
+          .map(
+            (id) =>
+              `${this._data.devices[id]?.name || "Unavailable radar"}: ${errors[id]}${previous.has(id) ? " (showing previous signals)" : ""}`,
+          )
+          .join("; ");
+        state.partial = failed.length < ids.length;
+      } else {
+        this._publishRoomSignals(state, bounds, ids, results, day, kind);
+        state.cache.set(signature, state.data);
+        while (state.cache.size > 3)
+          state.cache.delete(state.cache.keys().next().value);
+        this._finishRoomGraph(state, signature, day);
       }
     } finally {
       if (request === state.request) {
@@ -169,6 +219,16 @@ export const panelRoomGraph = {
         this._renderRoomGraph(gid);
       }
     }
+  },
+
+  _publishRoomSignals(state, bounds, ids, results, day, kind) {
+    state.data = {
+      bounds,
+      series: ids.filter((id) => results.has(id)).map((id) => results.get(id)),
+    };
+    state.loadedDay = day;
+    state.loadedKind = kind;
+    state.version = (state.version || 0) + 1;
   },
 
   _finishRoomGraph(state, signature, day) {
@@ -187,22 +247,29 @@ export const panelRoomGraph = {
     if (
       !section ||
       !this.isConnected ||
-      !this._groupOpen.has(gid) ||
+      !this._roomGraphVisible(gid) ||
       this._dragging
     )
       return;
     const state = this._roomGraphState(gid);
     const canvas = section.querySelector("[data-room-graph]");
     const status = section.querySelector(".room-graph-status");
+    const paused = (this._roomsData().groups[gid]?.device_ids || [])
+      .filter((id) => this._data.devices[id]?.recording_enabled === false)
+      .map((id) => this._data.devices[id].name || "Unnamed radar");
+    const recording = paused.length
+      ? ` Recording paused: ${paused.join(", ")}. Enable Record data in the radar card to resume.`
+      : "";
     const statusText = state.loading
       ? "Loading recorded signals. Waiting for the tuner if it is busy…"
       : state.error
-        ? `Graph unavailable: ${state.error} You can retry with Refresh graph.`
-        : "Drag across the graph or the label bar to select a period.";
+        ? `${state.partial ? "Some radar signals unavailable" : "Graph unavailable"}: ${state.error} You can retry with Refresh graph.`
+        : `Drag across the graph or the label bar to select a period.${recording}`;
     if (status.textContent !== statusText) status.textContent = statusText;
     status.classList.toggle("is-busy", !!state.loading);
     if (
       !state.data ||
+      state.loadedKind !== state.kind ||
       state.loadedDay !== this._historyStateFor(`room:${gid}`).day
     ) {
       canvas.innerHTML =
@@ -215,7 +282,13 @@ export const panelRoomGraph = {
     }
     const width = Math.max(320, canvas.clientWidth || CHART_W);
     const labels = this._roomsData().groups[gid]?.labels || [];
-    const paintKey = JSON.stringify([state.version, width, labels]);
+    const paintKey = JSON.stringify([
+      state.version,
+      width,
+      labels,
+      !!state.loading,
+      !!state.error,
+    ]);
     const repaint = canvas.dataset.paintKey !== paintKey;
     if (repaint) {
       canvas.innerHTML = this._roomGraphSvg(gid, state.data, width);
@@ -259,7 +332,7 @@ export const panelRoomGraph = {
     const y = (value) =>
       CHART_MARGIN.top +
       (1 - Math.max(0, Math.min(100, value)) / 100) * CHART_PLOT_H;
-    const grid = [0, 50, 100]
+    const grid = [0, 25, 50, 75, 100]
       .map(
         (value) =>
           `<line class="grid-line" x1="${CHART_MARGIN.left}" x2="${width - CHART_MARGIN.right}" y1="${y(value)}" y2="${y(value)}"/><text class="axis-label" x="${CHART_MARGIN.left - 5}" y="${y(value) + 3}" text-anchor="end">${value}</text>`,
@@ -279,14 +352,15 @@ export const panelRoomGraph = {
         const points = item.points.filter(
           (point) => point.t >= bounds.start && point.t <= bounds.end,
         );
-        const paths = this._seriesSegments(points, item.bucket)
-          .map((group) =>
-            group.length === 1
-              ? `<circle cx="${x(group[0].t)}" cy="${y(group[0].avg)}" r="2.5" fill="${item.color}"/>`
-              : `<polyline fill="none" stroke="${item.color}" stroke-width="2" points="${group.map((point) => `${x(point.t).toFixed(2)},${y(point.avg).toFixed(2)}`).join(" ")}"/>`,
-          )
-          .join("");
-        return `<g data-room-signal="${this._esc(item.id)}"><title>${this._esc(item.name)}</title>${paths}</g>`;
+        const { activeBandSvg, activeLineSvg } = this._activeGatePaths(
+          { bucket_seconds: item.bucket, series: { signal: { points } } },
+          { gate: 0 },
+          "signal",
+          x,
+          y,
+          item.color,
+        );
+        return `<g data-room-signal="${this._esc(item.id)}"><title>${this._esc(item.name)}</title>${activeBandSvg}${activeLineSvg}</g>`;
       })
       .join("");
     const labels = this._roomsData().groups[gid]?.labels || [];
@@ -302,9 +376,12 @@ export const panelRoomGraph = {
           `<rect class="room-label-band ${this._esc(label.state)}" x="${x(Math.max(bounds.start, label.start))}" y="${CHART_MARGIN.top}" width="${x(Math.min(bounds.end, label.end)) - x(Math.max(bounds.start, label.start))}" height="${CHART_PLOT_H}"/>`,
       )
       .join("");
-    const empty = series.some((item) => item.points.length)
-      ? ""
-      : `<text x="${width / 2}" y="${CHART_H / 2}" text-anchor="middle" class="axis-label">No recorded signals in this period</text>`;
+    const empty =
+      this._roomGraphState(gid).loading ||
+      this._roomGraphState(gid).error ||
+      series.some((item) => item.points.length)
+        ? ""
+        : `<text x="${width / 2}" y="${CHART_H / 2}" text-anchor="middle" class="axis-label">No recorded signals in this period</text>`;
     return `<svg viewBox="0 0 ${width} ${CHART_H}" role="img" aria-label="Room signal history"><rect class="plot-bg" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}"/>${bands}${grid}${ticks}${lines}${empty}<rect data-room-graph-selection class="selection-rect" y="${CHART_MARGIN.top}" height="${CHART_PLOT_H}" hidden/><rect data-room-plot-hit class="selection-hit" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}"/></svg>`;
   },
 

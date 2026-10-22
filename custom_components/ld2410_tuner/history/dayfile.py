@@ -18,14 +18,14 @@ import zlib
 from array import array
 from bisect import bisect_right
 from dataclasses import dataclass, field
-from itertools import repeat
+from itertools import accumulate, chain, repeat
 from operator import add, mul, sub, truediv
 
 GATES = 18
 MISSING, FLOAT = 255, 254
 CHANGE, END, GUESS, SPAN = range(4)
 STATES = (None, "present", "not_present")
-MAGIC, VERSION = b"LDH1", 1
+MAGIC, VERSION = b"LDH1", 2
 HEADER = struct.Struct("<BqqII18B")  # version, start ms, end ms, rows, guesses, float gates.
 RUN = struct.Struct("<iiBBB")  # start, end (ms from day start), state code, level, basis.
 
@@ -450,12 +450,20 @@ def _offsets(day, times):
 
 def encode_day(day):
     floats = [0 if isinstance(column, bytes) else 1 for column in day.columns]
+    version = 1 if day.times and day.times[0] < day.start else VERSION
     body = bytearray(
         HEADER.pack(
-            VERSION, _ms(day.start), _ms(day.end), len(day.times), len(day.guesses), *floats
+            version, _ms(day.start), _ms(day.end), len(day.times), len(day.guesses), *floats
         )
     )
-    body += _offsets(day, day.times).tobytes() + _offsets(day, day.ends).tobytes()
+    starts = _offsets(day, day.times)
+    # Small deltas and coverage durations compress well even when an entire
+    # timestamp column exceeds zlib's dictionary. Gate values remain lossless.
+    if version == 1:
+        body += starts.tobytes() + _offsets(day, day.ends).tobytes()
+    else:
+        body += array("i", map(sub, starts, chain((0,), starts))).tobytes()
+        body += array("i", map(sub, _offsets(day, day.ends), starts)).tobytes()
     for column in day.columns:
         body += column if isinstance(column, bytes) else column.tobytes()
     base = _ms(day.start)
@@ -470,6 +478,32 @@ def _times(raw, position, count, base):
     # ``_seconds(base + offset)`` for every offset, without a Python step per row.
     seconds = map(truediv, map(add, offsets, repeat(base)), repeat(1000))
     return array("d", seconds), position + 4 * count
+
+
+def _time_columns(raw, position, count, start, end, version):
+    if version == 1:
+        times, position = _times(raw, position, count, start)
+        ends, position = _times(raw, position, count, start)
+        return times, ends, position
+    deltas, durations = array("i"), array("i")
+    deltas.frombytes(raw[position : position + 4 * count])
+    durations.frombytes(raw[position + 4 * count : position + 8 * count])
+    if len(deltas) != count or len(durations) != count or any(delta < 0 for delta in deltas):
+        raise ValueError("Invalid delta timestamps")
+    try:
+        offsets = array("i", accumulate(deltas))
+    except OverflowError as error:
+        raise ValueError("Invalid delta timestamps") from error
+    if any(
+        duration < 0 or offset + duration > end - start
+        for offset, duration in zip(offsets, durations, strict=True)
+    ):
+        raise ValueError("Invalid coverage durations")
+    times = array("d", map(truediv, map(add, offsets, repeat(start)), repeat(1000)))
+    ends = array(
+        "d", map(truediv, map(add, map(add, offsets, durations), repeat(start)), repeat(1000))
+    )
+    return times, ends, position + 8 * count
 
 
 def _columns(raw, position, count, floats):
@@ -502,10 +536,16 @@ def decode_day(data):
     try:
         raw = zlib.decompress(data[4:])
         version, start, end, count, runs, *floats = HEADER.unpack_from(raw)
-        if version != VERSION:
+        if version not in (1, VERSION):
             raise ValueError(f"Unsupported day file version {version}")
-        times, position = _times(raw, HEADER.size, count, start)
-        ends, position = _times(raw, position, count, start)
+        expected = HEADER.size + count * (8 + sum(4 if flag else 1 for flag in floats))
+        if (
+            end < start
+            or any(flag not in (0, 1) for flag in floats)
+            or expected + runs * RUN.size != len(raw)
+        ):
+            raise ValueError("Corrupt day file")
+        times, ends, position = _time_columns(raw, HEADER.size, count, start, end, version)
         columns, position = _columns(raw, position, count, floats)
         guesses, position = _runs(raw, position, runs, start)
     except (zlib.error, struct.error, IndexError) as error:

@@ -176,3 +176,77 @@ def test_file_bytes_reject_single_and_combined_immutable_captures(tmp_path, mult
         run(operation, *args, limits=replace(capture.CaptureLimits(), max_file_bytes=limit))
     assert physical.read_bytes() == original
     assert list(private.iterdir()) == []
+
+
+def test_chart_window_capture_slices_bst_live_day_without_changing_geometry(tmp_path):
+    import datetime
+    from pathlib import Path
+
+    from test_event_charts import row
+    from test_event_charts import view as chart_view
+    from tuner_under_test.presentation.charts import history_series_multi
+    from tuner_under_test.worker import codec, display
+
+    end = datetime.datetime.fromisoformat("2026-10-22T00:20:00+01:00").timestamp()
+    midnight = int(end // 86400) * 86400
+    source = chart_view(
+        [(midnight + offset, row(offset % 200)) for offset in range(0, int(end - midnight), 100)],
+        end=end,
+        pending=True,
+    )
+    source._snapshot_history_start, source._history_until = end - 1200, end
+    expected = history_series_multi(source, "a", ["g0_move"], 1 / 3, 1000, end)
+    source._capture_chart_window = True
+    request = run(capture.prepare, source, "a", tmp_path / "short")
+    captured = calculations.restore(request)
+    date = captured._days.days("a")[0]
+    day = captured._days.day("a", date)
+    assert len(day.times) <= 13  # Twenty minutes, rather than 23h20 of UTC live columns.
+    request.update(
+        operation="charts",
+        parameters=codec.encode(
+            {"device_id": "a", "keys": ["g0_move"], "hours": 1 / 3, "max_points": 1000, "end": end}
+        ),
+    )
+    assert display.unpack_chart(calculations.execute(request)) == expected
+    with pytest.raises(worker_snapshot.SnapshotTooLarge):
+        run(
+            capture.prepare,
+            source,
+            "a",
+            tmp_path / "reject",
+            limits=replace(capture.CaptureLimits(), max_rows=20),
+        )
+    assert not (tmp_path / "reject").exists()
+    first = SimpleNamespace(**vars(source))
+    second = SimpleNamespace(**vars(source))
+    second._snapshot_history_start = end - 600
+    requests = run(capture.prepare_multi, {"one": first, "two": second}, tmp_path / "multi")
+    paths = [item["days"][0]["path"] for item in requests["views"].values()]
+    assert len(set(paths)) == 2
+    assert all(Path(path).is_file() for path in paths)
+
+
+def test_chart_capture_keeps_open_predecessor_gaps_and_historical_cutoffs(tmp_path):
+    from test_event_charts import row
+    from test_event_charts import view as chart_view
+    from tuner_under_test.presentation.charts import history_series_multi
+    from tuner_under_test.worker import codec, display
+
+    source = chart_view([(0, row(10)), (100, row(30)), (200, row(50))], end=300, pending=True)
+    source._days.append("a", dayfile.Change(400, {0: 60}))
+    for index, (start, end) in enumerate(((450, 810), (-110, 250), (90, 450))):
+        source._capture_chart_window = True
+        source._snapshot_history_start, source._history_until = start, end
+        parameters = {
+            "device_id": "a",
+            "keys": ["g0_move"],
+            "hours": 0.1,
+            "max_points": 1000,
+            "end": end,
+        }
+        expected = history_series_multi(source, **parameters)
+        request = run(capture.prepare, source, "a", tmp_path / str(index))
+        request.update(operation="charts", parameters=codec.encode(parameters))
+        actual = display.unpack_chart(calculations.execute(request))
+        assert actual == expected

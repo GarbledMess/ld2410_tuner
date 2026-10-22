@@ -231,7 +231,7 @@ def test_export_rejects_excess_nodes_or_depth(monkeypatch, value):
         display.check_export(value)
 
 
-@pytest.mark.parametrize("operation", ["charts", "export_days"])
+@pytest.mark.parametrize("operation", ["charts", "summary", "export_days"])
 def test_display_runs_in_independent_python_without_homeassistant(tmp_path, operation):
     import json
     import subprocess
@@ -241,12 +241,15 @@ def test_display_runs_in_independent_python_without_homeassistant(tmp_path, oper
     from tuner_under_test.const import HISTORY_KEYS
     from tuner_under_test.worker import calculations, protocol
 
-    source = view([block(0, 86400 if operation == "charts" else 600, 40)], [])
+    source = view([block(0, 86400 if operation in ("charts", "summary") else 600, 40)], [])
     with ThreadPoolExecutor() as executor:
         request = executor.submit(capture.prepare_multi, {"any-name": source}, tmp_path).result()
     parameters = {"device_id": "any-name"}
-    if operation == "charts":
+    if operation in ("charts", "summary"):
         parameters.update(keys=list(HISTORY_KEYS), hours=24, max_points=1000, end=86400)
+    if operation == "summary":
+        parameters["summary"] = True
+        operation = "charts"
     request.update(operation=operation, parameters=codec.encode(parameters))
     path = tmp_path / "request.json"
     path.write_bytes(protocol.pack("learn", request))
@@ -316,3 +319,124 @@ def test_chart_transport_enforces_compressed_and_expanded_byte_limits(monkeypatc
             patch.setattr(display, name, 1)
             with pytest.raises(ValueError):
                 display.pack_chart(valid)
+
+
+def test_room_summary_preserves_simultaneous_geometry_and_full_chart(tmp_path):
+    from test_event_charts import chart, row
+    from test_event_charts import view as chart_view
+    from tuner_under_test.worker import calculations
+
+    source = chart_view(
+        [],
+        blocks=[
+            ([(0, row(10, 10)), (50.125, row(90, 20)), (50.175, row(None, 20))], 100),
+            ([(100.125, row(30, None)), (110, row(30, 40))], 600),
+        ],
+    )
+    parameters = {
+        "device_id": "a",
+        "keys": ["g0_move", "g0_still"],
+        "hours": 1,
+        "max_points": 50,
+        "end": 600,
+    }
+    full = chart(source, keys=parameters["keys"])
+    simultaneous = chart_view(
+        [],
+        blocks=[
+            ([(0, row(10)), (50.125, row(90)), (50.175, row(20))], 100),
+            ([(100.125, row(30)), (110, row(40))], 600),
+        ],
+    )
+    expected_native = chart(simultaneous)
+    expected = {key: expected_native[key] for key in ("start", "end", "bucket_seconds")}
+    expected["points"] = expected_native["series"]["g0_move"]["points"]
+    with ThreadPoolExecutor() as executor:
+        request = executor.submit(capture.prepare_multi, {"a": source}, tmp_path).result()
+    for summary in (False, True):
+        request.update(
+            operation="charts", parameters=codec.encode({**parameters, "summary": summary})
+        )
+        assert display.unpack_chart(calculations.execute(request)) == (
+            expected if summary else full
+        )
+
+
+def test_summary_chart_shape_budget_and_empty():
+    from copy import deepcopy
+
+    from tuner_under_test.presentation.charts import history_series_multi
+
+    full = history_series_multi(view([block(0, 600, 40)], []), "any-name", ["g0_move"], 1, end=600)
+    summary = {key: full[key] for key in ("start", "end", "bucket_seconds")}
+    summary["points"] = []
+    assert display.unpack_chart(display.pack_chart(summary)) == summary
+    point = full["series"]["g0_move"]["points"][0]
+    summary["points"] = [point] * 18000
+    assert len(display.unpack_chart(display.pack_chart(summary))["points"]) == 18000
+    for mutation in ({"points": [point] * 18001}, {"extra": 1}, {"points": [{}]}):
+        damaged = {**deepcopy(summary), **mutation}
+        with pytest.raises(ValueError):
+            display.pack_chart(damaged)
+
+
+def test_room_summary_empty_and_gate_order_are_semantically_stable():
+    from test_event_charts import row
+    from test_event_charts import view as chart_view
+
+    parameters = {"device_id": "a", "hours": 1, "max_points": 50, "end": 600, "summary": True}
+    source = chart_view([(0, row(10, 10)), (100, row(20, 40))])
+    forward = display.unpack_chart(
+        display.calculate("charts", source, {**parameters, "keys": ["g0_move", "g0_still"]})
+    )
+    reverse = display.unpack_chart(
+        display.calculate("charts", source, {**parameters, "keys": ["g0_still", "g0_move"]})
+    )
+    assert forward == reverse
+    empty = display.unpack_chart(
+        display.calculate("charts", chart_view([], blocks=[]), {**parameters, "keys": ["g0_move"]})
+    )
+    assert empty["points"] == []
+
+
+def test_async_room_summary_cache_keeps_mode_and_gate_order(monkeypatch):
+    import asyncio
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    from test_event_charts import row
+    from test_event_charts import view as chart_view
+    from tuner_under_test.presentation import charts
+    from tuner_under_test.worker import bridge
+
+    async def run():
+        source = chart_view([(0, row(10, 10))])
+        source._history_cache, source._history_jobs = OrderedDict(), {}
+        source._history_view = lambda *args, **kwargs: source
+        source.hass = SimpleNamespace(async_add_executor_job=asyncio.to_thread)
+        calls = []
+
+        async def calculate(runtime, operation, prepare):
+            prepared = prepare()
+            assert prepared["views"]["a"]._snapshot_history_start == -3000
+            calls.append(prepared["parameters"])
+            return display.calculate(operation, source, prepared["parameters"])
+
+        monkeypatch.setattr(bridge, "calculate", calculate)
+        keys = ["g0_move", "g0_still"]
+        for summary, requested in (
+            (False, keys),
+            (True, keys),
+            (True, keys[::-1]),
+            (True, keys),
+            (False, keys[::-1]),
+        ):
+            result = await charts.async_history_series(
+                source, "a", requested, 1, 50, 600, summary=summary
+            )
+            assert ("points" in result) is summary
+        assert len(calls) == 3
+        assert [call["summary"] for call in calls] == [False, True, True]
+        assert calls[2]["keys"] == keys[::-1]
+
+    asyncio.run(run())

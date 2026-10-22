@@ -7,7 +7,7 @@ export const panelView = {
     this.shadowRoot.innerHTML = `
       <style>
         :host { display:block; padding:12px; box-sizing:border-box; color:var(--primary-text-color); }
-        .wrap { max-width:1500px; margin:auto; }
+        .wrap { max-width:1500px; margin:auto; container:tuner-panel / inline-size; }
         h1 { font-size:20px; margin:4px 0 6px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
         .panel-version { font-size:12px; font-weight:400; color:var(--secondary-text-color); border:1px solid var(--divider-color); border-radius:6px; padding:3px 6px; }
         .action-status, #snapshot-status { min-height:1.5em; font-size:13px; margin:6px 0; }
@@ -45,7 +45,12 @@ export const panelView = {
         .data-clear { border-top:1px solid var(--divider-color); padding-top:12px; margin-top:12px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
         .subtitle { color:var(--secondary-text-color); font-size:14px; margin-bottom:14px; }
         .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(500px,100%),1fr)); gap:14px; min-width:0; }
-        #layout { display:flex; flex-direction:column; gap:14px; min-width:0; }
+        #layout { display:grid; grid-template-columns:minmax(0,1fr); gap:14px; min-width:0; }
+        #layout > * { align-self:start; }
+        #layout > :is([data-layout-footer], [data-set-id], [data-leaf-id="all"], details:only-of-type) { grid-column:1 / -1; }
+        @container tuner-panel (min-width:1100px) {
+          #layout { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        }
         .layout-node, .layout-leaf, .layout-direct { min-width:0; }
         .layout-node > summary, .layout-leaf > summary { cursor:pointer; min-height:44px; align-content:center; }
         .layout-node > summary h2 { display:inline; margin:0; font-size:16px; }

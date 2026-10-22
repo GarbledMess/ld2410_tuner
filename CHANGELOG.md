@@ -1,5 +1,34 @@
 # Release notes
 
+## 1.26.4 - 2026-10-22
+
+- Preserve the last observed coverage of unchanged signals when flushing, so stable
+  zero or 100 readings survive an abrupt restart. Persist unavailable transitions.
+- Calculate room signals from simultaneous physical readings before downsampling.
+  Preserve true step boundaries, outages, duration-weighted means and peak intervals.
+- Share the radar graph's average line and recorded-range shading with room graphs.
+  Show paused recording beside the graph. Keep successful radar results visible when
+  another fails, publish completed results promptly, and retry only failed requests.
+- Capture only the requested portion of mutable chart days. Return one compact
+  room signal per radar rather than all gate series. Prioritise visible interactions
+  while deferring automatic work in closed sections.
+- Use lossless delta timestamps and coverage durations in finished day files, retaining
+  readers for the original format. Existing files compact automatically in the protected
+  startup transaction, one file at a time; every recorded change is retained.
+  Older releases cannot read the new encoding; downgrades require restoring the
+  corresponding history backup.
+- Use two room columns when the panel has sufficient desktop width, retain a single
+  mobile column and keep room, zone and radar cards within their owning cards.
+
+
+Validation: 2,325 workspace tests passed, followed by 48 focused storage checks
+including three additional malformed-file cases; combined coverage was 97.07%.
+Desktop/mobile browser checks and real HA state-event acquisition through flush,
+restart and chart retrieval passed in the one-CPU, 1,536 MiB lab. The protected
+150,000-row workload retained every row; HA HTTP p95 was 21.650 ms (maximum
+237.151 ms). All 122 supplied finished days round-tripped exactly, shrinking
+from 24,287,325 to 14,621,437 bytes without removing any recorded change.
+
 ## 1.26.3 - 2026-10-21
 
 - Fix normal multi-gate charts failing the worker result limit. Use bounded,

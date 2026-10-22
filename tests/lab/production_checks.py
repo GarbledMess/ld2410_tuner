@@ -43,11 +43,12 @@ async def main():
         start = end - 6001
         store.append("old", dayfile.Change(end - 10 * 86400, {0: 25}))
         store.append("old", dayfile.End(end - 10 * 86400 + 6))
-        for index in range(6000):
-            base = 40 if index < 3000 else 5
+        row_count = 150000  # Match dense delivered-event days in the supplied recordings.
+        for index in range(row_count):
+            base = 40 if index < row_count // 2 else 5
             store.append(
                 "probe",
-                dayfile.Change(start + index, dict.fromkeys(range(18), base + index % 5)),
+                dayfile.Change(start + index * 0.04, dict.fromkeys(range(18), base + index % 5)),
             )
         labels = [
             {"start": start, "end": start + 3000, "state": "present"},
@@ -112,6 +113,27 @@ async def main():
             assert set(chart["series"]) == set(HISTORY_KEYS)
             assert all(len(series["points"]) >= 200 for series in chart["series"].values())
 
+            summary = await bridge.calculate(
+                runtime,
+                "charts",
+                lambda: {
+                    "views": {"probe": view},
+                    "parameters": {
+                        "device_id": "probe",
+                        "keys": list(HISTORY_KEYS),
+                        "hours": 2,
+                        "max_points": 400,
+                        "end": end,
+                        "summary": True,
+                    },
+                },
+            )
+            summary = await asyncio.to_thread(display.unpack_chart, summary)
+            # Every gate has the same value at each instant in this fixture,
+            # so their simultaneous maximum is exactly one gate's native curve.
+            assert summary["points"] == chart["series"][HISTORY_KEYS[0]]["points"]
+            assert (summary["start"], summary["end"]) == (chart["start"], chart["end"])
+
             async def accept_storage(result, directory):
                 prepared, changes, report, staged = await asyncio.to_thread(
                     maintenance.load, result, directory
@@ -132,7 +154,7 @@ async def main():
             observed = sum(
                 len(runtime._days.day("probe", date).times) for date in runtime._days.days("probe")
             )
-            assert observed == 6000
+            assert observed == row_count
         finally:
             await bridge.stop(runtime)
             stopped.set()
@@ -144,12 +166,16 @@ async def main():
                 {
                     "production_learning_children": 4,
                     "protected_chart_gates": len(chart["series"]),
+                    "room_summary_points": len(summary["points"]),
+                    "full_chart_json_bytes": len(json.dumps(chart, separators=(",", ":"))),
+                    "room_summary_json_bytes": len(json.dumps(summary, separators=(",", ":"))),
+                    "room_summary_simultaneous_truth": True,
                     "protected_chart_points": sum(
                         len(s["points"]) for s in chart["series"].values()
                     ),
                     "production_storage_children": 4,
                     "storage_recovered_rows": observed,
-                    "synthetic_rows": 6000,
+                    "synthetic_rows": row_count,
                     "ha_http_responses": len(latencies),
                     "ha_http_p95_ms": round(statistics.quantiles(latencies, n=20)[18] * 1000, 3),
                     "ha_http_max_ms": round(max(latencies) * 1000, 3),

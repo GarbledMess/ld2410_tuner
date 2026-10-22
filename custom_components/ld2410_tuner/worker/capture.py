@@ -1,6 +1,8 @@
 """Executor-only acquisition of a bounded, portable numerical job."""
 
 import math
+from bisect import bisect_right
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -178,7 +180,7 @@ def _capture_days(view, dates, directory, limits, shared, remaining):
         else remaining
     )
     for key, date in dates:
-        mark = id(store), key, date, getattr(view, "_history_until", None)
+        mark = _capture_mark(store, key, date, view)
         entry = shared.get(mark)
         if entry is None:
             snapshot = _acquire(store, key, date, view, remaining)
@@ -253,17 +255,8 @@ def _preflight_multi(views, limits):
 
 
 def _acquire(store, key, date, view, remaining):
-    snapshot = worker_snapshot.acquire(
-        store,
-        key,
-        date,
-        getattr(view, "_history_until", None),
-        limits=worker_snapshot.Limits(
-            remaining["rows"],
-            remaining["guesses"],
-            remaining["raw"],
-        ),
-    )
+    limits = worker_snapshot.Limits(remaining["rows"], remaining["guesses"], remaining["raw"])
+    snapshot = _acquire_snapshot(store, key, date, view, limits)
     if remaining["guesses"] is not None:
         remaining["guesses"] -= len(snapshot.late_guesses)
     if snapshot.day is not None:
@@ -272,3 +265,58 @@ def _acquire(store, key, date, view, remaining):
         if remaining["guesses"] is not None:
             remaining["guesses"] -= len(snapshot.day.guesses)
     return snapshot
+
+
+def _chart_builder(builder, start, until):
+    """Copy only intersecting columns; keep guess inputs and exact endpoint semantics."""
+    first = bisect_right(builder.ends, start)
+    if builder.current is not None and builder.times:
+        first = min(first, len(builder.times) - 1)
+    after = bisect_right(builder.times, until)
+    bounded = copy(builder)
+    bounded.times = builder.times[first:after]
+    bounded.ends = builder.ends[first:after]
+    bounded.columns = [column[first:after] for column in builder.columns]
+    if after < len(builder.times) or not bounded.times:
+        bounded.current = None
+    return bounded
+
+
+def _chart_store(store, key, date, view, limits):
+    """Use the original lock and ownership markers with a bounded mutable builder."""
+    with store._lock:
+        live = store._live.get(key)
+        current = live is not None and live.date == date
+        item = live if current else store._closing.get(key, {}).get(date)
+        if item is None:
+            return store
+        worker_snapshot._preflight(item.builder, store._late.get(key, {}).get(date, ()), limits)
+        bounded = copy(item)
+        bounded.builder = _chart_builder(
+            item.builder, view._snapshot_history_start, view._history_until
+        )
+        detached = copy(store)
+        if current:
+            detached._live = {**store._live, key: bounded}
+        else:
+            detached._closing = {**store._closing, key: {**store._closing[key], date: bounded}}
+        return detached
+
+
+def _acquire_snapshot(store, key, date, view, limits):
+    until = getattr(view, "_history_until", None)
+    if getattr(view, "_capture_chart_window", False):
+        with store._lock:
+            bounded = _chart_store(store, key, date, view, limits)
+            if bounded is not store:
+                return worker_snapshot.acquire(bounded, key, date, until, limits=limits)
+    return worker_snapshot.acquire(store, key, date, until, limits=limits)
+
+
+def _capture_mark(store, key, date, view):
+    start = (
+        getattr(view, "_snapshot_history_start", None)
+        if getattr(view, "_capture_chart_window", False)
+        else None
+    )
+    return id(store), key, date, getattr(view, "_history_until", None), start

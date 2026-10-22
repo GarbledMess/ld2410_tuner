@@ -89,6 +89,78 @@ def test_corrupt_finished_file_is_rejected():
         dayfile.decode_day(b"not a day file")
 
 
+def test_v2_delta_times_and_durations_preserve_gaps_and_milliseconds():
+    import struct
+    import zlib
+
+    day = dayfile.day_from_log(
+        [
+            change(1.125, g0=4),
+            change(3.625, g0=8),
+            dayfile.End(START + 9.125),
+            change(50.125, g0=12),
+            dayfile.End(START + 60.125),
+        ],
+        None,
+        START,
+        END,
+    )
+    encoded = dayfile.encode_day(day)
+    raw = zlib.decompress(encoded[4:])
+    assert raw[0] == 2, "new files use compact delta timestamps"
+    assert struct.unpack_from("<6i", raw, dayfile.HEADER.size) == (
+        1125,
+        2500,
+        46500,
+        2500,
+        5500,
+        10000,
+    )
+    assert dayfile.decode_day(encoded) == day
+
+
+def test_v1_known_answer_remains_readable():
+    import struct
+    import zlib
+
+    header = dayfile.HEADER.pack(1, round(START * 1000), round(END * 1000), 2, 1, *([0] * 18))
+    body = struct.pack("<4i", 1125, 50125, 9125, 60125)
+    body += bytes([4, 12]) + bytes([255, 255]) * 17
+    body += dayfile.RUN.pack(1125, 9125, 1, 18, 1)
+    day = dayfile.decode_day(dayfile.MAGIC + zlib.compress(header + body))
+    assert list(day.times) == [START + 1.125, START + 50.125]
+    assert list(day.ends) == [START + 9.125, START + 60.125]
+    assert day.vector(0) == vector(g0=4)
+    assert day.guesses == [(START + 1.125, START + 9.125, "present", 18, 1)]
+
+
+def test_delta_layout_compacts_large_history_without_dropping_events():
+    import zlib
+
+    builder = dayfile.DayBuilder(START, END)
+    for index in range(12000):
+        builder.add(change(index * 0.125, g0=index % 100))
+    builder.add(dayfile.End(START + 1500))
+    day = builder.day()
+    legacy = dayfile.HEADER.pack(1, round(START * 1000), round(END * 1000), 12000, 0, *([0] * 18))
+    legacy += dayfile._offsets(day, day.times).tobytes() + dayfile._offsets(day, day.ends).tobytes()
+    legacy += b"".join(day.columns)
+    encoded = dayfile.encode_day(day)
+    assert len(encoded) < 0.7 * len(zlib.compress(legacy, 6))
+    assert dayfile.decode_day(encoded) == day
+
+
+@pytest.mark.parametrize("times", [(-1, 1), (0, -1), (86400000, 1)])
+def test_invalid_v2_time_ranges_are_rejected(times):
+    import struct
+    import zlib
+
+    header = dayfile.HEADER.pack(2, 0, 86400000, 1, 0, *([0] * 18))
+    body = struct.pack("<2i", *times) + bytes([255]) * 18
+    with pytest.raises(ValueError):
+        dayfile.decode_day(dayfile.MAGIC + zlib.compress(header + body))
+
+
 def test_out_of_order_records_are_rejected():
     with pytest.raises(ValueError):
         dayfile.encode_records([change(5, g0=1), change(4, g0=2)], START)
@@ -193,3 +265,13 @@ def test_live_views_clip_only_what_reaches_past_their_time():
         if count and count == len(builder.times) and builder.current is not None:
             expected[-1] = until
         assert list(view.ends) == expected
+
+
+def test_predecessor_before_day_start_keeps_legacy_lossless_encoding():
+    import zlib
+    from array import array
+
+    day = dayfile.Day(100, 200, array("d", [99.5]), array("d", [101]), [bytes([10])] * 18, [])
+    encoded = dayfile.encode_day(day)
+    assert zlib.decompress(encoded[4:])[0] == 1
+    assert dayfile.decode_day(encoded) == day

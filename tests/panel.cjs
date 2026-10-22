@@ -24,6 +24,7 @@ const testAutomaticWeight = require("./browser/automatic_weight.cjs");
 const testLayout = require("./browser/layout.cjs");
 const testCardConsistency = require("./browser/consistency.cjs");
 const testCollapsedDefaults = require("./browser/collapsed.cjs");
+const testChartQueue = require("./browser/chart_queue.cjs");
 const { execFileSync } = require("node:child_process");
 (async () => {
   const registration = JSON.parse(
@@ -169,6 +170,16 @@ const { execFileSync } = require("node:child_process");
               await new Promise((resolve) => setTimeout(resolve, window.delay));
             const end = message.end ?? Date.now() / 1000,
               start = end - message.hours * 3600;
+            if (message.summary)
+              return {
+                start,
+                end,
+                bucket_seconds: message.hours <= 6 ? 60 : 300,
+                points: [
+                  { t: start + 60, min: 5, avg: 10, max: 20 },
+                  { t: end - 60, min: 6, avg: 11, max: 22 },
+                ],
+              };
             return {
               start,
               end,
@@ -193,6 +204,7 @@ const { execFileSync } = require("node:child_process");
       };
     });
     await testCollapsedDefaults(page);
+    await testChartQueue(page);
     // The remaining interaction recipes explicitly exercise these sections open.
     await page.evaluate(() => {
       for (const id of Object.keys(fixture.devices))

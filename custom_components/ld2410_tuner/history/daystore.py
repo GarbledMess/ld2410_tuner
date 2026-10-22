@@ -57,6 +57,11 @@ class _Live:
         self.last = record.time
         self.seen = max(self.seen, record.time)
 
+    def checkpoint(self):
+        """Journal the last observation without adding a vector or extending past it."""
+        if self.is_open() and self.seen > self.last:
+            self.add(dayfile.Change(self.seen, {}))
+
     def is_open(self):
         return self.builder.current is not None or self.builder.run is not None
 
@@ -214,6 +219,7 @@ class DayStore:
         today = date_of(time.time() if now is None else now)
         with self._lock:
             for device_id, live in list(self._live.items()):
+                live.checkpoint()
                 if live.date < today:
                     self._roll(device_id, live, today)
             pending = [(key, live, live.buffer) for key, live in self._live.items() if live.buffer]
@@ -344,7 +350,7 @@ class DayStore:
 
     def observe(self, device_id, timestamp):
         """The radar was observed unchanged at ``timestamp``: memory only, never a record (a
-        crash still ends coverage at the last record)."""
+        flush journals this observation before a crash)."""
         with self._lock:
             live = self._live.get(device_id)
             if live is not None and live.builder.current is not None:

@@ -62,7 +62,7 @@ export const panelControls = {
       body.classList.toggle("collapsed", willCollapse);
       btn.textContent = `${willCollapse ? "Show" : "Hide"} device details`;
       btn.setAttribute("aria-expanded", String(!willCollapse));
-      if (!willCollapse) this._maybeFetchChart(id, d);
+      if (!willCollapse) this._maybeFetchChart(id, d, false);
     };
     card.querySelector('[data-action="toggle"]').onclick = (e) => {
       e.stopPropagation();
@@ -85,7 +85,8 @@ export const panelControls = {
             );
           else this._chartState.get(id).historyLinked = false;
         }
-        if (key === "chart" && !willCollapse) this._maybeFetchChart(id, d);
+        if (key === "chart" && !willCollapse)
+          this._maybeFetchChart(id, d, false);
       };
       head.onkeydown = (event) => {
         if (event.target === head && ["Enter", " "].includes(event.key)) {

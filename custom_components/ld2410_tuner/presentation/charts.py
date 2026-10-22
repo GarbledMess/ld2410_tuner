@@ -25,6 +25,7 @@ def history_series_multi(
     hours: float,
     max_points: int = 400,
     end: float | None = None,
+    summary: bool = False,
 ) -> dict[str, Any]:
     """Downsampled time series for several gates at once, sharing one pass
     over the history and one set of labels, so the chart can overlay
@@ -35,6 +36,11 @@ def history_series_multi(
     averaged value) so short spikes during a quiet period aren't
     smoothed away - those spikes are exactly what matters when judging
     whether a threshold is safely above the real noise ceiling.
+
+    A room summary first takes the maximum of the selected gates in each
+    physical span, then applies the same duration-weighted aggregation. Its
+    extrema retain their physical intervals, and coverage is the union of
+    available selected gates rather than the coverage of a winning gate.
     """
     device = runtime.data["devices"].get(device_id)
     if not device:
@@ -76,10 +82,12 @@ def history_series_multi(
         ),
         86400,
     )
-    return _native_chart(runtime, device_id, indices, start, end, bucket_span, max_points)
+    return _native_chart(runtime, device_id, indices, start, end, bucket_span, max_points, summary)
 
 
-async def async_history_series(runtime, device_id, keys, hours, max_points, end=None):
+async def async_history_series(
+    runtime, device_id, keys, hours, max_points, end=None, summary=False
+):
     if end is not None and not math.isfinite(float(end)):
         raise ValueError("End time must be finite")
     end = min(time.time(), float(end)) if end is not None else time.time()
@@ -88,7 +96,8 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
         raise ValueError("Unknown device")
     cache_key = (
         device_id,
-        tuple(sorted(set(keys))),
+        tuple(dict.fromkeys(keys)) if summary else tuple(sorted(set(keys))),
+        summary,
         hours,
         max_points,
         end,
@@ -109,6 +118,7 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
         def prepare():
             view = runtime._history_view(device_id, members=False)
             requested_hours = max(0.1, min(settings(runtime.data)["human_days"] * 24, float(hours)))
+            view._capture_chart_window = True
             view._snapshot_history_start = end - requested_hours * 3600
             view._history_until = end
             return {
@@ -119,6 +129,7 @@ async def async_history_series(runtime, device_id, keys, hours, max_points, end=
                     "hours": hours,
                     "max_points": max_points,
                     "end": end,
+                    "summary": summary,
                 },
             }
 
@@ -174,18 +185,27 @@ def _chart_labels(device, start, end):
     return labels
 
 
-def _native_chart(runtime, device_id, indices, start, end, bucket_span, max_points):
+def _native_chart(runtime, device_id, indices, start, end, bucket_span, max_points, summary=False):
     while 2 * (math.ceil(end / bucket_span) - math.floor(start / bucket_span)) > max_points:
         bucket_span *= 2
-    series = {key: _NativeSeries(start, end, bucket_span, max_points) for key in indices}
+    series = (
+        {}
+        if summary
+        else {key: _NativeSeries(start, end, bucket_span, max_points) for key in indices}
+    )
+    strongest = _NativeSeries(start, end, bucket_span, max_points) if summary else None
     modes = set()
     for cell in spans.events(runtime, device_id, start=start, end=end):
         pace.rest()
         modes.add(cell.mode)
-        for key, position in indices.items():
-            value = cell.values[position]
-            if value is not None:
-                series[key].add(cell.start, cell.end, value)
+        _add_native_span(series, strongest, indices, cell)
+    if strongest is not None:
+        return {
+            "start": start,
+            "end": end,
+            "bucket_seconds": bucket_span,
+            "points": strongest.finish()["points"],
+        }
     return {
         "start": start,
         "end": end,
@@ -195,6 +215,22 @@ def _native_chart(runtime, device_id, indices, start, end, bucket_span, max_poin
         "basis": "physical_span_duration",
         "modes": sorted(modes),
     }
+
+
+def _add_native_span(series, strongest, indices, cell):
+    if strongest is not None:
+        values = [
+            cell.values[position]
+            for position in indices.values()
+            if cell.values[position] is not None
+        ]
+        if values:
+            strongest.add(cell.start, cell.end, max(values))
+        return
+    for key, position in indices.items():
+        value = cell.values[position]
+        if value is not None:
+            series[key].add(cell.start, cell.end, value)
 
 
 class _NativeSeries:

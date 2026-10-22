@@ -21,7 +21,8 @@ def calculate(operation, view, parameters):
     if operation == "charts":
         from ..presentation.charts import history_series_multi
 
-        return pack_chart(history_series_multi(view, **parameters))
+        result = history_series_multi(view, **parameters)
+        return pack_chart(result)
     if operation == "export_days":
         return recorded_days(view, parameters["device_id"])
     raise ValueError("Unsupported display operation")
@@ -58,7 +59,7 @@ def unpack_chart(value):
         protocol._preflight(raw, 2_000_000)
         result = json.loads(raw, object_pairs_hook=protocol._pairs)
         _validate_chart(result)
-        for series in result["series"].values():
+        for series in result.get("series", {}).values():
             for name in ("gaps", "omitted_ranges"):
                 series[name] = [tuple(span) for span in series[name]]
         return result
@@ -69,12 +70,21 @@ def unpack_chart(value):
 def _validate_chart(value):
     codec.validate(value, max_nodes=2_000_000, max_bytes=CHART_RAW_BYTES)
     fields = {"start", "end", "bucket_seconds", "series", "labels", "basis", "modes"}
-    if type(value) is not dict or set(value) != fields:
+    summary_fields = {"start", "end", "bucket_seconds", "points"}
+    if type(value) is not dict or set(value) not in (fields, summary_fields):
         raise ValueError("Invalid chart fields")
     for name in ("start", "end", "bucket_seconds"):
         _number(value[name])
     if value["end"] < value["start"] or value["bucket_seconds"] <= 0:
         raise ValueError("Invalid chart window")
+    if set(value) == summary_fields:
+        for point in _bounded_list(value["points"], len(HISTORY_KEYS) * 1000):
+            _validate_point(point)
+        return
+    _validate_full_chart(value)
+
+
+def _validate_full_chart(value):
     series = value["series"]
     _validate_gates(series)
     for item in series.values():

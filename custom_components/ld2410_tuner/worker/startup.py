@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..history import convert, dayfile
 from ..history.daystore import DayStore, _Live
-from . import codec
+from . import codec, recompaction
 from .history import _nonblocking
 
 # A full day can contain more than 131k changes or 32k automatic guess runs.
@@ -40,6 +40,7 @@ def execute(request):
     days.open(request["now"])
     convert.run(data, days, request["now"])
     days.flush(request["now"])  # Persist late-span repair before handing ownership back.
+    recompaction.finished_days(days.root)
     patches = _patches(request["data"], data)
     directory = Path(request.get("directory", request["root"]))
     directory.mkdir(parents=True, exist_ok=True)

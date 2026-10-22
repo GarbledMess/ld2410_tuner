@@ -66,11 +66,23 @@ export const panelChart = {
     return Array.from({ length: 9 }, (_, g) => `g${g}_${cs.kind}`);
   },
 
-  _maybeFetchChart(id, d) {
+  _maybeFetchChart(id, d, background = true) {
     const cs = this._chartState.get(id);
     if (!cs) return;
     this._renderChartCanvas(id);
     if (this._collapsed.has(id) || this._sectionCollapsed(id, "chart")) return;
+    if (
+      !this._chartCanvases(id).some((canvas) => {
+        for (
+          let ancestor = canvas.parentElement;
+          ancestor;
+          ancestor = ancestor.parentElement
+        )
+          if (ancestor.matches("details:not([open])")) return false;
+        return true;
+      })
+    )
+      return;
     if (cs.loading || cs.error) return;
     const revision = d.history?.revision || 0;
     if (cs.loadedRevision !== revision) cs.cache?.clear();
@@ -81,19 +93,31 @@ export const panelChart = {
       cs.loadedRevision === revision
     )
       return;
-    void this._fetchChartData(id);
+    void this._fetchChartData(id, false, background);
   },
 
-  _queueChartCall(call) {
+  _queueChartCall(call, { background = false } = {}) {
     return new Promise((resolve, reject) => {
-      this._chartQueue.push({ call, resolve, reject });
+      this._chartQueue.push({ call, resolve, reject, background });
       this._drainChartQueue();
     });
   },
 
   _drainChartQueue() {
     while (this._activeCharts < 2 && this._chartQueue.length) {
-      const { call, resolve, reject } = this._chartQueue.shift();
+      // Bound foreground bursts so accepted automatic refreshes also progress.
+      // Both classes retain their arrival order; active work finishes normally.
+      const foreground = this._chartQueue.findIndex((item) => !item.background);
+      const background = this._chartQueue.findIndex((item) => item.background);
+      const serveBackground =
+        background >= 0 &&
+        (foreground < 0 || (this._foregroundChartBurst || 0) >= 4);
+      const index = serveBackground ? background : foreground;
+      this._foregroundChartBurst =
+        background >= 0 && !serveBackground
+          ? (this._foregroundChartBurst || 0) + 1
+          : 0;
+      const [{ call, resolve, reject }] = this._chartQueue.splice(index, 1);
       this._activeCharts++;
       void Promise.resolve()
         .then(call)
@@ -105,7 +129,7 @@ export const panelChart = {
     }
   },
 
-  async _fetchChartData(id, refresh = false) {
+  async _fetchChartData(id, refresh = false, background = false) {
     const cs = this._chartState.get(id);
     if (!cs) return;
     if (refresh) {
@@ -138,15 +162,18 @@ export const panelChart = {
     cs.error = null;
     this._renderChartCanvas(id);
     try {
-      const data = await this._queueChartCall(() => {
-        if (request !== cs.request || !this.isConnected) return null;
-        return this._chartCall({
-          device_id: id,
-          keys: this._chartKeys({ kind }),
-          hours,
-          ...(end != null ? { end } : {}),
-        });
-      });
+      const data = await this._queueChartCall(
+        () => {
+          if (request !== cs.request || !this.isConnected) return null;
+          return this._chartCall({
+            device_id: id,
+            keys: this._chartKeys({ kind }),
+            hours,
+            ...(end != null ? { end } : {}),
+          });
+        },
+        { background },
+      );
       if (request !== cs.request || !data) return;
       cs.data = data;
       cs.end = data.end;

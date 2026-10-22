@@ -153,7 +153,14 @@ export const panelVisualization = {
     return otherLines;
   },
 
-  _activeGatePaths(data, cs, activeKey, xScale, yScale) {
+  _activeGatePaths(
+    data,
+    cs,
+    activeKey,
+    xScale,
+    yScale,
+    color = GATE_COLORS[cs.gate],
+  ) {
     const activeSeries = data.series?.[activeKey];
     let activeBandSvg = "",
       activeLineSvg = "";
@@ -176,10 +183,10 @@ export const panelVisualization = {
           .reverse()
           .map((p) => `${xScale(p.t).toFixed(1)},${yScale(p.min).toFixed(1)}`)
           .join(" L ");
-        activeBandSvg += `<path d="M ${bandTop} L ${bandBottom} Z" class="value-band" style="fill:${GATE_COLORS[cs.gate]}"></path>`;
-        activeLineSvg += `<path d="${linePath}" class="value-line active" style="stroke:${GATE_COLORS[cs.gate]}"></path>`;
+        activeBandSvg += `<path d="M ${bandTop} L ${bandBottom} Z" class="value-band" style="fill:${color}"></path>`;
+        activeLineSvg += `<path d="${linePath}" class="value-line active" style="stroke:${color}"></path>`;
         if (points.length === 1)
-          activeLineSvg += `<circle cx="${xScale(points[0].t)}" cy="${yScale(points[0].avg)}" r="2" fill="${GATE_COLORS[cs.gate]}"></circle>`;
+          activeLineSvg += `<circle cx="${xScale(points[0].t)}" cy="${yScale(points[0].avg)}" r="2" fill="${color}"></circle>`;
       }
     }
 

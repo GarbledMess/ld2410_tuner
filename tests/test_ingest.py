@@ -149,12 +149,14 @@ def test_guesses_need_open_coverage_and_no_guess_without_a_run_records_nothing(t
     assert live._days.day("radar", DAY, until=START + 4).guesses == []
 
 
-def test_unchanged_readings_are_observed_in_memory_without_a_record(tmp_path, monkeypatch):
+def test_unchanged_readings_checkpoint_at_flush_without_adding_vectors(tmp_path, monkeypatch):
     live = runtime(tmp_path, g0_move=10)
     ingest.change(live, "radar", {}, START + 1)
     written = live._days.flush(now=START + 2)
     ingest.change(live, "radar", {"g0_move": 10}, START + 50)  # Polled, nothing changed.
-    assert live._days.flush(now=START + 51) == 0  # No record was written for it.
+    assert not live._days._live["radar"].buffer  # Polling itself adds no records.
+    assert live._days.flush(now=START + 51) > 0  # Flush journals the observation time.
+    assert live._days.flush(now=START + 52) == 0  # No duplicate checkpoint.
     monkeypatch.setattr(daystore.time, "time", lambda: START + 10)  # A clock behind the poll.
     assert rows(live, None) == [(START + 1, START + 50, (10, None))]
     assert written > 0

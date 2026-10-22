@@ -60,6 +60,8 @@ def _roll(store, today, owners):
 def _target(store, now):
     with store._lock:
         today = date_of(now)
+        for live in store._live.values():
+            live.checkpoint()
         owners = {key: live for key, live in store._live.items() if live.date < today}
         _roll(store, today, owners)
         items = [(key, live, False) for key, live in store._live.items() if live.buffer]
@@ -548,5 +550,9 @@ def _pending(store):
             store._clear_pending
             or any(store._closing.values())
             or any(store._late.values())
-            or any(live.buffer or live.date < today for live in store._live.values())
+            or any(_live_pending(live, today) for live in store._live.values())
         )
+
+
+def _live_pending(live, today):
+    return bool(live.buffer or live.date < today or (live.is_open() and live.seen > live.last))

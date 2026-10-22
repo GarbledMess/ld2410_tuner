@@ -199,15 +199,15 @@ async function testHeaders(page) {
   assert.equal(await desk.evaluate((node) => node.open), false);
   assert.match(
     await office.locator(".group-summary").innerText(),
-    /Presence & history[\s\S]*Whole area · 2 radars[\s\S]*—/,
+    /Presence & history[\s\S]*Whole area · 2 radars[\s\S]*Not assessed/,
   );
   assert.match(
     await desk.locator(".group-summary").innerText(),
-    /Presence & history[\s\S]*Zone · 1 radar[\s\S]*—$/,
+    /Presence & history[\s\S]*Zone · 1 radar[\s\S]*Not assessed$/,
   );
   assert.match(
     await office.locator(".group-summary").innerText(),
-    /Desk —/,
+    /Desk Not assessed/,
     "area header lists its zone scores",
   );
   await page.evaluate(() => {
@@ -681,7 +681,7 @@ async function testManualAndRemovedArea(page) {
   await manual.locator(".room-settings > summary").click();
   assert.match(
     await manual.locator(".group-summary").innerText(),
-    /Presence & history[\s\S]*Manual group · 1 radar[\s\S]*—$/,
+    /Presence & history[\s\S]*Manual group · 1 radar[\s\S]*Not assessed$/,
   );
   assert.match(
     await manual.locator(".room-settings > p").first().innerText(),

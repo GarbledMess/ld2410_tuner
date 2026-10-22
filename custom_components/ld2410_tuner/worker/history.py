@@ -43,7 +43,11 @@ def _inflate(stream, maximum):
 
 def _header(raw, max_rows, max_guesses):
     version, start, end, rows, guesses, *flags = dayfile.HEADER.unpack_from(raw)
-    if version != dayfile.VERSION or end < start or any(flag not in (0, 1) for flag in flags):
+    if (
+        version not in (1, dayfile.VERSION)
+        or end < start
+        or any(flag not in (0, 1) for flag in flags)
+    ):
         raise HistoryRejected("Invalid history header")
     if (max_rows is not None and rows > max_rows) or (
         max_guesses is not None and guesses > max_guesses
@@ -55,7 +59,7 @@ def _header(raw, max_rows, max_guesses):
     resident = rows * (16 + sum(4 if flag else 1 for flag in flags))
     if resident + guesses * GUESS_BYTES > DAY_BYTES:
         raise HistoryRejected("Decoded history representation exceeds worker memory allowance")
-    return start, end, rows, guesses, flags
+    return version, start, end, rows, guesses, flags
 
 
 def decode(
@@ -76,9 +80,10 @@ def decode(
         with _inflate(
             stream, DAY_BYTES if max_raw_bytes is None else min(DAY_BYTES, max_raw_bytes)
         ) as raw:
-            start, end, rows, guesses, flags = _header(raw, max_rows, max_guesses)
-            times, position = dayfile._times(raw, dayfile.HEADER.size, rows, start)
-            ends, position = dayfile._times(raw, position, rows, start)
+            version, start, end, rows, guesses, flags = _header(raw, max_rows, max_guesses)
+            times, ends, position = dayfile._time_columns(
+                raw, dayfile.HEADER.size, rows, start, end, version
+            )
             columns, position = dayfile._columns(raw, position, rows, flags)
             runs, _ = dayfile._runs(raw, position, guesses, start)
     except HistoryRejected:

@@ -194,9 +194,11 @@ export const panelLayout = {
       details.firstElementChild.addEventListener("click", () =>
         this._layoutOpen.set(key, !details.open),
       );
-      details.addEventListener("toggle", () =>
-        this._layoutOpen.set(key, details.open),
-      );
+      details.addEventListener("toggle", () => {
+        this._layoutOpen.set(key, details.open);
+        if (details.open)
+          requestAnimationFrame(() => this._resumeRoomGraphs(details));
+      });
       return details;
     });
     if (node.open !== this._layoutIsOpen(key))
@@ -361,7 +363,7 @@ export const panelLayout = {
             const section = details.querySelector("[data-room-timeline]");
             const current = this._roomsData().groups[id];
             if (section && current && details.open)
-              this._wireRoomGraph(section, id, current);
+              this._wireRoomGraph(section, id, current, true);
           });
       };
       // The toggle event is queued, so a poll could redraw first and undo a
@@ -403,12 +405,17 @@ export const panelLayout = {
       .filter((child) => child.kind === "zone" && rooms.groups[child.group_id])
       .map(
         (child) =>
-          `${this._esc(child.name)} ${this._scoreText(rooms.groups[child.group_id].assessment?.room)}`,
+          `${this._esc(child.name)} ${this._assessmentScoreText(rooms.groups[child.group_id].assessment)}`,
       );
     const zoneList = zones.length
       ? `<span class="group-zones"> · Zones: ${zones.join(", ")}</span>`
       : "";
-    return `<b>Presence &amp; history</b><span class="section-description">View radar signals and label occupied or empty periods.</span><span class="group-context">${this._groupKindLabel(group, rooms)} · ${count} radar${count === 1 ? "" : "s"}</span><span class="group-score">${this._scoreText(report.room)}${this._roomAssessmentMarker(report)}</span>${zoneList}`;
+    return `<b>Presence &amp; history</b><span class="section-description">View radar signals and label occupied or empty periods.</span><span class="group-context">${this._groupKindLabel(group, rooms)} · ${count} radar${count === 1 ? "" : "s"}</span><span class="group-score">${this._assessmentScoreText(report)}${this._roomAssessmentMarker(report)}</span>${zoneList}`;
+  },
+
+  _assessmentScoreText(report) {
+    const score = this._scoreText(report?.room);
+    return score === "—" ? "Not assessed" : score;
   },
 
   _roomAssessmentMarker(report) {

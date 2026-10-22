@@ -296,6 +296,7 @@ def _sample_device(runtime, device_id, device):
         runtime._source_runtime.pop(device_id, None)
         device.get("auto", {}).pop("last_classification", None)
         ingest.change(runtime, device_id, dict.fromkeys(HISTORY_KEYS), time.time())
+        runtime._schedule_flush()
         return
     if not device.get("recording_enabled", True) or runtime._storage_status.get("blocked"):
         runtime._source_runtime.pop(device_id, None)

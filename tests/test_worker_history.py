@@ -21,6 +21,32 @@ def test_empty_day_roundtrip():
     assert result.columns == [b""] * 18
 
 
+def test_v2_known_answer_and_count_limits_before_columns(monkeypatch):
+    import struct
+
+    header = dayfile.HEADER.pack(2, 0, 86400000, 2, 0, *([0] * 18))
+    body = struct.pack("<4i", 1125, 49000, 8000, 10000) + bytes([4, 12]) + bytes([255, 255]) * 17
+    payload = dayfile.MAGIC + zlib.compress(header + body)
+    result = history.decode(payload)
+    assert list(result.times) == [1.125, 50.125]
+    assert list(result.ends) == [9.125, 60.125]
+    assert result.vector(0)[0] == 4
+    monkeypatch.setattr(dayfile, "_columns", lambda *args: pytest.fail("allocated columns"))
+    with pytest.raises(history.HistoryRejected, match="count budget"):
+        history.decode(payload, max_rows=1)
+
+
+@pytest.mark.parametrize("times", [(-1, 1), (0, -1), (86400000, 1)])
+def test_v2_invalid_times_refused_before_columns(times, monkeypatch):
+    import struct
+
+    header = dayfile.HEADER.pack(2, 0, 86400000, 1, 0, *([0] * 18))
+    payload = dayfile.MAGIC + zlib.compress(header + struct.pack("<2i", *times) + bytes([255]) * 18)
+    monkeypatch.setattr(dayfile, "_columns", lambda *args: pytest.fail("allocated columns"))
+    with pytest.raises(history.HistoryRejected):
+        history.decode(payload)
+
+
 @pytest.mark.parametrize("payload", [encoded(rows=32769), encoded(runs=4097)])
 def test_counts_rejected_before_columns(payload, monkeypatch):
     monkeypatch.setattr(dayfile, "_columns", lambda *args: pytest.fail("allocated columns"))
@@ -152,7 +178,7 @@ def test_zero_expansion_budget_still_has_a_limit():
         history.decode(encoded(), max_raw_bytes=0)
 
 
-@pytest.mark.parametrize("version,start,end", [(2, 0, 10), (1, 10, 0)])
+@pytest.mark.parametrize("version,start,end", [(3, 0, 10), (1, 10, 0)])
 def test_invalid_header(version, start, end):
     payload = dayfile.MAGIC + zlib.compress(
         dayfile.HEADER.pack(version, start, end, 0, 0, *([0] * 18))
@@ -196,3 +222,14 @@ else:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "nonregular input rejected"
+
+
+def test_v2_accumulated_timestamp_overflow_is_rejected_before_columns(monkeypatch):
+    import struct
+
+    header = dayfile.HEADER.pack(2, 0, 86400000, 2, 0, *([0] * 18))
+    body = struct.pack("<4i", 2147483647, 2147483647, 0, 0) + bytes([255]) * 36
+    monkeypatch.setattr(dayfile, "_columns", lambda *args: pytest.fail("allocated columns"))
+    with pytest.raises(history.HistoryRejected, match="Invalid or oversized") as caught:
+        history.decode(dayfile.MAGIC + zlib.compress(header + body))
+    assert str(caught.value.__cause__) == "Invalid delta timestamps"
