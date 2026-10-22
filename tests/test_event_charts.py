@@ -258,3 +258,110 @@ def test_whole_number_day_is_charted_from_columns_without_rebuilding_rows(summar
     ):
         result = history_series_multi(runtime, "a", keys, 10000 / 3600, 400, 10000.0, summary)
     assert result["points" if summary else "series"]
+
+
+def _python_calls(function):
+    """Python-level function calls made while ``function`` runs (C built-ins excluded)."""
+    import sys
+
+    calls = [0]
+
+    def count(frame, event, arg):
+        if event == "call":
+            calls[0] += 1
+
+    sys.setprofile(count)
+    try:
+        result = function()
+    finally:
+        sys.setprofile(None)
+    return calls[0], result
+
+
+def _dense_chart_calls(spacing, summary):
+    # Every gate changes on every reading, the worst case for value runs.
+    end = 10000.0
+    changes = [
+        (i * spacing, {gate: (i * 7 + gate * 13) % 97 for gate in range(18)})
+        for i in range(int(end / spacing))
+    ]
+    runtime = _blocks_view([(changes, end)], end)
+    keys = [f"g{gate}_still" for gate in range(9)]
+    with patch("time.time", return_value=end):
+        calls, result = _python_calls(
+            lambda: history_series_multi(runtime, "a", keys, end / 3600, 400, end, summary)
+        )
+    assert result["points" if summary else "series"]
+    return calls
+
+
+@pytest.mark.parametrize("summary", [False, True])
+def test_dense_day_chart_work_does_not_grow_per_reading(summary):
+    # Twice the readings over the same period: Python work follows buckets, not readings.
+    assert _dense_chart_calls(0.25, summary) < 1.2 * _dense_chart_calls(0.5, summary)
+
+
+def _long_and_zero_blocks(seed):
+    """Rows spanning many buckets, readings at one instant and closes at a change."""
+    import random
+
+    rng = random.Random(seed)
+    blocks, clock = [], 0.0
+    for _ in range(8):
+        changes = []
+        for index in range(rng.randrange(1, 300)):
+            # A block may reopen at the instant the previous one closed.
+            clock += rng.choice((0.0, 0.05, 0.5, 1.0, 45.0, 400.0) if index else (0.0, 0.5))
+            changes.append(
+                (clock, {g: None if rng.random() < 0.03 else rng.randrange(0, 4) for g in (0, 13)})
+            )
+        if rng.random() < 0.3:  # Close on an unreadable reading.
+            clock += 0.5
+            changes.append((clock, {0: None, 13: None}))
+        # Half the blocks close at their last change, leaving a zero-length row.
+        stop = clock if rng.random() < 0.5 else clock + rng.choice((0.5, 30.0))
+        blocks.append((changes, stop))
+        clock = stop + rng.choice((0.0, 0.0, 3.0, 400.0))
+    return blocks, clock
+
+
+@pytest.mark.parametrize("seed", range(24))
+@pytest.mark.parametrize("summary", [False, True])
+def test_long_rows_and_zero_length_rows_match_per_span_chart(seed, summary):
+    blocks, stop = _long_and_zero_blocks(seed)
+    keys = ("g0_move", "g4_still")
+    end = stop - (seed % 3) * 7.25
+    hours = (end - (seed % 4) * 11.5) / 3600
+    runtime = _blocks_view(blocks, end)
+    with patch("time.time", return_value=end):
+        result = history_series_multi(runtime, "a", list(keys), hours, 200, end, summary)
+        expected = _reference_chart(
+            runtime, keys, end=end, hours=hours, max_points=200, summary=summary
+        )
+    if summary:
+        _close(result["points"], expected)
+    else:
+        _close(result["series"], expected[0])
+        assert result["modes"] == expected[1]
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_dense_noisy_day_matches_per_span_chart(seed):
+    import random
+
+    rng = random.Random(seed)
+    clock, changes = 0.0, []
+    for _ in range(6000):
+        clock += rng.choice((0.5, 0.5, 1.0))
+        changes.append(
+            (clock, {g: None if rng.random() < 0.01 else rng.randrange(0, 100) for g in range(18)})
+        )
+    end = clock + 1.0
+    runtime = _blocks_view([(changes, end)], end)
+    keys = [f"g{gate}_still" for gate in range(9)]
+    with patch("time.time", return_value=end):
+        result = history_series_multi(runtime, "a", keys, end / 3600, 400, end)
+        expected = _reference_chart(
+            runtime, keys, end=end, hours=end / 3600, max_points=400, summary=False
+        )
+    _close(result["series"], expected[0])

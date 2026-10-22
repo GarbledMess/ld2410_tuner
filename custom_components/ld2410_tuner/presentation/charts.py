@@ -7,8 +7,8 @@ import math
 import time
 from array import array
 from bisect import bisect_left, bisect_right
-from itertools import compress
-from operator import ne
+from itertools import compress, pairwise, repeat
+from operator import eq, gt, lt, mul, ne, sub
 from typing import Any
 
 from ..calibration.constants import SAMPLE_SECONDS
@@ -265,14 +265,88 @@ def _chart_rows(rows, indices, series, strongest):
         columns = {None: _strongest_column([rows.column(p) for p in indices.values()])}
     else:
         columns = {key: rows.column(position) for key, position in indices.items()}
-    observed = False
+    day, first, after = rows.day, rows.first, rows.after
+    durations = list(map(sub, day.ends[first:after], day.times[first:after]))
+    zeros = list(compress(range(len(durations)), map(eq, durations, repeat(0.0))))
     for key, column in columns.items():
-        target = strongest if key is None else series[key]
-        for run_start, run_end, value in _runs(rows, column):
-            observed = True
-            if value is not None:
-                target.add(run_start, run_end, value)
-    return observed
+        _add_column(rows, column, strongest if key is None else series[key], durations, zeros)
+    return any(durations)
+
+
+def _add_column(rows, column, target, durations, zeros):
+    for low, high, chunk in _chunks(rows, column, target.bucket_span):
+        pace.rest()
+        if bisect_left(zeros, chunk[1]) > bisect_left(zeros, chunk[0]):
+            _add_runs(rows, column, target, low, high, *chunk[:2])
+        else:
+            target.add_chunk(low, high, _summary(rows, column, durations, low, high, *chunk))
+
+
+def _add_runs(rows, column, target, low, high, first, after):
+    """A zero-length reading splits value runs: keep the exact run path."""
+    sub_rows = _Rows(rows.day, rows.first + first, rows.first + after, low, high)
+    for run_start, run_end, value in _runs(sub_rows, column[first:after]):
+        if value is not None:
+            target.add(run_start, run_end, value)
+
+
+def _chunks(rows, column, bucket_span):
+    """``(low, high, (first, after, changes))`` of known contiguous rows within one bucket.
+
+    Missing readings and recording gaps end a stretch; buckets split it as ``add`` does.
+    """
+    day, first = rows.day, rows.first
+    missing = _missing(column)
+    changes = list(compress(range(1, len(column)), map(ne, column[1:], column[:-1])))
+    cuts = sorted({0, len(column), *rows.breaks, *missing, *(m + 1 for m in missing)})
+    missing = set(missing)
+    for begin, stop in pairwise(cuts):
+        if begin in missing:
+            continue
+        start = max(rows.low, day.times[first + begin])
+        end = min(rows.high, day.ends[first + stop - 1])
+        while start < end:
+            high = min(end, (math.floor(start / bucket_span) + 1) * bucket_span)
+            low_row = bisect_right(day.ends, start, first + begin, first + stop) - first
+            high_row = bisect_left(day.times, high, first + begin, first + stop) - first
+            yield start, high, (low_row, high_row, changes)
+            start = high
+
+
+def _missing(column):
+    if isinstance(column, bytes):
+        return list(compress(range(len(column)), map(eq, column, repeat(MISSING))))
+    return list(compress(range(len(column)), map(math.isnan, column)))
+
+
+def _summary(rows, column, durations, low, high, first, after, changes):
+    """One bucket's known contiguous rows as the accumulator their runs would build."""
+    day, base = rows.day, rows.first
+    values = column[first:after]
+
+    def run_end(offset):
+        stop = bisect_right(changes, offset)
+        stop = changes[stop] if stop < len(changes) and changes[stop] < after else after
+        return min(high, day.ends[base + stop - 1])
+
+    def extremum(value):
+        offset = first + values.index(value)
+        return value, max(low, day.times[base + offset]), run_end(offset)
+
+    last = bisect_right(changes, after - 1) - 1
+    last = max(first, changes[last]) if last >= 0 else first
+    integral = (
+        sum(map(mul, values, durations[first:after]))
+        - values[0] * (low - day.times[base + first])
+        - values[-1] * (day.ends[base + after - 1] - high)
+    )
+    return {
+        "min": extremum(min(values)),
+        "max": extremum(max(values)),
+        "first": (values[0], run_end(first)),
+        "last": (values[-1], max(low, day.times[base + last])),
+        "integral": integral,
+    }
 
 
 def _strongest_column(columns):
@@ -354,25 +428,36 @@ class _NativeSeries:
 
     def add(self, start, end, value):
         while start < end:
-            bucket = math.floor(start / self.bucket_span)
-            high = min(end, (bucket + 1) * self.bucket_span)
-            if self.bucket != bucket:
-                self._flush()
-                self.bucket = bucket
-                self.segments, self.overfull = [], False
+            high = min(end, (self._enter(start) + 1) * self.bucket_span)
             self._piece(start, high, value)
             start = high
 
-    def _piece(self, start, end, value):
+    def add_chunk(self, start, end, summary):
+        """Contiguous runs within one bucket, summarised by ``_summary``."""
+        if summary["min"][0] == summary["max"][0]:
+            self.add(start, end, summary["min"][0])  # One run: exactly a single piece.
+            return
+        self._enter(start)
+        self._piece(start, end, summary, _chunk_accumulator, _merge_accumulator)
+
+    def _enter(self, start):
+        bucket = math.floor(start / self.bucket_span)
+        if self.bucket != bucket:
+            self._flush()
+            self.bucket = bucket
+            self.segments, self.overfull = [], False
+        return bucket
+
+    def _piece(self, start, end, value, new=None, extend=None):
         self._gap(self.last_end, start)
         self.last_end = end
         self.observed += end - start
         if self.overfull:
             return
         if not self.segments or self.segments[-1]["end"] < start:
-            self.segments.append(_new_accumulator(start, end, value))
+            self.segments.append((new or _new_accumulator)(start, end, value))
         else:
-            _extend_accumulator(self.segments[-1], start, end, value)
+            (extend or _extend_accumulator)(self.segments[-1], start, end, value)
         if len(self.points) + 2 * len(self.segments) > self.limit:
             self.segments, self.overfull = [], True
 
@@ -448,6 +533,35 @@ def _new_accumulator(start, end, value):
         "_last_start": start,
         "_closed_integral": 0.0,
     }
+
+
+def _chunk_accumulator(start, end, summary):
+    acc = _new_accumulator(start, end, summary["first"][0])
+    acc["min"], acc["min_start"], acc["min_end"] = summary["min"]
+    acc["max"], acc["max_start"], acc["max_end"] = summary["max"]
+    _chunk_integral(acc, end, summary, 0.0)
+    return acc
+
+
+def _merge_accumulator(acc, start, end, summary):
+    """Apply a chunk's runs in order: first run may extend, a new extremum replaces."""
+    first, first_end = summary["first"]
+    for name, better in (("min", lt), ("max", gt)):
+        value, low, high = summary[name]
+        if better(value, acc[name]):
+            acc[name], acc[name + "_start"], acc[name + "_end"] = value, low, high
+        elif first == acc[name] and start == acc[name + "_end"]:
+            acc[name + "_end"] = first_end
+    acc["end"] = end
+    acc["observed_seconds"] = end - acc["start"]
+    _chunk_integral(acc, end, summary, acc["integral"])
+
+
+def _chunk_integral(acc, end, summary, before):
+    value, start = summary["last"]
+    acc["integral"] = before + summary["integral"]
+    acc["_last_value"], acc["_last_start"] = value, start
+    acc["_closed_integral"] = acc["integral"] - value * (end - start)
 
 
 def _extend_accumulator(acc, start, end, value):

@@ -1,5 +1,18 @@
 # Release notes
 
+## 1.28.1 - 2026-10-22
+
+- Calculate room and radar graphs about ten times faster. Each graph point is now
+  built from whole blocks of stored readings instead of one step per reading per
+  gate, so a full-day room graph no longer slows down with every reading recorded.
+  Graphs show the same values; a radar that reconnects at the instant it
+  disconnected keeps the previous exact calculation.
+
+Validation: 2,478 workspace tests passed with 96.97% coverage. One radar's full
+86,400-reading synthetic day charted in 0.23 s instead of 2.33 s on a desktop; new
+comparison tests match the previous calculation on random histories with gaps,
+unreadable readings, long readings and same-instant reconnects.
+
 ## 1.28.0 - 2026-10-22
 
 - A room or zone with exactly one recording radar now trains that radar with its manual

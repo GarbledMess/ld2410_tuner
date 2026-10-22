@@ -2,7 +2,7 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
-[Release notes](CHANGELOG.md) - 1.28.0 removes duplicated and empty parts of the panel and lets a lone radar learn from its room.
+[Release notes](CHANGELOG.md) - 1.28.1 makes room graphs calculate about ten times faster.
 
 All collapsible sections start closed. Each heading describes what is inside;
 sections you open stay open during panel refreshes. History and Recommendations
