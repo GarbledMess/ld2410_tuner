@@ -113,6 +113,14 @@ async def main():
             assert set(chart["series"]) == set(HISTORY_KEYS)
             assert all(len(series["points"]) >= 200 for series in chart["series"].values())
 
+            # A room graph must not wait behind learning: it has its own display child.
+            learning = asyncio.create_task(
+                bridge.calculate(
+                    runtime, "learn", lambda: {"views": {"probe": view}, "parameters": parameters}
+                )
+            )
+            await asyncio.sleep(0.5)
+            chart_started = time.monotonic()
             summary = await bridge.calculate(
                 runtime,
                 "charts",
@@ -128,6 +136,9 @@ async def main():
                     },
                 },
             )
+            summary_seconds = time.monotonic() - chart_started
+            summary_beside_learning = not learning.done()
+            await learning
             summary = await asyncio.to_thread(display.unpack_chart, summary)
             # Every gate has the same value at each instant in this fixture,
             # so their simultaneous maximum is exactly one gate's native curve.
@@ -160,6 +171,7 @@ async def main():
             stopped.set()
             await beat
         assert not runtime._worker_service._jobs
+        assert not runtime._display_service._jobs
         assert len(latencies) >= 5
         print(
             json.dumps(
@@ -170,6 +182,8 @@ async def main():
                     "full_chart_json_bytes": len(json.dumps(chart, separators=(",", ":"))),
                     "room_summary_json_bytes": len(json.dumps(summary, separators=(",", ":"))),
                     "room_summary_simultaneous_truth": True,
+                    "room_summary_seconds": round(summary_seconds, 3),
+                    "room_summary_beside_learning": summary_beside_learning,
                     "protected_chart_points": sum(
                         len(s["points"]) for s in chart["series"].values()
                     ),

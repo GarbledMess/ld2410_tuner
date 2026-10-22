@@ -6,27 +6,56 @@ import {
   GATE_COLORS,
 } from "./constants.js";
 
+// Radars in one room chart are told apart by line style; gates keep their colours.
+const RADAR_DASHES = ["", "7,4", "2,3", "10,3,2,3"];
+
 export const panelRoomGraph = {
   _roomGraphState(gid) {
     this._roomCharts ||= new Map();
     if (!this._roomCharts.has(gid))
-      this._roomCharts.set(gid, { kind: "all", request: 0, cache: new Map() });
+      this._roomCharts.set(gid, {
+        kind: "still",
+        gate: null,
+        request: 0,
+        cache: new Map(),
+      });
     return this._roomCharts.get(gid);
+  },
+
+  _roomGraphGate(gid) {
+    const state = this._roomGraphState(gid);
+    if (state.gate == null) {
+      const first = this._roomsData().groups[gid]?.device_ids.find(
+        (id) => this._data?.devices?.[id],
+      );
+      state.gate = first
+        ? this._defaultKindAndGate(this._data.devices[first]).gate
+        : 0;
+    }
+    return state.gate;
   },
 
   _roomGraphHtml(gid) {
     const state = this._roomGraphState(gid);
     const options = [
-      ["all", "All signals"],
       ["move", "Movement"],
-      ["still", "Still presence"],
+      ["still", "Still"],
     ]
       .map(
         ([value, label]) =>
           `<option value="${value}" ${state.kind === value ? "selected" : ""}>${label}</option>`,
       )
       .join("");
-    return `<div class="room-graph"><div class="chart-controls"><label>Signals<select data-room-graph-kind>${options}</select></label><button type="button" data-room-graph-refresh>Refresh graph</button></div><div class="room-graph-status muted" data-preserve-children role="status" aria-live="polite"></div><div class="room-signal-canvas" data-room-graph="${this._esc(gid)}" data-chart-canvas="room:${this._esc(gid)}"></div><div class="room-graph-legend" data-preserve-children aria-label="Radars in this graph"></div><p class="muted">Strongest signal from each radar (0–100): the line shows its average and the shading its recorded range. Signals alone do not confirm presence.</p></div>`;
+    return `<div class="room-graph"><div class="chart-controls"><label>Kind<select data-room-graph-kind>${options}</select></label><button type="button" data-room-graph-refresh>Refresh graph</button></div><div class="gate-chips">${this._roomGateChipsHtml(gid)}</div><div class="room-graph-status muted" data-preserve-children role="status" aria-live="polite"></div><div class="room-signal-canvas" data-room-graph="${this._esc(gid)}" data-chart-canvas="room:${this._esc(gid)}"></div><div class="room-graph-legend" data-preserve-children aria-label="Radars in this graph"></div><p class="muted">Every gate of the selected kind from each radar in this room, each in its own colour; line style identifies the radar. Select a G0–G8 button to highlight that gate with each radar's current threshold. Signals alone do not confirm presence.</p></div>`;
+  },
+
+  _roomGateChipsHtml(gid) {
+    const gate = this._roomGraphGate(gid);
+    return Array.from(
+      { length: 9 },
+      (_, g) =>
+        `<button type="button" class="gate-chip${g === gate ? " active" : ""}" data-room-graph-gate="${g}" aria-label="Highlight gate ${g}" aria-pressed="${g === gate}" style="--chip-color:${GATE_COLORS[g]}">G${g}</button>`,
+    ).join("");
   },
 
   _wireRoomGraph(section, gid, group, foreground = false) {
@@ -37,6 +66,14 @@ export const panelRoomGraph = {
     };
     section.querySelector("[data-room-graph-refresh]").onclick = () =>
       this._loadRoomGraph(gid, group, true);
+    for (const chip of section.querySelectorAll("[data-room-graph-gate]"))
+      chip.onclick = () => {
+        state.gate = Number(chip.dataset.roomGraphGate);
+        section.querySelector(".gate-chips").innerHTML =
+          this._roomGateChipsHtml(gid);
+        this._wireRoomGraph(section, gid, group);
+        this._renderRoomGraph(gid);
+      };
     if (this._roomGraphVisible(gid)) {
       const canvas = section.querySelector("[data-room-graph]");
       if (state.element !== canvas) {
@@ -153,11 +190,10 @@ export const panelRoomGraph = {
         await Promise.all(
           requested.map(async (id) => {
             try {
-              const keys = Array.from({ length: 9 }, (_, gate) =>
-                ["move", "still"]
-                  .filter((item) => kind === "all" || item === kind)
-                  .map((item) => `g${gate}_${item}`),
-              ).flat();
+              const keys = Array.from(
+                { length: 9 },
+                (_, gate) => `g${gate}_${kind}`,
+              );
               const data = await this._queueChartCall(
                 () => {
                   if (!this.isConnected || request !== state.request)
@@ -165,7 +201,6 @@ export const panelRoomGraph = {
                   return this._chartCall({
                     device_id: id,
                     keys,
-                    summary: true,
                     hours: Math.max(0.1, (end - bounds.start) / 3600),
                     end,
                   });
@@ -173,16 +208,15 @@ export const panelRoomGraph = {
                 { background: !foreground },
               );
               if (!data || request !== state.request) return;
-              if (!Array.isArray(data.points))
+              if (!data.series || typeof data.series !== "object")
                 throw new Error(
                   "The tuner returned an invalid signal history. Reload the panel and retry.",
                 );
               results.set(id, {
                 id,
                 name: this._data.devices[id]?.name || "Unavailable radar",
-                color: GATE_COLORS[ids.indexOf(id) % GATE_COLORS.length],
-                points: data.points,
-                bucket: data.bucket_seconds,
+                dash: RADAR_DASHES[ids.indexOf(id) % RADAR_DASHES.length],
+                chart: data,
               });
               this._publishRoomSignals(state, bounds, ids, results, day, kind);
               this._renderRoomGraph(gid);
@@ -286,6 +320,8 @@ export const panelRoomGraph = {
       state.version,
       width,
       labels,
+      this._roomGraphGate(gid),
+      this._roomThresholds(gid, state.data.series),
       !!state.loading,
       !!state.error,
     ]);
@@ -306,7 +342,7 @@ export const panelRoomGraph = {
       legend.innerHTML = state.data.series
         .map(
           (item) =>
-            `<button type="button" data-room-device="${this._esc(item.id)}"><i style="background:${item.color}"></i>${this._esc(item.name)}<span>View radar</span></button>`,
+            `<button type="button" data-room-device="${this._esc(item.id)}"><svg viewBox="0 0 24 10" aria-hidden="true"><line x1="1" y1="5" x2="23" y2="5" style="stroke-dasharray:${item.dash}"/></svg>${this._esc(item.name)}<span>View radar</span></button>`,
         )
         .join("");
     for (const button of legend.querySelectorAll("[data-room-device]"))
@@ -347,20 +383,21 @@ export const panelRoomGraph = {
       });
       return `<text class="axis-label" x="${x(time)}" y="${CHART_H - 6}" text-anchor="${this._tickAnchor(i, 5)}"><title>${this._esc(this._historyTime(time))}</title>${this._esc(label)}</text>`;
     }).join("");
+    const gate = this._roomGraphGate(gid);
+    const kind = this._roomGraphState(gid).kind;
+    const thresholds = this._roomThresholds(gid, series);
     const lines = series
-      .map((item) => {
-        const points = item.points.filter(
-          (point) => point.t >= bounds.start && point.t <= bounds.end,
-        );
+      .map((item, index) => {
+        const shown = { gate, kind };
+        const others = this._otherGateLines(item.chart, shown, x, y);
         const { activeBandSvg, activeLineSvg } = this._activeGatePaths(
-          { bucket_seconds: item.bucket, series: { signal: { points } } },
-          { gate: 0 },
-          "signal",
+          item.chart,
+          shown,
+          `g${gate}_${kind}`,
           x,
           y,
-          item.color,
         );
-        return `<g data-room-signal="${this._esc(item.id)}"><title>${this._esc(item.name)}</title>${activeBandSvg}${activeLineSvg}</g>`;
+        return `<g data-room-signal="${this._esc(item.id)}" style="stroke-dasharray:${item.dash}"><title>${this._esc(item.name)}</title>${others}${activeBandSvg}${activeLineSvg}${this._roomThresholdSvg(item, index, thresholds[index], gate, width, y)}</g>`;
       })
       .join("");
     const labels = this._roomsData().groups[gid]?.labels || [];
@@ -379,10 +416,31 @@ export const panelRoomGraph = {
     const empty =
       this._roomGraphState(gid).loading ||
       this._roomGraphState(gid).error ||
-      series.some((item) => item.points.length)
+      series.some((item) =>
+        Object.values(item.chart.series).some((gate) => gate.points.length),
+      )
         ? ""
         : `<text x="${width / 2}" y="${CHART_H / 2}" text-anchor="middle" class="axis-label">No recorded signals in this period</text>`;
     return `<svg viewBox="0 0 ${width} ${CHART_H}" role="img" aria-label="Room signal history"><rect class="plot-bg" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}"/>${bands}${grid}${ticks}${lines}${empty}<rect data-room-graph-selection class="selection-rect" y="${CHART_MARGIN.top}" height="${CHART_PLOT_H}" hidden/><rect data-room-plot-hit class="selection-hit" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}"/></svg>`;
+  },
+
+  _roomThresholds(gid, series) {
+    const key = `g${this._roomGraphGate(gid)}_${this._roomGraphState(gid).kind}`;
+    return series.map((item) => {
+      const device = this._data.devices[item.id];
+      const value = device
+        ? this._learningView(item.id, device).current_thresholds?.[key]
+        : null;
+      return value != null && Number.isFinite(Number(value))
+        ? Number(value)
+        : null;
+    });
+  },
+
+  _roomThresholdSvg(item, index, threshold, gate, width, y) {
+    if (threshold == null) return "";
+    const level = y(threshold);
+    return `<line class="threshold-line current" x1="${CHART_MARGIN.left}" x2="${width - CHART_MARGIN.right}" y1="${level}" y2="${level}"/><text class="axis-label current" x="${CHART_MARGIN.left + 4 + index * 130}" y="${Math.max(9, level - 3)}">${this._esc(`${item.name} G${gate} ${this._fmt(threshold)}`)}</text>`;
   },
 
   _paintRoomGraphSelection(section, id, selection) {

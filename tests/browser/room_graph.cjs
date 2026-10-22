@@ -18,8 +18,9 @@ module.exports = async function testRoomGraphResilience(page) {
       if (failed.has(message.device_id))
         throw new Error("Synthetic radar failure");
       const value = structuredClone(await original(message));
-      if (empty) value.points = [];
-      else if (value.points?.length) value.points[0].avg = 77;
+      const gates = Object.values(value.series || {});
+      if (empty) for (const gate of gates) gate.points = [];
+      else if (gates[0]?.points.length) gates[0].points[0].avg = 77;
       return value;
     };
     try {
@@ -28,7 +29,9 @@ module.exports = async function testRoomGraphResilience(page) {
       const section = panel._roomGraphSection(gid);
       const partial = {
         ids: state.data.series.map((s) => s.id),
-        first: state.data.series.find((s) => s.id === "a").points[0].avg,
+        first: Object.values(
+          state.data.series.find((s) => s.id === "a").chart.series,
+        )[0].points[0].avg,
         text: section.innerText,
       };
       const before = calls.length;
@@ -58,7 +61,7 @@ module.exports = async function testRoomGraphResilience(page) {
       failed.add("b");
       await panel._loadRoomGraph(gid, group, false, true);
       const freshPartial = state.data.series.map((s) => s.id);
-      state.kind = "all";
+      state.kind = "still";
       const beforeCache = calls.length;
       await panel._loadRoomGraph(gid, group, false, true);
       const cachedBack = {
@@ -82,7 +85,7 @@ module.exports = async function testRoomGraphResilience(page) {
       await panel._loadRoomGraph(gid, group, false, true);
       const wrongDayGraph = !!section.querySelector("svg");
       ui.day = oldDay;
-      state.kind = "all";
+      state.kind = "still";
       failed.clear();
       await panel._loadRoomGraph(gid, group, true);
       empty = true;
@@ -209,7 +212,7 @@ module.exports = async function testRoomGraphResilience(page) {
     let release;
     const gate = new Promise((resolve) => (release = resolve));
     panel._hass.callWS = async (message) => {
-      if (message.summary && message.device_id === "b") await gate;
+      if (message.device_id === "b") await gate;
       return original(message);
     };
     const oldKind = state.kind;
@@ -317,18 +320,25 @@ module.exports = async function testRoomGraphResilience(page) {
     "unavailable assessment summaries explain their state",
   );
   const visual = await page.evaluate(() => {
+    const key = `g${panel._roomGraphGate("area:ux")}_${panel._roomGraphState("area:ux").kind}`;
     const data = {
       bounds: { start: 0, end: 120 },
       series: [
         {
           id: "a",
           name: "Radar",
-          color: "#e53935",
-          bucket: 60,
-          points: [
-            { t: 0, avg: 20, min: 20, max: 100 },
-            { t: 60, avg: 20, min: 20, max: 20 },
-          ],
+          dash: "",
+          chart: {
+            bucket_seconds: 60,
+            series: {
+              [key]: {
+                points: [
+                  { t: 0, avg: 20, min: 20, max: 100 },
+                  { t: 60, avg: 20, min: 20, max: 20 },
+                ],
+              },
+            },
+          },
         },
       ],
     };

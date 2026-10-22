@@ -1,5 +1,29 @@
 # Release notes
 
+## 1.27.0 - 2026-10-22
+
+- Load graphs in seconds instead of minutes. Graphs and recorded-data reads now run
+  in their own low-priority worker, so they no longer wait behind Learn, reference
+  or seen-by jobs. Each worker still runs one job at a time under CPU limits; the
+  display worker has a smaller 256 MiB memory limit.
+- Calculate charts from each gate's stored values directly instead of rebuilding
+  every reading, about five times less work per radar-day with identical results.
+- Redraw the room graph like the radar graph: every gate of the selected kind for
+  each radar on one chart, with line style identifying the radar. G0–G8 buttons
+  highlight a gate together with each radar's current threshold. The previous graph
+  plotted each radar's strongest gate regardless of thresholds, so gates the radar
+  ignores could dominate it.
+- Add a **Recorded data** card showing the exact stored readings for each radar and
+  day: millisecond UTC times, durations and gate values without averaging or
+  rounding, actual file sizes and retained recovery files. Download a complete day
+  as CSV with progress and cancellation; no partial file is saved.
+
+Validation: 2,410 workspace tests passed with 96.95% coverage. Desktop/mobile
+browser checks passed in the one-CPU Linux HA lab. A room graph over a dense
+150,000-row day loaded in 2.4 s while a Learn job ran, with HA HTTP p95 of
+24.5 ms. A complete 149,532-row supplied day exported with every value matching
+storage exactly.
+
 ## 1.26.4 - 2026-10-22
 
 - Preserve the last observed coverage of unchanged signals when flushing, so stable

@@ -606,7 +606,8 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
     async def test_commands_remain_admin_only_and_lookup_live_runtime(self):
         # 29 before learning sets, plus learn_set and apply_set, plus refresh_references (P1),
         # plus configure_automatic_weight (P2b), less the learn_room and apply_room aliases (P5).
-        self.assertEqual(len(self.commands), 31)
+        # Recording inventory and raw day pages add two read-only commands.
+        self.assertEqual(len(self.commands), 33)
         self.assertTrue(all(command.admin_only for command in self.commands.values()))
         self.hass.data[mod.DOMAIN] = types.SimpleNamespace(snapshot=lambda: {"reloaded": True})
         await self.call("snapshot")

@@ -51,7 +51,7 @@ def test_full_day_chart_crosses_real_manifest_and_result_transport(
     }
     holder = {}
     with ThreadPoolExecutor() as executor:
-        path, _ = executor.submit(
+        path, *_ = executor.submit(
             bridge._build, holder, "charts", {"views": {"a": source}, "parameters": parameters}
         ).result()
     try:

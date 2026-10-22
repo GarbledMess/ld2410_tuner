@@ -92,6 +92,33 @@ async def main():
                 for row in (recovered[1].vector(i) for i in range(len(recovered[1].times)))
             )
             assert recovered[1].vector(len(recovered[1].times) - 1)[0] == 0
+            inventory = await runtime.async_recording_days()
+            assert inventory["devices"][0]["id"] == DEVICE
+            assert inventory["devices"][0]["days"] == 2
+            listing = await runtime.async_recording_days(DEVICE)
+            assert listing["days"][0]["date"] == str(dates[-1])
+            first_page = await runtime.async_recording_rows(DEVICE, str(dates[-1]), limit=1)
+            raw_rows = list(first_page["rows"])
+            offset = first_page["next_offset"]
+            while offset is not None:
+                page = await runtime.async_recording_rows(
+                    DEVICE,
+                    str(dates[-1]),
+                    offset=offset,
+                    limit=1,
+                    end=first_page["end"],
+                    revision=first_page["revision"],
+                )
+                raw_rows.extend(page["rows"])
+                offset = page["next_offset"]
+            assert len(raw_rows) == len(recovered[1].times)
+            assert raw_rows[-1][1] == midnight + 120
+            for index, row in enumerate(raw_rows):
+                assert row == [
+                    recovered[1].times[index],
+                    recovered[1].ends[index],
+                    *recovered[1].vector(index),
+                ]
             result = await runtime.async_history_series(
                 DEVICE, list(HISTORY_KEYS), 1, 1000, midnight + 120, summary=True
             )
@@ -114,6 +141,8 @@ async def main():
                         "dates": [str(date) for date in dates],
                         "rows": [len(day.times) for day in recovered],
                         "summary_points": len(result["points"]),
+                        "raw_rows": len(raw_rows),
+                        "raw_pages": len(raw_rows),
                         "observed_until": midnight + 120,
                         "passed": True,
                     }

@@ -1,4 +1,5 @@
 import { SECTION_DEFAULTS, SECTION_DESCRIPTIONS } from "./constants.js";
+import { RECORDED_STYLES } from "./recorded_view.js";
 import { CARD_STYLES } from "./card_styles.js";
 
 export const panelView = {
@@ -312,6 +313,7 @@ export const panelView = {
         .room-conflicts ul { margin:6px 0 0; }
         .room-conflicts li span { overflow-wrap:anywhere; }
         ${CARD_STYLES}
+        ${RECORDED_STYLES}
       </style>
       <div class="wrap">
         <div id="error" role="alert" class="notice warn panel-card" hidden></div>
@@ -320,6 +322,10 @@ export const panelView = {
         <div class="subtitle">Review room presence, label recorded periods, and tune your radars. Your labels take priority over automatic estimates.</div>
         <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         </header>
+        <details id="recorded-data" class="panel-card raw-recordings-card">
+          <summary><h2>Recorded data</h2><span class="section-description">Exact gate readings by radar and day, file sizes and CSV downloads.</span></summary>
+          <div data-raw-content></div>
+        </details>
         <details class="panel-card global-settings-card">
           <summary><h2 id="global-settings-title">Global settings</h2><span class="section-description">Learning schedules, recording storage and timing.</span></summary>
           <section class="settings-section" aria-labelledby="overnight-settings-title">
@@ -391,6 +397,7 @@ export const panelView = {
   _draw() {
     this._drawLearningSchedule();
     this._drawStorage();
+    this._drawRecordedData();
     this._drawTimingSettings();
     this._drawLayout();
   },

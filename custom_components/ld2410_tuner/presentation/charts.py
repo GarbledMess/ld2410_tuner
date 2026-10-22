@@ -5,11 +5,16 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from array import array
+from bisect import bisect_left, bisect_right
+from itertools import compress
+from operator import ne
 from typing import Any
 
 from ..calibration.constants import SAMPLE_SECONDS
 from ..const import HISTORY_KEYS
 from ..history import pace, spans
+from ..history.dayfile import MISSING
 from ..history.policy import settings
 from ..worker import bridge
 from ..worker.supervisor import Busy, owned_preparation
@@ -194,11 +199,7 @@ def _native_chart(runtime, device_id, indices, start, end, bucket_span, max_poin
         else {key: _NativeSeries(start, end, bucket_span, max_points) for key in indices}
     )
     strongest = _NativeSeries(start, end, bucket_span, max_points) if summary else None
-    modes = set()
-    for cell in spans.events(runtime, device_id, start=start, end=end):
-        pace.rest()
-        modes.add(cell.mode)
-        _add_native_span(series, strongest, indices, cell)
+    modes = _column_chart(runtime, device_id, indices, start, end, series, strongest)
     if strongest is not None:
         return {
             "start": start,
@@ -215,6 +216,114 @@ def _native_chart(runtime, device_id, indices, start, end, bucket_span, max_poin
         "basis": "physical_span_duration",
         "modes": sorted(modes),
     }
+
+
+def _column_chart(runtime, device_id, indices, start, end, series, strongest):
+    """Feed each series the runs of its column instead of one rebuilt vector per row.
+
+    A run is consecutive contiguous rows holding the same value, so the series see the
+    same values over the same physical time as per-row spans, in far fewer pieces.
+    """
+    start = max(start, getattr(runtime, "_physical_history_start", -math.inf))
+    end = min(end, getattr(runtime, "_attribution_until", math.inf))
+    if end <= start:
+        return set()
+    observed, last_end = False, -math.inf
+    for day, selected in spans._selected_days(runtime, device_id, start, end):
+        for low, high in selected:
+            rows = _Rows.select(day, low, high, last_end)
+            if rows is not None:
+                last_end = day.ends[rows.after - 1]
+                observed |= _chart_rows(rows, indices, series, strongest)
+    return {"event"} if observed else set()
+
+
+class _Rows:
+    """Rows ``[first, after)`` of one day, clipped to ``[low, high)``."""
+
+    def __init__(self, day, first, after, low, high):
+        self.day, self.first, self.after, self.low, self.high = day, first, after, low, high
+        times, ends = day.times[first + 1 : after], day.ends[first : after - 1]
+        # Offsets (from ``first``) of rows that start after a recording gap.
+        self.breaks = set(compress(range(1, after - first), map(ne, times, ends)))
+
+    @classmethod
+    def select(cls, day, low, high, last_end):
+        first, after = bisect_right(day.ends, low), bisect_left(day.times, high)
+        if first >= after:
+            return None
+        if day.times[first] < last_end:
+            raise ValueError("Physical history contains overlapping coverage")
+        return cls(day, first, after, low, high)
+
+    def column(self, position):
+        return self.day.columns[position][self.first : self.after]
+
+
+def _chart_rows(rows, indices, series, strongest):
+    if strongest is not None:
+        columns = {None: _strongest_column([rows.column(p) for p in indices.values()])}
+    else:
+        columns = {key: rows.column(position) for key, position in indices.items()}
+    observed = False
+    for key, column in columns.items():
+        target = strongest if key is None else series[key]
+        for run_start, run_end, value in _runs(rows, column):
+            observed = True
+            if value is not None:
+                target.add(run_start, run_end, value)
+    return observed
+
+
+def _strongest_column(columns):
+    """Per-row maximum of the selected gates; missing only where all of them are."""
+    if all(isinstance(column, bytes) for column in columns):
+        if len(columns) == 1:
+            return columns[0]
+        # Missing (255) reads as 0 for the maximum; rows with every gate missing stay 255.
+        present = bytes(map(max, *(column.translate(_MISSING_AS_ZERO) for column in columns)))
+        absent = bytes(map(min, *columns)).translate(_ONLY_MISSING)
+        return bytes(map(max, present, absent))
+    return array(
+        "d",
+        (
+            max(filter(_known, row), default=math.nan)
+            for row in zip(*map(_floats, columns), strict=True)
+        ),
+    )
+
+
+def _floats(column):
+    if not isinstance(column, bytes):
+        return column
+    return [math.nan if value == MISSING else value for value in column]
+
+
+def _known(value):
+    return not math.isnan(value)
+
+
+_MISSING_AS_ZERO = bytes(range(MISSING)) + b"\0"
+_ONLY_MISSING = bytes(MISSING) + bytes((MISSING,))
+
+
+def _runs(rows, column):
+    """``(start, end, value)`` of each run of equal values between recording gaps."""
+    changes = set(compress(range(1, len(column)), map(ne, column[1:], column[:-1])))
+    begin = 0
+    for stop in (*sorted(changes | rows.breaks), len(column)):
+        pace.rest()
+        run_start = max(rows.low, rows.day.times[rows.first + begin])
+        run_end = min(rows.high, rows.day.ends[rows.first + stop - 1])
+        if run_end > run_start:
+            yield run_start, run_end, _value(column[begin])
+        begin = stop
+
+
+def _value(value):
+    if value == MISSING or math.isnan(value):
+        return None
+    return value
 
 
 def _add_native_span(series, strongest, indices, cell):

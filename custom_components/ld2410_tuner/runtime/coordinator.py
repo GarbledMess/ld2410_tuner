@@ -17,7 +17,7 @@ from ..const import STORE_DELAY
 from ..history import labels as manual_training
 from ..history import recording, storage
 from ..presence import autolabelling, rebuilds, sources
-from ..presentation import charts
+from ..presentation import charts, recordings
 from ..presentation import snapshots as presentation
 from ..rooms import application as room_application
 from ..rooms import groups as room_groups
@@ -69,6 +69,7 @@ class TunerRuntime:
         # Device id -> history.label_counts.Counts behind its histograms.
         self._label_counts = {}
         self._history_jobs = {}
+        self._recording_jobs = {}
         self._learning_jobs = {}
         self._comparison_jobs = {}
         self._room_jobs = {}
@@ -194,6 +195,8 @@ class TunerRuntime:
     _timeout_worker = manual_training._timeout_worker
     clear_samples = manual_training.clear_samples
     _history_view = recording._history_view
+    async_recording_days = recordings.async_recording_days
+    async_recording_rows = recordings.async_recording_rows
     async_history_series = charts.async_history_series
     start_learning = calibration.start_learning
     async_learn = calibration.async_learn

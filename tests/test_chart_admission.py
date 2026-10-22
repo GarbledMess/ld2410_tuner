@@ -27,7 +27,7 @@ def test_saturated_chart_refresh_is_bounded_and_deduplicated(monkeypatch):
             _history_view=lambda *args, **kwargs: copied.append(True) or SimpleNamespace(),
             hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
         )
-        service = bridge._service(owner)
+        service = bridge._service(owner, "charts")
         entered, release = asyncio.Event(), asyncio.Event()
 
         async def process(args):
@@ -92,7 +92,7 @@ def test_shutdown_releases_abandoned_chart_waiter_without_task_error(monkeypatch
             _history_view=lambda *args, **kwargs: copied.append(True),
             hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
         )
-        service = bridge._service(owner)
+        service = bridge._service(owner, "charts")
         entered = asyncio.Event()
 
         async def process(args):

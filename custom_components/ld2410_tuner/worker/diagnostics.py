@@ -139,6 +139,7 @@ def describe(request, request_bytes):
         "recount",
         "charts",
         "export_days",
+        "recording_rows",
         "startup",
         "maintenance",
         "flush",

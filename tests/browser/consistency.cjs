@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const testRoomGraphResilience = require("./room_graph.cjs");
+const testRoomChart = require("./room_chart.cjs");
 
 module.exports = async function testCardConsistency(page, screenshotDir) {
   await page.evaluate(() => {
@@ -294,6 +295,7 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
   );
   assert.equal(loading.calls, 2, "only one request per room radar is queued");
   await testRoomGraphResilience(page);
+  await testRoomChart(page);
   const hit = graph.locator("[data-room-plot-hit]");
   await hit.scrollIntoViewIfNeeded();
   const box = await hit.boundingBox();

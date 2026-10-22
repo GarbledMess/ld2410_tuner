@@ -2,6 +2,7 @@ import { panelRendering } from "./panel/rendering.js";
 import { panelComparison } from "./panel/comparison.js";
 import { panelSources } from "./panel/sources.js";
 import { panelTimingSettings } from "./panel/timing_settings.js";
+import { panelRecordedData } from "./panel/recorded_data.js";
 import { panelStorage } from "./panel/storage.js";
 import { panelJobs } from "./panel/jobs.js";
 import { panelSavedResults } from "./panel/saved_results.js";
@@ -256,6 +257,7 @@ Object.assign(
   panelComparison,
   panelTimingSettings,
   panelStorage,
+  panelRecordedData,
   panelSources,
   panelJobs,
   panelSavedResults,

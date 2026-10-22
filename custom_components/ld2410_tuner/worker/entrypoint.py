@@ -21,16 +21,20 @@ def main():
     from ld2410_child.worker.diagnostics import describe, emit, safely
     from ld2410_child.worker.limits import Budget, install
 
-    if len(sys.argv) not in (3, 4) or (len(sys.argv) == 4 and sys.argv[3] != "storage"):
+    mode = sys.argv[3] if len(sys.argv) == 4 else None
+    if len(sys.argv) not in (3, 4) or mode not in (None, "storage", "display"):
         raise ValueError("Expected request path and parent PID")
-    file_mib = 192 if len(sys.argv) == 4 else 16
+    # Display jobs are byte-bounded reads and may run beside a numerical child.
+    memory_mib = 256 if mode == "display" else 512
+    file_mib = 192 if mode == "storage" else 16
     controls = install(
-        Budget(512 * 1024 * 1024, 120, file_mib * 1024 * 1024), expected_parent=int(sys.argv[2])
+        Budget(memory_mib * 1024 * 1024, 120, file_mib * 1024 * 1024),
+        expected_parent=int(sys.argv[2]),
     )
     emit("protected", limits=controls)
     from ld2410_child.worker import calculations, codec, protocol
 
-    if len(sys.argv) == 4:
+    if mode == "storage":
         from ld2410_child.worker import transactions
 
         request = transactions._read(sys.argv[1], "learn")

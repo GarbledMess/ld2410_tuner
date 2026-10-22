@@ -236,6 +236,7 @@ def execute(request):
         "recount",
         "charts",
         "export_days",
+        "recording_rows",
     ):
         raise ValueError("Unsupported worker operation")
     parameters = codec.decode(request.get("parameters", request))
@@ -261,6 +262,10 @@ def _members(items, views):
 
 
 def _other(operation, views, parameters):
+    if operation == "recording_rows":
+        from .recordings import calculate, pack_page
+
+        return pack_page(calculate(views[parameters["device_id"]], **parameters))
     if operation in ("charts", "export_days"):
         from .display import calculate
 

@@ -147,3 +147,114 @@ def test_gap_diagnostics_remain_bounded_when_many_outages_are_omitted():
     assert series["gaps_truncated"] is True
     assert len(series["omitted_ranges"]) <= 50
     assert series["observed_seconds"] == 500
+
+
+def _reference_chart(runtime, keys, *, end, hours, max_points, summary):
+    """The per-span algorithm the column runs must reproduce."""
+    from tuner_under_test.const import HISTORY_KEYS
+    from tuner_under_test.history import spans
+    from tuner_under_test.presentation import charts
+
+    start, indices = end - hours * 3600, {key: HISTORY_KEYS.index(key) for key in keys}
+    bucket = next(s for s in (6, 12, 30, 60, 120, 300, 600) if s >= (end - start) / max_points)
+    while 2 * (charts.math.ceil(end / bucket) - charts.math.floor(start / bucket)) > max_points:
+        bucket *= 2
+    series = (
+        {} if summary else {k: charts._NativeSeries(start, end, bucket, max_points) for k in keys}
+    )
+    strongest = charts._NativeSeries(start, end, bucket, max_points) if summary else None
+    modes = set()
+    for cell in spans.events(runtime, "a", start=start, end=end):
+        modes.add(cell.mode)
+        charts._add_native_span(series, strongest, indices, cell)
+    if summary:
+        return strongest.finish()["points"]
+    return {key: value.finish() for key, value in series.items()}, sorted(modes)
+
+
+def _random_blocks(seed, fractional):
+    import random
+
+    rng = random.Random(seed)
+    blocks, clock = [], 0.0
+    for _ in range(4):
+        changes = []
+        for _ in range(rng.randrange(1, 400)):
+            clock += rng.choice((0.0, 0.05, 0.5, 1.0, 1.0, 2.0, 7.5))
+            gates = rng.sample(range(18), rng.randrange(1, 4))
+            values = {
+                gate: None
+                if rng.random() < 0.05
+                else rng.randrange(0, 100) + (rng.choice((0, 0.25)) if fractional else 0)
+                for gate in gates
+            }
+            changes.append((clock, values))
+        clock += rng.choice((0.5, 30.0))
+        blocks.append((changes, clock))
+        clock += rng.choice((0.0, 3.0, 400.0))
+    return blocks, clock
+
+
+def _blocks_view(blocks, end):
+    temporary = tempfile.TemporaryDirectory(prefix="ld2410-charts-")
+    days = daystore.DayStore(Path(temporary.name) / "history")
+    for changes, stop in blocks:
+        for timestamp, values in changes:
+            days.append("a", dayfile.Change(timestamp, values))
+        days.append("a", dayfile.End(stop))
+    days.flush(now=end)
+    return SimpleNamespace(
+        data={"devices": {"a": {"recording_enabled": True}}},
+        _days=days,
+        _history_until=end,
+        _temporary=temporary,
+    )
+
+
+def _close(actual, expected):
+    if isinstance(expected, dict):
+        assert set(actual) == set(expected)
+        for key in expected:
+            _close(actual[key], expected[key])
+    elif isinstance(expected, (list, tuple)):
+        assert len(actual) == len(expected)
+        for a, b in zip(actual, expected, strict=True):
+            _close(a, b)
+    elif isinstance(expected, float):
+        assert actual == pytest.approx(expected, abs=1e-3)
+    else:
+        assert actual == expected
+
+
+@pytest.mark.parametrize("seed", range(12))
+@pytest.mark.parametrize("fractional", [False, True])
+@pytest.mark.parametrize("summary", [False, True])
+def test_column_runs_match_per_span_chart(seed, fractional, summary):
+    blocks, stop = _random_blocks(seed, fractional)
+    keys = ("g0_move", "g3_move", "g5_still", "g8_still")
+    end = stop - (seed % 3) * 7.25  # Query ends inside recorded rows as well as after them.
+    hours = (end - (seed % 4) * 11.5) / 3600  # And starts inside a row.
+    runtime = _blocks_view(blocks, end)
+    with patch("time.time", return_value=end):
+        result = history_series_multi(runtime, "a", list(keys), hours, 120, end, summary)
+        expected = _reference_chart(
+            runtime, keys, end=end, hours=hours, max_points=120, summary=summary
+        )
+    if summary:
+        _close(result["points"], expected)
+    else:
+        _close(result["series"], expected[0])
+        assert result["modes"] == expected[1]
+
+
+@pytest.mark.parametrize("summary", [False, True])
+def test_whole_number_day_is_charted_from_columns_without_rebuilding_rows(summary):
+    changes = [(i * 0.5, {i % 18: i % 101}) for i in range(20000)]
+    runtime = _blocks_view([(changes, 10000.0)], 10000.0)
+    keys = [f"g{gate}_{kind}" for gate in range(9) for kind in ("move", "still")]
+    with (
+        patch("time.time", return_value=10000.0),
+        patch.object(dayfile.Day, "vector", side_effect=AssertionError("per-row vector rebuilt")),
+    ):
+        result = history_series_multi(runtime, "a", keys, 10000 / 3600, 400, 10000.0, summary)
+    assert result["points" if summary else "series"]

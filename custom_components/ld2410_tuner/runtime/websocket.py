@@ -16,6 +16,33 @@ def _websocket_routes():
     return [
         ("snapshot", {}, "snapshot", (), None, False),
         (
+            "recording_days",
+            {
+                vol.Optional("device_id", default=None): vol.Any(str, None),
+                vol.Optional("offset", default=0): vol.All(int, vol.Range(min=0)),
+                vol.Optional("limit", default=50): vol.All(int, vol.Range(min=1, max=100)),
+            },
+            "async_recording_days",
+            ("device_id", "offset", "limit"),
+            "invalid_request",
+            False,
+        ),
+        (
+            "recording_rows",
+            {
+                **device,
+                vol.Required("date"): str,
+                vol.Optional("offset", default=0): vol.All(int, vol.Range(min=0)),
+                vol.Optional("limit", default=100): vol.All(int, vol.Range(min=1, max=10000)),
+                vol.Optional("end", default=None): vol.Any(vol.Coerce(float), None),
+                vol.Optional("revision", default=None): vol.Any(int, None),
+            },
+            "async_recording_rows",
+            ("device_id", "date", "offset", "limit", "end", "revision"),
+            "invalid_request",
+            False,
+        ),
+        (
             "learn_set",
             {vol.Required("set_id"): str},
             "learn_set",

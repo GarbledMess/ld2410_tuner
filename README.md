@@ -2,7 +2,7 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
-[Release notes](CHANGELOG.md) - 1.26.0 adds nested room cards, room history graphs and priority for live worker requests.
+[Release notes](CHANGELOG.md) - 1.27.0 makes graphs load in seconds, redraws room graphs like the radar graph and adds a recorded-data viewer.
 
 All collapsible sections start closed. Each heading describes what is inside;
 sections you open stay open during panel refreshes. History and Recommendations
@@ -537,6 +537,33 @@ is noisy: detection uses any enabled gate, and overlapping per-gate counts canno
 be added. These counts describe sampled threshold crossings, not individual physical
 occupancy events. Version 1.9.2 corrects this diagnostic attribution and updates the search while
 retaining the existing acceptance criteria.
+
+The **Room presence** graph uses the same view for every radar in the room on one
+chart: all nine gates of the selected kind (Movement or Still), each in its gate
+colour, with line style identifying the radar. Select a G0–G8 button to highlight
+that gate's average line and recorded range for each radar, together with each
+radar's current threshold for it. A radar with no threshold for that gate shows none.
+Graphs and recorded-data reads use their own low-priority worker, separate from
+learning, so they never wait behind a running Learn. Each worker runs one job at a
+time under the same CPU and memory limits.
+
+## Recorded data
+
+The **Recorded data** card, closed by default, shows exactly what is stored for each
+radar, including removed (archived) radars that still have recordings. It lists the
+recorded days with their actual disk sizes, plus any recovery files retained from
+an interrupted storage transaction, which are counted separately. Opening a day
+shows its stored rows: start and end times to the millisecond (UTC), the duration,
+and the nine gate values of the selected kind exactly as stored, without averaging
+or rounding. A gate with no recorded value shows **Missing**; gaps between rows are
+not filled. Rows are shown 100 at a time.
+
+**Download day CSV** writes every row of the day, with movement and still values
+for all nine gates; missing values are empty cells. The download reads the day in
+pages pinned to one snapshot, so it never mixes two versions of a day. If the
+recording is rewritten meanwhile, the export stops and asks you to reload. Progress
+is shown and **Cancel export** (or leaving the panel) stops it without saving a
+partial file. A dense day takes roughly a minute or two on a Home Assistant Green.
 
 ## What learning measures
 

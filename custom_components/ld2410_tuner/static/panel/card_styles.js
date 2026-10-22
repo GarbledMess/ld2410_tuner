@@ -32,7 +32,8 @@ h2, h3 { font-size:16px; }
 .room-graph-status { min-height:3em; margin:6px 0; font-size:12px; }
 .room-graph-legend { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
 .room-graph-legend button { display:flex; flex-wrap:wrap; align-items:center; gap:6px; min-width:0; max-width:100%; text-align:start; white-space:normal; }
-.room-graph-legend i { width:10px; height:10px; border-radius:50%; flex:none; }
+.room-graph-legend svg { width:24px; height:10px; flex:none; }
+.room-graph-legend line { stroke:currentColor; stroke-width:2; }
 .room-graph-legend button span { color:var(--secondary-text-color); font-size:12px; }
 .card :is(input:not([type="checkbox"]):not([type="radio"]), select), .panel-card :is(input:not([type="checkbox"]):not([type="radio"]), select) { min-width:0; max-width:100%; font:inherit; min-height:44px; border:1px solid var(--divider-color); border-radius:8px; background:var(--card-background-color,#fff); color:var(--primary-text-color); padding:8px; }
 .card :is(label,form,section,details,fieldset,nav), .panel-card :is(label,form,section,details,fieldset,nav) { min-width:0; max-width:100%; }
