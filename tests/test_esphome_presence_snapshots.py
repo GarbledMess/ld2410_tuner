@@ -63,6 +63,9 @@ def test_both_unfiltered_target_sensors_run_the_capture_after_the_frame():
     radar = package["binary_sensor"][0]
     for target in ("has_moving_target", "has_still_target"):
         assert radar[target]["on_state"] == [{"script.execute": SCRIPT}]
+        # ESPHome skips on_state for the first state by default; the boot frame must seed
+        # the global or the first real edge after boot only seeds it and is lost.
+        assert radar[target]["trigger_on_initial_state"] == "true"
         assert "filters" not in radar[target]
     script = _capture(package)
     assert script["mode"] == "restart"

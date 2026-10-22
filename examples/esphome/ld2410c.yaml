@@ -40,12 +40,14 @@ binary_sensor:
       id: ${ld2410_id}_moving_target
       name: Moving Target
       device_id: ${ld2410_device_id}
+      trigger_on_initial_state: true
       on_state:
         - script.execute: ${ld2410_id}_capture_presence_edge
     has_still_target:
       id: ${ld2410_id}_still_target
       name: Still Target
       device_id: ${ld2410_device_id}
+      trigger_on_initial_state: true
       on_state:
         - script.execute: ${ld2410_id}_capture_presence_edge
     out_pin_presence_status:
