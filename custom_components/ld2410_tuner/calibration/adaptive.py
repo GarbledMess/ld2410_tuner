@@ -10,6 +10,8 @@ def _clip_labels(labels, cutoff):
 def _clip_device(device, cutoff):
     result = dict(device)
     result["history_labels"] = _clip_labels(device.get("history_labels", []), cutoff)
+    if "group_labels" in device:  # A lone group's labels (rooms/lone_labels.py).
+        result["group_labels"] = _clip_labels(device["group_labels"], cutoff)
     start = device.get("training_label_start")
     if start is None or start >= cutoff:
         result["training_state"] = "unknown"

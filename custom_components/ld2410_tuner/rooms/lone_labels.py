@@ -8,6 +8,7 @@ membership change (``membership._refresh``) and when devices are rediscovered.
 
 from __future__ import annotations
 
+from ..history import labels
 from . import groups
 
 
@@ -26,7 +27,8 @@ def _derived(runtime):
 
 
 def sync(runtime) -> set[str]:
-    """Refresh every radar's ``group_labels``; the ids whose value changed."""
+    """Refresh every radar's ``group_labels`` and, where they changed, its labelled
+    histograms, as a label edit of its own would; the ids whose value changed."""
     derived = _derived(runtime)
     changed = set()
     for key, device in runtime.data["devices"].items():
@@ -38,6 +40,8 @@ def sync(runtime) -> set[str]:
         else:
             device["group_labels"] = value
         changed.add(key)
+    for key in changed:
+        labels._native_label_rebuild(runtime, key, runtime.data["devices"][key])
     return changed
 
 

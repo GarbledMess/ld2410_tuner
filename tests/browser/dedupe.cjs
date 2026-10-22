@@ -8,7 +8,9 @@ module.exports = async function testDedupe(page) {
   });
   try {
     await testIdenticalZoneHidden(page);
+    await testHiddenZoneLearnsInItsRoom(page);
     await testLoneRadarEditor(page);
+    await testLoneRadarCardPathsDoNotThrow(page);
     await testSourcesBelongToGroups(page);
     await testCalendarRemoved(page);
   } finally {
@@ -225,4 +227,92 @@ async function testCalendarRemoved(page) {
     0,
     "History has a day picker, not a month calendar",
   );
+}
+
+async function testLoneRadarCardPathsDoNotThrow(page) {
+  const thrown = [];
+  const collect = (error) => thrown.push(error.message);
+  page.on("pageerror", collect);
+  try {
+    await page.evaluate(() => roomFixture(["a"]));
+    await page.evaluate(() => {
+      panel._radarEditorShown.clear();
+      fixture.devices.c.history = { ...fixture.devices.c.history, labels: [] };
+      fixture.rooms.areas.second = "Living room";
+      fixture.rooms.groups["area:second"] = {
+        name: "Living room",
+        kind: "area",
+        area_id: "second",
+        device_ids: ["c"],
+        labels: [],
+        automatic: true,
+        assessment: { state: "pending" },
+        presence_sources: { sources: [] },
+      };
+      fixture.layout.push({
+        id: "area:second",
+        name: "Living room",
+        kind: "area",
+        group_id: "area:second",
+        devices: ["c"],
+        children: [],
+      });
+      panel._layoutOpen.set("area:second", true);
+      panel._setSectionCollapsed("c", "history", true);
+      panel._setSectionCollapsed("c", "chart", false);
+      return panel._load(true);
+    });
+    const card = page.locator(
+      '[data-node-id="area:second"] [data-placement][data-device-id="c"]',
+    );
+    await card
+      .locator('[data-action="section-toggle"][data-section="history"]')
+      .click();
+    const hit = card.locator('[data-role="selection-hit"]');
+    await hit.scrollIntoViewIfNeeded();
+    const box = await hit.boundingBox();
+    await page.mouse.move(box.x + box.width * 0.3, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * 0.6, box.y + box.height / 2);
+    await page.mouse.up();
+    await page.evaluate(() =>
+      panel._reviewHistoryRange("c", 1790000000, 1790000600),
+    );
+    assert.deepEqual(thrown, [], "a lone radar's card paths do not throw");
+    assert.equal(
+      await card.locator(".history-range").count(),
+      1,
+      "reviewing a period on a lone radar opens its own editor",
+    );
+  } finally {
+    page.off("pageerror", collect);
+  }
+}
+
+async function testHiddenZoneLearnsInItsRoom(page) {
+  await page.evaluate(() => {
+    panel._shownZones.clear();
+    fixture.learning_sets = {
+      "zone:ux": {
+        group_ids: ["zone:ux"],
+        device_ids: ["a", "b"],
+        learning: {},
+      },
+    };
+    panel._groupOpen.add("area:ux");
+    return roomFixture(["a", "b"]);
+  });
+  const room = page.locator(
+    '[data-node-id="area:ux"] [data-group-id="area:ux"]',
+  );
+  assert.equal(
+    await room.locator('[data-room-action="learn"]').count(),
+    1,
+    "the hidden zone's learning is reachable from its room",
+  );
+  assert.doesNotMatch(await room.innerText(), /Learn each zone below/);
+  await page.evaluate(() => {
+    fixture.learning_sets = {};
+    return panel._load(true);
+  });
 }

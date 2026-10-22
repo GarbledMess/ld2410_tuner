@@ -103,3 +103,23 @@ class LoneLabelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state(self.radar(), 150), "present")
         self.assertEqual(state(self.radar(), 130), "not_present")
         self.assertIsNone(state(self.radar(), 250))
+
+
+def test_earlier_view_clips_group_labels_at_the_cutoff():
+    from types import SimpleNamespace
+
+    from tuner_under_test.calibration.adaptive import earlier_view
+
+    device = {
+        "history_labels": [],
+        "group_labels": [
+            {"start": 0, "end": 10, "state": "present"},
+            {"start": 20, "end": 30, "state": "not_present"},
+        ],
+    }
+    view = SimpleNamespace(data={"devices": {"a": device}})
+    earlier = earlier_view(view, 5)
+    assert earlier.data["devices"]["a"]["group_labels"] == [
+        {"start": 0, "end": 5, "state": "present"}
+    ]
+    assert len(device["group_labels"]) == 2  # The original view is untouched.

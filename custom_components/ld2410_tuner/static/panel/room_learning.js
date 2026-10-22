@@ -76,8 +76,31 @@ export const panelRoomLearning = {
 
   // ---- Group headers -----------------------------------------------------
 
+  // A room whose only learning set belongs to a zone hidden as its duplicate
+  // (layout.js) learns that zone from its own header.
+  _hiddenZoneLearning(group, rooms) {
+    if (group.kind !== "area") return null;
+    for (const [key, zone] of Object.entries(rooms.groups)) {
+      if (zone.kind !== "zone" || zone.area_id !== group.area_id) continue;
+      const set = this._setOfGroup(key);
+      if (
+        set?.group_ids.length === 1 &&
+        this._zoneRepeatsRoom(group, key, zone)
+      )
+        return { id: key, zone, set };
+    }
+    return null;
+  },
+
   _groupLearningHtml(id, group, rooms) {
     const set = this._setOfGroup(id);
+    const hidden = !set && this._hiddenZoneLearning(group, rooms);
+    if (hidden)
+      return this._roomLearningHtml(
+        hidden.id,
+        { ...hidden.zone, learning: hidden.set.learning },
+        rooms,
+      );
     if (!set) return this._ungroupedLearningHtml(group, rooms);
     if (set.group_ids.length > 1) return this._linkedZoneHtml(id, set);
     return this._roomLearningHtml(
@@ -255,6 +278,13 @@ export const panelRoomLearning = {
   // ---- Wiring ------------------------------------------------------------
 
   _wireRoomLearning(section, id, group) {
+    const hidden =
+      !this._setOfGroup(id) &&
+      this._hiddenZoneLearning(group, this._roomsData());
+    if (hidden) {
+      id = hidden.id;
+      group = hidden.zone;
+    }
     const set = this._setOfGroup(id);
     if (!set) return;
     const show = section.querySelector('[data-room-action="show-set"]');

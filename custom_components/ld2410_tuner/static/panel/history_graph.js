@@ -87,7 +87,8 @@ export const panelHistoryGraph = {
 
   _showHistoryWindow(card, id, bounds, selection = null) {
     const cs = this._chartState.get(id);
-    if (!cs) return;
+    // A lone radar's card has no editor to link the chart to (card.js).
+    if (!cs || !card.querySelector(".history-range")) return;
     const end = Math.min(bounds.end, Date.now() / 1000);
     cs.historyLinked = true;
     cs.end = end;
@@ -117,7 +118,17 @@ export const panelHistoryGraph = {
     gateKey = "",
     origin = null,
   ) {
-    const card = origin || this._placements(id)[0];
+    if (
+      !this._placements(id).some((copy) => copy.querySelector(".history-range"))
+    ) {
+      this._radarEditorShown.add(id); // Reviewing a lone radar opens its own editor.
+      this._draw();
+    }
+    const editable = (copy) =>
+      copy?.isConnected && copy.querySelector(".history-range");
+    const card = editable(origin)
+      ? origin
+      : this._placements(id).find(editable);
     if (
       !card ||
       !Number.isFinite(start) ||
@@ -166,6 +177,7 @@ export const panelHistoryGraph = {
 
   _useGraphSelection(id, selection) {
     for (const card of this._placements(id))
-      this._setHistoryRange(card, id, selection);
+      if (card.querySelector(".history-range"))
+        this._setHistoryRange(card, id, selection);
   },
 };

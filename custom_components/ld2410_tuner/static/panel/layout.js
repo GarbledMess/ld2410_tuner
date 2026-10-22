@@ -276,11 +276,21 @@ export const panelLayout = {
   },
 
   _redundantZone(node, child) {
-    if (this._shownZones.has(child.group_id)) return false;
     const groups = this._roomsData().groups;
-    const room = groups[node.group_id];
-    const zone = groups[child.group_id];
-    if (!room || !zone || child.kind !== "zone") return false;
+    return (
+      child.kind === "zone" &&
+      this._zoneRepeatsRoom(
+        groups[node.group_id],
+        child.group_id,
+        groups[child.group_id],
+      )
+    );
+  },
+
+  // A zone with exactly its room's radars and nothing of its own is not shown
+  // separately (unless asked for); its room stands in for it.
+  _zoneRepeatsRoom(room, zoneId, zone) {
+    if (!room || !zone || this._shownZones.has(zoneId)) return false;
     const same =
       room.device_ids.length === zone.device_ids.length &&
       zone.device_ids.every((id) => room.device_ids.includes(id));
