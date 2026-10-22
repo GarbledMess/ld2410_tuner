@@ -136,6 +136,7 @@ export const panelHistory = {
   },
 
   _wireHistory(card, id) {
+    if (!card.querySelector(".history-range")) return; // A lone radar (card.js).
     this._wireHistoryCalendar(card, id);
     const day = card.querySelector('[data-action="history-day"]');
     day.onchange = () => {

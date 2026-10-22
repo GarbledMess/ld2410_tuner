@@ -8,6 +8,7 @@ module.exports = async function testDedupe(page) {
   });
   try {
     await testIdenticalZoneHidden(page);
+    await testLoneRadarEditor(page);
   } finally {
     await page.evaluate(() => {
       window.fixture = structuredClone(dedupeOriginal);
@@ -113,5 +114,68 @@ async function testIdenticalZoneHidden(page) {
     (await layout(["a"])).zone,
     1,
     "a zone covering part of the room stays visible",
+  );
+}
+
+async function testLoneRadarEditor(page) {
+  const card = page.locator(
+    '[data-node-id="area:second"] [data-placement][data-device-id="c"]',
+  );
+  const timeline = page.locator('[data-room-timeline="area:second"]');
+  const setup = (labels) =>
+    page.evaluate((labels) => {
+      panel._radarEditorShown.clear();
+      fixture.devices.c.history = { ...fixture.devices.c.history, labels };
+      fixture.rooms.groups["area:second"] = {
+        name: "Living room",
+        kind: "area",
+        area_id: "second",
+        device_ids: ["c"],
+        labels: [],
+        automatic: true,
+        assessment: { state: "pending" },
+        presence_sources: { sources: [] },
+      };
+      fixture.rooms.areas.second = "Living room";
+      fixture.layout.push({
+        id: "area:second",
+        name: "Living room",
+        kind: "area",
+        group_id: "area:second",
+        devices: ["c"],
+        children: [],
+      });
+      panel._layoutOpen.set("area:second", true);
+      panel._groupOpen.add("area:second");
+      panel._collapsed.delete(fixture.layout.at(-1).id + "/c");
+      for (const key of ["history", "chart"])
+        panel._setSectionCollapsed("c", key, false);
+      return panel._load(true);
+    }, labels);
+  await page.evaluate(() => roomFixture(["a"]));
+  await setup([]);
+  assert.equal(await card.locator(".history-range").count(), 0);
+  assert.match(
+    await card.locator('.subsection[data-section="history"]').innerText(),
+    /Label this radar on Living room's timeline above/,
+    "a lone radar is labelled on its room",
+  );
+  assert.equal(
+    await card.locator(".chart-home [data-chart-canvas]").count(),
+    1,
+    "its gate visualization stays available",
+  );
+  await page.evaluate(() => roomFixture(["a"]));
+  await setup([{ start: 1790000000, end: 1790000600, state: "present" }]);
+  const note = timeline.locator("[data-radar-labels]");
+  assert.match(
+    await note.innerText(),
+    /1 period is labelled on Room c itself and takes priority/,
+  );
+  await note.locator('[data-room-action="edit-radar-labels"]').click();
+  assert.equal(
+    await card.locator(".history-range").count(),
+    1,
+    "the radar's own editor can still be opened",
   );
 }

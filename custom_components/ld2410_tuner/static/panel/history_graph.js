@@ -1,7 +1,9 @@
 export const panelHistoryGraph = {
   _placeHistoryGraph(card, id) {
     const chart = card.querySelector('.subsection[data-section="chart"]');
-    const linked = !this._sectionCollapsed(id, "history");
+    const linked =
+      !this._sectionCollapsed(id, "history") &&
+      !!card.querySelector(".history-graph");
     const target = card.querySelector(
       linked ? ".history-graph" : ".chart-home",
     );
@@ -25,7 +27,12 @@ export const panelHistoryGraph = {
   },
 
   _syncHistoryTimeline(card, id) {
-    if (!card.isConnected || this._sectionCollapsed(id, "history")) return;
+    if (
+      !card.isConnected ||
+      this._sectionCollapsed(id, "history") ||
+      !card.querySelector(".history-range")
+    )
+      return;
     const bounds = this._historyRangeBounds(id);
     const periods = this._historyPeriods(this._data.devices[id], bounds);
     const bar = card.querySelector(".history-range");

@@ -27,6 +27,7 @@ export const panelTimeline = {
 
   _paintHistoryRange(card, id, selection = this._historyRangeValue(card, id)) {
     const bar = card.querySelector(".history-range");
+    if (!bar) return;
     const bounds = this._historyRangeBounds(id);
     const visible =
       selection && selection.end > bounds.start && selection.start < bounds.end;
@@ -69,6 +70,7 @@ export const panelTimeline = {
 
   _wireHistoryRange(card, id) {
     const bar = card.querySelector(".history-range");
+    if (!bar) return; // A lone radar's card has no editor (card.js).
     bar.onpointerdown = (event) => this._dragHistoryRange(event, card, id);
     for (const handle of bar.querySelectorAll(".history-range-handle"))
       handle.onkeydown = (event) => this._keyHistoryRange(event, card, id);

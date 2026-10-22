@@ -50,6 +50,7 @@ export const panelRoomTimeline = {
       <div class="history-axis"><span>${this._esc(this._historyTime(bounds.start))}</span><span>${this._esc(this._historyTime(bounds.end))} (next day)</span></div></div>
       ${this._roomSensorBarHtml(sensor, bounds)}
       <div class="history-periods">${rows || '<p class="muted">No manual room labels on this day.</p>'}</div>
+      ${this._loneRadarLabelsHtml(group)}
       <p class="history-edit-note" role="status">${ui.edit ? "Editing the full saved room period." : "Add a period, or select a saved period to edit it."}</p>
       <div class="history-fields">
         <label>From<input data-action="history-start" type="datetime-local" step="1" value="${this._esc(fields.start)}"></label>
@@ -188,6 +189,22 @@ export const panelRoomTimeline = {
     );
   },
 
+  // A lone radar's own labels win over this timeline (rooms/lone_labels.py): say so,
+  // and let them be edited, since its card shows no editor of its own.
+  _loneRadarLabelsHtml(group) {
+    const [id] = group.device_ids || [];
+    const count = this._data?.devices?.[id]?.history?.labels?.length || 0;
+    if (
+      group.device_ids?.length !== 1 ||
+      !count ||
+      this._radarEditorShown.has(id)
+    )
+      return "";
+    const name = this._esc(this._data.devices[id].name || "this radar");
+    const periods = count === 1 ? "1 period is" : `${count} periods are`;
+    return `<p class="field-note" data-radar-labels>${periods} labelled on ${name} itself and ${count === 1 ? "takes" : "take"} priority. <button type="button" data-room-action="edit-radar-labels" data-device="${this._esc(id)}">Edit radar labels</button></p>`;
+  },
+
   _wireRoomTimeline(body, gid, group) {
     const section = body.querySelector("[data-room-timeline]");
     const rid = `room:${gid}`;
@@ -214,6 +231,15 @@ export const panelRoomTimeline = {
           this._selectRoomPeriod(section, gid, button),
         );
     action("new").onclick = () => this._newRoomPeriod(section, rid);
+    const radarLabels = section.querySelector(
+      '[data-room-action="edit-radar-labels"]',
+    );
+    if (radarLabels)
+      radarLabels.onclick = () => {
+        this._radarEditorShown.add(radarLabels.dataset.device);
+        this._setSectionCollapsed(radarLabels.dataset.device, "history", false);
+        this._draw();
+      };
     action("apply").onclick = (event) =>
       this._action(event.currentTarget, () =>
         this._saveRoomPeriod(section, gid),
