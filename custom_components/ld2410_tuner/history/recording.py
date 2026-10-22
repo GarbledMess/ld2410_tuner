@@ -132,6 +132,8 @@ def _history_view(runtime, device_id, members=True):
     snapshot = {key: device.get(key) for key in TRAINING_FIELDS}
     snapshot.update(_histograms_copy(device))
     snapshot["history_labels"] = deepcopy(device.get("history_labels", []))
+    if "group_labels" in device:
+        snapshot["group_labels"] = deepcopy(device["group_labels"])
     view = TunerRuntime(
         None,
         None,

@@ -169,9 +169,11 @@ def _manual_history_state(device: dict[str, Any], timestamp: float) -> str | Non
         and (not expires or timestamp < expires)
     ):
         return device.get("training_state", "unknown")
-    for label in reversed(device.get("history_labels", [])):
-        if float(label.get("start", 0)) <= timestamp < float(label.get("end", 0)):
-            return label.get("state", "unknown")
+    # The radar's own periods win over its lone groups' copies (rooms/lone_labels.py).
+    for labels in (device.get("history_labels", []), device.get("group_labels", [])):
+        for label in reversed(labels):
+            if float(label.get("start", 0)) <= timestamp < float(label.get("end", 0)):
+                return label.get("state", "unknown")
     return None
 
 

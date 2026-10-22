@@ -158,7 +158,7 @@ def calculate(runtime, device_id, saved, human, others):
     reads = {group: attribution._reader(context) for group, context in contexts.items()}
     if human:
         reads = {group: attribution._human_only(read) for group, read in reads.items()}
-    own = _history_label_reader(runtime.data["devices"][device_id])
+    own = _history_label_reader(runtime.data["devices"][device_id], groups=False)
     edges = sorted(
         {*own.edges, *(edge for context in contexts.values() for edge in truth.edges(context))}
     )

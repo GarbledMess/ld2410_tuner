@@ -115,7 +115,7 @@ def read(view, device_id, keys, start, end, *, automatic_reader=None):
         guesses.evidence(view, device_id, start) if automatic_reader is None else automatic_reader
     )
     cells = automatic.cells(start, end)
-    labels = _history_label_reader(device)
+    labels = _history_label_reader(device, groups=False)
     boundaries = {start, end, *(point for span in cells for point in span[:2])}
     for item in device.get("history_labels", []):
         boundaries.update((item["start"], item["end"]))

@@ -132,6 +132,7 @@ RUNTIME_FILES = (
     "rooms/intervals.py",
     "rooms/jobs.py",
     "rooms/layout.py",
+    "rooms/lone_labels.py",
     "rooms/membership.py",
     "rooms/replay.py",
     "rooms/room_labels.py",

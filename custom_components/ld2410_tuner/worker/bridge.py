@@ -21,6 +21,7 @@ def preflight(runtime):
     fields = (
         *TRAINING_FIELDS,
         "history_labels",
+        "group_labels",
         "histograms",
         "presence_sources",
         "reference_profile",

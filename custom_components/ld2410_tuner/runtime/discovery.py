@@ -11,7 +11,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from .. import entity_index
 from ..const import GATE_RE
 from ..history import ingest
-from ..rooms import groups, membership
+from ..rooms import groups, lone_labels, membership
 
 
 @callback
@@ -58,6 +58,7 @@ def refresh_devices(runtime, registry: er.EntityRegistry) -> None:
 
     if before != {key: value.get("entities", {}) for key, value in runtime.data["devices"].items()}:
         runtime._schedule_save()
+    lone_labels.refresh(runtime)
 
 
 @callback

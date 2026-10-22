@@ -100,6 +100,9 @@ zones work** help.
 
 You can label a room or zone Present, Empty or Unknown directly on its timeline.
 These manual room labels are a separate record from each radar's own labels.
+A room or zone with exactly one radar is that radar: its manual labels train the
+radar as the radar's own labels would, and the radar's own labels win where both
+exist. **Seen by** still shows what the radar's own energy and labels say.
 Sensor-derived room labels come from optional room presence sources (camera,
 boolean entity or Bermuda) and are stored separately; a sensor label change only
 marks the members' references out of date (see below). Editing a manual label

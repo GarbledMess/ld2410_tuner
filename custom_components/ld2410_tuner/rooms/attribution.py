@@ -308,7 +308,7 @@ def _contexts(saved, others=None):
     """Human-only contexts; with ``others`` (every member's guesses) they carry the estimate."""
     inputs = {}
     for key, device in saved["members"].items():
-        index = label_index(device)
+        index = label_index(device, groups=False)
         inputs[key] = {"manual": index_reader(index), "automatic": NO_GUESSES, "edges": index[0]}
     return {
         group: truth.context(

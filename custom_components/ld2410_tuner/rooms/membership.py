@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from . import attribution, groups, truth
+from . import attribution, groups, lone_labels, truth
 
 
 def _shape(definitions):
@@ -42,9 +42,10 @@ def retrain(runtime, device_ids, invalidate=True) -> None:
 
 def _refresh(runtime, group_ids, before, after, invalidate=True) -> None:
     runtime._room_membership = attribution.membership(after, time.monotonic())
+    lone = lone_labels.sync(runtime)
     affected = _members(before, group_ids) | _members(after, group_ids)
     grouped = attribution.grouped(before) | attribution.grouped(after)
-    retrain(runtime, affected & grouped, invalidate)
+    retrain(runtime, (affected & grouped) | lone, invalidate)
 
 
 def labels_changed(runtime, group_id, invalidate=True) -> None:

@@ -6,15 +6,21 @@ from bisect import bisect_right
 from collections import defaultdict
 
 
-def _history_label_reader(device):
+def _history_label_reader(device, groups=True):
     """Resolve labels once, keeping last-label-wins semantics in logarithmic time."""
-    return index_reader(label_index(device))
+    return index_reader(label_index(device, groups))
 
 
-def label_index(device):
-    """``(times, states)``: the device's label (saved periods, then its live label) from each
-    time until the next one; None before the first or where no label applies."""
-    intervals = list(device.get("history_labels", []))
+def label_index(device, groups=True):
+    """``(times, states)``: the device's label (its lone groups' labels, then its saved
+    periods, then its live label, later winning) from each time until the next one; None
+    before the first or where no label applies (``rooms/lone_labels.py``). ``groups`` False
+    reads only the radar's own labels: room attribution asks what the radar itself was
+    labelled, never its group's copy."""
+    intervals = [
+        *(device.get("group_labels", []) if groups else ()),
+        *device.get("history_labels", []),
+    ]
     start = device.get("training_label_start")
     if start is not None:
         intervals.append(
