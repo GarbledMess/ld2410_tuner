@@ -144,7 +144,6 @@ RUNTIME_FILES = (
     "services.yaml",
     "static/ld2410-tuner-panel.js",
     "static/panel/activity.js",
-    "static/panel/calendar.js",
     "static/panel/card.js",
     "static/panel/card_styles.js",
     "static/panel/rendering.js",

@@ -95,16 +95,6 @@ export const panelView = {
         .history-fields { display:grid; grid-template-columns:1fr 1fr 180px; gap:8px; margin:10px 0; }
         .history-fields label { color:var(--secondary-text-color); font-size:12px; }
         .history-fields input,.history-fields select { display:block; width:100%; margin-top:4px; min-height:44px; padding:8px; border:1px solid var(--divider-color); border-radius:9px; background:var(--card-background-color); color:var(--primary-text-color); box-sizing:border-box; }
-        .history-calendar { margin-top:12px; }
-        .calendar-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
-        .calendar-grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:3px; margin-bottom:8px; }
-        .calendar-weekday { font-size:11px; text-align:center; color:var(--secondary-text-color); }
-        .calendar-day { display:flex; flex-direction:column; justify-content:center; align-items:center; min-height:44px; padding:4px 0; font-size:13px; }
-        .calendar-day.other-month { color:var(--secondary-text-color); border-color:transparent; }
-        .calendar-day.today { border-color:var(--primary-color); }
-        .calendar-day[aria-pressed="true"] { background:var(--secondary-background-color); outline:2px solid var(--primary-color); outline-offset:-2px; font-weight:700; }
-        .calendar-dots { display:flex; gap:2px; height:6px; margin-top:3px; }
-        .calendar-dots i { width:5px; height:5px; border-radius:50%; }
         .history-navigation { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px; margin:12px 0; }
         .history-navigation label { flex:1; min-width:130px; font-size:12px; }
         .history-navigation input { display:block; width:100%; min-width:0; min-height:44px; box-sizing:border-box; padding:8px; font:inherit; border:1px solid var(--divider-color); border-radius:9px; background:var(--card-background-color); color:var(--primary-text-color); }

@@ -78,7 +78,8 @@ export const panelCards = {
         id,
         "training",
         "Current presence label",
-        this._trainingHtml(id, d) + this._sourcesHtml(id, d),
+        this._trainingHtml(id, d) +
+          (this._radarSourcesShown(id, d) ? this._sourcesHtml(id, d) : ""),
       ),
       `<div class="chart-home">${this._section(id, "chart", "Gate visualization", this._chartHtml(id, d))}</div>`,
       this._section(

@@ -64,36 +64,17 @@ module.exports = async function testHistoryEditor(page) {
     (await card.locator(".history-segment.unlabelled").count()) > 0,
     true,
   );
-  assert.match(
-    await card.locator('[data-role="calendar-month"]').innerText(),
-    /September 2026/,
-  );
-  const selectedDay = card.locator(
-    '[data-action="calendar-day"][data-day="2026-09-23"]',
-  );
-  assert.equal(await selectedDay.getAttribute("aria-pressed"), "true");
-  assert.equal(await selectedDay.locator(".calendar-dots i").count(), 2);
-  await card.locator('[data-action="calendar-next"]').click();
-  assert.match(
-    await card.locator('[data-role="calendar-month"]').innerText(),
-    /October 2026/,
-  );
   assert.equal(
-    await day.inputValue(),
-    "2026-09-23",
-    "Browsing months must not change the selected timeline",
+    await card.locator(".history-calendar").count(),
+    0,
+    "days are chosen with the day picker",
   );
-  await card.locator('[data-action="calendar-previous"]').click();
-  await card
-    .locator('[data-action="calendar-day"][data-day="2026-09-24"]')
-    .click();
-  assert.equal(await day.inputValue(), "2026-09-24");
-  assert.equal(await periods.count(), 1);
-  await selectedDay.click();
   await card.locator('[data-action="history-next"]').click();
   assert.equal(await day.inputValue(), "2026-09-24");
   assert.equal(await periods.count(), 1);
   await card.locator('[data-action="history-previous"]').click();
+  assert.equal(await day.inputValue(), "2026-09-23");
+  assert.equal(await periods.count(), 2);
   await periods.nth(1).click();
   const from = card.locator('[data-action="history-start"]');
   const to = card.locator('[data-action="history-end"]');

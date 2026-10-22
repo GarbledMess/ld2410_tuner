@@ -2,6 +2,22 @@ import { readNumberFields } from "./forms.js";
 import { sourcePickerHtml, wireSourcePicker } from "./source_picker.js";
 
 export const panelSources = {
+  // Sources belong to rooms and zones. A radar keeps its own form only outside every
+  // group, or while it still has (or is editing) sources of its own to move.
+  _inAnyGroup(id) {
+    return Object.values(this._roomsData().groups).some((group) =>
+      group.device_ids?.includes(id),
+    );
+  },
+
+  _radarSourcesShown(id, d) {
+    return (
+      !this._inAnyGroup(id) ||
+      !!d.presence_sources?.sources?.length ||
+      !!this._sourceDrafts?.has(id)
+    );
+  },
+
   // ``groupId`` attaches the sources to a room group instead of a radar.
   _sourcesHtml(id, d, groupId = null) {
     const config = this._sourceDrafts?.get(id) || d.presence_sources || {};
@@ -12,7 +28,7 @@ export const panelSources = {
     const intro = groupId
       ? "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor to label this whole room. Their output is stored as read-only sensor room labels; your manual room labels always win."
       : "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor. Choose independent sources, not this radar's own presence output.";
-    return `<details class="presence-sources" ${open}><summary>${groupId ? "Room presence sources" : "Automatic labels from other entities"}<span class="section-description">Create presence labels from cameras and other sensors.</span></summary>
+    return `<details class="presence-sources" ${open}><summary>${groupId ? "Room presence sources" : this._inAnyGroup(id) ? "Radar presence sources (move these to its room)" : "Automatic labels from other entities"}<span class="section-description">Create presence labels from cameras and other sensors.</span></summary>
       <p class="muted">${intro} Any positive source starts or continues a presence period.</p>
       <div class="source-rows">${(config.sources || []).map((source, index) => this._sourceRowHtml(id, source, index)).join("")}</div>
       <button data-action="source-add" type="button" ${full ? `disabled aria-describedby="${limitId}"` : ""}>Add source</button>
@@ -72,6 +88,7 @@ export const panelSources = {
 
   _wireSources(card, id, d, groupId = null) {
     const form = card.querySelector(".presence-sources");
+    if (!form) return; // This radar's sources live on its room (card.js).
     this._sourceDrafts ||= new Map();
     const capture = () => this._sourceDrafts.set(id, this._readSources(form));
     const redraw = () => {

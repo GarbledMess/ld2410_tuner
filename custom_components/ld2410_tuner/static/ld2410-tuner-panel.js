@@ -15,7 +15,6 @@ import { panelControls } from "./panel/controls.js";
 import { panelLearning } from "./panel/learning.js";
 import { panelChart } from "./panel/chart.js";
 import { panelSelection } from "./panel/selection.js";
-import { panelCalendar } from "./panel/calendar.js";
 import { panelHistory } from "./panel/history.js";
 import { panelRoomLearning } from "./panel/room_learning.js";
 import { panelLayout, PlacementCollapse } from "./panel/layout.js";
@@ -279,6 +278,5 @@ Object.assign(
   panelControls,
   panelLearning,
   panelHistory,
-  panelCalendar,
 );
 customElements.define("ld2410-tuner-panel", LD2410TunerPanel);

@@ -83,7 +83,6 @@ export const panelHistory = {
       ? `<p class="muted">Live training is ${this._esc(STATUS[d.training_state])}. Its current period is still open; saved periods appear below once closed.</p>`
       : "";
     return `<div class="muted">Review manual labels in the stored ${d.history?.retention_days || 30}-day history. Times use ${this._esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}.</div>
-      ${this._historyCalendarHtml(id, d)}
       <div class="history-navigation">
         <button type="button" data-action="history-previous" aria-label="Previous day">‹</button>
         <label>Day<input type="date" data-action="history-day" value="${ui.day}"></label>
@@ -137,7 +136,6 @@ export const panelHistory = {
 
   _wireHistory(card, id) {
     if (!card.querySelector(".history-range")) return; // A lone radar (card.js).
-    this._wireHistoryCalendar(card, id);
     const day = card.querySelector('[data-action="history-day"]');
     day.onchange = () => {
       if (day.value) this._changeHistoryDay(card, id, day.value);

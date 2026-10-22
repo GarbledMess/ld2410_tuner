@@ -9,6 +9,8 @@ module.exports = async function testDedupe(page) {
   try {
     await testIdenticalZoneHidden(page);
     await testLoneRadarEditor(page);
+    await testSourcesBelongToGroups(page);
+    await testCalendarRemoved(page);
   } finally {
     await page.evaluate(() => {
       window.fixture = structuredClone(dedupeOriginal);
@@ -177,5 +179,50 @@ async function testLoneRadarEditor(page) {
     await card.locator(".history-range").count(),
     1,
     "the radar's own editor can still be opened",
+  );
+}
+
+async function testSourcesBelongToGroups(page) {
+  const sources = (selector) =>
+    page.evaluate((selector) => {
+      const root = panel.shadowRoot.querySelector(selector);
+      return [...root.querySelectorAll(".presence-sources > summary")].map(
+        (node) => node.childNodes[0].textContent.trim(),
+      );
+    }, selector);
+  await page.evaluate(() => {
+    delete fixture.devices.b.presence_sources;
+    panel._collapsed.delete("area:ux/b");
+    panel._setSectionCollapsed("b", "training", false);
+    return roomFixture(["a"]);
+  });
+  const radar = '[data-node-id="area:ux"] [data-placement][data-device-id="b"]';
+  assert.deepEqual(
+    await sources(radar),
+    [],
+    "a radar in a room has no sources form of its own",
+  );
+  assert.deepEqual(
+    await sources('[data-node-id="area:ux"] [data-group-id="area:ux"]'),
+    ["Room presence sources"],
+  );
+  await page.evaluate(() => {
+    fixture.devices.b.presence_sources = {
+      sources: [{ entity_id: "binary_sensor.x", kind: "boolean", area: "" }],
+    };
+    return panel._load(true);
+  });
+  assert.deepEqual(
+    await sources(radar),
+    ["Radar presence sources (move these to its room)"],
+    "existing radar sources stay editable",
+  );
+}
+
+async function testCalendarRemoved(page) {
+  assert.equal(
+    await page.locator("#layout .history-calendar").count(),
+    0,
+    "History has a day picker, not a month calendar",
   );
 }
