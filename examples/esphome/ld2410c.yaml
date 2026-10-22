@@ -1212,6 +1212,13 @@ text_sensor:
       if (id(${ld2410_id}_recovery_paused)) return {"Paused after failed recovery; use Retry Radar Recovery"};
       if (id(${ld2410_id}_recover_parameters).is_running()) return {"Recovering missing settings"};
       return {"Waiting for settings"};
+  # Set by the presence capture: gates over threshold in the frame that found presence.
+  - platform: template
+    id: ${ld2410_id}_presence_found_gates
+    name: Presence Found Gates
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    update_interval: never
   # Read-only metadata: these use the exact substitutions wired to the existing
   # filters above. Exposing them does not alter presence or add a new handler.
   - platform: template
@@ -1470,6 +1477,52 @@ script:
             const float value = gates[i]->get_raw_state();
             if (std::isfinite(value)) targets[i]->publish_state(value);
           }
+          if (!present) return;
+          bool captured = false;
+          for (auto *gate : gates) captured = captured || std::isfinite(gate->get_raw_state());
+          if (!captured) return;  // Engineering Mode off: no gate energies to judge.
+          number::Number *thresholds[] = {
+            id(${ld2410_id}_g0_move_raw),
+            id(${ld2410_id}_g0_still_raw),
+            id(${ld2410_id}_g1_move_raw),
+            id(${ld2410_id}_g1_still_raw),
+            id(${ld2410_id}_g2_move_raw),
+            id(${ld2410_id}_g2_still_raw),
+            id(${ld2410_id}_g3_move_raw),
+            id(${ld2410_id}_g3_still_raw),
+            id(${ld2410_id}_g4_move_raw),
+            id(${ld2410_id}_g4_still_raw),
+            id(${ld2410_id}_g5_move_raw),
+            id(${ld2410_id}_g5_still_raw),
+            id(${ld2410_id}_g6_move_raw),
+            id(${ld2410_id}_g6_still_raw),
+            id(${ld2410_id}_g7_move_raw),
+            id(${ld2410_id}_g7_still_raw),
+            id(${ld2410_id}_g8_move_raw),
+            id(${ld2410_id}_g8_still_raw)
+          };
+          auto *max_move = id(${ld2410_id}_max_move);
+          auto *max_still = id(${ld2410_id}_max_still);
+          bool known = max_move->has_state() && std::isfinite(max_move->state)
+              && max_still->has_state() && std::isfinite(max_still->state);
+          for (auto *threshold : thresholds) {
+            known = known && threshold->has_state() && std::isfinite(threshold->state);
+          }
+          auto *names = id(${ld2410_id}_presence_found_gates);
+          if (!known) {
+            names->publish_state("Settings unavailable");
+            return;
+          }
+          std::string over;
+          for (int i = 0; i < 18; i++) {
+            const float value = gates[i]->get_raw_state();
+            const float threshold = thresholds[i]->state;
+            const float max_gate = i % 2 ? max_still->state : max_move->state;
+            if (!std::isfinite(value) || !(value > threshold) || i / 2 > max_gate) continue;
+            if (!over.empty()) over += ", ";
+            over += "G" + std::to_string(i / 2) + (i % 2 ? " Still" : " Move");
+          }
+          names->publish_state(over.empty() ? std::string("None over threshold") : over);
 
 esphome:
   on_boot:

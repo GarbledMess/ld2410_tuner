@@ -511,6 +511,11 @@ gates triggered a detection.
   Presence entity. Presence changes later, after `ld2410_presence_on_delay` and
   `ld2410_presence_off_delay`.
 - The values are raw. They ignore Gate Rounding and the gate throttle.
+- **Presence Found Gates** names every gate from that same frame whose energy is
+  greater than its threshold and within Max Move/Still Distance, for example
+  `G3 Move, G4 Still`. `None over threshold` means the radar detected something
+  its current thresholds don't explain. `Settings unavailable` means the radar's
+  thresholds or maximum gates have not loaded yet.
 - The sensors are unknown until their first edge after the ESP starts. While
   Engineering Mode is off there are no gate energies, so no snapshot is taken and
   the previous values stay.

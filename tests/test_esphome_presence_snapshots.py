@@ -89,3 +89,36 @@ def test_capture_publishes_raw_gate_values_only_on_a_real_edge():
     for gate, kind in GATES:
         for name in ("energy", *EDGES):
             assert f"id(ld2410_g{gate}_{kind}_{name})" in code
+
+
+def test_presence_found_gates_is_an_inert_diagnostic_text_sensor():
+    sensor = next(
+        item
+        for item in _package()["text_sensor"]
+        if item.get("id") == "ld2410_presence_found_gates"
+    )
+    assert sensor["platform"] == "template"
+    assert sensor["name"] == "Presence Found Gates"
+    assert sensor["entity_category"] == "diagnostic"
+    assert sensor["update_interval"] == "never"
+    assert sensor["device_id"] == "${ld2410_device_id}"
+    assert "lambda" not in sensor
+
+
+def test_capture_names_gates_over_threshold_within_range():
+    code = " ".join(_capture(_package())["then"][1]["lambda"].split())
+    for gate, kind in GATES:
+        assert f"id(ld2410_g{gate}_{kind}_raw)" in code
+    assert "id(ld2410_max_move)" in code
+    assert "id(ld2410_max_still)" in code
+    assert '"Settings unavailable"' in code
+    assert '"None over threshold"' in code
+    assert "auto *names = id(ld2410_presence_found_gates);" in code
+    assert 'names->publish_state("Settings unavailable");' in code
+    # Names are only judged when presence was found and gate energies were captured.
+    judged = code.index("auto *names")
+    assert code.index("if (!present) return;") < judged
+    assert code.index("if (!captured) return;") < judged
+    # Equal to the threshold does not detect, as in the tuner's own replay.
+    assert "> threshold" in code
+    assert ">= threshold" not in code

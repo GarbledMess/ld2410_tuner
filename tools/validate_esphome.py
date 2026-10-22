@@ -194,6 +194,8 @@ def _check_snapshots(config, count):
     ):
         sensor = sensors[f"{prefix}_g{gate}_{kind}_{edge}"]
         _require(str(sensor["entity_category"]) == "diagnostic")
+    texts = {str(s["id"]) for s in config["text_sensor"]}
+    _require(all(f"{prefix}_presence_found_gates" in texts for prefix in prefixes))
 
 
 def _check_rounding(config, override):
