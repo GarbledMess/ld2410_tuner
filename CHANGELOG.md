@@ -1,5 +1,27 @@
 # Release notes
 
+## 1.28.0 - 2026-10-22
+
+- A room or zone with exactly one radar now trains that radar with its manual
+  labels; the radar's own labels still win where both exist, and **Seen by** keeps
+  showing what the radar itself saw. That radar is labelled on its room's timeline,
+  which lists any labels of its own and can open its editor.
+- Hide a zone that has exactly its room's radars and nothing of its own; the room
+  names it, offers **Show**, and carries its Learn controls.
+- Presence sources live on rooms and zones. A radar keeps its own sources form only
+  outside every group or while it still has sources to move.
+- Remove the History month calendar; choose days with the day picker.
+- Hide empty results (score headlines, Radar on its own, snapshot outcomes, pattern
+  comparison). Recommendations keeps the result picker, Learn/Apply and the outcome,
+  with comparison, automatic Apply, timing and gate thresholds in one **Details**.
+- Shorten help text to a line or two; the README keeps the detail.
+- Disabled controls now say why next to them. Selection grips sit exactly on their
+  boundaries at the ends of the day.
+
+Validation: 2,421 workspace tests passed with 96.96% coverage. Desktop/mobile browser
+checks passed locally and in the one-CPU Linux HA lab with real startup. With every
+section open, the sample panel is 8,737 px tall instead of 14,102 px.
+
 ## 1.27.0 - 2026-10-22
 
 - Load graphs in seconds instead of minutes. Graphs and recorded-data reads now run
