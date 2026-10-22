@@ -74,5 +74,18 @@ def test_runtime_rounding_is_restored_and_refreshes_metadata_without_radar_write
     assert refresh["mode"] == "restart"
     assert refresh["then"][0] == {"delay": "500ms"}
     assert refresh["then"][1] == {"delay": "${ld2410_gate_throttle}"}
-    assert "gate->publish_state(gate->raw_state)" in refresh["then"][2]["lambda"]
+    assert "gate->publish_state(gate->get_raw_state())" in refresh["then"][2]["lambda"]
     assert "DisconnectRequest" in refresh["then"][-1]["lambda"]
+
+
+def test_public_gate_thresholds_are_configuration_not_dashboard_controls():
+    """Room dashboards list primary entities; thresholds belong on the device's settings."""
+    package = yaml.load(PACKAGE.read_text(), Loader=yaml.BaseLoader)
+    thresholds = [
+        number
+        for number in package["number"]
+        if number.get("platform") == "template" and number.get("name", "").endswith("Threshold")
+    ]
+    assert len(thresholds) == 18
+    for number in thresholds:
+        assert number.get("entity_category") == "config", number["name"]

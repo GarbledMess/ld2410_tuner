@@ -8,6 +8,7 @@ import json
 import subprocess  # nosec B404
 import sys
 from collections import Counter
+from itertools import product
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -109,8 +110,8 @@ def _entities(value):
 def _check(config, count, expected_names, override=False):
     _require(len(config["ld2410"]) == count)
     _require(len(config["uart"]) == count)
-    _require(len(config["script"]) == 2 * count)
-    _require(len(config["globals"]) == 4 * count)
+    _require(len(config["script"]) == 3 * count)
+    _require(len(config["globals"]) == 5 * count)
     for index, radar in enumerate(config["ld2410"]):
         prefix = f"radar_{index}" if index else "ld2410"
         _require(str(radar["id"]) == f"{prefix}_radar")
@@ -174,6 +175,7 @@ def _check_options(config, count, override):
     energies = {f"G{gate} {kind} Energy" for gate in range(9) for kind in ("Move", "Still")}
     _require(energies <= {e["name"] for e in _entities(config["sensor"])})
     _check_rounding(config, override)
+    _check_snapshots(config, count)
     for index in range(1, count):
         sensor = next(
             x for x in config["binary_sensor"] if str(x.get("ld2410_id")) == f"radar_{index}_radar"
@@ -184,10 +186,21 @@ def _check_options(config, count, override):
         )
 
 
+def _check_snapshots(config, count):
+    sensors = {str(s["id"]): s for s in config["sensor"]}
+    prefixes = [f"radar_{index}" if index else "ld2410" for index in range(count)]
+    for prefix, gate, kind, edge in product(
+        prefixes, range(9), ("move", "still"), ("found", "lost")
+    ):
+        sensor = sensors[f"{prefix}_g{gate}_{kind}_{edge}"]
+        _require(str(sensor["entity_category"]) == "diagnostic")
+    texts = {str(s["id"]) for s in config["text_sensor"]}
+    _require(all(f"{prefix}_presence_found_gates" in texts for prefix in prefixes))
+
+
 def _check_rounding(config, override):
-    for index, sensor in enumerate(config["sensor"]):
-        if sensor.get("platform") != "ld2410":
-            continue
+    radars = [sensor for sensor in config["sensor"] if sensor.get("platform") == "ld2410"]
+    for index, sensor in enumerate(radars):
         rounding = _expected_rounding(index, override)
         prefix = f"radar_{index}" if index else "ld2410"
         control = next(n for n in config["number"] if str(n["id"]) == f"{prefix}_gate_rounding")

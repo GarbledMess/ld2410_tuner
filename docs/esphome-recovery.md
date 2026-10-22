@@ -498,6 +498,32 @@ own threshold input. Engineering Mode is needed for per-gate reporting; it is
 already exposed by the package. Rounding filters the reported energies; it does
 not replace the radar's presence logic.
 
+### Gate energies at presence found and lost
+
+The package adds 36 diagnostic sensors per radar: **G0–G8 Move/Still at Presence
+Found** and **at Presence Lost**. Each one holds that gate's energy from the radar
+frame in which the radar's own presence bit turned on (found) or off (lost). The
+value stays until the next edge of the same kind, and Home Assistant keeps every
+snapshot in history. Compare each value with that gate's threshold to see which
+gates triggered a detection.
+
+- The edge is the radar's own decision (Moving Target or Still Target), not the
+  Presence entity. Presence changes later, after `ld2410_presence_on_delay` and
+  `ld2410_presence_off_delay`.
+- The values are raw. They ignore Gate Rounding and the gate throttle.
+- **Presence Found Gates** names every gate from that same frame whose energy is
+  greater than its threshold and within Max Move/Still Distance, for example
+  `G3 Move, G4 Still`. `None over threshold` means the radar detected something
+  its current thresholds don't explain. `Settings unavailable` means the radar's
+  thresholds or maximum gates have not loaded yet.
+- The sensors are unknown until their first edge after the ESP starts. While
+  Engineering Mode is off there are no gate energies, so no snapshot is taken and
+  the previous values stay.
+- Lost values are normally all below their thresholds. The radar clears only after
+  every gate has stayed below for the whole Timeout.
+
+These sensors are not gate entities to the tuner and are not recorded as readings.
+
 Timing semantics: [LD2410 configuration](https://esphome.io/components/sensor/ld2410/)
 and [ESPHome binary sensor filters](https://esphome.io/components/binary_sensor/#binary-sensor-filters).
 

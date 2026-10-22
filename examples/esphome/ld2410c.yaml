@@ -40,10 +40,16 @@ binary_sensor:
       id: ${ld2410_id}_moving_target
       name: Moving Target
       device_id: ${ld2410_device_id}
+      trigger_on_initial_state: true
+      on_state:
+        - script.execute: ${ld2410_id}_capture_presence_edge
     has_still_target:
       id: ${ld2410_id}_still_target
       name: Still Target
       device_id: ${ld2410_device_id}
+      trigger_on_initial_state: true
+      on_state:
+        - script.execute: ${ld2410_id}_capture_presence_edge
     out_pin_presence_status:
       id: ${ld2410_id}_out_pin_presence
       name: Out Pin Presence
@@ -350,6 +356,260 @@ sensor:
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
           - delta: 1
 
+  # Every gate's raw energy from the radar frame that found or lost presence.
+  - platform: template
+    id: ${ld2410_id}_g0_move_found
+    name: G0 Move at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g0_still_found
+    name: G0 Still at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g1_move_found
+    name: G1 Move at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g1_still_found
+    name: G1 Still at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g2_move_found
+    name: G2 Move at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g2_still_found
+    name: G2 Still at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g3_move_found
+    name: G3 Move at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g3_still_found
+    name: G3 Still at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g4_move_found
+    name: G4 Move at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g4_still_found
+    name: G4 Still at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g5_move_found
+    name: G5 Move at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g5_still_found
+    name: G5 Still at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g6_move_found
+    name: G6 Move at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g6_still_found
+    name: G6 Still at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g7_move_found
+    name: G7 Move at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g7_still_found
+    name: G7 Still at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g8_move_found
+    name: G8 Move at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g8_still_found
+    name: G8 Still at Presence Found
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g0_move_lost
+    name: G0 Move at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g0_still_lost
+    name: G0 Still at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g1_move_lost
+    name: G1 Move at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g1_still_lost
+    name: G1 Still at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g2_move_lost
+    name: G2 Move at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g2_still_lost
+    name: G2 Still at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g3_move_lost
+    name: G3 Move at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g3_still_lost
+    name: G3 Still at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g4_move_lost
+    name: G4 Move at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g4_still_lost
+    name: G4 Still at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g5_move_lost
+    name: G5 Move at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g5_still_lost
+    name: G5 Still at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g6_move_lost
+    name: G6 Move at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g6_still_lost
+    name: G6 Still at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g7_move_lost
+    name: G7 Move at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g7_still_lost
+    name: G7 Still at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g8_move_lost
+    name: G8 Move at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    id: ${ld2410_id}_g8_still_lost
+    name: G8 Still at Presence Lost
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+
 number:
   - platform: ld2410
     ld2410_id: ${ld2410_id}_radar
@@ -470,6 +730,7 @@ number:
     id: ${ld2410_id}_g0_move
     name: G0 Move Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -490,6 +751,7 @@ number:
     id: ${ld2410_id}_g0_still
     name: G0 Still Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -510,6 +772,7 @@ number:
     id: ${ld2410_id}_g1_move
     name: G1 Move Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -530,6 +793,7 @@ number:
     id: ${ld2410_id}_g1_still
     name: G1 Still Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -550,6 +814,7 @@ number:
     id: ${ld2410_id}_g2_move
     name: G2 Move Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -570,6 +835,7 @@ number:
     id: ${ld2410_id}_g2_still
     name: G2 Still Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -590,6 +856,7 @@ number:
     id: ${ld2410_id}_g3_move
     name: G3 Move Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -610,6 +877,7 @@ number:
     id: ${ld2410_id}_g3_still
     name: G3 Still Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -630,6 +898,7 @@ number:
     id: ${ld2410_id}_g4_move
     name: G4 Move Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -650,6 +919,7 @@ number:
     id: ${ld2410_id}_g4_still
     name: G4 Still Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -670,6 +940,7 @@ number:
     id: ${ld2410_id}_g5_move
     name: G5 Move Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -690,6 +961,7 @@ number:
     id: ${ld2410_id}_g5_still
     name: G5 Still Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -710,6 +982,7 @@ number:
     id: ${ld2410_id}_g6_move
     name: G6 Move Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -730,6 +1003,7 @@ number:
     id: ${ld2410_id}_g6_still
     name: G6 Still Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -750,6 +1024,7 @@ number:
     id: ${ld2410_id}_g7_move
     name: G7 Move Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -770,6 +1045,7 @@ number:
     id: ${ld2410_id}_g7_still
     name: G7 Still Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -790,6 +1066,7 @@ number:
     id: ${ld2410_id}_g8_move
     name: G8 Move Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -810,6 +1087,7 @@ number:
     id: ${ld2410_id}_g8_still
     name: G8 Still Threshold
     device_id: ${ld2410_device_id}
+    entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
@@ -934,6 +1212,13 @@ text_sensor:
       if (id(${ld2410_id}_recovery_paused)) return {"Paused after failed recovery; use Retry Radar Recovery"};
       if (id(${ld2410_id}_recover_parameters).is_running()) return {"Recovering missing settings"};
       return {"Waiting for settings"};
+  # Set by the presence capture: gates over threshold in the frame that found presence.
+  - platform: template
+    id: ${ld2410_id}_presence_found_gates
+    name: Presence Found Gates
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    update_interval: never
   # Read-only metadata: these use the exact substitutions wired to the existing
   # filters above. Exposing them does not alter presence or add a new handler.
   - platform: template
@@ -1005,6 +1290,11 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'false'
+  # Radar presence seen by the last capture; -1 until the first frame.
+  - id: ${ld2410_id}_last_presence
+    type: int
+    restore_value: false
+    initial_value: '-1'
 
 script:
   - id: ${ld2410_id}_recover_parameters
@@ -1098,7 +1388,7 @@ script:
             id(${ld2410_id}_g8_still_energy)
           };
           for (auto *gate : gates) {
-            if (gate->has_state()) gate->publish_state(gate->raw_state);
+            if (gate->has_state()) gate->publish_state(gate->get_raw_state());
           }
       - delay: 100ms
       - lambda: |-
@@ -1110,6 +1400,129 @@ script:
             }
           }
           #endif
+
+  # Runs after the whole frame: the driver publishes the targets before the gates, and
+  # moving before still, so a moving-to-still handover is not an edge.
+  - id: ${ld2410_id}_capture_presence_edge
+    mode: restart
+    then:
+      - delay: 0s
+      - lambda: |-
+          const int present = id(${ld2410_id}_moving_target).state || id(${ld2410_id}_still_target).state;
+          const int previous = id(${ld2410_id}_last_presence);
+          id(${ld2410_id}_last_presence) = present;
+          if (previous < 0 || previous == present) return;
+          sensor::Sensor *gates[] = {
+            id(${ld2410_id}_g0_move_energy),
+            id(${ld2410_id}_g0_still_energy),
+            id(${ld2410_id}_g1_move_energy),
+            id(${ld2410_id}_g1_still_energy),
+            id(${ld2410_id}_g2_move_energy),
+            id(${ld2410_id}_g2_still_energy),
+            id(${ld2410_id}_g3_move_energy),
+            id(${ld2410_id}_g3_still_energy),
+            id(${ld2410_id}_g4_move_energy),
+            id(${ld2410_id}_g4_still_energy),
+            id(${ld2410_id}_g5_move_energy),
+            id(${ld2410_id}_g5_still_energy),
+            id(${ld2410_id}_g6_move_energy),
+            id(${ld2410_id}_g6_still_energy),
+            id(${ld2410_id}_g7_move_energy),
+            id(${ld2410_id}_g7_still_energy),
+            id(${ld2410_id}_g8_move_energy),
+            id(${ld2410_id}_g8_still_energy)
+          };
+          sensor::Sensor *found[] = {
+            id(${ld2410_id}_g0_move_found),
+            id(${ld2410_id}_g0_still_found),
+            id(${ld2410_id}_g1_move_found),
+            id(${ld2410_id}_g1_still_found),
+            id(${ld2410_id}_g2_move_found),
+            id(${ld2410_id}_g2_still_found),
+            id(${ld2410_id}_g3_move_found),
+            id(${ld2410_id}_g3_still_found),
+            id(${ld2410_id}_g4_move_found),
+            id(${ld2410_id}_g4_still_found),
+            id(${ld2410_id}_g5_move_found),
+            id(${ld2410_id}_g5_still_found),
+            id(${ld2410_id}_g6_move_found),
+            id(${ld2410_id}_g6_still_found),
+            id(${ld2410_id}_g7_move_found),
+            id(${ld2410_id}_g7_still_found),
+            id(${ld2410_id}_g8_move_found),
+            id(${ld2410_id}_g8_still_found)
+          };
+          sensor::Sensor *lost[] = {
+            id(${ld2410_id}_g0_move_lost),
+            id(${ld2410_id}_g0_still_lost),
+            id(${ld2410_id}_g1_move_lost),
+            id(${ld2410_id}_g1_still_lost),
+            id(${ld2410_id}_g2_move_lost),
+            id(${ld2410_id}_g2_still_lost),
+            id(${ld2410_id}_g3_move_lost),
+            id(${ld2410_id}_g3_still_lost),
+            id(${ld2410_id}_g4_move_lost),
+            id(${ld2410_id}_g4_still_lost),
+            id(${ld2410_id}_g5_move_lost),
+            id(${ld2410_id}_g5_still_lost),
+            id(${ld2410_id}_g6_move_lost),
+            id(${ld2410_id}_g6_still_lost),
+            id(${ld2410_id}_g7_move_lost),
+            id(${ld2410_id}_g7_still_lost),
+            id(${ld2410_id}_g8_move_lost),
+            id(${ld2410_id}_g8_still_lost)
+          };
+          sensor::Sensor **targets = present ? found : lost;
+          for (int i = 0; i < 18; i++) {
+            const float value = gates[i]->get_raw_state();
+            if (std::isfinite(value)) targets[i]->publish_state(value);
+          }
+          if (!present) return;
+          bool captured = false;
+          for (auto *gate : gates) captured = captured || std::isfinite(gate->get_raw_state());
+          if (!captured) return;  // Engineering Mode off: no gate energies to judge.
+          number::Number *thresholds[] = {
+            id(${ld2410_id}_g0_move_raw),
+            id(${ld2410_id}_g0_still_raw),
+            id(${ld2410_id}_g1_move_raw),
+            id(${ld2410_id}_g1_still_raw),
+            id(${ld2410_id}_g2_move_raw),
+            id(${ld2410_id}_g2_still_raw),
+            id(${ld2410_id}_g3_move_raw),
+            id(${ld2410_id}_g3_still_raw),
+            id(${ld2410_id}_g4_move_raw),
+            id(${ld2410_id}_g4_still_raw),
+            id(${ld2410_id}_g5_move_raw),
+            id(${ld2410_id}_g5_still_raw),
+            id(${ld2410_id}_g6_move_raw),
+            id(${ld2410_id}_g6_still_raw),
+            id(${ld2410_id}_g7_move_raw),
+            id(${ld2410_id}_g7_still_raw),
+            id(${ld2410_id}_g8_move_raw),
+            id(${ld2410_id}_g8_still_raw)
+          };
+          auto *max_move = id(${ld2410_id}_max_move);
+          auto *max_still = id(${ld2410_id}_max_still);
+          bool known = max_move->has_state() && std::isfinite(max_move->state)
+              && max_still->has_state() && std::isfinite(max_still->state);
+          for (auto *threshold : thresholds) {
+            known = known && threshold->has_state() && std::isfinite(threshold->state);
+          }
+          auto *names = id(${ld2410_id}_presence_found_gates);
+          if (!known) {
+            names->publish_state("Settings unavailable");
+            return;
+          }
+          std::string over;
+          for (int i = 0; i < 18; i++) {
+            const float value = gates[i]->get_raw_state();
+            const float threshold = thresholds[i]->state;
+            const float max_gate = i % 2 ? max_still->state : max_move->state;
+            if (!std::isfinite(value) || !(value > threshold) || i / 2 > max_gate) continue;
+            if (!over.empty()) over += ", ";
+            over += "G" + std::to_string(i / 2) + (i % 2 ? " Still" : " Move");
+          }
+          names->publish_state(over.empty() ? std::string("None over threshold") : over);
 
 esphome:
   on_boot:
