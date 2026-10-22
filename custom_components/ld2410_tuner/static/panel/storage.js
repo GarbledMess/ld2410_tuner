@@ -34,9 +34,6 @@ export const panelStorage = {
         }
         await this._load(true);
       });
-    if (d.recording_enabled === false)
-      for (const action of ["state", "timeout-hours", "timeout-minutes"])
-        card.querySelector(`[data-action="${action}"]`).disabled = true;
   },
 
   _storageStatusHtml() {

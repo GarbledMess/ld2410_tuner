@@ -20,6 +20,8 @@ h2, h3 { font-size:16px; }
 .room-settings { border-top:1px solid var(--divider-color); margin-top:16px; padding-top:8px; }
 .room-settings > summary, .inline-help > summary { cursor:pointer; min-height:44px; align-content:center; }
 .room-graph { min-width:0; margin:12px 0; }
+.field-note { margin:6px 0; font-size:13px; color:var(--secondary-text-color); }
+.field-note[hidden] { display:none; }
 .room-signal-canvas { min-width:0; width:100%; overflow:hidden; border:1px solid var(--divider-color); border-radius:10px; background:var(--card-background-color,#fff); }
 .room-signal-canvas svg { display:block; width:100%; height:auto; min-height:160px; touch-action:none; }
 .room-signal-canvas > p { padding:16px; }

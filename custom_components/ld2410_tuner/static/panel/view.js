@@ -111,7 +111,7 @@ export const panelView = {
         .history-range { position:relative; margin:12px 0; touch-action:none; user-select:none; -webkit-user-select:none; cursor:crosshair; }
         .history-range .history-timeline { height:44px; }
         .history-range-selection { position:absolute; top:0; bottom:0; background:rgba(30,136,229,.25); border-inline:2px solid #1565c0; box-sizing:border-box; pointer-events:none; }
-        .history-range-handle { position:absolute; top:0; bottom:0; left:clamp(0px,calc(var(--position) - 22px),calc(100% - 44px)); width:44px; padding:0; border:0; background:transparent; cursor:ew-resize; touch-action:none; }
+        .history-range-handle { position:absolute; top:0; bottom:0; left:calc(var(--position) - 22px); width:44px; padding:0; border:0; background:transparent; cursor:ew-resize; touch-action:none; }
         .history-range-handle::after { content:""; display:block; margin:auto; height:24px; width:8px; background:#1565c0; border:2px solid #fff; border-radius:5px; }
         .history-range [hidden] { display:none; }
         .history-timeline { display:flex; height:28px; border:1px solid var(--divider-color); border-radius:6px; overflow:hidden; }

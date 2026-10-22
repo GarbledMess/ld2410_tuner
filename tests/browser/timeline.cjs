@@ -71,6 +71,40 @@ module.exports = async function testTimeline(page) {
   assert.equal(Number(await handle.getAttribute("aria-valuenow")), before + 60);
   await from.fill("2026-09-23T08:00");
   assert.match(await handle.getAttribute("aria-valuetext"), /08:00/);
+  // Each grip sits on its boundary, including at the very ends of the bar.
+  const keptEnd = await to.inputValue();
+  for (const width of [390, 1400]) {
+    await page.setViewportSize({ width, height: 900 });
+    await from.fill("2026-09-23T00:00");
+    await to.fill("2026-09-23T23:59:59");
+    const grips = await card.evaluate((node) => {
+      const box = (selector) =>
+        node.querySelector(selector).getBoundingClientRect();
+      const range = box(".history-range-selection");
+      const centre = (boundary) => {
+        const r = box(`.history-range-handle[data-boundary="${boundary}"]`);
+        return r.left + r.width / 2;
+      };
+      return {
+        start: centre("start") - range.left,
+        end: centre("end") - range.right,
+      };
+    });
+    assert.ok(
+      Math.abs(grips.start) <= 1 && Math.abs(grips.end) <= 1,
+      `grips sit on the selection edges at ${width}px: ${JSON.stringify(grips)}`,
+    );
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+      "edge grips do not widen the page",
+    );
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await to.fill(keptEnd);
+  await from.fill("2026-09-23T08:00");
   await from.blur();
   // Saving the dragged range still requires the existing explicit confirmation.
   await card.locator('[data-action="history-state"]').selectOption("present");

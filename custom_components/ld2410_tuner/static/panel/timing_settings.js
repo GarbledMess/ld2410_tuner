@@ -21,7 +21,8 @@ export const panelTimingSettings = {
       `<details ${this._timingOpen ? "open" : ""}><summary>Learning timing<span class="section-description">Radar delays and how learning accounts for them.</span></summary>
       <div class="storage-fields"><label>Timing model<select data-action="timing-mode">${TIMING_MODES.map(([value, label]) => `<option value="${value}" ${values.mode === value ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
       <p>Applies to manual and overnight learning on every device. Device values take priority; defaults fill only missing or unreadable values and are reported as assumptions.</p>
-      <div class="storage-fields">${TIMING_FIELDS.map(([key, label, fallback]) => `<label>${label}<input type="number" data-timing="${key}" min="0" max="65535" step="any" required value="${this._esc(values[key] ?? fallback)}" ${values.mode === "fallback" ? "" : "disabled"}></label>`).join("")}</div>
+      <div class="storage-fields">${TIMING_FIELDS.map(([key, label, fallback]) => `<label>${label}<input type="number" data-timing="${key}" min="0" max="65535" step="any" required value="${this._esc(values[key] ?? fallback)}" aria-describedby="timing-values-reason" ${values.mode === "fallback" ? "" : "disabled"}></label>`).join("")}</div>
+      <p class="field-note" id="timing-values-reason" ${values.mode === "fallback" ? "hidden" : ""}>These values are only used with "${TIMING_MODES.find(([value]) => value === "fallback")[1]}". Choose that timing model to edit them.</p>
       <p class="muted">Disabling timing scores raw threshold activity without radar timeout or on/off delays. These settings change the learning model only; they never change the device. Saved results keep their original timing: learn again after changing this policy.</p>
       <button data-action="timing-save">Save timing settings</button>
       <div class="settings-action-status muted" role="status"></div>
@@ -42,6 +43,8 @@ export const panelTimingSettings = {
     mode.onchange = () => {
       this._timingDraft = capture();
       for (const input of inputs) input.disabled = mode.value !== "fallback";
+      container.querySelector("#timing-values-reason").hidden =
+        mode.value === "fallback";
     };
     const save = container.querySelector('[data-action="timing-save"]');
     save.onclick = () =>

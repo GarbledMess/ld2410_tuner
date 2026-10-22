@@ -59,7 +59,7 @@ export const panelCards = {
         id,
         "training",
         "Current presence label",
-        this._trainingHtml(d) + this._sourcesHtml(id, d),
+        this._trainingHtml(id, d) + this._sourcesHtml(id, d),
       ),
       `<div class="chart-home">${this._section(id, "chart", "Gate visualization", this._chartHtml(id, d))}</div>`,
       this._section(id, "history", "History", this._historyHtml(id, d)),
@@ -82,12 +82,18 @@ export const panelCards = {
     ].join("");
   },
 
-  _trainingHtml(d) {
+  _trainingHtml(id, d) {
     const state = d.training_state || "unknown";
+    const reasonId = `presence-reason-${Array.from(id, (char) => char.codePointAt(0).toString(16)).join("-")}`;
+    const paused = d.recording_enabled === false;
+    const lock = paused ? `disabled aria-describedby="${reasonId}"` : "";
+    const reason = paused
+      ? `<p class="field-note" id="${reasonId}">Recording is off for this radar, so presence can't be labelled. Turn on Record data above to label it.</p>`
+      : "";
     const expiry = d.training_expires_at
       ? `<span class="area">Expires ${this._timeLeft(d.training_expires_at)}</span>`
       : "";
-    return `<div class="training"><label>Presence now</label><select data-action="state"><option value="unknown" ${state === "unknown" ? "selected" : ""}>UNKNOWN</option><option value="present" ${state === "present" ? "selected" : ""}>PRESENT</option><option value="not_present" ${state === "not_present" ? "selected" : ""}>NOT PRESENT</option></select><label>Keep label for</label><div class="duration"><input data-action="timeout-hours" aria-label="Label duration in hours" type="number" min="0" step="1" inputmode="numeric" placeholder="Hours"><span>h</span><input data-action="timeout-minutes" aria-label="Label duration in minutes" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="Minutes"><span>m</span></div>${expiry}</div>`;
+    return `<div class="training"><label>Presence now</label><select data-action="state" ${lock}><option value="unknown" ${state === "unknown" ? "selected" : ""}>UNKNOWN</option><option value="present" ${state === "present" ? "selected" : ""}>PRESENT</option><option value="not_present" ${state === "not_present" ? "selected" : ""}>NOT PRESENT</option></select><label>Keep label for</label><div class="duration"><input data-action="timeout-hours" ${lock} aria-label="Label duration in hours" type="number" min="0" step="1" inputmode="numeric" placeholder="Hours"><span>h</span><input data-action="timeout-minutes" ${lock} aria-label="Label duration in minutes" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="Minutes"><span>m</span></div>${expiry}${reason}</div>`;
   },
 
   _autoInfo(auto) {

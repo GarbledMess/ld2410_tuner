@@ -376,15 +376,20 @@ export const panelSavedResults = {
       `<label><input data-action="nightly-enabled" type="checkbox" ${form.enabled ? "checked" : ""}> Overnight learning</label>
       <label>Time <input data-action="nightly-time" type="time" value="${this._esc(form.time)}" required></label>
       <label><input data-action="nightly-auto-apply" type="checkbox" ${(form.auto_apply ?? true) ? "checked" : ""}> Global default: automatically apply better results</label>
-      <label>Default scope <select data-action="auto-apply-scope" ${form.auto_apply === false ? "disabled" : ""}><option value="overnight" ${form.auto_apply_scope !== "all" ? "selected" : ""}>Overnight learning only</option><option value="all" ${form.auto_apply_scope === "all" ? "selected" : ""}>Every completed Learn</option></select></label>
+      <label>Default scope <select data-action="auto-apply-scope" aria-describedby="auto-apply-scope-reason" ${form.auto_apply === false ? "disabled" : ""}><option value="overnight" ${form.auto_apply_scope !== "all" ? "selected" : ""}>Overnight learning only</option><option value="all" ${form.auto_apply_scope === "all" ? "selected" : ""}>Every completed Learn</option></select></label>
+      <p class="field-note" id="auto-apply-scope-reason" ${form.auto_apply === false ? "" : "hidden"}>Turn on automatic Apply above to choose when it applies.</p>
       <label>Automatic evidence weight <input data-action="automatic-weight" type="number" min="0" max="1" step="any" required value="${this._esc(form.automatic_weight ?? this._automaticWeight(config))}"></label>
       <details class="inline-help" data-preserve-open><summary>How automatic evidence is used<span class="section-description">How automatic estimates contribute alongside your labels.</span></summary><p>How much automatic guesses, including a radar's own and scaled by their confidence, count beside human labels: 0 = automatic evidence only breaks ties; 1 = automatic evidence counts up to a quarter of the human evidence. Changing it makes learned results stale. Automatic Apply still requires an improvement on human labels. Not-present guesses count in full; a present guess counts only from a fresh reference and where the radar reads above its own empty-room level, and a room is present only when two members agree. The room and zone blend is not yet validated on real data.</p></details>
       <button data-action="nightly-save">Save learning settings</button>
       <span class="muted ${config.running ? "is-busy" : ""}" role="status">${this._esc(config.timezone)} · Global default: ${config.running ? "Learning devices…" : this._automaticApplyPolicyText(config)} Override this default in each sensor’s Recommendations.</span>`,
     );
     container.oninput = () => {
+      const automatic = container.querySelector(
+        '[data-action="nightly-auto-apply"]',
+      ).checked;
       container.querySelector('[data-action="auto-apply-scope"]').disabled =
-        !container.querySelector('[data-action="nightly-auto-apply"]').checked;
+        !automatic;
+      container.querySelector("#auto-apply-scope-reason").hidden = automatic;
       this._scheduleDraft = {
         enabled: container.querySelector('[data-action="nightly-enabled"]')
           .checked,

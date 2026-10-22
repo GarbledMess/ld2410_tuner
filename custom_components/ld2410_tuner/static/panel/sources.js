@@ -7,13 +7,16 @@ export const panelSources = {
     const config = this._sourceDrafts?.get(id) || d.presence_sources || {};
     const status = this._sourceStatusText(d.presence_sources);
     const open = this._sectionState.get(`${id}:sources`) ? "open" : "";
+    const full = (config.sources || []).length >= 16;
+    const limitId = `source-limit-${Array.from(groupId || id, (char) => char.codePointAt(0).toString(16)).join("-")}`;
     const intro = groupId
       ? "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor to label this whole room. Their output is stored as read-only sensor room labels; your manual room labels always win."
       : "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor. Choose independent sources, not this radar's own presence output.";
     return `<details class="presence-sources" ${open}><summary>${groupId ? "Room presence sources" : "Automatic labels from other entities"}<span class="section-description">Create presence labels from cameras and other sensors.</span></summary>
       <p class="muted">${intro} Any positive source starts or continues a presence period.</p>
       <div class="source-rows">${(config.sources || []).map((source, index) => this._sourceRowHtml(id, source, index)).join("")}</div>
-      <button data-action="source-add" type="button" ${(config.sources || []).length >= 16 ? "disabled" : ""}>Add source</button>
+      <button data-action="source-add" type="button" ${full ? `disabled aria-describedby="${limitId}"` : ""}>Add source</button>
+      ${full ? `<p class="field-note" id="${limitId}">Up to 16 sources can be used. Remove one to add another.</p>` : ""}
       <div class="storage-fields"><label class="source-negative"><input type="checkbox" data-source-negative ${config.mark_not_present ? "checked" : ""}> Mark “Not Present”</label>
       <label>Source confidence (%)<input type="number" data-source-confidence min="1" max="100" value="${this._esc(config.confidence ?? 90)}" required></label></div>
       <div class="storage-fields"><label>Trim start of presence (seconds)<input type="number" data-source-buffer="start_buffer_seconds" min="0" max="3600" step="any" value="${this._esc(config.start_buffer_seconds ?? 10)}" required></label>

@@ -595,7 +595,8 @@ export const panelLayout = {
       .join("");
     return `<form class="pattern-comparison"><h3>${draft.group_id ? "Edit group" : "Add zone or manual group"}</h3>
       <div class="history-fields"><label>Name<input name="room-name" required maxlength="80" value="${this._esc(draft.name)}"></label>
-      <label>Area<select name="room-area" ${draft.group_id?.startsWith("area:") ? "disabled" : ""}><option value="">No area / custom group</option>${areaOptions}</select></label></div>
+      <label>Area<select name="room-area" ${draft.group_id?.startsWith("area:") ? 'disabled aria-describedby="room-area-reason"' : ""}><option value="">No area / custom group</option>${areaOptions}</select></label></div>
+      ${draft.group_id?.startsWith("area:") ? '<p class="field-note" id="room-area-reason">A whole-area group always uses its own Home Assistant area. Add a zone or manual group to choose a different area.</p>' : ""}
       <fieldset class="room-members"><legend>Radars covering this zone</legend>${members}</fieldset>
       <p class="muted">Select only radars that can represent this zone. A radar shared with another zone contributes to both; grouping cannot distinguish which side of its coverage triggered. Assigning an area here organizes this group; it does not move devices in Home Assistant or change whole-area membership.</p>
       <button type="submit">Save group</button> <button type="button" data-room-action="cancel">Cancel</button></form>`;
