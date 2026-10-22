@@ -20,6 +20,8 @@ from ..worker import bridge
 from ..worker.supervisor import Busy, owned_preparation
 
 MAX_HISTORY_JOBS = 2
+# A fragmented radar-day chart is up to ~190 KB compressed; four fit the 1 MiB result.
+ROOM_CHART_DEVICES = 4
 
 
 @pace.background
@@ -99,18 +101,7 @@ async def async_history_series(
     device = runtime.data["devices"].get(device_id)
     if not device:
         raise ValueError("Unknown device")
-    cache_key = (
-        device_id,
-        tuple(dict.fromkeys(keys)) if summary else tuple(sorted(set(keys))),
-        summary,
-        hours,
-        max_points,
-        end,
-        device.get("label_revision", 0),
-        device.get("training_state"),
-        device.get("training_label_start"),
-        device.get("training_expires_at"),
-    )
+    cache_key = _history_cache_key(device_id, device, keys, hours, max_points, end, summary)
     if cache_key in runtime._history_cache:
         runtime._history_cache.move_to_end(cache_key)
         return runtime._history_cache[cache_key]
@@ -121,11 +112,7 @@ async def async_history_series(
             raise Busy("Chart refresh is busy; retry shortly")
 
         def prepare():
-            view = runtime._history_view(device_id, members=False)
-            requested_hours = max(0.1, min(settings(runtime.data)["human_days"] * 24, float(hours)))
-            view._capture_chart_window = True
-            view._snapshot_history_start = end - requested_hours * 3600
-            view._history_until = end
+            view = _chart_view(runtime, device_id, hours, end)
             return {
                 "views": {device_id: view},
                 "parameters": {
@@ -144,6 +131,112 @@ async def async_history_series(
         # A disconnected websocket may leave no waiter to retrieve a later failure.
         runtime._history_jobs[cache_key].add_done_callback(_history_done)
     return await asyncio.shield(runtime._history_jobs[cache_key])
+
+
+def _history_cache_key(device_id, device, keys, hours, max_points, end, summary=False):
+    return (
+        device_id,
+        tuple(dict.fromkeys(keys)) if summary else tuple(sorted(set(keys))),
+        summary,
+        hours,
+        max_points,
+        end,
+        device.get("label_revision", 0),
+        device.get("training_state"),
+        device.get("training_label_start"),
+        device.get("training_expires_at"),
+    )
+
+
+def _chart_view(runtime, device_id, hours, end):
+    view = runtime._history_view(device_id, members=False)
+    requested_hours = max(0.1, min(settings(runtime.data)["human_days"] * 24, float(hours)))
+    view._capture_chart_window = True
+    view._snapshot_history_start = end - requested_hours * 3600
+    view._history_until = end
+    return view
+
+
+def _room_request(device_ids, keys, hours, end):
+    if not isinstance(device_ids, list) or not 1 <= len(device_ids) <= ROOM_CHART_DEVICES:
+        raise ValueError(f"Expected 1..{ROOM_CHART_DEVICES} unique device ids")
+    if any(not isinstance(item, str) for item in device_ids) or len(set(device_ids)) != len(
+        device_ids
+    ):
+        raise ValueError("Expected unique string device ids")
+    if not any(key in HISTORY_KEYS for key in keys):
+        raise ValueError("No valid gate keys given")
+    if not math.isfinite(float(hours)):
+        raise ValueError("Hours must be finite")
+    if end is not None and not math.isfinite(float(end)):
+        raise ValueError("End time must be finite")
+    return min(time.time(), float(end)) if end is not None else time.time()
+
+
+async def async_room_series(runtime, device_ids, keys, hours, max_points=400, end=None):
+    """Build room charts in one display job, reusing per-device cached charts."""
+    end = _room_request(device_ids, keys, hours, end)
+    result = {"charts": {}, "errors": {}}
+    misses = {}
+    for device_id in device_ids:
+        device = runtime.data["devices"].get(device_id)
+        if device is None:
+            result["errors"][device_id] = "Unknown device"
+            continue
+        key = _history_cache_key(device_id, device, keys, hours, max_points, end)
+        if key in runtime._history_cache:
+            runtime._history_cache.move_to_end(key)
+            result["charts"][device_id] = runtime._history_cache[key]
+        else:
+            misses[device_id] = key
+    if misses:
+        built = await _room_history_job(runtime, misses, keys, hours, max_points, end)
+        result["charts"].update(built["charts"])
+        result["errors"].update(built["errors"])
+    return result
+
+
+async def _room_history_job(runtime, misses, keys, hours, max_points, end):
+    job_key = tuple(misses.values())
+    if job_key not in runtime._history_jobs:
+        if len(runtime._history_jobs) >= MAX_HISTORY_JOBS:
+            raise Busy("Chart refresh is busy; retry shortly")
+
+        def prepare():
+            return {
+                "views": {
+                    device_id: _chart_view(runtime, device_id, hours, end) for device_id in misses
+                },
+                "parameters": {
+                    "device_ids": list(misses),
+                    "keys": keys,
+                    "hours": hours,
+                    "max_points": max_points,
+                    "end": end,
+                },
+            }
+
+        task = asyncio.create_task(_build_room_series(runtime, job_key, misses, prepare))
+        runtime._history_jobs[job_key] = task
+        task.add_done_callback(_history_done)
+    return await asyncio.shield(runtime._history_jobs[job_key])
+
+
+async def _build_room_series(runtime, job_key, misses, prepare):
+    from ..worker.display import unpack_charts
+
+    try:
+        result = await bridge.calculate(runtime, "charts", prepare)
+        result = await owned_preparation(
+            runtime.hass.async_add_executor_job(unpack_charts, result, list(misses))
+        )
+        for device_id, chart in result["charts"].items():
+            runtime._history_cache[misses[device_id]] = chart
+        while len(runtime._history_cache) > 16:
+            runtime._history_cache.popitem(last=False)
+        return result
+    finally:
+        runtime._history_jobs.pop(job_key, None)
 
 
 async def _build_history_series(runtime, cache_key, prepare):

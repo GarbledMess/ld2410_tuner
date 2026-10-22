@@ -1,10 +1,10 @@
 import { CHART_RANGES, GATE_COLORS } from "./constants.js";
 
 export const panelChart = {
-  async _chartCall(parameters) {
+  async _chartCall(parameters, type = "history_series_multi") {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this._call("history_series_multi", parameters, 180000);
+        return await this._call(type, parameters, 180000);
       } catch (error) {
         if (error.code !== "busy" || attempt >= 2 || !this.isConnected)
           throw error;

@@ -297,6 +297,20 @@ def _websocket_routes():
             False,
         ),
         (
+            "room_series",
+            {
+                vol.Required("device_ids"): [str],
+                vol.Required("keys"): [str],
+                vol.Optional("hours", default=24): vol.Coerce(float),
+                vol.Optional("max_points", default=400): vol.Coerce(int),
+                vol.Optional("end"): vol.Coerce(float),
+            },
+            "async_room_series",
+            ("device_ids", "keys", "hours", "max_points", "end"),
+            "invalid_request",
+            False,
+        ),
+        (
             "history_series_multi",
             {
                 **device,

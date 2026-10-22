@@ -18,6 +18,11 @@ module.exports = async function testRoomChart(page) {
       .slice(start)
       .filter((r) => r.type.endsWith("history_series_multi"));
     return {
+      rooms: requests
+        .slice(start)
+        .filter((r) => r.type.endsWith("room_series"))
+        .map((r) => ({ ids: r.device_ids, keys: r.keys })),
+      direct: calls.filter((r) => !r.room).length,
       calls: calls.map((r) => ({
         id: r.device_id,
         summary: !!r.summary,
@@ -32,6 +37,12 @@ module.exports = async function testRoomChart(page) {
   }, gid);
   const stillKeys = Array.from({ length: 9 }, (_, g) => `g${g}_still`);
   assert.deepEqual(
+    setup.rooms,
+    [{ ids: ["a", "b"], keys: stillKeys }],
+    "the whole room is fetched in one request",
+  );
+  assert.equal(setup.direct, 0, "no separate request per radar");
+  assert.deepEqual(
     setup.calls,
     [
       { id: "a", summary: false, keys: stillKeys },
@@ -40,6 +51,38 @@ module.exports = async function testRoomChart(page) {
     "each radar's gates are requested, not a merged strongest signal",
   );
   assert.deepEqual(setup.kinds, ["move", "still"]);
+  const large = await page.evaluate(async (gid) => {
+    const extra = ["c", "d", "e"];
+    for (const id of extra)
+      panel._data.devices[id] = {
+        ...structuredClone(panel._data.devices.a),
+        name: `Extra ${id}`,
+      };
+    const group = {
+      ...panel._roomsData().groups[gid],
+      device_ids: ["a", "b", ...extra],
+    };
+    const start = requests.length;
+    try {
+      await panel._loadRoomGraph(gid, group, true);
+      return {
+        batches: requests
+          .slice(start)
+          .filter((r) => r.type.endsWith("room_series"))
+          .map((r) => r.device_ids),
+        drawn: panel._roomGraphState(gid).data.series.map((s) => s.id),
+      };
+    } finally {
+      for (const id of extra) delete panel._data.devices[id];
+      await panel._loadRoomGraph(gid, panel._roomsData().groups[gid], true);
+    }
+  }, gid);
+  assert.deepEqual(
+    large.batches,
+    [["a", "b", "c", "d"], ["e"]],
+    "large rooms are fetched in batches that fit one worker result",
+  );
+  assert.deepEqual(large.drawn, ["a", "b", "c", "d", "e"]);
   await graph.locator("svg").waitFor();
   for (const id of ["a", "b"])
     assert.equal(

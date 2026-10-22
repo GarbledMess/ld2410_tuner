@@ -164,6 +164,31 @@ const { execFileSync } = require("node:child_process");
           window.requests.push(message);
           if (message.type.endsWith("snapshot"))
             return structuredClone(window.fixture);
+          if (message.type.endsWith("room_series")) {
+            // One room request answered per radar, so tests can fail or slow one radar.
+            const charts = {},
+              errors = {};
+            await Promise.all(
+              message.device_ids.map(async (id) => {
+                try {
+                  charts[id] = await panel._hass.callWS({
+                    type: message.type.replace(
+                      "room_series",
+                      "history_series_multi",
+                    ),
+                    device_id: id,
+                    keys: message.keys,
+                    hours: message.hours,
+                    end: message.end,
+                    room: true,
+                  });
+                } catch (error) {
+                  errors[id] = error.message || String(error);
+                }
+              }),
+            );
+            return { charts, errors };
+          }
           if (message.type.endsWith("history_series_multi")) {
             if (window.fail) throw new Error("History offline");
             if (window.race)

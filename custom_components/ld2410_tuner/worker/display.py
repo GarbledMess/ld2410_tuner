@@ -28,6 +28,49 @@ def calculate(operation, view, parameters):
     raise ValueError("Unsupported display operation")
 
 
+def calculate_charts(views, parameters):
+    """Calculate each requested radar independently inside one display child."""
+    from ..presentation.charts import history_series_multi
+
+    charts, errors = {}, {}
+    for device_id in parameters["device_ids"]:
+        try:
+            charts[device_id] = pack_chart(
+                history_series_multi(
+                    views[device_id],
+                    device_id=device_id,
+                    keys=parameters["keys"],
+                    hours=parameters["hours"],
+                    max_points=parameters["max_points"],
+                    end=parameters["end"],
+                )
+            )
+        except ValueError as error:
+            errors[device_id] = str(error)[:500]
+    return {"charts": charts, "errors": errors}
+
+
+def unpack_charts(value, device_ids):
+    """Validate the room envelope before expanding any untrusted chart payloads."""
+    if type(value) is not dict or set(value) != {"charts", "errors"}:
+        raise ValueError("Invalid room chart envelope")
+    charts, errors = value["charts"], value["errors"]
+    if type(charts) is not dict or type(errors) is not dict:
+        raise ValueError("Invalid room chart maps")
+    _validate_chart_devices(charts, device_ids)
+    _validate_chart_devices(errors, device_ids)
+    if charts.keys() & errors.keys():
+        raise ValueError("Conflicting room chart results")
+    if any(type(error) is not str or len(error) > 500 for error in errors.values()):
+        raise ValueError("Invalid room chart error")
+    return {"charts": {key: unpack_chart(chart) for key, chart in charts.items()}, "errors": errors}
+
+
+def _validate_chart_devices(mapping, device_ids):
+    if any(type(key) is not str or key not in device_ids for key in mapping):
+        raise ValueError("Invalid room chart device")
+
+
 def pack_chart(value):
     """Keep full chart geometry inside the existing bounded result envelope."""
     _validate_chart(value)

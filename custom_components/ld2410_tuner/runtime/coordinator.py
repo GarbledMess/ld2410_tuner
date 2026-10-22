@@ -198,6 +198,7 @@ class TunerRuntime:
     async_recording_days = recordings.async_recording_days
     async_recording_rows = recordings.async_recording_rows
     async_history_series = charts.async_history_series
+    async_room_series = charts.async_room_series
     start_learning = calibration.start_learning
     async_learn = calibration.async_learn
     _learn_once = calibration._learn_once

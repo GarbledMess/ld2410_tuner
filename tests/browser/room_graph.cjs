@@ -219,20 +219,10 @@ module.exports = async function testRoomGraphResilience(page) {
     state.kind = "move";
     const work = panel._loadRoomGraph(gid, group, false, true);
     try {
-      for (
-        let frame = 0;
-        frame < 100 &&
-        !(
-          state.loadedKind === "move" &&
-          state.data?.series.some((item) => item.id === "a")
-        );
-        frame++
-      )
+      for (let frame = 0; frame < 10; frame++)
         await new Promise(requestAnimationFrame);
-      const progressive =
-        state.loading &&
-        state.loadedKind === "move" &&
-        !!panel._roomGraphSection(gid).querySelector("svg");
+      // One request charts the room, so it waits for its slowest radar.
+      const waiting = state.loading && state.loadedKind !== "move";
       const request = state.request;
       area.open = false;
       panel._layoutOpen.set(gid, false);
@@ -244,7 +234,7 @@ module.exports = async function testRoomGraphResilience(page) {
       panel._layoutOpen.set(gid, true);
       await new Promise(requestAnimationFrame);
       await new Promise(requestAnimationFrame);
-      return { progressive, completed, unchanged: state.request === request };
+      return { waiting, completed, unchanged: state.request === request };
     } finally {
       release();
       await work;
@@ -254,9 +244,9 @@ module.exports = async function testRoomGraphResilience(page) {
     }
   });
   assert.equal(
-    inFlight.progressive,
+    inFlight.waiting,
     true,
-    "fast radar results render while another radar is still loading",
+    "the room request stays in flight until every radar is charted",
   );
   assert.equal(
     inFlight.completed,
@@ -381,5 +371,42 @@ module.exports = async function testRoomGraphResilience(page) {
     paused,
     /Recording paused.*Record data/s,
     "empty room graphs explain paused recording and how to resume it",
+  );
+
+  const batch = await page.evaluate(async () => {
+    const gid = "area:ux",
+      group = panel._roomsData().groups[gid];
+    const state = panel._roomGraphState(gid);
+    const section = panel._roomGraphSection(gid);
+    const original = panel._hass.callWS;
+    let reply;
+    panel._hass.callWS = async (message) => {
+      if (!message.type.endsWith("room_series")) return original(message);
+      if (reply instanceof Error) throw reply;
+      return reply;
+    };
+    try {
+      reply = new Error("Room request timed out");
+      await panel._loadRoomGraph(gid, group, true);
+      const failed = { text: section.innerText, partial: state.partial };
+      reply = { charts: { a: { labels: [] } }, errors: {} };
+      await panel._loadRoomGraph(gid, group, true);
+      const malformed = { text: section.innerText, partial: state.partial };
+      return { failed, malformed };
+    } finally {
+      panel._hass.callWS = original;
+      await panel._loadRoomGraph(gid, group, true);
+    }
+  });
+  assert.match(
+    batch.failed.text,
+    /Graph unavailable.*Room a: Room request timed out.*Room b: Room request timed out/s,
+    "a failed room request names every radar it covered",
+  );
+  assert.equal(batch.failed.partial, false);
+  assert.match(
+    batch.malformed.text,
+    /Room a: The tuner returned an invalid signal history.*Room b: The tuner returned an invalid signal history/s,
+    "a malformed or missing radar chart is reported, not drawn",
   );
 };

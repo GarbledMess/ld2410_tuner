@@ -268,10 +268,10 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
     let release;
     const gate = new Promise((resolve) => (release = resolve));
     let calls = 0;
-    panel._chartCall = async (parameters) => {
+    panel._chartCall = async (...args) => {
       calls++;
       await gate;
-      return original.call(panel, parameters);
+      return original.apply(panel, args);
     };
     try {
       const first = panel._loadRoomGraph(gid, group, true);
@@ -295,7 +295,7 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
     true,
     "polling cannot invalidate an active room request",
   );
-  assert.equal(loading.calls, 2, "only one request per room radar is queued");
+  assert.equal(loading.calls, 1, "only one request per room is queued");
   await testRoomGraphResilience(page);
   await testRoomChart(page);
   const hit = graph.locator("[data-room-plot-hit]");

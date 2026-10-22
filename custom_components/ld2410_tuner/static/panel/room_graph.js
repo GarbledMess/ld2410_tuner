@@ -8,6 +8,8 @@ import {
 
 // Radars in one room chart are told apart by line style; gates keep their colours.
 const RADAR_DASHES = ["", "7,4", "2,3", "10,3,2,3"];
+// Radars per room request; four worst-case charts fit one worker result.
+const ROOM_BATCH = 4;
 
 export const panelRoomGraph = {
   _roomGraphState(gid) {
@@ -186,46 +188,42 @@ export const panelRoomGraph = {
     }
     this._renderRoomGraph(gid);
     try {
+      const keys = Array.from({ length: 9 }, (_, gate) => `g${gate}_${kind}`);
+      const batches = [];
       if (end > bounds.start)
-        await Promise.all(
-          requested.map(async (id) => {
-            try {
-              const keys = Array.from(
-                { length: 9 },
-                (_, gate) => `g${gate}_${kind}`,
-              );
-              const data = await this._queueChartCall(
-                () => {
-                  if (!this.isConnected || request !== state.request)
-                    return null;
-                  return this._chartCall({
-                    device_id: id,
+        for (let i = 0; i < requested.length; i += ROOM_BATCH)
+          batches.push(requested.slice(i, i + ROOM_BATCH));
+      // One worker job charts each batch of the room's radars.
+      await Promise.all(
+        batches.map(async (batch) => {
+          let reply = null;
+          try {
+            reply = await this._queueChartCall(
+              () => {
+                if (!this.isConnected || request !== state.request) return null;
+                return this._chartCall(
+                  {
+                    device_ids: batch,
                     keys,
                     hours: Math.max(0.1, (end - bounds.start) / 3600),
                     end,
-                  });
-                },
-                { background: !foreground },
-              );
-              if (!data || request !== state.request) return;
-              if (!data.series || typeof data.series !== "object")
-                throw new Error(
-                  "The tuner returned an invalid signal history. Reload the panel and retry.",
+                  },
+                  "room_series",
                 );
-              results.set(id, {
-                id,
-                name: this._data.devices[id]?.name || "Unavailable radar",
-                dash: RADAR_DASHES[ids.indexOf(id) % RADAR_DASHES.length],
-                chart: data,
-              });
-              this._publishRoomSignals(state, bounds, ids, results, day, kind);
-              this._renderRoomGraph(gid);
-            } catch (error) {
-              if (request === state.request)
-                errors[id] = error.message || String(error);
-            }
-          }),
-        );
+              },
+              { background: !foreground },
+            );
+          } catch (error) {
+            for (const id of batch) errors[id] = error.message || String(error);
+          }
+          if (!reply || request !== state.request) return;
+          this._roomSeriesResults(reply, batch, ids, results, errors);
+          if (batch.some((id) => !errors[id])) {
+            this._publishRoomSignals(state, bounds, ids, results, day, kind);
+            this._renderRoomGraph(gid);
+          }
+        }),
+      );
       if (request !== state.request) return;
       state.errors = errors;
       const failed = Object.keys(errors);
@@ -252,6 +250,24 @@ export const panelRoomGraph = {
         state.pendingQuery = null;
         this._renderRoomGraph(gid);
       }
+    }
+  },
+
+  _roomSeriesResults(reply, requested, ids, results, errors) {
+    const invalid =
+      "The tuner returned an invalid signal history. Reload the panel and retry.";
+    for (const id of requested) {
+      const chart = reply.charts?.[id];
+      if (reply.errors?.[id] != null) errors[id] = String(reply.errors[id]);
+      else if (!chart?.series || typeof chart.series !== "object")
+        errors[id] = invalid;
+      else
+        results.set(id, {
+          id,
+          name: this._data.devices[id]?.name || "Unavailable radar",
+          dash: RADAR_DASHES[ids.indexOf(id) % RADAR_DASHES.length],
+          chart,
+        });
     }
   },
 
