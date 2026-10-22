@@ -2,10 +2,11 @@
 
 ## 1.28.0 - 2026-10-22
 
-- A room or zone with exactly one radar now trains that radar with its manual
+- A room or zone with exactly one recording radar now trains that radar with its manual
   labels; the radar's own labels still win where both exist, and **Seen by** keeps
   showing what the radar itself saw. That radar is labelled on its room's timeline,
-  which lists any labels of its own and can open its editor.
+  which lists any labels of its own (saved or live) and can open its editor; View
+  radar opens its gate graph.
 - Hide a zone that has exactly its room's radars and nothing of its own; the room
   names it, offers **Show**, and carries its Learn controls.
 - Presence sources live on rooms and zones. A radar keeps its own sources form only
@@ -18,7 +19,7 @@
 - Disabled controls now say why next to them. Selection grips sit exactly on their
   boundaries at the ends of the day.
 
-Validation: 2,421 workspace tests passed with 96.96% coverage. Desktop/mobile browser
+Validation: 2,424 workspace tests passed with 96.96% coverage. Desktop/mobile browser
 checks passed locally and in the one-CPU Linux HA lab with real startup. With every
 section open, the sample panel is 8,737 px tall instead of 14,102 px.
 
