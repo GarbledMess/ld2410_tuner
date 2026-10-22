@@ -392,13 +392,14 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         self.record(5, 5)
         assert self.human(self.device) == set()
 
-    def test_room_empty_of_a_single_radar_group_keeps_live_training_unchanged(self):
+    def test_room_empty_of_a_single_radar_group_trains_only_that_radar(self):
+        # A group of one is its radar: its Empty label is the radar's own (lone_labels).
         self.office()
         groups.configure(self.runtime, "area:office", "Office", "office", ["b"])
         self.label(0, 100, "not_present")
         self.record(5, 5)
         assert self.human(self.device) == set()
-        assert self.human(self.b) == set()
+        assert self.human(self.b) == {"not_present"}
 
     async def test_room_present_unattributed_never_enters_present_reference(self):
         # Regression: quiet member samples never enter a radar's Present reference.
@@ -448,14 +449,15 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         assert units["automatic"] == (30, 0)
         assert confidence["present"] == pytest.approx(0.6)
 
-    def test_single_radar_groups_do_not_use_room_targets(self):
+    def test_single_radar_groups_train_through_their_labels_not_room_targets(self):
         self.office()
         groups.configure(self.runtime, "area:office", "Office", "office", ["b"])
         self.record(5, 70)
         self.label(0, 40, "present")
         assert attribution.room_targets(self.runtime, "b") is None
         assert recording._history_view(self.runtime, "b").data["room_snapshot"] is None
-        assert measured(self.runtime, "b")[0] == {"human": (0, 0), "automatic": (0, 0)}
+        # The room's Present label is b's own human label (lone_labels), not a room target.
+        assert measured(self.runtime, "b")[0] == {"human": (40, 0), "automatic": (0, 0)}
 
     async def present_b(self, group="area:office"):
         """Record a quiet a and a high b, then label the room so b learns room Present
