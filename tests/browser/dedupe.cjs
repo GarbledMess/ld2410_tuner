@@ -156,6 +156,18 @@ async function testLoneRadarEditor(page) {
         panel._setSectionCollapsed("c", key, false);
       return panel._load(true);
     }, labels);
+  assert.equal(
+    await page.evaluate(() => {
+      fixture.rooms.members.b.recording_enabled = false;
+      panel._data.rooms.members.b.recording_enabled = false;
+      const lone = panel._loneInGroup("a", "area:ux");
+      fixture.rooms.members.b.recording_enabled = true;
+      panel._data.rooms.members.b.recording_enabled = true;
+      return lone;
+    }),
+    true,
+    "a group with one recording radar is that radar, as for learning",
+  );
   await page.evaluate(() => roomFixture(["a"]));
   await setup([]);
   assert.equal(await card.locator(".history-range").count(), 0);
@@ -169,6 +181,13 @@ async function testLoneRadarEditor(page) {
     1,
     "its gate visualization stays available",
   );
+  await page.evaluate(() => panel._setSectionCollapsed("c", "chart", true));
+  await timeline.locator('[data-room-device="c"]').click();
+  assert.equal(
+    await page.evaluate(() => panel._sectionCollapsed("c", "chart")),
+    false,
+    "View radar opens a lone radar's own gate graph",
+  );
   await page.evaluate(() => roomFixture(["a"]));
   await setup([{ start: 1790000000, end: 1790000600, state: "present" }]);
   const note = timeline.locator("[data-radar-labels]");
@@ -176,6 +195,29 @@ async function testLoneRadarEditor(page) {
     await note.innerText(),
     /1 period is labelled on Room c itself and takes priority/,
   );
+  await page.evaluate(() => {
+    fixture.devices.c.history.labels = [];
+    Object.assign(fixture.devices.c, {
+      training_state: "present",
+      training_label_start: 1790000000,
+    });
+    return panel._load(true);
+  });
+  assert.match(
+    await note.innerText(),
+    /Room c has a live Present label of its own, which takes priority/,
+    "a live label on the lone radar is announced too",
+  );
+  await page.evaluate(() => {
+    fixture.devices.c.history.labels = [
+      { start: 1790000000, end: 1790000600, state: "present" },
+    ];
+    Object.assign(fixture.devices.c, {
+      training_state: "unknown",
+      training_label_start: null,
+    });
+    return panel._load(true);
+  });
   await note.locator('[data-room-action="edit-radar-labels"]').click();
   assert.equal(
     await card.locator(".history-range").count(),

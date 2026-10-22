@@ -352,7 +352,12 @@ export const panelRoomGraph = {
           `[data-device-id="${CSS.escape(button.dataset.roomDevice)}"]`,
         );
         if (card)
-          this._openDeviceSection(card, button.dataset.roomDevice, "history");
+          // A lone radar is labelled here, so open its own gate graph instead.
+          this._openDeviceSection(
+            card,
+            button.dataset.roomDevice,
+            card.querySelector(".history-range") ? "history" : "chart",
+          );
       };
     canvas.querySelector("[data-room-plot-hit]").onpointerdown = (event) =>
       this._dragHistoryRange(event, section, `room:${gid}`);

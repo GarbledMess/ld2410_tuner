@@ -14,11 +14,18 @@ from . import groups
 
 def _derived(runtime):
     labels = runtime.data.get("room_labels", {})
+    devices = runtime.data["devices"]
     found = {}
     for key, item in groups.definitions(runtime)[2].items():
-        if len(item["device_ids"]) != 1:
+        # Like areas, a saved zone counts only its recording radars.
+        recording = [
+            member
+            for member in item["device_ids"]
+            if devices.get(member, {}).get("recording_enabled", True)
+        ]
+        if len(recording) != 1:
             continue
-        found.setdefault(item["device_ids"][0], []).extend(
+        found.setdefault(recording[0], []).extend(
             {"start": x["start"], "end": x["end"], "state": x["state"]}
             for x in labels.get(key, [])
             if x.get("source") == "manual"

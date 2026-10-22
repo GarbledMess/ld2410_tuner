@@ -44,6 +44,15 @@ class SavedLearningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["user"]["id"], first_id)
         self.assertEqual(self.device["last_learning"], original)
 
+    async def test_saved_result_still_applies_after_labels_change(self):
+        # An upgrade that lets a lone radar learn from its room bumps its label
+        # revision (rooms/lone_labels.refresh); its saved results stay appliable.
+        self.saved()
+        self.device["label_revision"] = self.device.get("label_revision", 0) + 1
+        await self.apply_slot("user")
+        saved = results.saved_results(self.device)
+        self.assertEqual(saved["current"]["proposals"]["g0_move"]["threshold"], 20)
+
     async def test_apply_and_rollback_preserve_manual_and_automatic_results(self):
         user = self.saved()
         await self.apply_slot("user")

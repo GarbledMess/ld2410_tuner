@@ -192,17 +192,26 @@ export const panelRoomTimeline = {
   // A lone radar's own labels win over this timeline (rooms/lone_labels.py): say so,
   // and let them be edited, since its card shows no editor of its own.
   _loneRadarLabelsHtml(group) {
-    const [id] = group.device_ids || [];
-    const count = this._data?.devices?.[id]?.history?.labels?.length || 0;
-    if (
-      group.device_ids?.length !== 1 ||
-      !count ||
-      this._radarEditorShown.has(id)
-    )
+    const recording = this._recordingMembers(group);
+    const [id] = recording;
+    const device = this._data?.devices?.[id];
+    if (recording.length !== 1 || !device || this._radarEditorShown.has(id))
       return "";
-    const name = this._esc(this._data.devices[id].name || "this radar");
-    const periods = count === 1 ? "1 period is" : `${count} periods are`;
-    return `<p class="field-note" data-radar-labels>${periods} labelled on ${name} itself and ${count === 1 ? "takes" : "take"} priority. <button type="button" data-room-action="edit-radar-labels" data-device="${this._esc(id)}">Edit radar labels</button></p>`;
+    const name = this._esc(device.name || "this radar");
+    const count = device.history?.labels?.length || 0;
+    const live = { present: "Present", not_present: "Not present" }[
+      device.training_state
+    ];
+    const parts = [
+      live && device.training_label_start != null
+        ? `${name} has a live ${live} label of its own, which takes priority.`
+        : "",
+      count
+        ? `${count === 1 ? "1 period is" : `${count} periods are`} labelled on ${name} itself and ${count === 1 ? "takes" : "take"} priority.`
+        : "",
+    ].filter(Boolean);
+    if (!parts.length) return "";
+    return `<p class="field-note" data-radar-labels>${parts.join(" ")} <button type="button" data-room-action="edit-radar-labels" data-device="${this._esc(id)}">Edit radar labels</button></p>`;
   },
 
   _wireRoomTimeline(body, gid, group) {

@@ -82,6 +82,20 @@ class LoneLabelTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("area:office", groups.definitions(self.runtime)[2])
         self.assertNotIn("group_labels", self.radar())
 
+    def test_paused_radar_in_a_saved_zone_derives_nothing(self):
+        zone = self.lone_zone()
+        self.radar()["recording_enabled"] = False
+        room_labels.label_room_range(self.runtime, zone, 100, 200, "present")
+        self.assertNotIn("group_labels", self.radar())
+
+    def test_zone_with_one_recording_member_is_that_radar(self):
+        self.office()
+        zone = groups.configure(self.runtime, None, "Desk", "office", ["a", "b"])["id"]
+        self.radar("b")["recording_enabled"] = False
+        room_labels.label_room_range(self.runtime, zone, 100, 200, "present")
+        self.assertEqual(_history_label_reader(self.radar())(150), "present")
+        self.assertNotIn("group_labels", self.radar("b"))
+
     def test_startup_refresh_keeps_learning_results(self):
         zone = self.lone_zone()
         self.runtime.data.setdefault("room_labels", {})[zone] = [

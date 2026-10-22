@@ -59,11 +59,19 @@ export const panelCards = {
   // A radar alone in its room or zone is labelled on that group's timeline, which
   // trains it (rooms/lone_labels.py); its own editor opens only when asked for.
   _loneInGroup(id, groupId) {
-    const group = this._roomsData().groups[groupId];
+    const members = this._recordingMembers(this._roomsData().groups[groupId]);
     return (
-      group?.device_ids?.length === 1 &&
-      group.device_ids[0] === id &&
+      members.length === 1 &&
+      members[0] === id &&
       !this._radarEditorShown.has(id)
+    );
+  },
+
+  // Like areas, a group counts only its recording radars (rooms/lone_labels.py).
+  _recordingMembers(group) {
+    const members = this._roomsData().members;
+    return (group?.device_ids || []).filter(
+      (id) => members[id]?.recording_enabled !== false,
     );
   },
 
