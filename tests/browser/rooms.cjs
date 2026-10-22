@@ -611,20 +611,10 @@ async function testNoAreas(page) {
     await help.locator("summary").innerText(),
     /How rooms and zones work/,
   );
-  assert.match(
-    await help.evaluate((node) => node.textContent),
-    /Assess complementary radar coverage/,
-  );
-  // Learning is described by learning sets, not by "the most specific group".
+  // The panel keeps one line; how labels combine and learn is in the README.
   const text = await help.evaluate((node) => node.textContent);
-  assert.match(
-    text,
-    /Linked zones learn together, so a shared radar gets one value that serves every zone it covers/,
-  );
-  assert.match(
-    text,
-    /Device Learn and overnight learning resolve a radar to its learning set\./,
-  );
+  assert.match(text, /its radars learn from it/);
+  assert.match(text, /See the README for how labels combine/);
   assert.doesNotMatch(
     text,
     /most specific unambiguous group|independent zones/,

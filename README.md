@@ -125,6 +125,9 @@ feedback is handled on the server and affects at most one hour per answer.
 
 ### Which radar saw it
 
+A radar's own label means "should this radar detect here". Tap a **Seen by** chip on
+an occupied period to correct it; that saves a label on that radar.
+
 Each radar is credited with a room's occupied time by one function, shared by the
 learner and the **Seen by** chips:
 

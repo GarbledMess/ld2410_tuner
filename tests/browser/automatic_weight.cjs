@@ -50,11 +50,8 @@ module.exports = async function testAutomaticWeight(page) {
   assert.match(await schedule.innerText(), /Automatic evidence weight/);
   await schedule.locator(".inline-help > summary").click();
   const help = await schedule.innerText();
-  assert.match(help, /0 = automatic evidence only breaks ties/);
-  assert.match(
-    help,
-    /1 = automatic evidence counts up to a quarter of the human evidence/,
-  );
+  assert.match(help, /0 only breaks ties/);
+  assert.match(help, /1 counts up to a quarter of your labels/);
   assert.match(
     help,
     /Automatic Apply still requires an improvement on human labels/,

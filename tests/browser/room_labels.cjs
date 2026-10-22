@@ -670,11 +670,9 @@ async function testHelpAndMobile(page) {
   const help = await page
     .locator("details.layout-help")
     .evaluate((node) => node.textContent);
-  assert.match(help, /room labels/i);
-  assert.match(help, /Seen by/);
-  assert.match(help, /Human-labelled durations take priority/);
-  assert.match(help, /without the individual learner's outlier filtering/);
-  assert.match(help, /they do not determine the score/);
+  // One line in the panel; Seen by and scoring are described in the README.
+  assert.match(help, /Label a room or zone when it is occupied or empty/);
+  assert.match(help, /See the README for how labels combine/);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => panel._load(true));
   assert.ok(

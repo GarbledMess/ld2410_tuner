@@ -23,7 +23,7 @@ export const panelTimingSettings = {
       <p>Applies to manual and overnight learning on every device. Device values take priority; defaults fill only missing or unreadable values and are reported as assumptions.</p>
       <div class="storage-fields">${TIMING_FIELDS.map(([key, label, fallback]) => `<label>${label}<input type="number" data-timing="${key}" min="0" max="65535" step="any" required value="${this._esc(values[key] ?? fallback)}" aria-describedby="timing-values-reason" ${values.mode === "fallback" ? "" : "disabled"}></label>`).join("")}</div>
       <p class="field-note" id="timing-values-reason" ${values.mode === "fallback" ? "hidden" : ""}>These values are only used with "${TIMING_MODES.find(([value]) => value === "fallback")[1]}". Choose that timing model to edit them.</p>
-      <p class="muted">Disabling timing scores raw threshold activity without radar timeout or on/off delays. These settings change the learning model only; they never change the device. Saved results keep their original timing: learn again after changing this policy.</p>
+      <p class="muted">Changes the learning model only, never the device. Learn again after changing it.</p>
       <button data-action="timing-save">Save timing settings</button>
       <div class="settings-action-status muted" role="status"></div>
     </details>`,

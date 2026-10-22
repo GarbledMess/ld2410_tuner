@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 
 // Empty results are not shown, and Recommendations keeps its extras in one Details.
 module.exports = async function testTrim(page) {
+  await testHelpIsShort(page);
   await page.evaluate(() => {
     window.trimOriginal = structuredClone(fixture);
     for (const id of ["a", "b"]) {
@@ -66,3 +67,31 @@ module.exports = async function testTrim(page) {
     });
   }
 };
+
+// Help is one or two lines; the README holds the detail.
+async function testHelpIsShort(page) {
+  const long = await page.evaluate(() => {
+    const closed = [
+      ...panel.shadowRoot.querySelectorAll("details:not([open])"),
+    ];
+    for (const details of closed) details.open = true;
+    const roots = [
+      "#layout",
+      "#learning-schedule",
+      "#timing-controls",
+      "#storage-controls",
+      ".layout-help",
+    ].map((selector) => panel.shadowRoot.querySelector(selector));
+    const found = new Map();
+    for (const root of roots)
+      for (const node of root.querySelectorAll("p, .muted")) {
+        if (node.querySelector("p")) continue; // Judge the paragraphs themselves.
+        const text = node.textContent.trim().replace(/\s+/g, " ");
+        const words = text.split(" ").length;
+        if (words > 45) found.set(text.slice(0, 70), words);
+      }
+    for (const details of closed) details.open = false;
+    return [...found].map(([text, words]) => `${words}: ${text}`);
+  });
+  assert.deepEqual(long, [], "help paragraphs stay within 45 words");
+}
