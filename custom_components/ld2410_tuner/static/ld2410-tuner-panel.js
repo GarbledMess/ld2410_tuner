@@ -41,6 +41,7 @@ class LD2410TunerPanel extends HTMLElement {
     this._collapsed = new PlacementCollapse();
     // Room tree node/leaf open state, keyed by node or leaf id.
     this._layoutOpen = new Map();
+    this._shownZones = new Set(); // Zones identical to their room that were asked for.
     // Group ids whose header (overview block) is open; headers start closed.
     this._groupOpen = new Set();
     // Device id -> placement last edited, so drafts come from that copy.

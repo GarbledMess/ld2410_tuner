@@ -222,14 +222,32 @@ export const panelLayout = {
       summary.lastElementChild,
       "Zones, radars, presence history and room settings.",
     );
-    const children = node.children || [];
+    // A zone repeating its room exactly shows nothing new: its radars join the room's.
+    const redundant = (node.children || []).filter((child) =>
+      this._redundantZone(node, child),
+    );
+    const children = (node.children || []).filter(
+      (child) => !redundant.includes(child),
+    );
+    const direct = {
+      ...node,
+      devices: [
+        ...new Set([
+          ...(node.devices || []),
+          ...redundant.flatMap((child) => child.devices || []),
+        ]),
+      ],
+    };
     const parts = [
       summary,
       ...this._groupHeaderElement(details, node),
       ...this._nodeBandElements(details, node),
+      ...redundant.map((child) =>
+        this._hiddenZoneElement(details, node, child),
+      ),
     ];
-    if ((node.devices || []).length || !children.length || node.note)
-      parts.push(this._layoutDirectElement(details, node, devices, cards));
+    if (direct.devices.length || !children.length || node.note)
+      parts.push(this._layoutDirectElement(details, direct, devices, cards));
     // "Elsewhere" has no group; its cards show their role in the area's.
     for (const child of children)
       parts.push(
@@ -239,6 +257,37 @@ export const panelLayout = {
       );
     syncChildren(details, parts);
     return details;
+  },
+
+  _hiddenZoneElement(parent, node, child) {
+    const note = keyedChild(parent, "data-hidden-zone", child.group_id, () =>
+      element("p", "field-note"),
+    );
+    this._updateHtml(
+      note,
+      `${this._esc(child.name)} has the same radars as ${this._esc(node.name)}, so it isn't shown separately. <button type="button">Show ${this._esc(child.name)}</button>`,
+    );
+    note.querySelector("button").onclick = () => {
+      this._shownZones.add(child.group_id);
+      this._layoutOpen.set(child.id, true);
+      this._drawLayout();
+    };
+    return note;
+  },
+
+  _redundantZone(node, child) {
+    if (this._shownZones.has(child.group_id)) return false;
+    const groups = this._roomsData().groups;
+    const room = groups[node.group_id];
+    const zone = groups[child.group_id];
+    if (!room || !zone || child.kind !== "zone") return false;
+    const same =
+      room.device_ids.length === zone.device_ids.length &&
+      zone.device_ids.every((id) => room.device_ids.includes(id));
+    const ownLabels = (zone.labels || []).some(
+      (label) => label.source === "manual",
+    );
+    return same && !ownLabels && !zone.presence_sources?.sources?.length;
   },
 
   // Bands for linked sets whose zones all sit in this node.

@@ -272,6 +272,10 @@ async function testEditMembers(page) {
   );
   assert.equal(saved.group_id, "zone:desk");
   assert.deepEqual(saved.device_ids, ["a", "b"]);
+  // Desk now repeats Office's radars, so it is folded into Office until shown.
+  const hidden = page.locator('[data-hidden-zone="zone:desk"]');
+  assert.match(await hidden.innerText(), /Desk has the same radars as Office/);
+  await hidden.locator("button").click();
   assert.equal(
     await page
       .locator('[data-leaf-id="zone:desk"] [data-device-id="b"]')

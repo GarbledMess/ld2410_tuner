@@ -115,6 +115,8 @@ module.exports = async function testCardConsistency(page, screenshotDir) {
     fixture.learning_sets = {};
     panel._groupOpen.add("area:ux");
     panel._groupOpen.add("zone:ux");
+    // Desk repeats Office's radars; these checks exercise it, so it is shown (dedupe.cjs).
+    panel._shownZones.add("zone:ux");
     panel._historyStateFor("room:area:ux").day = "2026-09-23";
     panel._historyStateFor("room:zone:ux").day = "2026-09-23";
     return panel._load(true);
