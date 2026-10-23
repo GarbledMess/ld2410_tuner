@@ -6,7 +6,6 @@ Finished files are references, never read or decoded here: child-side decoding
 limits and post-work identity/revision validation remain the caller's duty.
 """
 
-import asyncio
 import math
 import threading
 import time
@@ -56,6 +55,9 @@ class Snapshot:
 def _executor_only():
     if threading.current_thread() is threading.main_thread():
         raise RuntimeError("Worker snapshot acquisition requires an executor")
+    # Imported here: worker children use this module and never run an event loop.
+    import asyncio
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:

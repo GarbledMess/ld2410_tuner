@@ -11,20 +11,19 @@ this cooperative target supplies no hard CPU or memory guarantee.
 resource limits are owned separately by the worker supervisor.
 """
 
-import asyncio
 import functools
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from weakref import WeakKeyDictionary
 
 SHARE = 0.2  # Target CPU share for all expensive integration work together.
 SLICE = 0.005  # Seconds of CPU between rests (coarse CPU clocks can overrun this).
 _state = threading.local()
-_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ld2410-background")
+_worker = []  # The owned background thread, created on first use (see ``_submit``).
 _generation = [0]  # Bumped by ``stop``: jobs of an earlier generation are abandoned.
 _admission = WeakKeyDictionary()
+_creation = threading.Lock()
 
 
 class Stopped(Exception):
@@ -33,6 +32,9 @@ class Stopped(Exception):
 
 async def run(hass, fn, *args):
     """Wait for our turn without occupying Home Assistant's shared executor threads."""
+    # Imported here: worker children import this module and never run an event loop.
+    import asyncio
+
     generation = _generation[0]
     loop = asyncio.get_running_loop()
     turn = _admission.setdefault(loop, asyncio.Lock())
@@ -59,9 +61,21 @@ def _finished(turn, work):
 def _admitted(fn, generation):
     @functools.wraps(fn)
     def execute(*args):
-        return _worker.submit(_perform, fn, args, {}, generation).result()
+        return _submit(_perform, fn, args, {}, generation).result()
 
     return execute
+
+
+def _submit(*args):
+    if not _worker:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with _creation:
+            if not _worker:
+                _worker.append(
+                    ThreadPoolExecutor(max_workers=1, thread_name_prefix="ld2410-background")
+                )
+    return _worker[0].submit(*args)
 
 
 def background(fn):
@@ -74,7 +88,7 @@ def background(fn):
         if threading.current_thread() is threading.main_thread() or _active():
             return fn(*args, **kwargs)  # The event loop, or a job inside a job.
         generation = _generation[0]
-        return _worker.submit(_perform, fn, args, kwargs, generation).result()
+        return _submit(_perform, fn, args, kwargs, generation).result()
 
     governed._background = True
     return governed

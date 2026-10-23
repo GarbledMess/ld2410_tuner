@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import math
 import time
 from array import array
@@ -17,8 +16,6 @@ from ..const import HISTORY_KEYS
 from ..history import pace, spans
 from ..history.dayfile import MISSING
 from ..history.policy import settings
-from ..worker import bridge
-from ..worker.supervisor import Busy, owned_preparation
 
 MAX_HISTORY_JOBS = 2
 # A fragmented radar-day chart is up to ~190 KB compressed; four fit the 1 MiB result.
@@ -144,6 +141,11 @@ def _check_resume(resume, indices, start, end, bucket_span, max_points, summary)
 async def async_history_series(
     runtime, device_id, keys, hours, max_points, end=None, summary=False
 ):
+    # Imported here: the display worker imports this module for its pure chart functions.
+    import asyncio
+
+    from ..worker.supervisor import Busy
+
     if end is not None and not math.isfinite(float(end)):
         raise ValueError("End time must be finite")
     end = min(time.time(), float(end)) if end is not None else time.time()
@@ -175,6 +177,8 @@ async def async_history_series(
 
 
 def _start_history_job(runtime, cache_key, parameters):
+    import asyncio
+
     device_id, hours, end = parameters["device_id"], parameters["hours"], parameters["end"]
     head = None
     if not parameters["summary"]:
@@ -300,6 +304,10 @@ async def async_room_series(runtime, device_ids, keys, hours, max_points=400, en
 
 
 async def _room_history_job(runtime, misses, keys, hours, max_points, end):
+    import asyncio
+
+    from ..worker.supervisor import Busy
+
     job_key = tuple(misses.values())
     if job_key not in runtime._history_jobs:
         if len(runtime._history_jobs) >= MAX_HISTORY_JOBS:
@@ -331,7 +339,9 @@ async def _room_history_job(runtime, misses, keys, hours, max_points, end):
 
 
 async def _build_room_series(runtime, job_key, misses, prepare, heads):
+    from ..worker import bridge
     from ..worker.display import unpack_charts
+    from ..worker.supervisor import owned_preparation
 
     try:
         result = await bridge.calculate(runtime, "charts", prepare)
@@ -346,9 +356,12 @@ async def _build_room_series(runtime, job_key, misses, prepare, heads):
 
 
 async def _build_history_series(runtime, cache_key, prepare, head):
+    from ..worker import bridge
+    from ..worker.display import unpack_chart
+    from ..worker.supervisor import owned_preparation
+
     try:
         result = await bridge.calculate(runtime, "charts", prepare)
-        from ..worker.display import unpack_chart
 
         result = await owned_preparation(runtime.hass.async_add_executor_job(unpack_chart, result))
         return _keep(runtime, cache_key, head, result)

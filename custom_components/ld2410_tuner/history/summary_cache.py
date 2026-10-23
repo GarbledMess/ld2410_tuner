@@ -4,7 +4,6 @@ Compressed auxiliary files have their own disk budget and never own physical his
 The portable binary format contains bounded numeric arrays, never executable objects.
 """
 
-import asyncio
 import io
 import os
 import struct
@@ -26,6 +25,9 @@ _lock = threading.RLock()
 
 
 def worker_only():
+    # Imported here: worker children use this module and never run an event loop.
+    import asyncio
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:
