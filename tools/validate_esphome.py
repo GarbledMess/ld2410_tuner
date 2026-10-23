@@ -187,15 +187,11 @@ def _check_options(config, count, override):
 
 
 def _check_snapshots(config, count):
-    sensors = {str(s["id"]): s for s in config["sensor"]}
     prefixes = [f"radar_{index}" if index else "ld2410" for index in range(count)]
-    for prefix, gate, kind, edge in product(
-        prefixes, range(9), ("move", "still"), ("found", "lost")
-    ):
-        sensor = sensors[f"{prefix}_g{gate}_{kind}_{edge}"]
-        _require(str(sensor["entity_category"]) == "diagnostic")
-    texts = {str(s["id"]) for s in config["text_sensor"]}
-    _require(all(f"{prefix}_presence_found_gates" in texts for prefix in prefixes))
+    _require(not any(str(s["id"]).endswith(("_found", "_lost")) for s in config["sensor"]))
+    texts = {str(s["id"]): s for s in config["text_sensor"]}
+    for prefix, edge in product(prefixes, ("found", "lost")):
+        _require(str(texts[f"{prefix}_presence_{edge}_gates"]["entity_category"]) == "diagnostic")
 
 
 def _check_rounding(config, override):

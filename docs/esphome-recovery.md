@@ -498,31 +498,36 @@ own threshold input. Engineering Mode is needed for per-gate reporting; it is
 already exposed by the package. Rounding filters the reported energies; it does
 not replace the radar's presence logic.
 
-### Gate energies at presence found and lost
+### Gates over threshold at presence found and lost
 
-The package adds 36 diagnostic sensors per radar: **G0–G8 Move/Still at Presence
-Found** and **at Presence Lost**. Each one holds that gate's energy from the radar
-frame in which the radar's own presence bit turned on (found) or off (lost). The
-value stays until the next edge of the same kind, and Home Assistant keeps every
-snapshot in history. Compare each value with that gate's threshold to see which
-gates triggered a detection.
+The package adds two diagnostic text sensors per radar. **Presence Found Gates**
+lists the gates that were over threshold in the radar frame where the radar's own
+presence bit turned on. **Presence Lost Gates** does the same for the frame where
+it turned off. Each entry gives the gate, its energy in that frame and its
+threshold, for example `G3 Move 45>30, G4 Still 52>40`. The list stays until the
+next edge of the same kind, and Home Assistant keeps every one in history.
 
+- A gate counts when its energy is greater than its threshold and the gate is
+  within Max Move/Still Distance.
 - The edge is the radar's own decision (Moving Target or Still Target), not the
   Presence entity. Presence changes later, after `ld2410_presence_on_delay` and
   `ld2410_presence_off_delay`.
-- The values are raw. They ignore Gate Rounding and the gate throttle.
-- **Presence Found Gates** names every gate from that same frame whose energy is
-  greater than its threshold and within Max Move/Still Distance, for example
-  `G3 Move, G4 Still`. `None over threshold` means the radar detected something
-  its current thresholds don't explain. `Settings unavailable` means the radar's
-  thresholds or maximum gates have not loaded yet.
-- The sensors are unknown until their first edge after the ESP starts. While
-  Engineering Mode is off there are no gate energies, so no snapshot is taken and
-  the previous values stay.
-- Lost values are normally all below their thresholds. The radar clears only after
-  every gate has stayed below for the whole Timeout.
+- Energies are raw. They ignore Gate Rounding and the gate throttle.
+- `None over threshold` on found means the radar detected something its current
+  thresholds don't explain. On lost it is the normal case: the radar clears only
+  after every gate has stayed below threshold for the whole Timeout.
+- `Settings unavailable` means the radar's thresholds or maximum gates have not
+  loaded yet.
+- A long list ends with `+N more` to stay within Home Assistant's 255-character
+  limit.
+- Both are unknown until their first edge after the ESP starts. While Engineering
+  Mode is off there are no gate energies, so nothing is published and the previous
+  lists stay.
 
 These sensors are not gate entities to the tuner and are not recorded as readings.
+Earlier versions published 36 per-gate `at Presence Found/Lost` sensors instead.
+After updating, Home Assistant shows those as unavailable entities that can be
+deleted.
 
 Timing semantics: [LD2410 configuration](https://esphome.io/components/sensor/ld2410/)
 and [ESPHome binary sensor filters](https://esphome.io/components/binary_sensor/#binary-sensor-filters).
