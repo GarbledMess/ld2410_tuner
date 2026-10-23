@@ -1,19 +1,10 @@
-"""Each radar remembers every gate's energy from the frames where it found and lost presence."""
+"""Each radar remembers which gates were over threshold when it found and lost presence."""
 
-import importlib.util
 from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / "examples/esphome/ld2410c.yaml"
-# const.py needs no Home Assistant; importing it through the integration package would.
-_spec = importlib.util.spec_from_file_location(
-    "ld2410_const", ROOT / "custom_components/ld2410_tuner/const.py"
-)
-_const = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_const)
-GATE_RE = _const.GATE_RE
+PACKAGE = Path(__file__).resolve().parents[1] / "examples/esphome/ld2410c.yaml"
 GATES = [(gate, kind) for gate in range(9) for kind in ("move", "still")]
 EDGES = ("found", "lost")
 SCRIPT = "ld2410_capture_presence_edge"
@@ -23,39 +14,29 @@ def _package():
     return yaml.load(PACKAGE.read_text().replace("${ld2410_id}", "ld2410"), Loader=yaml.BaseLoader)
 
 
-def _snapshots(package):
-    return {
-        sensor["id"]: sensor
-        for sensor in package["sensor"]
-        if sensor.get("id", "").endswith(("_found", "_lost"))
-    }
-
-
 def _capture(package):
     return next(script for script in package["script"] if script["id"] == SCRIPT)
 
 
-def test_found_and_lost_snapshot_sensors_are_inert_diagnostics():
-    snapshots = _snapshots(_package())
-    assert len(snapshots) == 36
-    for gate, kind in GATES:
-        for edge in EDGES:
-            sensor = snapshots[f"ld2410_g{gate}_{kind}_{edge}"]
-            assert sensor["platform"] == "template"
-            assert sensor["name"] == f"G{gate} {kind.title()} at Presence {edge.title()}"
-            assert sensor["entity_category"] == "diagnostic"
-            assert sensor["accuracy_decimals"] == "0"
-            assert sensor["update_interval"] == "never"
-            assert sensor["device_id"] == "${ld2410_device_id}"
-            assert "lambda" not in sensor
-            assert "filters" not in sensor
+def _code():
+    return " ".join(_capture(_package())["then"][1]["lambda"].split())
 
 
-def test_snapshot_entity_ids_are_not_mistaken_for_live_gates():
-    entity_ids = _snapshots(_package())
-    assert len(entity_ids) == 36
-    for entity_id in entity_ids:
-        assert GATE_RE.match(entity_id) is None, entity_id
+def test_per_gate_snapshot_values_are_replaced_by_the_two_lists():
+    ids = [sensor.get("id", "") for sensor in _package()["sensor"]]
+    assert not [i for i in ids if i.endswith(("_found", "_lost"))]
+
+
+def test_found_and_lost_gate_lists_are_inert_diagnostic_text_sensors():
+    texts = {item.get("id"): item for item in _package()["text_sensor"]}
+    for edge in EDGES:
+        sensor = texts[f"ld2410_presence_{edge}_gates"]
+        assert sensor["platform"] == "template"
+        assert sensor["name"] == f"Presence {edge.title()} Gates"
+        assert sensor["entity_category"] == "diagnostic"
+        assert sensor["update_interval"] == "never"
+        assert sensor["device_id"] == "${ld2410_device_id}"
+        assert "lambda" not in sensor
 
 
 def test_both_unfiltered_target_sensors_run_the_capture_after_the_frame():
@@ -79,46 +60,43 @@ def test_both_unfiltered_target_sensors_run_the_capture_after_the_frame():
     )
 
 
-def test_capture_publishes_raw_gate_values_only_on_a_real_edge():
-    code = " ".join(_capture(_package())["then"][1]["lambda"].split())
+def test_capture_judges_raw_gate_values_only_on_a_real_edge():
+    code = _code()
     assert "id(ld2410_moving_target).state || id(ld2410_still_target).state" in code
     remembered = code.index("id(ld2410_last_presence) = present;")
     assert remembered < code.index("if (previous < 0 || previous == present) return;")
     assert "get_raw_state()" in code
-    assert "std::isfinite(" in code
     for gate, kind in GATES:
-        for name in ("energy", *EDGES):
-            assert f"id(ld2410_g{gate}_{kind}_{name})" in code
-
-
-def test_presence_found_gates_is_an_inert_diagnostic_text_sensor():
-    sensor = next(
-        item
-        for item in _package()["text_sensor"]
-        if item.get("id") == "ld2410_presence_found_gates"
-    )
-    assert sensor["platform"] == "template"
-    assert sensor["name"] == "Presence Found Gates"
-    assert sensor["entity_category"] == "diagnostic"
-    assert sensor["update_interval"] == "never"
-    assert sensor["device_id"] == "${ld2410_device_id}"
-    assert "lambda" not in sensor
-
-
-def test_capture_names_gates_over_threshold_within_range():
-    code = " ".join(_capture(_package())["then"][1]["lambda"].split())
-    for gate, kind in GATES:
+        assert f"id(ld2410_g{gate}_{kind}_energy)" in code
         assert f"id(ld2410_g{gate}_{kind}_raw)" in code
     assert "id(ld2410_max_move)" in code
     assert "id(ld2410_max_still)" in code
-    assert '"Settings unavailable"' in code
+
+
+def test_each_edge_lists_its_gates_over_threshold_with_value_and_threshold():
+    code = _code()
+    assert (
+        "auto *list = present ? id(ld2410_presence_found_gates) : id(ld2410_presence_lost_gates);"
+        in code
+    )
+    assert "if (!present) return;" not in code
+    # Engineering Mode off leaves the previous list in place.
+    assert code.index("if (!captured) return;") < code.index("list->publish_state(")
+    assert 'list->publish_state("Settings unavailable");' in code
     assert '"None over threshold"' in code
-    assert "auto *names = id(ld2410_presence_found_gates);" in code
-    assert 'names->publish_state("Settings unavailable");' in code
-    # Names are only judged when presence was found and gate energies were captured.
-    judged = code.index("auto *names")
-    assert code.index("if (!present) return;") < judged
-    assert code.index("if (!captured) return;") < judged
+    # Each entry reads like "G3 Move 45>30": the frame's value, then the threshold it beat.
+    assert '(i % 2 ? " Still " : " Move ")' in code
+    assert (
+        'std::to_string(static_cast<int>(value)) + ">" + std::to_string(static_cast<int>(threshold))'
+        in code
+    )
     # Equal to the threshold does not detect, as in the tuner's own replay.
-    assert "> threshold" in code
+    assert "!(value > threshold)" in code
     assert ">= threshold" not in code
+
+
+def test_gate_list_stays_within_the_home_assistant_state_limit():
+    code = _code()
+    # 18 entries can exceed 255 characters; the rest are counted instead of rejected by HA.
+    assert "255" in code
+    assert '" more"' in code
