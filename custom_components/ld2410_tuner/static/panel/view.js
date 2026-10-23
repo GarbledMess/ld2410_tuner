@@ -8,7 +8,7 @@ export const panelView = {
     this.shadowRoot.innerHTML = `
       <style>
         :host { display:block; padding:12px; box-sizing:border-box; color:var(--primary-text-color); }
-        .wrap { max-width:1500px; margin:auto; container:tuner-panel / inline-size; }
+        .wrap { container:tuner-panel / inline-size; }
         h1 { font-size:20px; margin:4px 0 6px; display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
         .panel-version { font-size:12px; font-weight:400; color:var(--secondary-text-color); border:1px solid var(--divider-color); border-radius:6px; padding:3px 6px; }
         .action-status, #snapshot-status { min-height:1.5em; font-size:13px; margin:6px 0; }

@@ -60,6 +60,17 @@ module.exports = async function testCollapsedDefaults(page) {
     assert.match(sizes.font, /Roboto/);
     assert.ok(sizes.target >= 44, "disclosure retains a touch target");
   }
+  // Wide desktops use the whole width instead of leaving empty side borders.
+  await page.setViewportSize({ width: 2400, height: 1000 });
+  const gutters = await page.evaluate(() => {
+    const wrap = panel.shadowRoot
+      .querySelector(".wrap")
+      .getBoundingClientRect();
+    const host = panel.getBoundingClientRect();
+    return [wrap.left - host.left, host.right - wrap.right];
+  });
+  for (const gutter of gutters)
+    assert.ok(gutter <= 16, `side gutter ${gutter}px`);
   await page.setViewportSize({ width: 1400, height: 1000 });
   await card.locator(".top").click();
   assert.equal(
