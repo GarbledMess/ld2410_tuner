@@ -176,7 +176,7 @@ class AcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.send(15, 30)
         assert [(r[0], r[1], r[2][0]) for r in self.rows(21)] == [(10, 20, 20), (20, 21, 30)]
 
-    def test_pause_block_recovery_and_removal_end_coverage_without_bridging_resume(self):
+    async def test_pause_block_recovery_and_removal_end_coverage_without_bridging_resume(self):
         for reason in ("pause", "blocked", "recovery", "removed"):
             with self.subTest(reason=reason):
                 self.runtime._days = daystore.DayStore(self.runtime._days.root / reason)
