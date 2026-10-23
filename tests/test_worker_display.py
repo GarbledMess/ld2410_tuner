@@ -440,3 +440,34 @@ def test_async_room_summary_cache_keeps_mode_and_gate_order(monkeypatch):
         assert calls[2]["keys"] == keys[::-1]
 
     asyncio.run(run())
+
+
+def _dense_chart():
+    from unittest.mock import patch
+
+    from test_event_charts import _blocks_view
+    from tuner_under_test.presentation.charts import history_series_multi
+
+    end = 3000.0
+    changes = [
+        (i * 0.5, {gate: (i * 7 + gate * 13) % 97 for gate in range(18)}) for i in range(6000)
+    ]
+    runtime = _blocks_view([(changes, end)], end)
+    keys = [f"g{gate}_still" for gate in range(9)]
+    with patch("time.time", return_value=end):
+        return history_series_multi(runtime, "a", keys, end / 3600, 400, end)
+
+
+def test_chart_transport_rejects_integers_beyond_64_bits():
+    import copy
+    import json
+    import zlib
+
+    valid = _dense_chart()
+    damaged = copy.deepcopy(valid)
+    next(iter(damaged["series"].values()))["points"][0]["count"] = 2**64
+    with pytest.raises(ValueError):
+        display.pack_chart(damaged)
+    raw = json.dumps(damaged, separators=(",", ":")).encode()
+    with pytest.raises(ValueError):
+        display.unpack_chart({"chart_zlib": base64.b64encode(zlib.compress(raw)).decode("ascii")})

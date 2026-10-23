@@ -403,7 +403,9 @@ class RecordingTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         harness.RuntimeTests.setUp(self)
-        self.now = self.clock = float(int(self.now))  # Recorded times are whole milliseconds.
+        # Noon UTC on the harness's day: the runs here span minutes and must not cross into
+        # the next day file. Recorded times are whole milliseconds.
+        self.now = self.clock = float(int(self.now) // 86400 * 86400 + 43200)
         clock = patch.object(time, "time", side_effect=lambda: self.clock)
         clock.start()
         self.addCleanup(clock.stop)

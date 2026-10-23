@@ -2,6 +2,9 @@
 
 import json
 import math
+import re
+from itertools import accumulate, compress, repeat
+from operator import eq, sub
 
 VERSION = 1
 
@@ -113,49 +116,28 @@ def unpack(raw, kind, *, max_bytes=1024 * 1024, max_nodes=32768):
         raise ProtocolRejected("Invalid worker metadata") from error
 
 
-class _Scanner:
-    """Linear byte scan; JSON syntax is still validated by the standard parser."""
-
-    def __init__(self):
-        self.depth = 0
-        self.quoted = self.escaped = self.primitive = False
-
-    def _string(self, byte):
-        if self.escaped:
-            self.escaped = False
-        elif byte == 92:
-            self.escaped = True
-        elif byte == 34:
-            self.quoted = False
-
-    def node(self, byte):
-        if self.quoted:
-            self._string(byte)
-            return False
-        if byte in b" \t\r\n,:]}":
-            self.primitive = False
-            if byte in b"]}":
-                self.depth -= 1
-            return False
-        if self.primitive and byte not in b'"{[':
-            return False
-        self.quoted = byte == 34
-        self.primitive = not self.quoted and byte not in b"{["
-        return True
+# Strings go first, so structural bytes inside them are not tokens. Each string then
+# becomes one quote and each run of primitive bytes one "n"; openers "(", closers ")".
+_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"', re.DOTALL)
+_PRIMITIVE = re.compile(rb'[^ \t\r\n,:\[\]{}"]+')
+_TOKENS = bytes.maketrans(b'"[{]}', b"n(())")
+_DELTAS = bytes.maketrans(b"(n)", b"\x02\x01\x00")
 
 
 def _preflight(raw, max_nodes):
-    scanner, nodes = _Scanner(), 0
-    for byte in raw:
-        if not scanner.node(byte):
-            continue
-        nodes += 1
-        if nodes > max_nodes or scanner.depth > 24:
-            raise ProtocolRejected("Metadata node or depth budget exceeded")
-        if byte in b"{[":
-            scanner.depth += 1
-    if scanner.quoted:
+    """Linear scan with C-level regex and byte passes; the standard parser checks syntax."""
+    tokens, strings = _STRING.subn(b'"', raw)
+    if tokens.count(b'"') != strings:
         raise ProtocolRejected("Unterminated metadata string")
+    tokens = _PRIMITIVE.sub(b"n", tokens).translate(_TOKENS, b" \t\r\n,:")
+    if tokens.count(b"n") + tokens.count(b"(") > max_nodes:
+        raise ProtocolRejected("Metadata node or depth budget exceeded")
+    # Depth after each token: a leaf starts at that depth, an opener one level above it.
+    depths = list(accumulate(map(sub, tokens.translate(_DELTAS), repeat(1))))
+    leaf = max(compress(depths, map(eq, tokens, repeat(ord("n")))), default=0)
+    opener = max(compress(depths, map(eq, tokens, repeat(ord("(")))), default=1) - 1
+    if max(leaf, opener) > 24:
+        raise ProtocolRejected("Metadata node or depth budget exceeded")
 
 
 def _utf8(raw):

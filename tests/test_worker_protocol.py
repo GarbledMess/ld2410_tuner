@@ -150,3 +150,99 @@ def test_alternate_encodings_cannot_bypass_scan(encoding, monkeypatch):
     )
     with pytest.raises(protocol.ProtocolRejected):
         protocol.unpack(raw, "learn", max_nodes=40)
+
+
+class _ByteScanner:
+    """The original byte-at-a-time preflight, kept as the oracle for the fast scan."""
+
+    def __init__(self):
+        self.depth = 0
+        self.quoted = self.escaped = self.primitive = False
+
+    def node(self, byte):
+        if self.quoted:
+            if self.escaped:
+                self.escaped = False
+            elif byte == 92:
+                self.escaped = True
+            elif byte == 34:
+                self.quoted = False
+            return False
+        if byte in b" \t\r\n,:]}":
+            self.primitive = False
+            if byte in b"]}":
+                self.depth -= 1
+            return False
+        if self.primitive and byte not in b'"{[':
+            return False
+        self.quoted = byte == 34
+        self.primitive = not self.quoted and byte not in b"{["
+        return True
+
+
+def _byte_preflight(raw, max_nodes):
+    scanner, nodes = _ByteScanner(), 0
+    for byte in raw:
+        if not scanner.node(byte):
+            continue
+        nodes += 1
+        if nodes > max_nodes or scanner.depth > 24:
+            return False
+        if byte in b"{[":
+            scanner.depth += 1
+    return not scanner.quoted
+
+
+def _accepted(raw, max_nodes):
+    try:
+        protocol._preflight(raw, max_nodes)
+    except protocol.ProtocolRejected:
+        return False
+    return True
+
+
+def _fuzz_cases():
+    import random
+
+    pieces = [b"[", b"]", b"{", b"}", b",", b":", b" ", b"\n", b"\t", b'"', b"\\", b"0"]
+    pieces += [b"tru", b"e", b"-1.5", b"x", "⛄".encode()]
+    for seed in range(400):
+        rng = random.Random(seed)
+        weights = [rng.random() for _ in pieces]
+        raw = b"".join(rng.choices(pieces, weights=weights, k=rng.randrange(0, 160)))
+        if seed % 3 == 0:
+            depth = rng.randrange(20, 30)
+            raw = b"[" * depth + raw + b"]" * depth
+        yield raw
+    for depth in range(22, 28):
+        for inner in (b"", b"0", b'""', b"[]", b"{}"):
+            yield b"[" * depth + inner + b"]" * depth
+            yield b"{" * depth + inner + b"}" * depth
+
+
+def test_preflight_accepts_exactly_what_the_byte_scanner_accepts():
+    for raw in _fuzz_cases():
+        for max_nodes in (1, 3, 10, 40, 100000):
+            assert _accepted(raw, max_nodes) == _byte_preflight(raw, max_nodes), (raw, max_nodes)
+
+
+def _preflight_calls(rows):
+    import sys
+
+    raw = json.dumps({"v": [{"t": i, "s": 'a"b', "x": [1.5, True, None]} for i in range(rows)]})
+    calls = [0]
+
+    def count(frame, event, arg):
+        calls[0] += event == "call"
+
+    sys.setprofile(count)
+    try:
+        protocol._preflight(raw.encode(), 10**7)
+    finally:
+        sys.setprofile(None)
+    return calls[0]
+
+
+def test_preflight_work_does_not_grow_per_byte():
+    # Worker replies reach megabytes; the scan must not run Python per byte.
+    assert _preflight_calls(4000) < 1.2 * _preflight_calls(1000)
