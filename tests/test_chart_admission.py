@@ -11,6 +11,9 @@ import test_tuner  # noqa: F401
 from tuner_under_test.presentation import charts
 from tuner_under_test.worker import bridge, codec, supervisor
 
+# An empty chart as the worker returns it (expansion is stubbed out below).
+CHART = {"start": 0, "end": 1, "bucket_seconds": 30, "series": {}, "labels": []}
+
 
 def test_saturated_chart_refresh_is_bounded_and_deduplicated(monkeypatch):
     from tuner_under_test.worker import display
@@ -33,7 +36,7 @@ def test_saturated_chart_refresh_is_bounded_and_deduplicated(monkeypatch):
         async def process(args):
             entered.set()
             await release.wait()
-            return codec.pack_result({"series": {}})
+            return codec.pack_result(CHART)
 
         async def prepare():
             return ()
@@ -66,13 +69,11 @@ def test_saturated_chart_refresh_is_bounded_and_deduplicated(monkeypatch):
         with pytest.raises(asyncio.CancelledError):
             await requests[0]
         release.set()
-        assert await asyncio.gather(*requests[1:]) == [{"series": {}}, {"series": {}}]
+        assert await asyncio.gather(*requests[1:]) == [CHART, CHART]
         await asyncio.gather(active, pending)
         assert copied == [True, True]
         assert owner._history_jobs == {}
-        assert await charts.async_history_series(owner, "a", ["g0_move"], 1, 100, 1200) == {
-            "series": {}
-        }
+        assert await charts.async_history_series(owner, "a", ["g0_move"], 1, 100, 1200) == CHART
         assert copied == [True, True]
         await bridge.stop(owner)
 

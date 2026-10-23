@@ -7,9 +7,10 @@ import math
 import time
 from array import array
 from bisect import bisect_left, bisect_right
+from collections import OrderedDict
 from itertools import compress, pairwise, repeat
 from operator import eq, gt, lt, mul, ne, sub
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..calibration.constants import SAMPLE_SECONDS
 from ..const import HISTORY_KEYS
@@ -33,6 +34,7 @@ def history_series_multi(
     max_points: int = 400,
     end: float | None = None,
     summary: bool = False,
+    resume: dict | None = None,
 ) -> dict[str, Any]:
     """Downsampled time series for several gates at once, sharing one pass
     over the history and one set of labels, so the chart can overlay
@@ -48,6 +50,9 @@ def history_series_multi(
     physical span, then applies the same duration-weighted aggregation. Its
     extrema retain their physical intervals, and coverage is the union of
     available selected gates rather than the coverage of a winning gate.
+
+    ``resume`` (from ``resume_from``) charts only the buckets from ``resume["from"]``, each
+    series continuing after ``resume["points"]`` kept points; ``spliced`` joins them.
     """
     device = runtime.data["devices"].get(device_id)
     if not device:
@@ -56,40 +61,84 @@ def history_series_multi(
     if not keys:
         raise ValueError("No valid gate keys given")
     indices = {k: HISTORY_KEYS.index(k) for k in keys}
-    if not math.isfinite(float(hours)):
-        raise ValueError("Hours must be finite")
-    hours = max(0.1, min(settings(runtime.data)["human_days"] * 24, float(hours)))
-    max_points = max(50, min(1000, int(max_points)))
     if end is not None and not math.isfinite(float(end)):
         raise ValueError("End time must be finite")
     end = min(time.time(), float(end)) if end is not None else time.time()
-    start = end - hours * 3600
-    span = end - start
-
-    bucket_span = next(
-        (
-            seconds
-            for seconds in (
-                6,
-                12,
-                30,
-                60,
-                120,
-                300,
-                600,
-                1800,
-                3600,
-                7200,
-                14400,
-                21600,
-                43200,
-                86400,
-            )
-            if seconds >= span / max_points
-        ),
-        86400,
+    start, bucket_span, max_points = chart_window(runtime.data, hours, max_points, end)
+    if resume is not None:
+        _check_resume(resume, indices, start, end, bucket_span, max_points, summary)
+    return _native_chart(
+        runtime, device_id, indices, (start, end, bucket_span), max_points, summary, resume
     )
-    return _native_chart(runtime, device_id, indices, start, end, bucket_span, max_points, summary)
+
+
+_BUCKETS = (6, 12, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 21600, 43200, 86400)
+SETTLED_SECONDS = 300  # Buckets ending this long before a chart's end are final.
+
+
+def chart_window(data, hours, max_points, end):
+    """``(start, bucket_span, max_points)`` of a chart ending at ``end``."""
+    if not math.isfinite(float(hours)):
+        raise ValueError("Hours must be finite")
+    hours = max(0.1, min(settings(data)["human_days"] * 24, float(hours)))
+    max_points = max(50, min(1000, int(max_points)))
+    start = end - hours * 3600
+    bucket_span = next((s for s in _BUCKETS if s >= (end - start) / max_points), 86400)
+    while 2 * (math.ceil(end / bucket_span) - math.floor(start / bucket_span)) > max_points:
+        bucket_span *= 2
+    return start, bucket_span, max_points
+
+
+def resume_from(chart, start, end, bucket_span):
+    """How a later chart (``start``, ``end``, ``bucket_span`` from ``chart_window``) can keep
+    ``chart``'s settled buckets, or None.
+
+    Buckets never span ``start`` or the cut, so each kept bucket is exactly what charting
+    afresh would build; only a series' point budget carries across, as its kept count.
+    """
+    if (
+        end < chart["end"]
+        or abs(chart["start"] - start) > 1e-3
+        or chart["bucket_seconds"] != bucket_span
+    ):
+        return None
+    cut = math.floor((chart["end"] - SETTLED_SECONDS) / bucket_span) * bucket_span
+    if cut <= start:
+        return None
+    return {
+        "from": cut,
+        "points": {key: _kept(series["points"], cut) for key, series in chart["series"].items()},
+    }
+
+
+def _kept(points, cut):
+    return bisect_left([point["start"] for point in points], cut)
+
+
+def spliced(chart, tail, resume):
+    """``chart``'s kept points followed by ``tail``'s, as one chart of ``tail``'s window."""
+    series = {}
+    for key, item in tail["series"].items():
+        kept = chart["series"][key]["points"][: resume["points"][key]]
+        points = list(item["points"])
+        if kept and points:
+            points[0] = {**points[0], "break_before": points[0]["start"] > kept[-1]["end"]}
+        series[key] = {"points": kept + points}
+    return {**tail, "series": series}
+
+
+def _check_resume(resume, indices, start, end, bucket_span, max_points, summary):
+    cut, kept = resume.get("from"), resume.get("points")
+    if (
+        summary
+        or type(cut) not in (int, float)
+        or not start < cut <= end
+        or cut % bucket_span
+        or type(kept) is not dict
+        or not set(kept) <= set(indices)
+        or any(type(n) is not int or not 0 <= n <= max_points for n in kept.values())
+    ):
+        raise ValueError("Invalid chart resume")
 
 
 async def async_history_series(
@@ -110,27 +159,40 @@ async def async_history_series(
         # Exact-end requests remain distinct; repeated requests share their task.
         if len(runtime._history_jobs) >= MAX_HISTORY_JOBS:
             raise Busy("Chart refresh is busy; retry shortly")
-
-        def prepare():
-            view = _chart_view(runtime, device_id, hours, end)
-            return {
-                "views": {device_id: view},
-                "parameters": {
-                    "device_id": device_id,
-                    "keys": keys,
-                    "hours": hours,
-                    "max_points": max_points,
-                    "end": end,
-                    "summary": summary,
-                },
-            }
-
-        runtime._history_jobs[cache_key] = asyncio.create_task(
-            _build_history_series(runtime, cache_key, prepare)
+        _start_history_job(
+            runtime,
+            cache_key,
+            {
+                "device_id": device_id,
+                "keys": keys,
+                "hours": hours,
+                "max_points": max_points,
+                "end": end,
+                "summary": summary,
+            },
         )
-        # A disconnected websocket may leave no waiter to retrieve a later failure.
-        runtime._history_jobs[cache_key].add_done_callback(_history_done)
     return await asyncio.shield(runtime._history_jobs[cache_key])
+
+
+def _start_history_job(runtime, cache_key, parameters):
+    device_id, hours, end = parameters["device_id"], parameters["hours"], parameters["end"]
+    head = None
+    if not parameters["summary"]:
+        found = _heads(
+            runtime, [device_id], parameters["keys"], hours, parameters["max_points"], end
+        )
+        head = found[device_id]
+
+    def prepare():
+        view = _chart_view(runtime, device_id, hours, end, head)
+        resume = {"resume": head.resume} if head and head.resume else {}
+        return {"views": {device_id: view}, "parameters": {**parameters, **resume}}
+
+    runtime._history_jobs[cache_key] = asyncio.create_task(
+        _build_history_series(runtime, cache_key, prepare, head)
+    )
+    # A disconnected websocket may leave no waiter to retrieve a later failure.
+    runtime._history_jobs[cache_key].add_done_callback(_history_done)
 
 
 def _history_cache_key(device_id, device, keys, hours, max_points, end, summary=False):
@@ -148,13 +210,54 @@ def _history_cache_key(device_id, device, keys, hours, max_points, end, summary=
     )
 
 
-def _chart_view(runtime, device_id, hours, end):
+def _chart_view(runtime, device_id, hours, end, head=None):
     view = runtime._history_view(device_id, members=False)
     requested_hours = max(0.1, min(settings(runtime.data)["human_days"] * 24, float(hours)))
     view._capture_chart_window = True
-    view._snapshot_history_start = end - requested_hours * 3600
+    view._snapshot_history_start = (
+        head.resume["from"] if head and head.resume else end - requested_hours * 3600
+    )
     view._history_until = end
     return view
+
+
+class _Head(NamedTuple):
+    """A radar's last chart of a window, kept so the next one charts only newer buckets."""
+
+    slot: tuple
+    chart: dict | None
+    resume: dict | None
+
+
+def _heads(runtime, device_ids, keys, hours, max_points, end):
+    kept = runtime.__dict__.setdefault("_chart_heads", OrderedDict())
+    days = getattr(runtime, "_days", None)
+    start, bucket_span, _ = chart_window(runtime.data, hours, max_points, end)
+    heads = {}
+    for device_id in device_ids:
+        # A rewrite (thinning, Trim, Clear) can change buckets that were settled.
+        rewrites = 0 if days is None else days.rewrites(device_id)
+        slot = (device_id, tuple(sorted(set(keys))), max_points, rewrites)
+        chart = kept.get(slot)
+        resume = None if chart is None else resume_from(chart, start, end, bucket_span)
+        heads[device_id] = _Head(slot, chart if resume else None, resume)
+    return heads
+
+
+def _keep(runtime, cache_key, head, chart):
+    """Cache a finished chart for its exact request and, joined, as its window's head."""
+    if head is not None:
+        if head.resume:
+            chart = spliced(head.chart, chart, head.resume)
+        kept = runtime.__dict__.setdefault("_chart_heads", OrderedDict())
+        kept[head.slot] = chart
+        kept.move_to_end(head.slot)
+        while len(kept) > 16:
+            kept.popitem(last=False)
+    runtime._history_cache[cache_key] = chart
+    while len(runtime._history_cache) > 16:
+        runtime._history_cache.popitem(last=False)
+    return chart
 
 
 def _room_request(device_ids, keys, hours, end):
@@ -201,28 +304,33 @@ async def _room_history_job(runtime, misses, keys, hours, max_points, end):
     if job_key not in runtime._history_jobs:
         if len(runtime._history_jobs) >= MAX_HISTORY_JOBS:
             raise Busy("Chart refresh is busy; retry shortly")
+        heads = _heads(runtime, list(misses), keys, hours, max_points, end)
 
         def prepare():
+            parameters = {
+                "device_ids": list(misses),
+                "keys": keys,
+                "hours": hours,
+                "max_points": max_points,
+                "end": end,
+            }
+            resume = {name: head.resume for name, head in heads.items() if head.resume}
+            if resume:
+                parameters["resume"] = resume
             return {
                 "views": {
-                    device_id: _chart_view(runtime, device_id, hours, end) for device_id in misses
+                    name: _chart_view(runtime, name, hours, end, heads[name]) for name in misses
                 },
-                "parameters": {
-                    "device_ids": list(misses),
-                    "keys": keys,
-                    "hours": hours,
-                    "max_points": max_points,
-                    "end": end,
-                },
+                "parameters": parameters,
             }
 
-        task = asyncio.create_task(_build_room_series(runtime, job_key, misses, prepare))
+        task = asyncio.create_task(_build_room_series(runtime, job_key, misses, prepare, heads))
         runtime._history_jobs[job_key] = task
         task.add_done_callback(_history_done)
     return await asyncio.shield(runtime._history_jobs[job_key])
 
 
-async def _build_room_series(runtime, job_key, misses, prepare):
+async def _build_room_series(runtime, job_key, misses, prepare, heads):
     from ..worker.display import unpack_charts
 
     try:
@@ -231,24 +339,19 @@ async def _build_room_series(runtime, job_key, misses, prepare):
             runtime.hass.async_add_executor_job(unpack_charts, result, list(misses))
         )
         for device_id, chart in result["charts"].items():
-            runtime._history_cache[misses[device_id]] = chart
-        while len(runtime._history_cache) > 16:
-            runtime._history_cache.popitem(last=False)
+            result["charts"][device_id] = _keep(runtime, misses[device_id], heads[device_id], chart)
         return result
     finally:
         runtime._history_jobs.pop(job_key, None)
 
 
-async def _build_history_series(runtime, cache_key, prepare):
+async def _build_history_series(runtime, cache_key, prepare, head):
     try:
         result = await bridge.calculate(runtime, "charts", prepare)
         from ..worker.display import unpack_chart
 
         result = await owned_preparation(runtime.hass.async_add_executor_job(unpack_chart, result))
-        runtime._history_cache[cache_key] = result
-        while len(runtime._history_cache) > 16:
-            runtime._history_cache.popitem(last=False)
-        return result
+        return _keep(runtime, cache_key, head, result)
     finally:
         runtime._history_jobs.pop(cache_key, None)
 
@@ -283,16 +386,20 @@ def _chart_labels(device, start, end):
     return labels
 
 
-def _native_chart(runtime, device_id, indices, start, end, bucket_span, max_points, summary=False):
-    while 2 * (math.ceil(end / bucket_span) - math.floor(start / bucket_span)) > max_points:
-        bucket_span *= 2
+def _native_chart(runtime, device_id, indices, window, max_points, summary=False, resume=None):
+    start, end, bucket_span = window
+    kept = resume["points"] if resume else {}
     series = (
         {}
         if summary
-        else {key: _NativeSeries(start, end, bucket_span, max_points) for key in indices}
+        else {
+            key: _NativeSeries(start, end, bucket_span, max_points, kept.get(key, 0))
+            for key in indices
+        }
     )
     strongest = _NativeSeries(start, end, bucket_span, max_points) if summary else None
-    modes = _column_chart(runtime, device_id, indices, start, end, series, strongest)
+    begin = resume["from"] if resume else start
+    modes = _column_chart(runtime, device_id, indices, begin, end, series, strongest)
     if strongest is not None:
         return {
             "start": start,
@@ -512,8 +619,10 @@ def _add_native_span(series, strongest, indices, cell):
 class _NativeSeries:
     """Bounded native plot segments; an overfull bucket is omitted, never bridged."""
 
-    def __init__(self, start, end, bucket_span, limit):
-        self.start, self.end, self.bucket_span, self.limit = start, end, bucket_span, limit
+    def __init__(self, start, end, bucket_span, limit, kept=0):
+        """``kept``: points of earlier buckets, charted before (``resume_from``)."""
+        self.start, self.end, self.bucket_span = start, end, bucket_span
+        self.limit = limit - kept
         self.points, self.gaps, self.omitted = [], [], []
         self.gaps_truncated = False
         self.observed, self.last_end = 0.0, start

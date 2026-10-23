@@ -45,6 +45,7 @@ def calculate_charts(views, parameters):
                     hours=parameters["hours"],
                     max_points=parameters["max_points"],
                     end=parameters["end"],
+                    resume=parameters.get("resume", {}).get(device_id),
                 )
             )
         except ValueError as error:
