@@ -515,6 +515,29 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
         self.runtime._label_counts.clear()
         self.assertEqual(rebuilt, labels._rebuild_histograms(self.runtime, self.device))
 
+    async def test_a_busy_or_stopping_worker_leaves_the_rebuild_to_the_next_change(self):
+        from tuner_under_test.history import label_counts
+        from tuner_under_test.worker.supervisor import Busy, Closed
+
+        self.history()
+        fields = ("device_id", "state", "timeout_seconds")
+        for refusal, state in ((Busy("full"), "present"), (Closed("stopping"), "not_present")):
+            with patch.object(label_counts, "ensure", side_effect=refusal):
+                await self.route("set_training_state", fields, device_id="a", state=state)
+                await asyncio.gather(*self.runtime._label_rebuilds.values())
+            self.assertEqual(self.runtime._label_rebuilds, {})
+            self.assertNotIn("a", self.runtime._label_counts)
+            self.assertEqual(self.device["training_state"], state)
+
+    async def test_a_radar_removed_while_counting_is_not_rebuilt(self):
+        self.history()
+        fields = ("device_id", "state", "timeout_seconds")
+        await self.route("set_training_state", fields, device_id="a", state="present")
+        pending = list(self.runtime._label_rebuilds.values())
+        removed = self.runtime.data["devices"].pop("a")
+        await asyncio.gather(*pending)
+        self.assertNotIn("histograms", removed)
+
     async def test_clearing_a_radar_cancels_its_pending_rebuild(self):
         self.history()
         fields = ("device_id", "state", "timeout_seconds")

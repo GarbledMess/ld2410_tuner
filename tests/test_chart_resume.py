@@ -61,6 +61,9 @@ def test_a_new_bucket_size_or_start_charts_afresh():
     assert charts.resume_from(earlier, 60.0, 21700, earlier["bucket_seconds"]) is None
     assert resume(earlier, 21000, 400) is None  # Never backwards.
     assert resume(drawn(runtime, 200, 400), 260, 400) is None  # Too new to have settled.
+    # Nothing before the cut has settled yet: the first bucket starts at the window start.
+    young = {"start": 0.0, "end": 400.0, "bucket_seconds": 120, "series": {}}
+    assert charts.resume_from(young, 0.0, 500.0, 120) is None
 
 
 @pytest.mark.parametrize(
