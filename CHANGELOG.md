@@ -1,5 +1,37 @@
 # Release notes
 
+## 1.29.1 - 2026-10-23
+
+- Refresh today's graphs much faster. A day graph only recharts its newest few minutes
+  when it reloads and keeps the rest; a busy radar-day takes about 2 ms of chart work
+  instead of about 170 ms, with exactly the same result. Changing the bucket size,
+  thinning, Trim or Clear charts the day afresh.
+- Send graphs at less than half the size. Each point now carries only what the panel
+  draws, so a busy radar-day reply drops from about 650 KB to about 290 KB, with less
+  for Home Assistant to check and the browser to read. Home Assistant still checks
+  every reply's exact shape.
+- Graphs start faster: each chart's worker no longer loads Home Assistant-side
+  machinery it never uses (about 0.07 s less per graph on a desktop, more on slower
+  hardware). Home Assistant also checks each worker reply about 2.5 times faster.
+- Stop Home Assistant freezing when a label changes before a radar's history is
+  counted. After a restart or a cleanup, changing the presence label, pausing
+  recording, a label timing out or a room label on a lone radar counted all of that
+  radar's history on Home Assistant's main loop, about 3 s per week of history. The
+  change now applies at once and the label histograms update in the background a
+  few seconds later.
+- The panel no longer breaks between a HACS update and the Home Assistant restart.
+- The panel uses the full width on wide screens.
+- ESPHome package: Presence Found Gates and the new Presence Lost Gates list each gate
+  over threshold with its value and threshold. These replace the 36 per-gate "at
+  Presence Found/Lost" sensors, which can be deleted in HA after reflashing.
+
+The ESPHome package change needs a rebuild and reflash; the firmware has not been
+compiled or tested on hardware yet.
+
+Validation: 2,506 workspace tests passed with 96.97% coverage. The browser suite
+passed, and the ESPHome package validated and generated C++ for 1 (with and without
+overrides), 2, 3 and 12 radar nodes.
+
 ## 1.29.0 - 2026-10-23
 
 - Load room graphs faster. A room's radars are now charted together in one background

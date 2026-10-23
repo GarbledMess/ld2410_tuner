@@ -2,7 +2,7 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
-[Release notes](CHANGELOG.md) - 1.29.0 loads room graphs in one job per room and records the gate energies behind each presence change.
+[Release notes](CHANGELOG.md) - 1.29.1 refreshes today's graphs much faster, sends them at half the size and stops a label change from freezing Home Assistant.
 
 All collapsible sections start closed. Each heading describes what is inside;
 sections you open stay open during panel refreshes. History and Recommendations
