@@ -1,5 +1,31 @@
 # Release notes
 
+## 1.29.0 - 2026-10-23
+
+- Load room graphs faster. A room's radars are now charted together in one background
+  job, up to four radars at a time, instead of one job per radar, so each extra radar
+  no longer pays for its own job start. The room graph now appears once its radars are
+  ready, rather than one line at a time.
+- Remember each gate's energy at the moment the radar finds or loses presence. The
+  ESPHome package adds 36 Diagnostic sensors per radar, such as `G3 Move at Presence
+  Found` and `G3 Still at Presence Lost`, holding the raw gate energy from the radar
+  frame where presence switched on or off. Home Assistant keeps every snapshot in its
+  history.
+- Name the gates behind each detection. A new Diagnostic text sensor, `Presence Found
+  Gates`, lists every gate over its threshold and within Max Move or Max Still
+  Distance when presence is found, for example `G3 Move, G4 Move, G4 Still`.
+- Show the per-gate threshold numbers as device configuration instead of dashboard
+  controls.
+
+The new sensors need the ESPHome package rebuilt and flashed; the firmware change has
+not been compiled or tested on hardware yet. Engineering Mode must be on for the
+snapshots and the gate list to update.
+
+Validation: 2,470 workspace tests passed with 96.93% coverage (one test that reads the real
+clock fails only in the 13 minutes before midnight UTC, before this release too;
+it passed when rerun after midnight). The browser suite passed, and the ESPHome package
+validated and generated C++ for 1, 2, 3 and 12 radar nodes.
+
 ## 1.28.1 - 2026-10-22
 
 - Calculate room and radar graphs about ten times faster. Each graph point is now
