@@ -488,7 +488,7 @@ class RecordingTests(unittest.IsolatedAsyncioTestCase):
         self.record(24, "not_present", 0.9)
         self.assertEqual(self.device["auto"]["observations"], {"present": 4, "not_present": 1})
 
-    def test_pausing_recording_ends_the_run_and_resuming_starts_a_new_one(self):
+    async def test_pausing_recording_ends_the_run_and_resuming_starts_a_new_one(self):
         self.record(0)
         self.record(6)
         self.clock = self.now + 9
@@ -529,7 +529,7 @@ class RecordingTests(unittest.IsolatedAsyncioTestCase):
         self.record(800, "present")
         self.assertEqual(guesses.of(view, "a").runs, before, "recording does not reach the view")
 
-    def test_newest_observation_is_open_coverage_or_where_it_ended(self):
+    async def test_newest_observation_is_open_coverage_or_where_it_ended(self):
         self.assertIsNone(recording.newest(self.runtime, "a", 0))
         for i in range(61):
             self.record(i * 6)

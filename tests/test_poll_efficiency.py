@@ -388,7 +388,7 @@ class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
                     now - newest,
                 )
 
-    def test_a_member_whose_coverage_ended_keeps_no_current_estimate(self):
+    async def test_a_member_whose_coverage_ended_keeps_no_current_estimate(self):
         """A member no longer observed (recording paused) keeps its guesses as history, but
         cannot keep an estimate current; an observed member alone still does."""
         from unittest.mock import patch

@@ -68,6 +68,8 @@ class TunerRuntime:
         self._history_cache = OrderedDict()
         # Device id -> history.label_counts.Counts behind its histograms.
         self._label_counts = {}
+        # Device id -> background task rebuilding histograms once its counts are kept.
+        self._label_rebuilds = {}
         self._history_jobs = {}
         self._recording_jobs = {}
         self._learning_jobs = {}

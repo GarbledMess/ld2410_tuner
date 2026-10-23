@@ -670,7 +670,7 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["start"] for item in episodes], [*starts, later])
         self.assertEqual([item["estimated"] for item in episodes], [False, False, True])
 
-    def test_snapshot_publishes_the_current_room_estimate(self):
+    async def test_snapshot_publishes_the_current_room_estimate(self):
         from tuner_under_test.rooms import room_labels
 
         self.office()

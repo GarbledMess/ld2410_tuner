@@ -129,7 +129,7 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.label_history_range("a", self.now + 5, self.now + 7, "unknown")
         assert measured() == {"human": (0, 1), "automatic": (4, 5)}  # Excluded: no evidence.
 
-    def test_external_records_follow_automatic_expiry_and_recording_pause(self):
+    async def test_external_records_follow_automatic_expiry_and_recording_pause(self):
         from tuner_under_test.history import budget, ingest, spans
 
         self.configure()

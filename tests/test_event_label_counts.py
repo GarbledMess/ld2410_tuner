@@ -1,5 +1,6 @@
 """Human histograms count recorded physical duration (day files), split exactly at labels."""
 
+import asyncio
 import unittest
 from copy import deepcopy
 from types import SimpleNamespace
@@ -178,12 +179,14 @@ class NativeLabelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         """Recording from ``start``: still open, read up to each operation's time."""
         self.runtime._days.append("a", dayfile.Change(start, {0: value}))
 
-    def test_current_label_changes_count_only_the_exact_observed_intervals(self):
+    async def test_current_label_changes_count_only_the_exact_observed_intervals(self):
         with patch.object(labels.time, "time", return_value=self.now):
             self.runtime.set_training_state("a", "present")
         self.native(self.now)
         with patch.object(labels.time, "time", return_value=self.now + 12):
             self.runtime.set_training_state("a", "not_present")
+            # Counts are not kept yet: the histograms follow once the worker has counted.
+            await asyncio.gather(*self.runtime._label_rebuilds.values())
         assert self.device["histograms"]["g0_move"]["present"][11] == pytest.approx(2, abs=1e-3)
         with patch.object(labels.time, "time", return_value=self.now + 30):
             self.runtime.set_training_state("a", "unknown")
@@ -223,6 +226,7 @@ class NativeLabelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(labels.time, "time", return_value=self.now + 30):
             await labels._timeout_worker(self.runtime, "a", 0)
+            await asyncio.gather(*self.runtime._label_rebuilds.values())
         assert self.device["training_state"] == "unknown"
         # Recorded from the millisecond of ``now``: within a millisecond of 12 s.
         assert self.device["histograms"]["g0_move"]["present"][11] == pytest.approx(2, abs=1e-3)

@@ -209,6 +209,12 @@ def restore_timeouts(runtime) -> None:
 def set_training_state(
     runtime, device_id: str, state: str, timeout_seconds: int | None = None
 ) -> None:
+    device = _change_training_state(runtime, device_id, state, timeout_seconds)
+    _native_label_rebuild(runtime, device_id, device)
+    runtime._schedule_save()
+
+
+def _change_training_state(runtime, device_id, state, timeout_seconds):
     if state not in TRAINING_STATES:
         raise ValueError("Invalid training state")
     device = runtime.data["devices"].get(device_id)
@@ -234,15 +240,52 @@ def set_training_state(
     else:
         device.pop("training_timeout_seconds", None)
         device.pop("training_expires_at", None)
-    _native_label_rebuild(runtime, device_id, device)
-    runtime._schedule_save()
+    return device
 
 
 def _native_label_rebuild(runtime, device_id, device):
     if not spans.has_events(runtime, device_id):
         return
+    if device_id not in runtime._label_counts:
+        # Counting all history here would stall the event loop (seconds per week of
+        # history); count in the executor, then rebuild from the kept counts.
+        _rebuild_when_counted(runtime, device_id)
+        return
     runtime._ensure_histograms(device)
     device["histograms"] = _rebuild_histograms(runtime, device)
+
+
+def _rebuild_when_counted(runtime, device_id):
+    """One pending rebuild per radar: it reads the labels as they are once counted."""
+    if device_id in runtime._label_rebuilds:
+        return
+
+    async def rebuild():
+        from ..worker.supervisor import Busy, Closed
+
+        try:
+            await label_counts.ensure(runtime, device_id)
+        except (Busy, Closed):
+            return  # The next label change or cleanup rebuilds them.
+        finally:
+            if runtime._label_rebuilds.get(device_id) is asyncio.current_task():
+                runtime._label_rebuilds.pop(device_id, None)
+        _rebuild_counted(runtime, device_id)
+
+    runtime._label_rebuilds[device_id] = runtime.hass.async_create_background_task(
+        rebuild(), f"ld2410_tuner label counts {device_id}"
+    )
+
+
+def _rebuild_counted(runtime, device_id):
+    device = runtime.data["devices"].get(device_id)
+    # Never count all history here: without kept counts, the next change retries.
+    if device is None or device_id not in runtime._label_counts:
+        return
+    if spans.has_events(runtime, device_id):
+        runtime._ensure_histograms(device)
+        device["histograms"] = _rebuild_histograms(runtime, device)
+        runtime._schedule_save()
 
 
 def _close_training_interval(runtime, device, now):
@@ -288,7 +331,11 @@ async def _timeout_worker(runtime, device_id: str, seconds: float) -> None:
 def clear_samples(runtime, device_id: str) -> None:
 
     if device_id in runtime.data["devices"]:
-        runtime.set_training_state(device_id, "unknown")
+        # No histogram rebuild: they are emptied below with the history they count.
+        _change_training_state(runtime, device_id, "unknown", None)
+        pending = runtime._label_rebuilds.pop(device_id, None)
+        if pending is not None:
+            pending.cancel()
         runtime.data["devices"][device_id].pop("last_learning", None)
         runtime.data["devices"][device_id].pop("learning_results", None)
         runtime.data["devices"][device_id].pop("comparison_scores", None)

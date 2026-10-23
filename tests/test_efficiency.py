@@ -1,6 +1,7 @@
 """Work on the event loop stays small on a weak machine: equivalence of the fast paths with
 the plain ones they replace, and guards that event-driven work never walks all history."""
 
+import asyncio
 import random
 import time
 import unittest
@@ -446,6 +447,114 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
         # the hour holds 60 of them, 180 recorded seconds, 30 six-second units.
         self.assertEqual(result["labelled_samples"], 30)
         self.assertEqual(where, [False], "counted once, off the loop")
+
+    async def counted_on(self, action):
+        """Threads that counted all history while ``action`` ran: True for the event loop."""
+        import threading
+
+        from tuner_under_test.history import label_counts
+        from tuner_under_test.worker import recount
+
+        loop_thread, where = threading.current_thread(), []
+
+        def spying(real):
+            def spy(*args, **kwargs):
+                where.append(threading.current_thread() is loop_thread)
+                return real(*args, **kwargs)
+
+            return spy
+
+        with (
+            patch.object(recount, "calculate", spying(recount.calculate)),
+            patch.object(label_counts, "count", spying(label_counts.count)),
+        ):
+            await action()
+            await asyncio.gather(*self.runtime._label_rebuilds.values())
+        return where
+
+    async def route(self, method, fields, **message):
+        websocket = harness.sys.modules["tuner_under_test.runtime.websocket"]
+        return await websocket._websocket_result(self.runtime, method, fields, message)
+
+    async def test_a_label_state_change_without_kept_counts_counts_in_the_executor(self):
+        """Regression: the first presence label change after a restart, trim or discarded
+        cleanup recounted all history on the event loop (2.6 s for a week on a desktop)."""
+        from tuner_under_test.history import labels
+
+        self.history()
+        start = self.now - DAY
+        self.device["history_labels"] = [{"start": start, "end": start + 3600, "state": "present"}]
+        fields = ("device_id", "state", "timeout_seconds")
+        where = await self.counted_on(
+            lambda: self.route("set_training_state", fields, device_id="a", state="present")
+        )
+        self.assertEqual(where, [False], "counted once, off the loop")
+        self.assertEqual(self.device["training_state"], "present")
+        rebuilt = self.device["histograms"]
+        self.runtime._label_counts.clear()
+        self.assertEqual(rebuilt, labels._rebuild_histograms(self.runtime, self.device))
+        self.assertTrue(any(any(series["present"]) for series in rebuilt.values()))
+
+    async def test_a_label_change_while_counting_joins_the_one_pending_rebuild(self):
+        """Regression: the label revision bumped right after a room label made the pending
+        rebuild skip, leaving the histograms missing until some later change."""
+        from tuner_under_test.history import labels
+
+        self.history()
+        start = self.now - DAY
+        self.device["history_labels"] = [{"start": start, "end": start + 3600, "state": "present"}]
+        fields = ("device_id", "state", "timeout_seconds")
+        await self.route("set_training_state", fields, device_id="a", state="present")
+        pending = list(self.runtime._label_rebuilds.values())
+        self.device["label_revision"] = self.device.get("label_revision", 0) + 1
+        await self.route("set_training_state", fields, device_id="a", state="not_present")
+        self.assertEqual(list(self.runtime._label_rebuilds.values()), pending, "one count")
+        await asyncio.gather(*pending)
+        self.assertEqual(self.runtime._label_rebuilds, {})
+        rebuilt = self.device["histograms"]
+        self.runtime._label_counts.clear()
+        self.assertEqual(rebuilt, labels._rebuild_histograms(self.runtime, self.device))
+
+    async def test_clearing_a_radar_cancels_its_pending_rebuild(self):
+        self.history()
+        fields = ("device_id", "state", "timeout_seconds")
+        await self.route("set_training_state", fields, device_id="a", state="present")
+        (pending,) = self.runtime._label_rebuilds.values()
+        await self.route("clear_samples", ("device_id",), device_id="a")
+        await asyncio.gather(pending, return_exceptions=True)
+        self.assertTrue(pending.cancelled())
+        self.assertEqual(self.device["histograms"], {})
+        self.assertNotIn("a", self.runtime._label_counts)
+
+    async def test_pausing_recording_without_kept_counts_counts_in_the_executor(self):
+        self.history()
+        where = await self.counted_on(
+            lambda: self.route(
+                "set_recording", ("device_id", "enabled"), device_id="a", enabled=False
+            )
+        )
+        self.assertEqual(where, [False], "counted once, off the loop")
+        self.assertFalse(self.device["recording_enabled"])
+
+    async def test_a_label_timeout_without_kept_counts_counts_in_the_executor(self):
+        self.history()
+        self.device.update(
+            training_state="present",
+            training_label_start=time.time() - 60,
+            training_expires_at=time.time() - 1,
+        )
+        where = await self.counted_on(lambda: self.runtime._timeout_worker("a", 0))
+        self.assertEqual(where, [False], "counted once, off the loop")
+        self.assertEqual(self.device["training_state"], "unknown")
+
+    async def test_clearing_a_radar_counts_none_of_the_history_it_removes(self):
+        self.history()
+        where = await self.counted_on(
+            lambda: self.route("clear_samples", ("device_id",), device_id="a")
+        )
+        self.assertEqual(where, [], "nothing counted for history that is being removed")
+        self.assertEqual(self.device["histograms"], {})
+        self.assertEqual(self.device["training_state"], "unknown")
 
     @patch.object(time, "time", return_value=NOW)
     async def test_cleanup_discarded_by_new_samples_still_keeps_the_counts(self, clock):

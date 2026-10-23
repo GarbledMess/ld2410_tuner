@@ -1,5 +1,6 @@
 """Persistent, correctable reference learning under changing room conditions."""
 
+import asyncio
 import json
 import sys
 import types
@@ -449,18 +450,19 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         assert units["automatic"] == (30, 0)
         assert confidence["present"] == pytest.approx(0.6)
 
-    def test_room_label_on_recorded_time_rebuilds_a_lone_radars_histograms(self):
+    async def test_room_label_on_recorded_time_rebuilds_a_lone_radars_histograms(self):
         from tuner_under_test.history import labels as device_labels
 
         self.office()
         groups.configure(self.runtime, "area:office", "Office", "office", ["b"])
         self.record(5, 70)  # Recorded before any label exists.
         self.label(0, 40, "present")
+        await asyncio.gather(*self.runtime._label_rebuilds.values())
         b = self.runtime.data["devices"]["b"]
         assert sum(b["histograms"]["g0_move"]["present"]) > 0
         assert b["histograms"] == device_labels._rebuild_histograms(self.runtime, b)
 
-    def test_single_radar_groups_train_through_their_labels_not_room_targets(self):
+    async def test_single_radar_groups_train_through_their_labels_not_room_targets(self):
         self.office()
         groups.configure(self.runtime, "area:office", "Office", "office", ["b"])
         self.record(5, 70)

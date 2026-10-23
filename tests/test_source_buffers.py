@@ -159,7 +159,7 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
         assert summary["state"] == "present"
         assert self.energies()[:-1] == before[:-1]
 
-    def test_config_change_and_recording_pause_discard_unconfirmed_tail(self):
+    async def test_config_change_and_recording_pause_discard_unconfirmed_tail(self):
         self.configure()
         self.tick(0)
         self.tick(6)
