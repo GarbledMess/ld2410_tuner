@@ -333,6 +333,46 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(await store._async_migrate_func(1, 0, original), original)
 
+    async def test_panel_files_stay_those_of_the_running_backend_until_restart(self):
+        """HACS rewrites the panel files before Home Assistant restarts; a reloaded panel
+        then called room_series on the old backend and got "Unknown command."."""
+        self.hass.data = {}
+        self.hass.bus = types.SimpleNamespace(async_listen=Mock(return_value=Mock()))
+        self.hass.http = types.SimpleNamespace(async_register_static_paths=AsyncMock())
+        store = types.SimpleNamespace(
+            async_load=AsyncMock(return_value={"devices": {}}), async_save=AsyncMock()
+        )
+        source = Path(self.hass.config.path("installed_static"))
+        (source / "panel").mkdir(parents=True)
+        (source / "ld2410-tuner-panel.js").write_text("running entrypoint")
+        (source / "panel" / "room_graph.js").write_text("running room graph")
+        with (
+            patch.object(mod, "STATIC_PATH", source),
+            patch.object(mod, "TunerStore", return_value=store),
+            patch.object(
+                mod, "StaticPathConfig", side_effect=lambda url, path, **kw: (url, path, kw)
+            ),
+            patch.object(mod, "_register_websocket_commands"),
+            patch.object(mod.frontend, "async_panel_exists", return_value=False, create=True),
+            patch.object(mod.frontend, "async_register_built_in_panel", create=True),
+        ):
+            await mod.async_setup_entry(self.hass, None)
+            await self.initialization()
+            # The update lands on disk while the old backend keeps running.
+            (source / "ld2410-tuner-panel.js").write_text("updated entrypoint")
+            (source / "panel" / "room_graph.js").write_text("updated room graph")
+            await mod.async_unload_entry(self.hass, None)
+            await mod.async_setup_entry(self.hass, None)
+            await self.initialization()
+            await mod.async_unload_entry(self.hass, None)
+        [(paths,)] = [call.args for call in self.hass.http.async_register_static_paths.mock_calls]
+        [(url, served, options)] = paths
+        self.assertEqual(url, "/api/ld2410_tuner/static")
+        self.assertEqual(options, {"cache_headers": False})
+        served = Path(served)
+        self.assertEqual((served / "ld2410-tuner-panel.js").read_text(), "running entrypoint")
+        self.assertEqual((served / "panel" / "room_graph.js").read_text(), "running room graph")
+
     async def test_setup_does_not_wait_for_the_startup_history_cleanup(self):
         """Bootstrap stage 2 timed out while a first cleanup after the 1.24 upgrade thinned
         every converted day: setup commits the conversion and cleans in the background."""

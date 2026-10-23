@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 import time
 from datetime import timedelta
 from functools import partial
@@ -38,6 +39,7 @@ from .worker import bridge, startup
 
 _LOGGER = logging.getLogger(__name__)
 _STARTUP = f"{DOMAIN}_startup"
+STATIC_PATH = Path(__file__).parent / "static"
 
 
 class TunerStore(Store):
@@ -121,10 +123,13 @@ async def _start_runtime(hass):
     # the background, like the hourly one.
     runtime._enforce_history_retention()
 
-    static_path = Path(__file__).parent / "static"
     if not hass.data.get(f"{DOMAIN}_static_registered"):
+        # HACS replaces the installed files before Home Assistant restarts. Serving a copy
+        # taken now keeps the panel matched to this running backend until that restart.
+        static_path = hass.config.path(".storage", DOMAIN, "panel")
+        await hass.async_add_executor_job(_copy_static, static_path)
         await hass.http.async_register_static_paths(
-            [StaticPathConfig("/api/ld2410_tuner/static", str(static_path), cache_headers=False)]
+            [StaticPathConfig("/api/ld2410_tuner/static", static_path, cache_headers=False)]
         )
         hass.data[f"{DOMAIN}_static_registered"] = True
 
@@ -146,6 +151,11 @@ async def _start_runtime(hass):
                 }
             },
         )
+
+
+def _copy_static(target):
+    shutil.rmtree(target, ignore_errors=True)
+    shutil.copytree(STATIC_PATH, target)
 
 
 async def async_unload_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
