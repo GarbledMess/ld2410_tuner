@@ -2,24 +2,31 @@
 
 import pytest
 from test_event_charts import row, view
+from tuner_under_test.presentation.charts import history_series_multi
 from tuner_under_test.worker import display
+
+
+def calculated(source, parameters):
+    """The full summary chart; the display job carries exactly its drawn part."""
+    full = history_series_multi(source, **parameters)
+    assert display.unpack_chart(display.calculate("charts", source, parameters)) == (
+        display.drawn(full)
+    )
+    return full
 
 
 def summary(events, *, blocks=None, keys=None):
     source = view(events, end=120, blocks=blocks)
-    return display.unpack_chart(
-        display.calculate(
-            "charts",
-            source,
-            {
-                "device_id": "a",
-                "keys": keys or ["g0_move", "g0_still"],
-                "hours": 0.1,
-                "max_points": 50,
-                "end": 120,
-                "summary": True,
-            },
-        )
+    return calculated(
+        source,
+        {
+            "device_id": "a",
+            "keys": keys or ["g0_move", "g0_still"],
+            "hours": 0.1,
+            "max_points": 50,
+            "end": 120,
+            "summary": True,
+        },
     )
 
 
@@ -66,19 +73,16 @@ def test_selected_kind_does_not_include_unrequested_gate():
 @pytest.mark.parametrize("budget", [0, 50, 400, 1000, 100000])
 def test_summary_keeps_same_window_and_point_budget_limits_as_native(budget):
     source = view([(0, row(100, 20)), (30, row(None, None)), (90, row(40, 10))], end=120)
-    result = display.unpack_chart(
-        display.calculate(
-            "charts",
-            source,
-            {
-                "device_id": "a",
-                "keys": ["g0_move", "g0_still"],
-                "hours": 0.1,
-                "max_points": budget,
-                "end": 120,
-                "summary": True,
-            },
-        )
+    result = calculated(
+        source,
+        {
+            "device_id": "a",
+            "keys": ["g0_move", "g0_still"],
+            "hours": 0.1,
+            "max_points": budget,
+            "end": 120,
+            "summary": True,
+        },
     )
     assert (result["start"], result["end"]) == (-240, 120)
     assert len(result["points"]) <= max(50, min(1000, budget))

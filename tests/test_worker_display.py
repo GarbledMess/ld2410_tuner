@@ -28,7 +28,7 @@ def test_display_chart_detached_matches_native_chart(tmp_path):
         request = executor.submit(capture.prepare_multi, {"any-name": source}, tmp_path).result()
     request.update(operation="charts", parameters=codec.encode(parameters))
     actual = display.unpack_chart(calculations.execute(request))
-    assert actual == expected
+    assert actual == display.drawn(expected)
 
 
 @pytest.mark.parametrize("gate_count,max_points", [(9, 400), (18, 1000)])
@@ -61,11 +61,12 @@ def test_full_day_chart_crosses_real_manifest_and_result_transport(
         restored = display.unpack_chart(codec.unpack_result(codec.pack_result(result)))
         from tuner_under_test.presentation.charts import history_series_multi
 
-        assert restored == history_series_multi(source, **parameters)
+        full = history_series_multi(source, **parameters)
+        assert restored == display.drawn(full)
         assert restored["start"] == 0
         assert restored["end"] == 86400
-        for series in restored["series"].values():
-            assert series["observed_seconds"] == 86400
+        for key, series in restored["series"].items():
+            assert full["series"][key]["observed_seconds"] == 86400
             assert series["points"][0]["t"] == 0
             assert series["points"][-1]["t"] == 86400
     finally:
@@ -129,7 +130,7 @@ def test_async_chart_captures_requested_window_and_expands_outside_event_loop(mo
         monkeypatch.setattr(bridge, "calculate", calculate)
         monkeypatch.setattr(display, "unpack_chart", expand)
         result = await charts.async_history_series(source, "a", ["g0_move"], 1, 50, 86400)
-        assert result == expected
+        assert result == display.drawn(expected)
         assert expanded and all(thread != main_thread for thread in expanded)
         assert await charts.async_history_series(source, "a", ["g0_move"], 1, 50, 86400) == result
         assert len(expanded) == 1
@@ -280,22 +281,20 @@ def test_chart_transport_rejects_malformed_geometry_and_envelopes():
 
     from tuner_under_test.presentation.charts import history_series_multi
 
-    valid = history_series_multi(view([block(0, 600, 40)], []), "any-name", ["g0_move"], 1, end=600)
+    full = history_series_multi(view([block(0, 600, 40)], []), "any-name", ["g0_move"], 1, end=600)
+    valid = display.drawn(full)
     changes = [
         (("end",), -4000),
-        (("basis",), "unrecognised"),
         (("series",), []),
         (("series",), {"foreign_gate": valid["series"]["g0_move"]}),
         (("labels",), [{}]),
         (("labels",), [{"start": 2, "end": 1, "state": "present"}]),
         (("series", "g0_move"), {}),
-        (("series", "g0_move", "basis"), "unrecognised"),
         (("series", "g0_move", "points"), [None]),
         (("series", "g0_move", "points"), [None] * 1001),
-        (("series", "g0_move", "points", 0, "anchor"), False),
+        (("series", "g0_move", "points", 0, "break_before"), 0),
         (("series", "g0_move", "points", 0, "avg"), float("inf")),
-        (("series", "g0_move", "gaps"), [[1]]),
-        (("series", "g0_move", "gaps"), [[2, 1]]),
+        (("series", "g0_move", "points", 0, "t"), "0"),
     ]
     for path, value in changes:
         damaged = copy.deepcopy(valid)
@@ -303,6 +302,12 @@ def test_chart_transport_rejects_malformed_geometry_and_envelopes():
         for key in path[:-1]:
             target = target[key]
         target[path[-1]] = value
+        with pytest.raises(ValueError):
+            display.unpack_chart(_raw(damaged))
+    for field, value in (("end", -4000), ("avg", float("inf"))):
+        damaged = copy.deepcopy(full)
+        target = damaged if field == "end" else damaged["series"]["g0_move"]["points"][0]
+        target[field] = value
         with pytest.raises(ValueError):
             display.pack_chart(damaged)
     for envelope in (None, {}, {"chart_zlib": 1}, {"chart_zlib": "!"}, {"chart_zlib": "AAAA"}):
@@ -357,7 +362,7 @@ def test_room_summary_preserves_simultaneous_geometry_and_full_chart(tmp_path):
         request.update(
             operation="charts", parameters=codec.encode({**parameters, "summary": summary})
         )
-        assert display.unpack_chart(calculations.execute(request)) == (
+        assert display.unpack_chart(calculations.execute(request)) == display.drawn(
             expected if summary else full
         )
 
@@ -371,13 +376,13 @@ def test_summary_chart_shape_budget_and_empty():
     summary = {key: full[key] for key in ("start", "end", "bucket_seconds")}
     summary["points"] = []
     assert display.unpack_chart(display.pack_chart(summary)) == summary
-    point = full["series"]["g0_move"]["points"][0]
+    point = display.drawn(full)["series"]["g0_move"]["points"][0]
     summary["points"] = [point] * 18000
     assert len(display.unpack_chart(display.pack_chart(summary))["points"]) == 18000
     for mutation in ({"points": [point] * 18001}, {"extra": 1}, {"points": [{}]}):
         damaged = {**deepcopy(summary), **mutation}
         with pytest.raises(ValueError):
-            display.pack_chart(damaged)
+            display.unpack_chart(_raw(damaged))
 
 
 def test_room_summary_empty_and_gate_order_are_semantically_stable():
@@ -442,6 +447,15 @@ def test_async_room_summary_cache_keeps_mode_and_gate_order(monkeypatch):
     asyncio.run(run())
 
 
+def _raw(value):
+    """A chart envelope as a corrupt child could send it, bypassing ``pack_chart``."""
+    import json
+    import zlib
+
+    raw = json.dumps(value, separators=(",", ":"), allow_nan=True).encode()
+    return {"chart_zlib": base64.b64encode(zlib.compress(raw)).decode("ascii")}
+
+
 def _dense_chart():
     from unittest.mock import patch
 
@@ -465,9 +479,53 @@ def test_chart_transport_rejects_integers_beyond_64_bits():
 
     valid = _dense_chart()
     damaged = copy.deepcopy(valid)
-    next(iter(damaged["series"].values()))["points"][0]["count"] = 2**64
+    next(iter(damaged["series"].values()))["points"][0]["avg"] = 2**64
     with pytest.raises(ValueError):
         display.pack_chart(damaged)
     raw = json.dumps(damaged, separators=(",", ":")).encode()
     with pytest.raises(ValueError):
         display.unpack_chart({"chart_zlib": base64.b64encode(zlib.compress(raw)).decode("ascii")})
+
+
+DRAWN = {"t", "avg", "min", "max", "start", "end", "break_before"}
+
+
+def test_chart_transport_carries_only_what_the_panel_draws():
+    """Regression: every point crossed the worker and websocket with 13 fields, though the
+    panel draws 7; a dense radar-day was ~650 KB of JSON for the browser to parse."""
+    import json
+
+    full = _dense_chart()
+    restored = display.unpack_chart(display.pack_chart(full))
+    assert set(restored) == {"start", "end", "bucket_seconds", "series", "labels"}
+    assert restored["labels"] == full["labels"]
+    for key, series in full["series"].items():
+        assert set(restored["series"][key]) == {"points"}
+        assert restored["series"][key]["points"] == [
+            {field: point[field] for field in DRAWN} for point in series["points"]
+        ]
+    wire = len(json.dumps(restored, separators=(",", ":")))
+    assert wire < 0.5 * len(json.dumps(full, separators=(",", ":")))
+
+
+def test_chart_transport_rejects_fields_the_panel_does_not_draw():
+    import copy
+    import json
+    import zlib
+
+    wire = display.unpack_chart(display.pack_chart(_dense_chart()))
+    for path, value in (
+        (("basis",), "physical_span_duration"),
+        (("series", "g0_still", "gaps"), []),
+        (("series", "g0_still", "points", 0, "anchor"), True),
+    ):
+        damaged = copy.deepcopy(wire)
+        target = damaged
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        raw = json.dumps(damaged, separators=(",", ":")).encode()
+        with pytest.raises(ValueError):
+            display.unpack_chart(
+                {"chart_zlib": base64.b64encode(zlib.compress(raw)).decode("ascii")}
+            )

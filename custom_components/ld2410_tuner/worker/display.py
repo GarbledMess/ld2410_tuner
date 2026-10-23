@@ -14,6 +14,8 @@ EXPORT_BYTES = 1024 * 1024
 EXPORT_NODES = 32768
 CHART_RAW_BYTES = 32 * 1024 * 1024
 CHART_WIRE_BYTES = 1024 * 1024 - 1024
+# The point fields the panel draws; the rest of a chart never leaves the worker.
+POINT_FIELDS = ("t", "avg", "min", "max", "start", "end", "break_before")
 
 
 def calculate(operation, view, parameters):
@@ -71,8 +73,28 @@ def _validate_chart_devices(mapping, device_ids):
         raise ValueError("Invalid room chart device")
 
 
+def drawn(chart):
+    """``chart`` as the panel draws it: per-point geometry and the labels, nothing else."""
+    if "points" in chart:
+        return {**_window(chart), "points": _points(chart["points"])}
+    return {
+        **_window(chart),
+        "series": {key: {"points": _points(s["points"])} for key, s in chart["series"].items()},
+        "labels": chart["labels"],
+    }
+
+
+def _window(chart):
+    return {name: chart[name] for name in ("start", "end", "bucket_seconds")}
+
+
+def _points(points):
+    return [{field: point[field] for field in POINT_FIELDS} for point in points]
+
+
 def pack_chart(value):
-    """Keep full chart geometry inside the existing bounded result envelope."""
+    """Keep the drawn chart geometry inside the existing bounded result envelope."""
+    value = drawn(value)
     _validate_chart(value)
     raw = json.dumps(value, separators=(",", ":"), allow_nan=False).encode("utf-8")
     if len(raw) > CHART_RAW_BYTES:
@@ -102,9 +124,6 @@ def unpack_chart(value):
         protocol._preflight(raw, 2_000_000)
         result = json.loads(raw, object_pairs_hook=protocol._pairs)
         _validate_chart(result)
-        for series in result.get("series", {}).values():
-            for name in ("gaps", "omitted_ranges"):
-                series[name] = [tuple(span) for span in series[name]]
         return result
     except (binascii.Error, UnicodeError, zlib.error, RecursionError) as error:
         raise ValueError("Invalid chart payload") from error
@@ -112,7 +131,7 @@ def unpack_chart(value):
 
 def _validate_chart(value):
     codec.validate(value, max_nodes=2_000_000, max_bytes=CHART_RAW_BYTES)
-    fields = {"start", "end", "bucket_seconds", "series", "labels", "basis", "modes"}
+    fields = {"start", "end", "bucket_seconds", "series", "labels"}
     summary_fields = {"start", "end", "bucket_seconds", "points"}
     if type(value) is not dict or set(value) not in (fields, summary_fields):
         raise ValueError("Invalid chart fields")
@@ -134,8 +153,6 @@ def _validate_full_chart(value):
         _validate_series(item)
     for label in _bounded_list(value["labels"], 8192):
         _validate_label(label)
-    if value["basis"] != "physical_span_duration" or value["modes"] not in ([], ["event"]):
-        raise ValueError("Invalid chart basis")
 
 
 def _validate_gates(series):
@@ -155,31 +172,10 @@ def _validate_label(label):
 
 
 def _validate_series(item):
-    fields = {
-        "sample_count",
-        "observed_seconds",
-        "basis",
-        "count_basis",
-        "points",
-        "gaps",
-        "gaps_truncated",
-        "omitted_ranges",
-    }
-    if type(item) is not dict or set(item) != fields:
+    if type(item) is not dict or set(item) != {"points"}:
         raise ValueError("Invalid chart series fields")
-    for name in ("sample_count", "observed_seconds"):
-        _number(item[name])
-    if (
-        item["basis"] != "physical_span_duration"
-        or item["count_basis"] != "six_second_equivalent_duration"
-        or type(item["gaps_truncated"]) is not bool
-    ):
-        raise ValueError("Invalid chart series basis")
     for point in _bounded_list(item["points"], 1000):
         _validate_point(point)
-    for name in ("gaps", "omitted_ranges"):
-        for span in _bounded_list(item[name], 1000):
-            _validate_range(span)
 
 
 def _bounded_list(values, limit):
@@ -189,38 +185,15 @@ def _bounded_list(values, limit):
 
 
 def _validate_point(entry):
-    fields = {
-        "start",
-        "end",
-        "min",
-        "max",
-        "min_start",
-        "min_end",
-        "max_start",
-        "max_end",
-        "observed_seconds",
-        "avg",
-        "count",
-        "t",
-        "break_before",
-    }
-    if type(entry) is not dict or set(entry) not in (fields, fields | {"anchor"}):
+    if type(entry) is not dict or set(entry) != _POINT_FIELDS:
         raise ValueError("Invalid chart point")
-    for field in fields - {"break_before"}:
+    for field in POINT_FIELDS[:-1]:
         _number(entry[field])
-    if type(entry["break_before"]) is not bool or (
-        "anchor" in entry and entry["anchor"] is not True
-    ):
-        raise ValueError("Invalid chart anchor")
+    if type(entry["break_before"]) is not bool:
+        raise ValueError("Invalid chart point break")
 
 
-def _validate_range(entry):
-    if type(entry) not in (tuple, list) or len(entry) != 2:
-        raise ValueError("Invalid chart range")
-    _number(entry[0])
-    _number(entry[1])
-    if entry[1] < entry[0]:
-        raise ValueError("Invalid chart range endpoints")
+_POINT_FIELDS = set(POINT_FIELDS)
 
 
 def _number(value):

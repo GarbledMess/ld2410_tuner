@@ -1201,7 +1201,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.sample(self.now - 2)
         with patch.object(time, "time", return_value=self.now):
             result = await self.runtime.async_history_series("a", ["g0_move"], 1, 400)
-        self.assertAlmostEqual(result["series"]["g0_move"]["sample_count"], 2 / 6, places=2)
+        points = result["series"]["g0_move"]["points"]
+        self.assertAlmostEqual(points[-1]["end"] - points[0]["start"], 2, places=1)
 
     async def test_learning_executor_does_not_use_unlabelled_auto_samples(self):
         self.configuration()

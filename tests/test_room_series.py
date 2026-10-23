@@ -45,8 +45,8 @@ def test_room_charts_real_manifest_and_result_transport():
         result = display.unpack_charts(codec.unpack_result(codec.pack_result(packed)), list(views))
         assert result["errors"] == {}
         for device_id, source in views.items():
-            assert result["charts"][device_id] == charts.history_series_multi(
-                source, device_id, ["g0_move"], 24, 400, 86400
+            assert result["charts"][device_id] == display.drawn(
+                charts.history_series_multi(source, device_id, ["g0_move"], 24, 400, 86400)
             )
     finally:
         shutil.rmtree(holder["directory"])

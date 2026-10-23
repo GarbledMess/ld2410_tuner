@@ -208,7 +208,7 @@ def test_chart_window_capture_slices_bst_live_day_without_changing_geometry(tmp_
             {"device_id": "a", "keys": ["g0_move"], "hours": 1 / 3, "max_points": 1000, "end": end}
         ),
     )
-    assert display.unpack_chart(calculations.execute(request)) == expected
+    assert display.unpack_chart(calculations.execute(request)) == display.drawn(expected)
     with pytest.raises(worker_snapshot.SnapshotTooLarge):
         run(
             capture.prepare,
@@ -249,4 +249,4 @@ def test_chart_capture_keeps_open_predecessor_gaps_and_historical_cutoffs(tmp_pa
         request = run(capture.prepare, source, "a", tmp_path / str(index))
         request.update(operation="charts", parameters=codec.encode(parameters))
         actual = display.unpack_chart(calculations.execute(request))
-        assert actual == expected
+        assert actual == display.drawn(expected)
