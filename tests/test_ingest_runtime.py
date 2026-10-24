@@ -138,7 +138,7 @@ class AcquisitionTests(unittest.IsolatedAsyncioTestCase):
         assert not self.device.get("guess_runs")
         assert not self.runtime._history_runtime["a"].get("samples")
 
-    def test_histograms_use_duration_and_label_edit_does_not_double_count(self):
+    async def test_histograms_use_duration_and_label_edit_does_not_double_count(self):
         self.device["history_labels"] = [
             {"start": START - 10, "end": START + 100, "state": "present"}
         ]
@@ -151,7 +151,8 @@ class AcquisitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(before[20], processed / 6)
         assert sum(before) == before[20]
         with patch.object(time, "time", return_value=START + 60):
-            self.runtime.label_history_range("a", START - 10, START + 100, "present")
+            await self.runtime.label_history_range("a", START - 10, START + 100, "present")
+            await harness.settled(self.runtime)
         after = self.device["histograms"]["g0_move"]["present"]
         self.assertAlmostEqual(after[20], 10)
         assert sum(after) == after[20]

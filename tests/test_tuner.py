@@ -161,6 +161,18 @@ def record_samples(view, device_id, rows, automatic=()):
     return view
 
 
+async def settled(runtime):
+    """Let each pending label rebuild finish: a radar's histograms follow its label changes
+    in the background. Their errors are raised here; a cancelled one (a clear) is skipped."""
+    while pending := list(runtime._label_rebuilds.values()):
+        for task in pending:
+            try:
+                await task
+            except asyncio.CancelledError:
+                if not task.cancelled():
+                    raise
+
+
 def sample_clock(times):
     """``{time: (start, end, last)}``: each of the sorted sample ``times`` as the
     ``SAMPLE_SECONDS`` of history it stood for, laid end to end; a gap longer than ``GAP``
@@ -983,7 +995,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         calls = []
 
         async def execute(request):
-            calls.append(request["operation"])
+            if request["operation"] == "charts":  # Not the label's background recount.
+                calls.append(request["operation"])
             await asyncio.sleep(0.01)
 
         self.worker_transport.before = execute
@@ -995,7 +1008,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         await self.runtime.async_history_series(*args)
         self.assertEqual(len(calls), 1)
-        self.runtime.label_history_range("a", self.now - 10, self.now, "present")
+        await self.runtime.label_history_range("a", self.now - 10, self.now, "present")
         updated = await self.runtime.async_history_series(*args)
         self.assertEqual(len(calls), 2)
         self.assertEqual(updated["labels"][0]["state"], "present")
@@ -1058,23 +1071,26 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(max(p["max"] for p in result["series"]["g0_move"]["points"]), 10)
         self.assertEqual(self.device.get("history", []), [])
 
-    def test_relabel_is_idempotent_and_does_not_duplicate_initial_training(self):
+    async def test_relabel_is_idempotent_and_does_not_duplicate_initial_training(self):
         self.device.update(training_state="present", training_label_start=self.now - 20)
         self.sample(self.now - 12)
         self.sample(self.now - 6)
         with patch.object(time, "time", return_value=self.now - 1):
             for _ in range(2):
-                self.runtime.label_history_range("a", self.now - 15, self.now - 1, "not_present")
+                await self.runtime.label_history_range(
+                    "a", self.now - 15, self.now - 1, "not_present"
+                )
+            await settled(self.runtime)
         hist = self.device["histograms"]["g0_move"]
         self.assertEqual(sum(hist["present"]), 0)
         self.assertAlmostEqual(sum(hist["not_present"]), 11 / 6, places=2)  # [-12, -1) s.
 
-    def test_unknown_clears_only_requested_half_open_range(self):
+    async def test_unknown_clears_only_requested_half_open_range(self):
         self.device.update(training_state="present", training_label_start=self.now - 20)
         self.sample(self.now - 12)
         self.sample(self.now - 6)
         with patch.object(time, "time", return_value=self.now):
-            self.runtime.label_history_range("a", self.now - 12, self.now - 6, "unknown")
+            await self.runtime.label_history_range("a", self.now - 12, self.now - 6, "unknown")
         hist = self.device["histograms"]["g0_move"]
         self.assertAlmostEqual(sum(hist["present"]), 1, places=2)  # [-6, 0) s stays present.
 
@@ -1209,9 +1225,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             await self.runtime.apply("a")
         self.hass.services.async_call.assert_not_awaited()
 
-    def test_nonfinite_history_range_rejected(self):
+    async def test_nonfinite_history_range_rejected(self):
         with self.assertRaises(ValueError):
-            self.runtime.label_history_range("a", float("nan"), self.now, "present")
+            await self.runtime.label_history_range("a", float("nan"), self.now, "present")
         with self.assertRaises(ValueError):
             self.runtime.history_series_multi("a", ["g0_move"], float("inf"))
 
@@ -1350,7 +1366,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(known.runs[0][2:], ("present", 15, guesses.REFERENCE))
         self.assertEqual(known.sample_guess(known.runs[0][0]), ("present", "automatic", 0.75))
 
-    def test_manual_corrections_and_explicit_unknown_override_guesses(self):
+    async def test_manual_corrections_and_explicit_unknown_override_guesses(self):
         self.now = round(self.now, 3)
         self.configuration()
         keys = list(self.device["last_learning"]["entities"])
@@ -1360,8 +1376,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             "a",
             [(self.now - 12, values + bytes((1, 90))), (self.now - 6, values + bytes((1, 90)))],
         )
-        self.runtime.label_history_range("a", self.now - 15, self.now - 9, "not_present")
-        self.runtime.label_history_range("a", self.now - 9, self.now - 1, "unknown")
+        await self.runtime.label_history_range("a", self.now - 15, self.now - 9, "not_present")
+        await self.runtime.label_history_range("a", self.now - 9, self.now - 1, "unknown")
         entities, current = self.runtime._threshold_configuration("a")
         result = self.runtime._fit_history("a", entities, current)
         # The empty label covers 3 s of the first reading (held until the next): half a sample.

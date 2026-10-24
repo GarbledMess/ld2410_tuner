@@ -1,5 +1,16 @@
 # Release notes
 
+## 1.30.1 - 2026-10-24
+
+- Labelling history no longer freezes Home Assistant. Adding or editing a history period,
+  changing the presence label or a label timing out recounted each day the label touched
+  on Home Assistant's main loop, about 1 s per busy day on a desktop (more on a Raspberry
+  Pi), and the labelled time in the reply took about as long again. Both now run in the
+  background: the main loop is held for at most about 45 ms, and the label histograms
+  follow about a second later, exactly as before.
+- The first label after a restart or a cleanup applies at once instead of waiting about
+  5 s for all of the radar's history to be counted; its histograms follow once counted.
+
 ## 1.30.0 - 2026-10-24
 
 - Learn is much faster, with exactly the same results. On five real radars with about

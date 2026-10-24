@@ -5,7 +5,8 @@ every retained recorded second under its labels. The counts are kept per radar i
 (``Counts``, on ``runtime._label_counts``). A rebuild recounts only what differs from the kept
 counts: finished days added or removed since, the days a changed label or the retention edge
 touches, and the day being recorded. Without kept counts (or after most days were replaced, as
-by a storage trim) a rebuild counts everything.
+by a storage trim) the worker counts everything (``ensure``). Neither runs on the event loop: a
+label change applies at once and its histograms follow (``labels._rebuild_soon``).
 
 Counts are exact: every recorded second is counted under the label at its time and the
 retention cutoff, so the histograms equal a rebuild from scratch. They are kept in seconds and
@@ -256,6 +257,41 @@ def current(runtime, device):
     return counts.raw
 
 
+async def refresh(runtime, device_id, device):
+    """The kept counts of ``device`` brought to its labels now, in six-second units, with the
+    label index they count. The update runs in the executor: it reads and indexes each day
+    it recounts (about 1 s for a busy day). The radar must have kept counts. None, keeping
+    none, when most kept days are gone: counting afresh is then the worker's (``ensure``)."""
+    kept, updating = runtime._label_counts, _updating(runtime)
+    # Taken out while updating: counts left half-updated (or cancelled by a clear) are never
+    # reused.
+    counts = kept.pop(device_id)
+    index = label_lookup.label_index(device)
+    cutoff = max(0, time.time() - retention_seconds(runtime.data))
+    history = _day_blocks(runtime, device_id)
+    blocks = dict(zip(map(id, history), history, strict=True))
+    updating.add(device_id)
+    try:
+        updated = await runtime.hass.async_add_executor_job(
+            _update, runtime, device_id, counts, blocks, cutoff, index
+        )
+    finally:
+        updating.discard(device_id)
+    if not updated:
+        return None
+    kept[device_id] = counts
+    return counts.raw, index
+
+
+def _update(runtime, device_id, counts, blocks, cutoff, index):
+    return counts.update(blocks, _live_day(runtime, device_id), cutoff, index)
+
+
+def _updating(runtime):
+    """Radars whose kept counts ``refresh`` has taken out to update."""
+    return runtime.__dict__.setdefault("_label_updates", set())
+
+
 def _day_blocks(runtime, device_id, max_days=None):
     """Each finished recorded day as a block: the same object while the radar's finished days
     are unchanged (``DayStore.mark``), so kept counts are not recounted."""
@@ -289,29 +325,12 @@ def _live_day(runtime, device_id):
     return days.day(device_id, live[0], until=getattr(runtime, "_history_until", None))
 
 
-EDITS = ("label_history_range", "edit_history_label")  # Runtime methods that rebuild.
-
-
-@pace.background
-def _worker_count(history, cutoff, index, live):
-    """Load optional finished indexes only in the executor, then count each day once."""
-    counts = Counts(index, cutoff)
-    read = label_lookup.index_reader(index)
-    for block in history:
-        pace.rest()
-        summary = block["days"].summary(block["device_id"], block["date"])
-        counts.add_block(block, read, cutoff, summary)
-    counts.count_live(live, read, cutoff, 1)
-    counts.live = live
-    return counts
-
-
 async def ensure(runtime, device_id):
     """Have kept counts for ``device_id`` before an edit needs them, counting in the executor
     when there are none (after a restart, a trim or a discarded cleanup): the event loop never
     counts all history. Days added or removed while counting are caught up by the edit."""
     device = runtime.data["devices"].get(device_id)
-    if device is None or device_id in runtime._label_counts:
+    if device is None or device_id in runtime._label_counts or device_id in _updating(runtime):
         return
     from ..worker import bridge
     from . import recording

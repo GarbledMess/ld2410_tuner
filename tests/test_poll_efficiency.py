@@ -459,7 +459,7 @@ class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(uncached(self.runtime, ["a", "b"]))
             self.assertIsNone(room_labels.current_estimate(self.runtime, ["a", "b"]))
 
-    def test_the_estimate_follows_history_edits_and_cleanup_between_polls(self):
+    async def test_the_estimate_follows_history_edits_and_cleanup_between_polls(self):
         from unittest.mock import patch
 
         from tuner_under_test.rooms import room_labels
@@ -479,7 +479,8 @@ class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         agree()
-        self.runtime.label_history_range("a", base, base + 120, "not_present")  # A history edit.
+        # A history edit.
+        await self.runtime.label_history_range("a", base, base + 120, "not_present")
         agree()
         self.runtime._days.flush(now)  # Stored history changes under the kept reads.
         agree()

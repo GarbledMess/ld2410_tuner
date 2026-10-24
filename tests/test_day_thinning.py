@@ -165,7 +165,7 @@ class TestDayStorage(unittest.IsolatedAsyncioTestCase):
             nonlocal raced
             if not raced and request["operation"] == "maintenance":
                 raced = True
-                self.runtime.label_history_range("a", START, START + 120, "present")
+                await self.runtime.label_history_range("a", START, START + 120, "present")
 
         self.worker_transport.after = race
         report = await self.runtime.trim_storage()
@@ -175,7 +175,7 @@ class TestDayStorage(unittest.IsolatedAsyncioTestCase):
 
     async def test_trim_updates_live_and_saved_histograms_from_retained_time(self):
         self.recorded()
-        self.runtime.label_history_range("a", START, START + 120, "present")
+        await self.runtime.label_history_range("a", START, START + 120, "present")
         self.runtime.data["storage_settings"] = {
             **policy.DEFAULTS,
             "human_days": 9,
@@ -196,7 +196,7 @@ class TestDayStorage(unittest.IsolatedAsyncioTestCase):
         self.runtime._record_history_sample("a", {"g0_move": 10}, START)
         ingest.end(self.runtime, "a", START + 121)
         # 121 s labelled: 20.1666... samples, which a stored histogram keeps to 0.001.
-        self.runtime.label_history_range("a", START, START + 121, "present")
+        await self.runtime.label_history_range("a", START, START + 121, "present")
         self.runtime.data["storage_settings"] = {**policy.DEFAULTS, "automatic_days": 8}
         await self.runtime.trim_storage()
         self.runtime._label_counts.clear()

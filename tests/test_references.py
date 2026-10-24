@@ -269,14 +269,14 @@ class ReferenceRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.entity("binary_sensor.camera_person", "off")
         for i in range(30):
             self.sample(self.now + i * 6, 70)
-        self.runtime.label_history_range("a", self.now, self.now + 180, "present")
+        await self.runtime.label_history_range("a", self.now, self.now + 180, "present")
         # The conflicting entity summary goes at once; human evidence waits for a refresh.
         assert self.device["reference_profile"]["periods"] == []
         await self.refresh()
         periods = self.device["reference_profile"]["periods"]
         assert {p["source"] for p in periods} == {"human"}
         assert {p["state"] for p in periods} == {"present"}
-        self.runtime.label_history_range("a", self.now, self.now + 180, "unknown")
+        await self.runtime.label_history_range("a", self.now, self.now + 180, "unknown")
         await self.refresh()
         assert not self.device["reference_profile"]["periods"]
 
@@ -320,7 +320,7 @@ class ReferenceRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_existing_human_history_is_imported_once_with_original_times(self):
         self.sample(self.now, 70)
         self.clock.return_value = self.now + 1
-        self.runtime.label_history_range("a", self.now - 1, self.now + 1, "present")
+        await self.runtime.label_history_range("a", self.now - 1, self.now + 1, "present")
         self.device.pop("reference_profile", None)
         await training.initialize(self.runtime)
         before = deepcopy(self.device["reference_profile"])
@@ -434,14 +434,14 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         assert sum(p["count"] for p in present) == 40
         assert min(p["start"] for p in present) == self.base + QUIET * 6
 
-    def test_collect_samples_uses_own_label_first_then_attributed_room(self):
+    async def test_collect_samples_uses_own_label_first_then_attributed_room(self):
         self.office()
         self.record(5, 5, count=QUIET)
         self.record(5, 70, start=QUIET)
         self.label(0, QUIET, "not_present")
         self.label(QUIET, QUIET + 40, "present")
         start = self.base + QUIET * 6
-        self.runtime.label_history_range("b", start, start + 60, "unknown")
+        await self.runtime.label_history_range("b", start, start + 60, "unknown")
         units, confidence = measured(self.runtime, "b")
         # Human room Empty over the quiet stretch: QUIET units of time.
         assert units["human"] == (0, QUIET)
@@ -570,7 +570,7 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         assert present[2] == pytest.approx(0.6)  # Baseline support in six-second units.
         assert target(self.base + 3) == ("not_present", "human", 1.0)
 
-    def member_labelled_office(self, b_present=None, b=70, quiet=QUIET):
+    async def member_labelled_office(self, b_present=None, b=70, quiet=QUIET):
         """a and b labelled Empty for ``quiet`` samples, then a labelled Present for 40 while b
         reads ``b``; ``b_present`` optionally labels b's own Present over that many samples of
         the episode. Room truth is human (derived from members); b's baseline is its own
@@ -580,16 +580,16 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         self.record(5, b, start=quiet)
         self.episode = self.base + quiet * 6
         for key in ("a", "b"):
-            self.runtime.label_history_range(key, self.base, self.episode, "not_present")
-        self.runtime.label_history_range("a", self.episode, self.episode + 240, "present")
+            await self.runtime.label_history_range(key, self.base, self.episode, "not_present")
+        await self.runtime.label_history_range("a", self.episode, self.episode + 240, "present")
         if b_present:
             end = self.episode + b_present * 6
-            self.runtime.label_history_range("b", self.episode, end, "present")
+            await self.runtime.label_history_range("b", self.episode, end, "present")
 
-    def test_rule_two_attribution_trains_as_weighted_guess_never_human(self):
+    async def test_rule_two_attribution_trains_as_weighted_guess_never_human(self):
         # Regression (real data): an unlabelled member whose energy rises above its own empty
         # baseline while another member is labelled Present was trained as human Present.
-        self.member_labelled_office()
+        await self.member_labelled_office()
         units, confidence = measured(self.runtime, "b")
         assert units == {"human": (0, QUIET), "automatic": (40, 0)}
         assert confidence["present"] == pytest.approx(0.6)  # Baseline support QUIET / 100.
@@ -605,9 +605,9 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         assert target[:2] == ("present", "attributed")
         assert target[2] == pytest.approx(0.6)
 
-    def test_rule_two_below_the_automatic_floor_gives_no_target(self):
+    async def test_rule_two_below_the_automatic_floor_gives_no_target(self):
         # 40 quiet samples give confidence 0.4 < MIN_AUTO_CONFIDENCE, like a floored estimate.
-        self.member_labelled_office(quiet=40)
+        await self.member_labelled_office(quiet=40)
         assert measured(self.runtime, "b")[0] == {"human": (0, 40), "automatic": (0, 0)}
         assert attribution.room_targets(self.runtime, "b")(self.episode + 3) is None
         current = {"id": "x", "thresholds": {"g0_move": 50}, "applicable": True}
@@ -620,17 +620,17 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         periods = self.b["reference_profile"]["periods"]
         assert not [p for p in periods if p["state"] == "present"]
 
-    def test_rule_two_rows_are_not_scoring_ground_truth(self):
-        self.member_labelled_office()
+    async def test_rule_two_rows_are_not_scoring_ground_truth(self):
+        await self.member_labelled_office()
         current = {"id": "x", "thresholds": {"g0_move": 50}, "applicable": True}
         context = {"keys": ["g0_move"], "timing": {"mode": "disabled"}}
         result = comparison.calculate(self.runtime, "b", {**context, "patterns": {"c": current}})
         assert result["counts"]["human"] == {"present": 0, "not_present": pytest.approx(QUIET)}
         assert result["counts"]["automatic"]["present"] == pytest.approx(40)
 
-    def test_rule_one_attribution_stays_human_at_full_weight(self):
+    async def test_rule_one_attribution_stays_human_at_full_weight(self):
         # b's own Present label inside the episode attributes it (rule 1), even while quiet.
-        self.member_labelled_office(b_present=5, b=5)
+        await self.member_labelled_office(b_present=5, b=5)
         # The whole 40-unit episode is b's (rule 1): human, at full weight; nothing automatic.
         assert measured(self.runtime, "b")[0] == {"human": (40, QUIET), "automatic": (0, 0)}
         assert attribution.room_targets(self.runtime, "b")(self.episode + 60) == (
@@ -646,8 +646,8 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         for key in ("a", "b"):
             assert measured(self.runtime, key)[0] == {"human": (0, 40), "automatic": (0, 0)}
 
-    def test_rule_two_present_enters_references_as_radar_never_human(self):
-        self.member_labelled_office()
+    async def test_rule_two_present_enters_references_as_radar_never_human(self):
+        await self.member_labelled_office()
         training.rebuild_human(self.runtime, self.b)
         assert self.human(self.b) == {"not_present"}
         periods = self.b["reference_profile"]["periods"]
@@ -657,9 +657,9 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         }
         assert sum(p["count"] for p in present) == 40
 
-    def test_a_rebuild_reads_the_history_once_for_all_its_evidence(self):
+    async def test_a_rebuild_reads_the_history_once_for_all_its_evidence(self):
         """One physical fold serves human, entity and radar reference evidence."""
-        self.member_labelled_office()
+        await self.member_labelled_office()
         from tuner_under_test.history import spans
 
         with patch.object(spans, "events", wraps=spans.events) as read:
@@ -747,12 +747,12 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
         assert target(self.base + 483) is None
         # ... but a present guess of its own is not a room's.
 
-    def test_human_room_empty_and_rule_one_present_override_automatic_at_full_weight(self):
+    async def test_human_room_empty_and_rule_one_present_override_automatic_at_full_weight(self):
         self.scenario()
         self.label(0, 40, "not_present")
         self.label(40, 80, "present")
         # b's own Present label in the episode (rule 1) makes room Present human for b.
-        self.runtime.label_history_range("b", self.base + 240, self.base + 246, "present")
+        await self.runtime.label_history_range("b", self.base + 240, self.base + 246, "present")
         assert measured(self.runtime, "b")[0] == {"human": (40, 40), "automatic": (0, 0)}
         target = attribution.auto_targets(self.runtime, "b")
         assert target(self.base + 3) == ("not_present", "human", 1.0)
@@ -849,9 +849,9 @@ class AutomaticRoomTruthTests(unittest.IsolatedAsyncioTestCase):
         training.rebuild_human(self.runtime, self.b)
         assert not [p for p in self.b["reference_profile"]["periods"] if p.get("room")]
 
-    def test_room_automatic_evidence_outranks_own_guess_but_own_human_label_wins(self):
+    async def test_room_automatic_evidence_outranks_own_guess_but_own_human_label_wins(self):
         self.scenario()
-        self.runtime.label_history_range("b", self.base, self.base + 60, "present")
+        await self.runtime.label_history_range("b", self.base, self.base + 60, "present")
         self.runtime.data.setdefault("room_labels", {})["area:office"] = [
             {
                 "start": self.base,

@@ -201,7 +201,8 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.migrate_history(data)
         await self.runtime.async_clean_history(persist=False)  # As at startup.
         for key in data["devices"]:  # Labelled radars keep their summaries (a label edit).
-            self.runtime.label_history_range(key, NOW - 4800, NOW, "present")
+            await self.runtime.label_history_range(key, NOW - 4800, NOW, "present")
+        await harness.settled(self.runtime)
         canonical = self.runtime.data
         # Require physical trimming even when disposable summary indexes are evicted first.
         physical_bytes = sum(
@@ -258,7 +259,7 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
             if request["operation"] != "maintenance":
                 return
             if calls == 0:
-                self.runtime.label_history_range(
+                await self.runtime.label_history_range(
                     "a", self.now - 11 * policy.DAY, self.now, "present"
                 )
             calls += 1

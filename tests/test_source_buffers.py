@@ -104,12 +104,12 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
         assert self.present(view) == []
         assert not self.runtime._history_cache
 
-    def test_manual_labels_keep_priority_including_trimmed_boundaries(self):
+    async def test_manual_labels_keep_priority_including_trimmed_boundaries(self):
         self.configure()
         for second in range(0, 31, 6):
             self.tick(second)
         for second, state in ((0, "present"), (12, "not_present"), (18, "unknown")):
-            self.runtime.label_history_range(
+            await self.runtime.label_history_range(
                 "a", self.now + second - 1, self.now + second + 1, state
             )
         measured = self.measured()

@@ -118,8 +118,13 @@ def reference_profile():
         for i in range(40):
             case.sample(BASE + i * 6, 70 if i < 20 else 8)
         with patch("time.time", return_value=BASE + 1000):
-            case.runtime.label_history_range("a", BASE, BASE + 120, "present")
-            case.runtime.label_history_range("a", BASE + 120, BASE + 240, "not_present")
+
+            async def label():
+                await case.runtime.label_history_range("a", BASE, BASE + 120, "present")
+                await case.runtime.label_history_range("a", BASE + 120, BASE + 240, "not_present")
+                await harness.settled(case.runtime)
+
+            case._asyncioRunner.run(label())
             references.training.rebuild_human(case.runtime, case.device)
             profile = case.device["reference_profile"]
             summary = references.refs.summary(profile, BASE + 1000)

@@ -15,7 +15,7 @@ from ..const import (
     TRAINING_STATES,
 )
 from ..presence import reference_training, references
-from . import daystore, label_counts, spans, summaries
+from . import daystore, label_counts, label_lookup, spans, summaries
 from .policy import retention_seconds
 
 
@@ -66,7 +66,7 @@ def replace_label(labels, original_start, original_end, start, end, state):
     return result
 
 
-def label_history_range(
+async def label_history_range(
     runtime, device_id: str, start: float, end: float, state: str
 ) -> dict[str, Any]:
     """Apply a retrospective manual label to historical samples in a time range."""
@@ -74,12 +74,16 @@ def label_history_range(
     device = _history_device(runtime, device_id)
     _prepare_history_edit(runtime, device)
     labels = apply_range(device.get("history_labels", []), start, end, state)
-    _save_history_edit(runtime, device, labels, [(start, end)])
-    seconds = _observed_seconds(runtime, device_id, start, end)
+    _save_history_edit(runtime, device_id, device, labels, [(start, end)])
+    saved = device["history_labels"]
+    # In the executor: it reads and indexes the labelled days (about 1 s for a busy day).
+    seconds = await runtime.hass.async_add_executor_job(
+        _observed_seconds, runtime, device_id, start, end
+    )
     return {
         "ok": True,
         "labelled_samples": seconds / SAMPLE_SECONDS,  # Recorded time, in six-second units.
-        "history_labels": device["history_labels"],
+        "history_labels": saved,
         "observed_seconds": seconds,
         "support_basis": "observed_native_duration",
     }
@@ -103,7 +107,7 @@ def edit_history_label(runtime, device_id, label_start, label_end, start, end, s
         raise ValueError("This saved period no longer exists. Refresh and select it again.")
     _prepare_history_edit(runtime, device)
     labels = replace_label(device["history_labels"], label_start, label_end, start, end, state)
-    _save_history_edit(runtime, device, labels, [(label_start, label_end), (start, end)])
+    _save_history_edit(runtime, device_id, device, labels, [(label_start, label_end), (start, end)])
     return {"ok": True, "history_labels": device["history_labels"]}
 
 
@@ -129,9 +133,12 @@ def _prepare_history_edit(runtime, device):
         device["training_label_start"] = now
 
 
-def _save_history_edit(runtime, device, labels, ranges):
+def _save_history_edit(runtime, device_id, device, labels, ranges):
     device["history_labels"] = labels
-    device["histograms"] = _rebuild_histograms(runtime, device)
+    if spans.has_events(runtime, device_id):
+        _rebuild_soon(runtime, device_id)
+    else:
+        device["histograms"] = _rebuild_histograms(runtime, device)  # Nothing to count.
     reference_training.correct(runtime, device, ranges)
     device.pop("last_learning", None)
     device["label_revision"] = device.get("label_revision", 0) + 1
@@ -244,19 +251,14 @@ def _change_training_state(runtime, device_id, state, timeout_seconds):
 
 
 def _native_label_rebuild(runtime, device_id, device):
-    if not spans.has_events(runtime, device_id):
-        return
-    if device_id not in runtime._label_counts:
-        # Counting all history here would stall the event loop (seconds per week of
-        # history); count in the executor, then rebuild from the kept counts.
-        _rebuild_when_counted(runtime, device_id)
-        return
-    runtime._ensure_histograms(device)
-    device["histograms"] = _rebuild_histograms(runtime, device)
+    if spans.has_events(runtime, device_id):
+        _rebuild_soon(runtime, device_id)
 
 
-def _rebuild_when_counted(runtime, device_id):
-    """One pending rebuild per radar: it reads the labels as they are once counted."""
+def _rebuild_soon(runtime, device_id):
+    """One pending rebuild per radar, off the event loop: counting all history (seconds per
+    week) or recounting the days a label touches (about 1 s for a busy day) would stall it.
+    The label applies at once; the histograms follow, from the labels as they are then."""
     if device_id in runtime._label_rebuilds:
         return
 
@@ -264,28 +266,38 @@ def _rebuild_when_counted(runtime, device_id):
         from ..worker.supervisor import Busy, Closed
 
         try:
-            await label_counts.ensure(runtime, device_id)
+            while await _rebuild_pass(runtime, device_id):
+                pass
         except (Busy, Closed):
             return  # The next label change or cleanup rebuilds them.
         finally:
             if runtime._label_rebuilds.get(device_id) is asyncio.current_task():
                 runtime._label_rebuilds.pop(device_id, None)
-        _rebuild_counted(runtime, device_id)
 
     runtime._label_rebuilds[device_id] = runtime.hass.async_create_background_task(
         rebuild(), f"ld2410_tuner label counts {device_id}"
     )
 
 
-def _rebuild_counted(runtime, device_id):
+async def _rebuild_pass(runtime, device_id):
+    """Bring the histograms to the radar's labels now: True to go again, when its labels
+    changed meanwhile or its kept counts were too stale to update."""
+    await label_counts.ensure(runtime, device_id)
     device = runtime.data["devices"].get(device_id)
     # Never count all history here: without kept counts, the next change retries.
     if device is None or device_id not in runtime._label_counts:
-        return
-    if spans.has_events(runtime, device_id):
-        runtime._ensure_histograms(device)
-        device["histograms"] = _rebuild_histograms(runtime, device)
-        runtime._schedule_save()
+        return False
+    refreshed = await label_counts.refresh(runtime, device_id, device)
+    if refreshed is None:
+        return True  # Counted afresh by the worker on the next pass.
+    counted, index = refreshed
+    device = runtime.data["devices"].get(device_id)
+    if device is None:
+        return False
+    runtime._ensure_histograms(device)
+    device["histograms"] = label_counts.stored({key: counted[key] for key in HISTORY_KEYS})
+    runtime._schedule_save()
+    return label_lookup.label_index(device) != index
 
 
 def _close_training_interval(runtime, device, now):

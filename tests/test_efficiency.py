@@ -22,8 +22,9 @@ class LabelEditTests(unittest.IsolatedAsyncioTestCase):
 
     @patch.object(time, "time", return_value=NOW)
     async def test_device_label_edit_reads_only_the_blocks_it_relabels(self, _clock):
-        """Regression guard: a device label edit (and a Seen by chip tap, which is one) runs
-        on the event loop; after cleanup it must not walk all 30 days of history."""
+        """Regression guard: a device label edit (and a Seen by chip tap, which is one) recounts
+        its histograms in the background; after cleanup it must not walk all 30 days of
+        history."""
         from tuner_under_test.history import dayfile, spans, summaries
 
         self.now = NOW
@@ -48,13 +49,14 @@ class LabelEditTests(unittest.IsolatedAsyncioTestCase):
                 side_effect=summaries.Summary.histograms,
             ) as spy,
         ):
-            result = self.runtime.label_history_range("a", start, start + 3600, "not_present")
+            result = await self.runtime.label_history_range("a", start, start + 3600, "not_present")
+            await harness.settled(self.runtime)
         self.assertEqual(result["observed_seconds"], 3600)
         self.assertEqual(
             sum(self.runtime._label_counts["a"].raw["g0_move"]["not_present"]), 3600 / 6
         )
         self.assertGreater(spy.call_count, 0, "the edited native day is recounted from its summary")
-        self.assertLess(spy.call_count, 40, "bounded summary queries on the event loop")
+        self.assertLess(spy.call_count, 40, "bounded summary queries")
 
 
 def old_rebuild(runtime, device):
@@ -113,7 +115,7 @@ class LabelCountTests(unittest.IsolatedAsyncioTestCase):
         runtime, device = self.runtime, self.device
         action = rng.randrange(13) if forced is None else forced
         if action <= 2:
-            runtime.label_history_range(
+            await runtime.label_history_range(
                 "a", *self.random_range(rng), rng.choice(("present", "not_present", "unknown"))
             )
         elif action == 3 and device.get("history_labels"):
@@ -173,10 +175,10 @@ class LabelCountTests(unittest.IsolatedAsyncioTestCase):
         over random edits, live labels, recording, the retention edge moving through recorded
         days, cleanups, confirmations, retention changes, rewritten and deleted days and
         clears."""
-        from tuner_under_test.history import labels
+        from tuner_under_test.history import label_counts, labels
 
         checked = []
-        real = labels._rebuild_histograms
+        real, refresh = labels._rebuild_histograms, label_counts.refresh
 
         def compare(runtime, device):
             rebuilt = real(runtime, device)
@@ -184,12 +186,21 @@ class LabelCountTests(unittest.IsolatedAsyncioTestCase):
             checked.append(bool(runtime._label_counts))
             return rebuilt
 
+        async def compare_kept(runtime, device_id, device):
+            refreshed = await refresh(runtime, device_id, device)
+            if refreshed is not None:
+                counted = {key: refreshed[0][key] for key in HISTORY_KEYS}
+                assert_counts_equal(label_counts.stored(counted), old_rebuild(runtime, device))
+                checked.append(True)
+            return refreshed
+
         for seed in range(3):
             rng = random.Random(4140 + seed)
             self.clock = Clock(NOW + seed * DAY)
             with (
                 patch.object(time, "time", self.clock),
                 patch.object(labels, "_rebuild_histograms", side_effect=compare),
+                patch.object(label_counts, "refresh", side_effect=compare_kept),
             ):
                 self.runtime.clear_samples("a")
                 self.history(rng)
@@ -197,6 +208,7 @@ class LabelCountTests(unittest.IsolatedAsyncioTestCase):
                 self.runtime.data["storage_settings"] = {"human_days": 3, "automatic_days": 3}
                 for index in range(52):  # Every kind of step first, then random ones.
                     await self.step(rng, index if index < 13 else None)
+                    await harness.settled(self.runtime)
             self.runtime._label_counts.clear()
         self.assertGreater(len(checked), 40)
         self.assertGreater(sum(checked), 25, "most rebuilds used kept counts")
@@ -361,12 +373,12 @@ class EditCostTests(unittest.IsolatedAsyncioTestCase):
     setUp = harness.RuntimeTests.setUp
     asyncTearDown = harness.RuntimeTests.asyncTearDown
 
-    def test_edits_never_copy_derived_histograms_back_into_history(self):
+    async def test_edits_never_copy_derived_histograms_back_into_history(self):
         """A label edit uses recorded duration directly, without retaining a histogram copy."""
         self.runtime._ensure_histograms(self.device)
         start = self.now - 7200
-        self.runtime.label_history_range("a", start, start + 600, "present")
-        self.runtime.label_history_range("a", start + 900, start + 1500, "not_present")
+        await self.runtime.label_history_range("a", start, start + 600, "present")
+        await self.runtime.label_history_range("a", start + 900, start + 1500, "not_present")
         self.assertNotIn("history_legacy_histograms", self.device)
 
 
@@ -443,10 +455,206 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(recount, "calculate", spy):
             result = await self.edit()
             await self.edit()
+            await asyncio.gather(*self.runtime._label_rebuilds.values())
         # Readings a minute apart are separate observations of half a sample (3 s) each:
         # the hour holds 60 of them, 180 recorded seconds, 30 six-second units.
         self.assertEqual(result["labelled_samples"], 30)
         self.assertEqual(where, [False], "counted once, off the loop")
+
+    async def indexed_on(self, action):
+        """Threads that built a day's index while ``action`` ran, with every index and
+        finished day read afresh: True for the event loop."""
+        import threading
+        from collections import OrderedDict
+
+        from tuner_under_test.history import summaries
+
+        self.runtime._days._cache.clear()
+        loop_thread, where = threading.current_thread(), []
+        real = summaries.Summary.__init__
+
+        def spy(summary, day):
+            where.append(threading.current_thread() is loop_thread)
+            real(summary, day)
+
+        with (
+            patch.object(summaries, "_cache", OrderedDict()),
+            patch.object(summaries, "_cached_bytes", 0),
+            patch.object(summaries.Summary, "__init__", spy),
+        ):
+            result = await action()
+            await asyncio.gather(*self.runtime._label_rebuilds.values())
+        return result, where
+
+    def assert_counted_afresh(self):
+        from tuner_under_test.history import labels
+
+        rebuilt = self.device["histograms"]
+        self.runtime._label_counts.clear()
+        self.assertEqual(rebuilt, labels._rebuild_histograms(self.runtime, self.device))
+        self.assertTrue(any(any(series["present"]) for series in rebuilt.values()))
+
+    async def test_labelling_with_kept_counts_indexes_no_day_on_the_loop(self):
+        """Regression: with counts kept, labelling recounted each day it touched on the event
+        loop, building that day's whole index there (about 1 s for a busy day on a desktop;
+        the reply's labelled time built another)."""
+        self.history()
+        await self.edit()
+        await asyncio.gather(*self.runtime._label_rebuilds.values())
+        self.assertIn("a", self.runtime._label_counts)
+        result, where = await self.indexed_on(self.edit)
+        self.assertEqual(result["labelled_samples"], 30)
+        self.assertIn(False, where, "the touched day was indexed")
+        self.assertNotIn(True, where, "but never on the event loop")
+        self.assert_counted_afresh()
+
+    async def test_editing_a_period_with_kept_counts_indexes_no_day_on_the_loop(self):
+        self.history()
+        await self.edit()
+        await asyncio.gather(*self.runtime._label_rebuilds.values())
+        start = self.now - DAY
+        fields = ("device_id", "label_start", "label_end", "start", "end", "state", "revision")
+        _result, where = await self.indexed_on(
+            lambda: self.route(
+                "edit_history_label",
+                fields,
+                device_id="a",
+                label_start=start,
+                label_end=start + 3600,
+                start=start,
+                end=start + 1800,
+                state="present",
+                revision=self.device["label_revision"],
+            )
+        )
+        self.assertIn(False, where, "the touched day was indexed")
+        self.assertNotIn(True, where, "but never on the event loop")
+        self.assert_counted_afresh()
+
+    async def test_the_first_label_after_a_restart_does_not_wait_for_counting(self):
+        """Regression: the first label after a restart, trim or discarded cleanup waited for
+        all of the radar's history to be counted (about 5 s for a week) before it applied."""
+        from tuner_under_test.history import label_counts
+
+        self.history()
+        counting, real = asyncio.Event(), label_counts.ensure
+
+        async def held(runtime, device_id):
+            await counting.wait()
+            await real(runtime, device_id)
+
+        with patch.object(label_counts, "ensure", held):
+            result = await asyncio.wait_for(self.edit(), 5)
+            self.assertEqual(result["labelled_samples"], 30)
+            self.assertEqual(self.device["history_labels"][-1]["state"], "present")
+            self.assertIn("a", self.runtime._label_rebuilds, "histograms follow")
+            counting.set()
+            await asyncio.gather(*self.runtime._label_rebuilds.values())
+        self.assert_counted_afresh()
+
+    async def hold_updates(self):
+        """Kept counts whose next update waits for the returned event (set from the loop)."""
+        import threading
+
+        from tuner_under_test.history import label_counts
+
+        self.history()
+        await self.edit()
+        await asyncio.gather(*self.runtime._label_rebuilds.values())
+        release, started, real = threading.Event(), asyncio.Event(), label_counts.Counts.update
+        loop = asyncio.get_running_loop()
+
+        def held(counts, *args):
+            loop.call_soon_threadsafe(started.set)
+            release.wait(10)
+            return real(counts, *args)
+
+        return release, started, patch.object(label_counts.Counts, "update", held)
+
+    async def test_a_label_change_during_an_update_is_counted_too(self):
+        release, started, holding = await self.hold_updates()
+        fields = ("device_id", "state", "timeout_seconds")
+        with holding:
+            await self.route("set_training_state", fields, device_id="a", state="present")
+            await asyncio.wait_for(started.wait(), 5)
+            start = self.now - 2 * DAY
+            websocket = harness.sys.modules["tuner_under_test.runtime.websocket"]
+            message = {"device_id": "a", "start": start, "end": start + 3600, "state": "present"}
+            await websocket._websocket_result(
+                self.runtime, "label_history_range", ("device_id", "start", "end", "state"), message
+            )
+            release.set()
+            await asyncio.gather(*self.runtime._label_rebuilds.values())
+        self.assertEqual(self.runtime._label_rebuilds, {})
+        self.assert_counted_afresh()
+
+    async def test_counts_being_updated_are_not_counted_again_meanwhile(self):
+        """The hourly retention keeps every radar's counts ready: one being updated has them."""
+        from tuner_under_test.history import label_counts
+        from tuner_under_test.worker import recount
+
+        release, started, holding = await self.hold_updates()
+        fields = ("device_id", "state", "timeout_seconds")
+        with holding, patch.object(recount, "calculate", side_effect=AssertionError("recount")):
+            await self.route("set_training_state", fields, device_id="a", state="present")
+            await asyncio.wait_for(started.wait(), 5)
+            await label_counts.ensure(self.runtime, "a")
+            release.set()
+            await harness.settled(self.runtime)
+        self.assert_counted_afresh()
+
+    async def test_a_radar_removed_during_an_update_is_not_rebuilt(self):
+        release, started, holding = await self.hold_updates()
+        fields = ("device_id", "state", "timeout_seconds")
+        before = self.device["histograms"]
+        with holding:
+            await self.route("set_training_state", fields, device_id="a", state="present")
+            await asyncio.wait_for(started.wait(), 5)
+            removed = self.runtime.data["devices"].pop("a")
+            release.set()
+            await harness.settled(self.runtime)
+        self.assertIs(removed["histograms"], before, "left as it was when removed")
+
+    async def test_counts_of_a_mostly_rewritten_history_are_counted_afresh_by_the_worker(self):
+        import threading
+
+        from tuner_under_test.history import labels
+        from tuner_under_test.worker import recount
+
+        self.history(days=4)
+        await self.edit()
+        await harness.settled(self.runtime)
+        days = self.runtime._days
+        days.delete("a", days.days("a")[:3])  # As a storage trim: most kept days go.
+        loop_thread, where = threading.current_thread(), []
+        real = recount.calculate
+
+        def spy(*args, **kwargs):
+            where.append(threading.current_thread() is loop_thread)
+            return real(*args, **kwargs)
+
+        fields = ("device_id", "state", "timeout_seconds")
+        with patch.object(recount, "calculate", spy):
+            await self.route("set_training_state", fields, device_id="a", state="present")
+            await harness.settled(self.runtime)
+        self.assertEqual(where, [False], "counted afresh once, off the loop")
+        rebuilt = self.device["histograms"]
+        self.runtime._label_counts.clear()
+        self.assertEqual(rebuilt, labels._rebuild_histograms(self.runtime, self.device))
+
+    async def test_clearing_a_radar_during_an_update_keeps_no_counts(self):
+        release, started, holding = await self.hold_updates()
+        fields = ("device_id", "state", "timeout_seconds")
+        with holding:
+            await self.route("set_training_state", fields, device_id="a", state="present")
+            await asyncio.wait_for(started.wait(), 5)
+            pending = list(self.runtime._label_rebuilds.values())
+            await self.route("clear_samples", ("device_id",), device_id="a")
+            release.set()
+            await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.sleep(0.1)  # The executor pass finishes after the cancellation.
+        self.assertNotIn("a", self.runtime._label_counts)
+        self.assertEqual(self.device["histograms"], {})
 
     async def counted_on(self, action):
         """Threads that counted all history while ``action`` ran: True for the event loop."""

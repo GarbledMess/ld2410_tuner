@@ -126,7 +126,7 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(
             attribution, "radar_attribution", wraps=attribution.radar_attribution
         ) as spy:
-            self.runtime.label_history_range("b", self.at(0), self.at(10), "not_present")
+            await self.runtime.label_history_range("b", self.at(0), self.at(10), "not_present")
             assert self.b["label_revision"] == revision + 1
             # Deliberate change: a room peer's references read b's labels, so a is stale too.
             assert await self.request(None) == ["a", "b"]
@@ -167,7 +167,7 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
         await self.request({"b"})
         await self.started()
         before = deepcopy(self.b.get("reference_profile"))
-        self.runtime.label_history_range("a", self.at(QUIET), self.at(QUIET + 40), "present")
+        await self.runtime.label_history_range("a", self.at(QUIET), self.at(QUIET + 40), "present")
         self.release.set()
         await self.finish()
         assert len(self.calls) == 2, "the stale result must be recomputed"
@@ -450,7 +450,7 @@ class StaleReferenceTests(unittest.IsolatedAsyncioTestCase):
         refs.observe(profile, {"g0_move": 9}, "not_present", "entity", 0.9, when - 9000)
         refs.observe(profile, {"g0_move": 9}, "not_present", "entity", 0.9, when)
         with patch.object(training, "rebuild_human", wraps=training.rebuild_human) as rebuild:
-            self.runtime.label_history_range("a", when - 1, when + 30, "present")
+            await self.runtime.label_history_range("a", when - 1, when + 30, "present")
             await self.idle()
             rebuild.assert_not_called()
         periods = self.device["reference_profile"]["periods"]
@@ -463,7 +463,7 @@ class StaleReferenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_device_label_edit_marks_the_radars_room_peers_stale(self):
         # a's labels decide the room truth b's references are rebuilt from.
         self.scenario()
-        self.runtime.label_history_range("a", self.at(QUIET), self.at(QUIET + 40), "present")
+        await self.runtime.label_history_range("a", self.at(QUIET), self.at(QUIET + 40), "present")
         assert STALE in self.runtime.data["devices"]["a"]
         assert STALE in self.b
 

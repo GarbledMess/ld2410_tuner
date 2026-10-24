@@ -229,10 +229,10 @@ class RoomSourceTests(unittest.IsolatedAsyncioTestCase):
         self.entity("off")
         self.run_ticks(start + 12, start + 12)
 
-    def test_sensor_retrain_keeps_member_learning_and_open_edits_valid(self):
+    async def test_sensor_retrain_keeps_member_learning_and_open_edits_valid(self):
         self.office()
         device = self.runtime.data["devices"]["a"]
-        self.runtime.label_history_range("a", 10, 20, "present")
+        await self.runtime.label_history_range("a", 10, 20, "present")
         device["last_learning"] = {"id": "kept"}
         revision = device["label_revision"]
         self.configure()

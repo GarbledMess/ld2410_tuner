@@ -6,7 +6,6 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 
 from ..const import DOMAIN, TRAINING_STATES
-from ..history import label_counts
 from ..worker.supervisor import Busy, Closed
 
 
@@ -340,8 +339,6 @@ async def _websocket_result(runtime, method, fields, message):
     import inspect
 
     values = [message.get(field) for field in fields]
-    if method in label_counts.EDITS:
-        await label_counts.ensure(runtime, values[0])
     if method == "set_training_state":
         values[-1] = values[-1] or None
     result = getattr(runtime, method)(*values)

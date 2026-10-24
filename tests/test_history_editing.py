@@ -26,13 +26,13 @@ class HistoryEditingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.device["label_revision"], 1)
         self.assertNotIn("last_learning", self.device)
 
-    def test_remove_unknown_restores_stored_guesses_without_deleting_recordings(self):
+    async def test_remove_unknown_restores_stored_guesses_without_deleting_recordings(self):
         self.configuration()
         keys = list(self.device["last_learning"]["entities"])
         row = bytes(30 if key in keys else 255 for key in harness.constants.HISTORY_KEYS)
         harness.record_rows(self.runtime, "a", [(self.now - 12, row + bytes((1, 100)))])
         recorded = list(harness.spans.events(self.runtime, "a"))
-        self.runtime.label_history_range("a", self.now - 20, self.now - 1, "unknown")
+        await self.runtime.label_history_range("a", self.now - 20, self.now - 1, "unknown")
         entities, current = self.runtime._threshold_configuration("a")
         before = self.runtime._fit_history("a", entities, current)
         self.assertEqual(before["automatic_evidence"]["samples"]["present"], 0)
@@ -45,7 +45,7 @@ class HistoryEditingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(harness.spans.events(self.runtime, "a")), recorded)
         self.hass.services.async_call.assert_not_called()
 
-    def test_edit_rebuilds_human_counts_for_the_new_boundaries(self):
+    async def test_edit_rebuilds_human_counts_for_the_new_boundaries(self):
         base = self.now - 60
         self.device["history_labels"] = [{"start": base + 10, "end": base + 40, "state": "present"}]
         row = bytes([30] * len(harness.constants.HISTORY_KEYS))
@@ -53,6 +53,7 @@ class HistoryEditingTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.edit_history_label(
             "a", base + 10, base + 40, base + 20, base + 30, "not_present", 0
         )
+        await harness.settled(self.runtime)
         series = self.device["histograms"]["g0_move"]
         self.assertEqual(sum(series["present"]), 0)
         # 10 s of empty-labelled recording, stored to a thousandth of a sample.

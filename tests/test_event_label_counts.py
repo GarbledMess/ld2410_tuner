@@ -190,13 +190,17 @@ class NativeLabelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         assert self.device["histograms"]["g0_move"]["present"][11] == pytest.approx(2, abs=1e-3)
         with patch.object(labels.time, "time", return_value=self.now + 30):
             self.runtime.set_training_state("a", "unknown")
+            await harness.settled(self.runtime)
         assert self.device["histograms"]["g0_move"]["present"][11] == pytest.approx(2, abs=1e-3)
         assert self.device["histograms"]["g0_move"]["not_present"][11] == pytest.approx(3)
 
-    def test_retrospective_response_reports_physical_observation_not_event_count(self):
+    async def test_retrospective_response_reports_physical_observation_not_event_count(self):
         self.native(self.now - 60)
         with patch.object(labels.time, "time", return_value=self.now):
-            result = self.runtime.label_history_range("a", self.now - 45, self.now - 15, "present")
+            result = await self.runtime.label_history_range(
+                "a", self.now - 45, self.now - 15, "present"
+            )
+            await harness.settled(self.runtime)
         assert result["labelled_samples"] == 30 / 6
         assert result["observed_seconds"] == pytest.approx(30)
         assert result["support_basis"] == "observed_native_duration"
@@ -231,9 +235,10 @@ class NativeLabelRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # Recorded from the millisecond of ``now``: within a millisecond of 12 s.
         assert self.device["histograms"]["g0_move"]["present"][11] == pytest.approx(2, abs=1e-3)
 
-    def test_unavailable_native_span_reports_no_observed_support(self):
+    async def test_unavailable_native_span_reports_no_observed_support(self):
         self.native(self.now - 60, None)
         with patch.object(labels.time, "time", return_value=self.now):
-            result = self.runtime.label_history_range("a", self.now - 60, self.now, "present")
+            result = await self.runtime.label_history_range("a", self.now - 60, self.now, "present")
+            await harness.settled(self.runtime)
         assert result["observed_seconds"] == 0
         assert sum(self.device["histograms"]["g0_move"]["present"]) == 0

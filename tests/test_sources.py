@@ -103,7 +103,7 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.entity("sensor.phone_area", "Main Bedroom")
         assert sources.estimate(self.runtime, self.device)["state"] == "present"
 
-    def test_manual_corrections_win_in_the_actual_learning_input(self):
+    async def test_manual_corrections_win_in_the_actual_learning_input(self):
         self.configure(negative=True)
         self.entity("binary_sensor.camera_person", "on")
         self.sample(self.now, 70)
@@ -123,10 +123,10 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
                 for source in ("human", "automatic")
             }
 
-        self.runtime.label_history_range("a", self.now - 1, self.now + 1, "not_present")
+        await self.runtime.label_history_range("a", self.now - 1, self.now + 1, "not_present")
         # Human [0, 1) s outranks the external present guess there; the guesses keep the rest.
         assert measured() == {"human": (0, 1), "automatic": (5, 6)}
-        self.runtime.label_history_range("a", self.now + 5, self.now + 7, "unknown")
+        await self.runtime.label_history_range("a", self.now + 5, self.now + 7, "unknown")
         assert measured() == {"human": (0, 1), "automatic": (4, 5)}  # Excluded: no evidence.
 
     def test_bermuda_distance_readings_and_negative_evidence(self):

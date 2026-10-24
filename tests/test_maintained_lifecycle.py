@@ -82,7 +82,7 @@ class MaintainedLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     runtime._days.flush(NOW)
                     self.assert_full_oracles(f"flush-{batch}")
 
-            labels.label_history_range(runtime, "a", start + 400, start + 700, "not_present")
+            await labels.label_history_range(runtime, "a", start + 400, start + 700, "not_present")
             self.assert_full_oracles("own-label-add")
             labels.edit_history_label(
                 runtime,
