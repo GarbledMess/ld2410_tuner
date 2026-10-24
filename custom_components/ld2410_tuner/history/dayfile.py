@@ -25,7 +25,8 @@ GATES = 18
 MISSING, FLOAT = 255, 254
 CHANGE, END, GUESS, SPAN = range(4)
 STATES = (None, "present", "not_present")
-MAGIC, VERSION = b"LDH1", 2
+MAGIC, VERSION = b"LDH1", 3
+VERSIONS = (1, 2, VERSION)  # Readable; startup rewrites older files to VERSION.
 HEADER = struct.Struct("<BqqII18B")  # version, start ms, end ms, rows, guesses, float gates.
 RUN = struct.Struct("<iiBBB")  # start, end (ms from day start), state code, level, basis.
 
@@ -457,13 +458,15 @@ def encode_day(day):
         )
     )
     starts = _offsets(day, day.times)
-    # Small deltas and coverage durations compress well even when an entire
-    # timestamp column exceeds zlib's dictionary. Gate values remain lossless.
     if version == 1:
         body += starts.tobytes() + _offsets(day, day.ends).tobytes()
     else:
-        body += array("i", map(sub, starts, chain((0,), starts))).tobytes()
-        body += array("i", map(sub, _offsets(day, day.ends), starts)).tobytes()
+        # The steps between row starts, and each row's end as its distance from the next
+        # row's start (its own start for the last row): 0 unless coverage stopped there.
+        # Both as byte planes, so zlib finds their near-constant high bytes together.
+        steps = array("i", map(sub, starts, chain((0,), starts)))
+        following = array("i", chain(starts[1:], starts[-1:]))
+        body += _planes(steps) + _planes(array("i", map(sub, _offsets(day, day.ends), following)))
     for column in day.columns:
         body += column if isinstance(column, bytes) else column.tobytes()
     base = _ms(day.start)
@@ -480,29 +483,51 @@ def _times(raw, position, count, base):
     return array("d", seconds), position + 4 * count
 
 
+def _planes(values):
+    """An int32 array as its four byte planes, low bytes first."""
+    raw = values.tobytes()
+    return b"".join(raw[k::4] for k in range(4))
+
+
+def _int32s(raw, position, count, planes):
+    values = array("i")
+    if planes:
+        joined = bytearray(4 * count)
+        for k in range(4):
+            joined[k::4] = raw[position + k * count : position + (k + 1) * count]
+        values.frombytes(joined)
+    else:
+        values.frombytes(raw[position : position + 4 * count])
+    return values
+
+
+def _row_ends(offsets, second, planes):
+    """Each row's end offset: version 3 stores it beside the next row's start (its own for
+    the last row), version 2 as its duration. Python integers: they cannot overflow."""
+    base = chain(offsets[1:], offsets[-1:]) if planes else offsets
+    return list(map(add, second, base))
+
+
 def _time_columns(raw, position, count, start, end, version):
     if version == 1:
         times, position = _times(raw, position, count, start)
         ends, position = _times(raw, position, count, start)
         return times, ends, position
-    deltas, durations = array("i"), array("i")
-    deltas.frombytes(raw[position : position + 4 * count])
-    durations.frombytes(raw[position + 4 * count : position + 8 * count])
-    if len(deltas) != count or len(durations) != count or any(delta < 0 for delta in deltas):
+    planes = version == 3
+    deltas = _int32s(raw, position, count, planes)
+    second = _int32s(raw, position + 4 * count, count, planes)
+    if len(deltas) != count or len(second) != count or min(deltas, default=0) < 0:
         raise ValueError("Invalid delta timestamps")
     try:
         offsets = array("i", accumulate(deltas))
     except OverflowError as error:
         raise ValueError("Invalid delta timestamps") from error
-    if any(
-        duration < 0 or offset + duration > end - start
-        for offset, duration in zip(offsets, durations, strict=True)
-    ):
+    finishes = _row_ends(offsets, second, planes)
+    # Checked over whole columns at C speed: no row ends before it starts or after the day.
+    if min(map(sub, finishes, offsets), default=0) < 0 or max(finishes, default=0) > end - start:
         raise ValueError("Invalid coverage durations")
     times = array("d", map(truediv, map(add, offsets, repeat(start)), repeat(1000)))
-    ends = array(
-        "d", map(truediv, map(add, map(add, offsets, durations), repeat(start)), repeat(1000))
-    )
+    ends = array("d", map(truediv, map(add, finishes, repeat(start)), repeat(1000)))
     return times, ends, position + 8 * count
 
 
@@ -536,7 +561,7 @@ def decode_day(data):
     try:
         raw = zlib.decompress(data[4:])
         version, start, end, count, runs, *floats = HEADER.unpack_from(raw)
-        if version not in (1, VERSION):
+        if version not in VERSIONS:
             raise ValueError(f"Unsupported day file version {version}")
         expected = HEADER.size + count * (8 + sum(4 if flag else 1 for flag in floats))
         if (

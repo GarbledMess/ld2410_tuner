@@ -14,7 +14,7 @@ from tuner_under_test.calibration.duration import DurationGroup, _clip
 from tuner_under_test.calibration.intervals import WeightedTime, across
 from tuner_under_test.calibration.metrics import threshold_masks
 from tuner_under_test.calibration.timing import _Window, hit_runs, merged
-from tuner_under_test.rooms import fitting, replay
+from tuner_under_test.rooms import fitting, replay, window_rates
 from tuner_under_test.rooms.intervals import union
 from tuner_under_test.rooms.objective import LinkedObjective, Objective
 
@@ -372,9 +372,9 @@ class AcrossTests(unittest.TestCase):
             across(masses, [1.0], [2.0])
 
 
-def wide_member(rng, device_id, timing, count=140, guessing=False):
+def wide_member(rng, device_id, timing, count=140, guessing=False, gap=0):
     """A radar with two gates (g0_move, g0_still) and random readings, and the guesses it
-    recorded when ``guessing``."""
+    recorded when ``guessing``; ``gap`` seconds unrecorded after every 30 samples."""
     records = []
     level = 0
     guess = (0, 0)
@@ -384,7 +384,7 @@ def wide_member(rng, device_id, timing, count=140, guessing=False):
             guess = (rng.choice((1, 2)), rng.choice((60, 80, 95))) if guessing else (0, 0)
         records.append(
             (
-                i * 6 + (rng.choice((0, 0, 0, 100)) if i % 37 == 0 else 0),
+                i * 6 + (rng.choice((0, 0, 0, 100)) if i % 37 == 0 else 0) + i // 30 * gap,
                 [
                     max(0, min(100, level + rng.randint(-8, 8))),
                     max(0, min(100, level + rng.randint(-20, 8))),
@@ -429,6 +429,94 @@ def random_thresholds(rng, item):
         key: {gate: rng.choice((0, 10, 20, 35, 50, 100, rng.randint(0, 100))) for gate in gates}
         for key, gates in item.current.items()
     }
+
+
+def plain_radar_rates(item, thresholds):
+    """One radar's rates as its spans are united and integrated (the general path)."""
+    ((key, radar),) = item.radars.items()
+    bits, automatic_bits = radar.bits(thresholds[key]), radar.automatic_bits(thresholds[key])
+    projected = radar.projector.project(bits)
+    automatic = radar.projector.project(automatic_bits)["lower"]
+    return item._source_rates(projected["lower"], projected["upper"], automatic)
+
+
+class SingleRadarRatesTests(unittest.TestCase):
+    """A device's own objective sums each window's integrals instead of uniting its spans.
+    Its sums are exact fixed-point while the general path sums floats span by span, so the
+    two agree to float rounding (a last-bit difference), not necessarily bit for bit."""
+
+    def assertRatesEqual(self, found, expected):
+        self.assertEqual(found.keys(), expected.keys())
+        for source, values in expected.items():
+            for value, wanted in zip(found[source], values, strict=True):
+                self.assertAlmostEqual(value, wanted, delta=1e-12 * max(1, abs(wanted)))
+
+    def test_rates_equal_the_plain_computation_in_any_order(self):
+        rng = random.Random(37)
+        for _ in range(8):
+            member = wide_member(rng, "a", rng.choice(TIMINGS), guessing=rng.random() < 0.7)
+            item = Objective({"a": member}, 0, 900)
+            for _ in range(40):
+                thresholds = random_thresholds(rng, item)
+                expected = plain_radar_rates(Objective({"a": member}, 0, 900), thresholds)
+                self.assertRatesEqual(item.rates(thresholds), expected)
+
+    def test_masks_changed_in_a_few_windows_rate_as_the_plain_computation(self):
+        rng = random.Random(47)
+        for timing in TIMINGS:
+            member = wide_member(rng, "a", timing, count=300, guessing=True, gap=600)
+            item = Objective({"a": member}, 0, 9000)
+            radar = item.radars["a"]
+            frames = radar.projector.frames
+            bits = automatic = random_bits(rng, 300)
+            for _ in range(30):
+                for _ in range(rng.randint(1, 2)):  # A gate's threshold moves: a few windows.
+                    offset, window, _start, _end = rng.choice(frames)
+                    bits ^= (rng.getrandbits(window.mask.bit_length()) & window.mask) << offset
+                if rng.random() < 0.5:
+                    automatic = bits & rng.getrandbits(300)
+                plain = Objective({"a": member}, 0, 9000)
+                plain.windows = None  # The general path: unite the spans, then integrate.
+                expected = plain._rates([(bits, automatic)])
+                found = item._rates([(bits, automatic)])
+                self.assertRatesEqual(found, expected)
+                fresh = Objective({"a": member}, 0, 9000)._rates([(bits, automatic)])
+                self.assertEqual(found, fresh, "the same whichever masks came before")
+
+    def test_a_mask_changed_in_one_window_is_not_walked_window_by_window(self):
+        member = wide_member(random.Random(43), "a", TIMINGS[3], gap=600)
+        item = Objective({"a": member}, 0, 4000)
+        radar = item.radars["a"]
+        assert len(radar.projector.frames) > 3
+        bits = radar.bits({"g0_move": 10, "g0_still": 10})
+        item._rates([(bits, bits)])
+        offset, window, _start, _end = radar.projector.frames[1]
+        changed = bits ^ (window.mask << offset)  # Only the second window's hits differ.
+        expected = Objective({"a": member}, 0, 4000)._rates([(changed, changed)])
+        with patch.object(replay.Projector, "_hits", side_effect=AssertionError("walked")):
+            self.assertEqual(item._rates([(changed, changed)]), expected)
+
+    def test_changed_windows_are_found_from_the_set_bits_alone(self):
+        item = Objective({"a": wide_member(random.Random(53), "a", TIMINGS[3])}, 0, 900)
+        rates = item.windows
+        rates.offsets, rates.ends = [4, 10], [8, 12]  # Windows of samples 4-7 and 10-11.
+        # Bit 11 is in the second window, 9 between the windows, 5 in the first, and 1
+        # before every window.
+        bits = (1 << 11) | (1 << 9) | (1 << 5) | (1 << 1)
+        self.assertEqual(rates._changed(bits), [1, 0])
+        self.assertEqual(rates._changed(1 << 9), [])
+        self.assertEqual(rates._changed(0), [])
+
+    def test_rates_stay_exact_when_the_kept_integrals_are_forgotten(self):
+        rng = random.Random(59)
+        member = wide_member(rng, "a", TIMINGS[4], count=300, guessing=True, gap=600)
+        item = Objective({"a": member}, 0, 9000)
+        with patch.object(window_rates, "LIMIT", 3):
+            for _ in range(20):
+                bits = random_bits(rng, 300)
+                expected = Objective({"a": member}, 0, 9000)._rates([(bits, bits)])
+                self.assertEqual(item._rates([(bits, bits)]), expected)
+                self.assertLessEqual(len(item.windows.known), 3)
 
 
 class ObjectiveEquivalenceTests(unittest.TestCase):

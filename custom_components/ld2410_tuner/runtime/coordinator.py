@@ -54,6 +54,8 @@ class TunerRuntime:
         self.unsub_nightly = None
         self._nightly_task = None
         self.data.setdefault("devices", {})
+        for device in self.data["devices"].values():
+            autolabelling.migrate_segments(device)
         self._save_task: asyncio.Task | None = None
         self._timeout_tasks: dict[str, asyncio.Task] = {}
         self._applying: set[str] = set()

@@ -36,8 +36,7 @@ def set_recording(runtime, device_id, enabled):
     auto = device.get("auto", {})
     auto.pop("last_classification", None)
     auto.pop("filter", None)
-    if auto.get("segments") and auto["segments"][-1].get("end") is None:
-        auto["segments"][-1]["end"] = time.time()
+    auto["open_segment"] = None
     runtime._schedule_save()
     return {"enabled": enabled}
 

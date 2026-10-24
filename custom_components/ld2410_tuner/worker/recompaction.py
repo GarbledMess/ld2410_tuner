@@ -33,7 +33,7 @@ def _legacy_reference(path):
         version = b""
         while not version and (chunk := stream.read(65536)):
             version = inflater.decompress(chunk, 1)
-        if version not in (b"\x01", bytes([dayfile.VERSION])):
+        if not version or version[0] not in dayfile.VERSIONS:
             raise history.HistoryRejected("Invalid finished history version")
         if version == bytes([dayfile.VERSION]):
             return None

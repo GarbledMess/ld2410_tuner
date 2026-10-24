@@ -2,6 +2,7 @@
 
 import copy
 import datetime
+import math
 import os
 import shutil
 import stat
@@ -201,9 +202,45 @@ def _array(kind, raw):
     return result
 
 
+def _number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _vector(item):
+    current = item["current"]
+    return current is None or (
+        item["rows"] > 0  # An open vector belongs to the last row.
+        and type(current) is list
+        and len(current) == dayfile.GATES
+        and all(value is None or _number(value) for value in current)
+    )
+
+
+def _run(run):
+    return run is None or (
+        type(run) is list
+        and len(run) == 4
+        and _number(run[0])
+        and run[1] in dayfile.STATES
+        and all(type(value) is int and 0 <= value <= 255 for value in run[2:])
+    )
+
+
+def _check_state(item):
+    """The child's open builder state must be one a builder can continue appending to."""
+    if not (
+        _vector(item)
+        and _run(item["run"])
+        and type(item["version"]) is int
+        and all(_number(item[key]) for key in ("written", "last", "seen"))
+    ):
+        raise ValueError("Invalid startup live state")
+
+
 def load_live(directory, item):
     """Restore one validated raw builder, off the event loop."""
     raw, position = _read(directory, item), 0
+    _check_state(item)
     live = _Live(datetime.date.fromisoformat(item["date"]), generation=item["generation"])
     builder = live.builder
     size = item["rows"] * 8

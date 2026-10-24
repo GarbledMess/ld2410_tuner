@@ -26,7 +26,8 @@ def main():
         raise ValueError("Expected request path and parent PID")
     # Display jobs are byte-bounded reads and may run beside a numerical child.
     memory_mib = 256 if mode == "display" else 512
-    file_mib = 192 if mode == "storage" else 16
+    # Reading children spill one inflated day (history.DAY_BYTES at most) before mapping it.
+    file_mib = 192 if mode == "storage" else 128
     controls = install(
         Budget(memory_mib * 1024 * 1024, 120, file_mib * 1024 * 1024),
         expected_parent=int(sys.argv[2]),

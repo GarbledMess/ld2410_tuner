@@ -11,7 +11,7 @@ from ..calibration.metrics import threshold_masks
 from ..calibration.scoring import automatic_share, blended_cost, episode_share, error_cost
 from ..calibration.separation import gate_preference
 from ..calibration.settings import DEFAULT_AUTOMATIC_WEIGHT
-from . import adaptive, attribution, evidence, replay, roles, truth
+from . import adaptive, attribution, evidence, replay, roles, truth, window_rates
 from .intervals import Timeline
 
 # Projections of a radar kept for reuse: the other radars do not change while one is searched.
@@ -178,6 +178,11 @@ class Objective:
         self.known = {}  # Rates by the hit masks that gave them.
         self.mass = room_mass(self.truth, coverage, start, end)
         self.totals = {key: value.between(start, end) for key, value in self.mass.items()}
+        self.windows = (
+            window_rates.WindowRates(self, *self.radars.values())
+            if window_rates.suited(self)
+            else None
+        )
         self._sources(automatic_weight)
         self.preferences = self._member_preferences(members, room)
         self.preferred = {
@@ -319,6 +324,9 @@ class Objective:
         return self.known[name]
 
     def _rates(self, masks):
+        if self.windows is not None:
+            ((bits, automatic_bits),) = masks
+            return self.windows.rates(bits, automatic_bits)
         projected = [
             radar.project(mask[0]) for radar, mask in zip(self.radars.values(), masks, strict=True)
         ]

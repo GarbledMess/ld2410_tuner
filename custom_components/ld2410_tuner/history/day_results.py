@@ -6,13 +6,16 @@ by the day file's identity (``DayStore.identity``: rewritten by thinning or Trim
 day) and by the caller's arguments, which include whatever else the result depends on, such
 as the labels inside the day (``fingerprint``). So a day is derived again only when it or its
 labels change. Live and closing days, and days with guesses still to be written into them,
-have no identity and are always derived afresh. Memory only, bounded by entries and size.
+have no identity and are always derived afresh. Memory is bounded by entries and size;
+worker views also persist supported results beside unchanged finished day files.
 """
 
 from array import array
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from threading import RLock
+
+from . import result_cache
 
 MAX_ENTRIES = 8192
 MAX_BYTES = 64 * 1024 * 1024
@@ -32,9 +35,25 @@ def remembered(store, device_id, date, name, args, compute):
         if key in _kept:
             _kept.move_to_end(key)
             return _kept[key][0]
+    reference = _result_identity(store, device_id, date, name)
+    if reference is not None:
+        path, disk_identity = reference
+        found, value = result_cache.load(path, disk_identity, name, args)
+        if found and _result_identity(store, device_id, date, name) == reference:
+            _keep(key, value, _size(value))
+            return value
     value = compute()
     _keep(key, value, _size(value))
+    if reference is not None and _result_identity(store, device_id, date, name) == reference:
+        path, disk_identity = reference
+        result_cache.store(path, path.parent.parent, disk_identity, name, args, value)
     return value
+
+
+def _result_identity(store, device_id, date, name):
+    if name in result_cache.NAMES and hasattr(store, "result_identity"):
+        return store.result_identity(device_id, date)
+    return None
 
 
 def _keep(key, value, size):

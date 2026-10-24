@@ -79,6 +79,20 @@ def test_chronological_candidates_use_original_held_duration():
     assert audit["candidates"]["corrected_positive"]["score"]["empty_seconds"] == 360
 
 
+def test_policies_that_configure_the_same_search_search_once():
+    """With no automatic weight both candidates are the reference policy: the earlier
+    history is searched and measured once for both, with the same audit."""
+    from unittest.mock import patch
+
+    from tuner_under_test.calibration import event_fitting
+
+    with patch.object(event_fitting, "_search", wraps=event_fitting._search) as search:
+        result = fit(_human_scene(), ["g0_move"], automatic_weight=0)
+    audit = result["adaptive_policy"]
+    assert audit["candidates"]["reference"] == audit["candidates"]["corrected_positive"]
+    assert search.call_count == 2  # The earlier history once, then the final search.
+
+
 def test_held_labels_cannot_change_earlier_candidate_thresholds():
 
     rows = _human_scene()

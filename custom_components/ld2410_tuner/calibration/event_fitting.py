@@ -713,21 +713,16 @@ def _selection(objective, view, keys, current, timing, weight, constraints):
         objective.start,
         cutoff,
     )
-    reports, empties = {}, []
+    reports, empties, searched = {}, [], {}
     for policy in ("reference", "corrected_positive"):
         _reference(earlier, policy == "reference", weight)
-        thresholds = _search(earlier)
-        score = _measure(objective, thresholds, start=cutoff)["duration"]
-        reports[policy] = {"thresholds": thresholds, "score": score}
-        empties.append(
-            [
-                _measure(objective, thresholds, start=ep.start, end=ep.end)["duration"][
-                    "false_positive_seconds"
-                ]
-                for ep in model.context.episodes
-                if ep.state == "not_present" and ep.start >= cutoff
-            ]
-        )
+        # The policy only sets ``earlier.reference``: when both set it alike (no automatic
+        # weight), the second search would repeat the first exactly.
+        if earlier.reference not in searched:
+            searched[earlier.reference] = _candidate(objective, earlier, model, cutoff)
+        report, empty = searched[earlier.reference]
+        reports[policy] = dict(report)
+        empties.append(list(empty))
     reference, positive = (item["score"] for item in reports.values())
     choice = select(
         reference,
@@ -744,6 +739,21 @@ def _selection(objective, view, keys, current, timing, weight, constraints):
         training_model=earlier.quality[objective.device_id].audit(),
     )
     return audit
+
+
+def _candidate(objective, earlier, model, cutoff):
+    """One policy's thresholds from the earlier history, scored on the later one, and their
+    false-active seconds in each later empty episode."""
+    thresholds = _search(earlier)
+    score = _measure(objective, thresholds, start=cutoff)["duration"]
+    empty = [
+        _measure(objective, thresholds, start=ep.start, end=ep.end)["duration"][
+            "false_positive_seconds"
+        ]
+        for ep in model.context.episodes
+        if ep.state == "not_present" and ep.start >= cutoff
+    ]
+    return {"thresholds": thresholds, "score": score}, empty
 
 
 def _automatic_evidence(objective, estimated, weight):

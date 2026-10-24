@@ -7,7 +7,7 @@ from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
-from ..history import dayfile, daystore, summaries, summary_cache, worker_snapshot
+from ..history import dayfile, daystore, summaries, worker_snapshot
 from . import codec, history
 
 
@@ -95,6 +95,21 @@ class ReadOnlyDays:
             raise history.HistoryRejected("History changed before derived result acquisition")
         return entry["path"], expected, tuple(tuple(span) for span in entry["late"])
 
+    def result_identity(self, device_id, date):
+        """Identify only unchanged finished sources eligible for disk results."""
+        entry = self.entries.get((device_id, date))
+        if entry is None or not entry.get("persistent", False) or entry["path"] is None:
+            return None
+        path = Path(entry["path"])
+        expected = tuple(map(int, entry["identity"]))
+        try:
+            if history._identity(path.stat()) != expected:
+                return None
+        except OSError:
+            return None
+        late = tuple(tuple(span) for span in entry["late"])
+        return path, (*expected[2:], late)
+
     def day(self, device_id, date, until=None):
         key = device_id, date
         entry = self.entries.get(key)
@@ -114,7 +129,7 @@ class ReadOnlyDays:
         return day
 
     def summary(self, device_id, date, until=None):
-        """Reuse optional indexes only beside identity-checked immutable source files."""
+        """Build an in-memory index from the identity-checked day."""
         day = self.day(device_id, date, until=until)
         if day is None:
             return None
@@ -125,14 +140,10 @@ class ReadOnlyDays:
         expected = tuple(map(int, entry["identity"]))
         if history._identity(path.stat()) != expected:
             raise history.HistoryRejected("History changed before summary acquisition")
-        identity = expected[2:]
-        result = summary_cache.load(day, path, identity=identity)
-        if result is None:
-            result = summaries.of_day(day)
-            summary_cache.store(result, path, path.parent.parent, identity=identity)
+        result = summaries.of_day(day)
         if history._identity(path.stat()) != expected:
             raise history.HistoryRejected("History changed during summary acquisition")
-        return summaries.remember(day, result)
+        return result
 
     def _read(self, entry, date):
         if self.budgets["max_raw_bytes"] <= 0:

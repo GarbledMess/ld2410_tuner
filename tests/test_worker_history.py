@@ -36,6 +36,29 @@ def test_v2_known_answer_and_count_limits_before_columns(monkeypatch):
         history.decode(payload, max_rows=1)
 
 
+def test_v3_files_decode_like_the_day_they_were_made_from():
+    builder = dayfile.DayBuilder(0, 86400)
+    for second, value in ((1.125, 4), (3.625, 8), (50.125, 12)):
+        builder.add(dayfile.Change(second, {0: value}))
+    builder.add(dayfile.End(60.125))
+    day = builder.day()
+    payload = dayfile.encode_day(day)
+    assert zlib.decompress(payload[4:])[0] == 3
+    assert history.decode(payload) == day
+
+
+def test_v3_invalid_times_refused_before_columns(monkeypatch):
+    import struct
+
+    header = dayfile.HEADER.pack(3, 0, 86400000, 1, 0, *([0] * 18))
+    ends = struct.pack("<i", -1)  # Ends before it starts.
+    planes = b"\x00" * 4 + b"".join(ends[k::4] for k in range(4))
+    payload = dayfile.MAGIC + zlib.compress(header + planes + bytes([255]) * 18)
+    monkeypatch.setattr(dayfile, "_columns", lambda *args: pytest.fail("allocated columns"))
+    with pytest.raises(history.HistoryRejected):
+        history.decode(payload)
+
+
 @pytest.mark.parametrize("times", [(-1, 1), (0, -1), (86400000, 1)])
 def test_v2_invalid_times_refused_before_columns(times, monkeypatch):
     import struct
@@ -178,7 +201,7 @@ def test_zero_expansion_budget_still_has_a_limit():
         history.decode(encoded(), max_raw_bytes=0)
 
 
-@pytest.mark.parametrize("version,start,end", [(3, 0, 10), (1, 10, 0)])
+@pytest.mark.parametrize("version,start,end", [(4, 0, 10), (0, 0, 10), (1, 10, 0)])
 def test_invalid_header(version, start, end):
     payload = dayfile.MAGIC + zlib.compress(
         dayfile.HEADER.pack(version, start, end, 0, 0, *([0] * 18))

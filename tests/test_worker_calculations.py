@@ -389,10 +389,10 @@ def test_real_numerical_operations_in_independent_python(tmp_path, operation):
 
 
 @pytest.mark.parametrize("mutable", [False, True])
-def test_summary_cache_only_persists_for_original_finished_files(tmp_path, mutable):
+def test_summary_never_persists_for_finished_or_mutable_files(tmp_path, mutable):
     from types import SimpleNamespace
 
-    from tuner_under_test.history import dayfile, daystore, summary_cache
+    from tuner_under_test.history import dayfile, daystore
 
     store = daystore.DayStore(tmp_path / "history")
     date = daystore.date_of(100)
@@ -414,10 +414,8 @@ def test_summary_cache_only_persists_for_original_finished_files(tmp_path, mutab
         summary = restored._days.summary("a", date)
         assert summary is not None
         sidecar = Path(entry["path"]).with_suffix(".sum")
-        assert sidecar.exists() is (not mutable)
-        assert store._path("a", date, ".sum").exists() is (not mutable)
-        if not mutable:
-            assert summary_cache.load(summary.day, store._path("a", date, ".day")) is not None
+        assert not sidecar.exists()
+        assert not store._path("a", date, ".sum").exists()
 
     from pathlib import Path
 

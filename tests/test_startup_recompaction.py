@@ -40,6 +40,22 @@ def test_startup_recompacts_legacy_day_losslessly_without_finished_handoff(tmp_p
     assert result["patches"] == {}
 
 
+def test_startup_rewrites_version_2_days_into_the_smaller_version_3(tmp_path):
+    root = tmp_path / "history"
+    path = root / "radar" / "2025-10-15.day"
+    path.parent.mkdir(parents=True)
+    header = dayfile.HEADER.pack(
+        2, round(START * 1000), round((START + 86400) * 1000), 2, 1, *([0] * 18)
+    )
+    body = struct.pack("<4i", 1125, 49000, 8000, 10000) + bytes([4, 12]) + bytes([255, 255]) * 17
+    body += dayfile.RUN.pack(1125, 9125, 1, 18, 1)
+    path.write_bytes(dayfile.MAGIC + zlib.compress(header + body))
+    original = dayfile.decode_day(path.read_bytes())
+    startup.execute({"root": str(root), "data": {"devices": {}}, "now": START + 2 * 86400})
+    assert zlib.decompress(path.read_bytes()[4:])[0] == 3
+    assert dayfile.decode_day(path.read_bytes()) == original
+
+
 def test_current_day_encoding_is_not_rewritten(tmp_path):
     root = tmp_path / "history"
     path = legacy_file(root)

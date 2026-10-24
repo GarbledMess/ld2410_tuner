@@ -1,5 +1,6 @@
 """Delivered HA events preserve pulse timing and whole-percentage gate energies."""
 
+import asyncio
 import datetime
 import time
 import types
@@ -80,7 +81,7 @@ class AcquisitionTests(unittest.IsolatedAsyncioTestCase):
             (r[0], (r[2][HISTORY_KEYS.index("g0_move")], r[2][HISTORY_KEYS.index("g1_move")]))
             for r in self.rows(8)
         ] == [(1, (30, None)), (2, (30, 25)), (3, (None, 25))]
-        assert self.runtime._live["a"]["g0_move"] == 30
+        assert self.runtime._live["a"] == {"g1_move": 25}
 
     def test_invalid_first_reading_starts_no_coverage(self):
         for value in ("unavailable", "unknown", "bad", "140"):
@@ -112,7 +113,7 @@ class AcquisitionTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(time, "time", return_value=START + 3610):
                 await flushing.flush(self.runtime)
             reopened = daystore.DayStore(self.runtime._days.root)
-            reopened.open(START + 3620)
+            await asyncio.to_thread(reopened.open, START + 3620)
             day = reopened.day("a", DAY, until=START + 3620)
             assert list(day.times) == [START + 1]
             assert list(day.ends) == [START + 3600]

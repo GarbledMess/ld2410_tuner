@@ -43,11 +43,7 @@ def _inflate(stream, maximum):
 
 def _header(raw, max_rows, max_guesses):
     version, start, end, rows, guesses, *flags = dayfile.HEADER.unpack_from(raw)
-    if (
-        version not in (1, dayfile.VERSION)
-        or end < start
-        or any(flag not in (0, 1) for flag in flags)
-    ):
+    if version not in dayfile.VERSIONS or end < start or any(flag not in (0, 1) for flag in flags):
         raise HistoryRejected("Invalid history header")
     if (max_rows is not None and rows > max_rows) or (
         max_guesses is not None and guesses > max_guesses

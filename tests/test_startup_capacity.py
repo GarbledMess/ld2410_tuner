@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 import test_tuner  # noqa: F401
 from tuner_under_test.history import daystore
+from tuner_under_test.worker import history as worker_history
 from tuner_under_test.worker import startup
 
 START = 1_760_486_400.0
@@ -77,8 +78,7 @@ def test_decoded_budget_accepts_exact_boundary_and_rejects_next_record():
             startup._budget({"live": [{**descriptor, "confirmed": 3}]})
 
 
-@pytest.mark.parametrize("mode,expected", [("storage", 192), ("numerical", 16)])
-def test_child_file_limit_matches_storage_handoff_without_changing_cpu_or_memory(mode, expected):
+def _installed_budget(mode):
     package = str(startup.__file__.rsplit("worker", 1)[0])
     script = "\n".join(
         [
@@ -92,7 +92,7 @@ def test_child_file_limit_matches_storage_handoff_without_changing_cpu_or_memory
             " print(json.dumps([budget.memory_bytes,budget.cpu_seconds,budget.file_bytes]));raise Captured",
             "limits.install=install",
             "entrypoint._namespace=lambda:None",
-            f"sys.argv=['entrypoint','unused','42']+({['storage'] if mode == 'storage' else []!r})",
+            f"sys.argv=['entrypoint','unused','42']+({[] if mode == 'numerical' else [mode]!r})",
             "try: entrypoint.main()",
             "except Captured: pass",
         ]
@@ -101,4 +101,15 @@ def test_child_file_limit_matches_storage_handoff_without_changing_cpu_or_memory
         [sys.executable, "-I", "-S", "-c", script], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == [512 * 1024**2, 120, expected * 1024**2]
+    return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize("mode,expected", [("storage", 192), ("numerical", 128)])
+def test_child_file_limit_matches_storage_handoff_without_changing_cpu_or_memory(mode, expected):
+    assert _installed_budget(mode) == [512 * 1024**2, 120, expected * 1024**2]
+
+
+@pytest.mark.parametrize("mode", ["numerical", "display"])
+def test_reading_children_may_spill_the_largest_accepted_day(mode):
+    # A finished day inflates into one temporary file of up to DAY_BYTES before mapping.
+    assert _installed_budget(mode)[2] >= worker_history.DAY_BYTES

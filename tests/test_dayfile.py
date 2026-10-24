@@ -89,11 +89,8 @@ def test_corrupt_finished_file_is_rejected():
         dayfile.decode_day(b"not a day file")
 
 
-def test_v2_delta_times_and_durations_preserve_gaps_and_milliseconds():
-    import struct
-    import zlib
-
-    day = dayfile.day_from_log(
+def gapped_day():
+    return dayfile.day_from_log(
         [
             change(1.125, g0=4),
             change(3.625, g0=8),
@@ -105,17 +102,64 @@ def test_v2_delta_times_and_durations_preserve_gaps_and_milliseconds():
         START,
         END,
     )
+
+
+def unplaned(raw, position, count):
+    """The int32 values stored as four byte planes (low bytes first)."""
+    import struct
+
+    joined = bytearray(4 * count)
+    for k in range(4):
+        joined[k::4] = raw[position + k * count : position + (k + 1) * count]
+    return struct.unpack(f"<{count}i", joined)
+
+
+def test_v3_stores_time_steps_as_byte_planes_and_ends_beside_the_next_start():
+    import zlib
+
+    day = gapped_day()
     encoded = dayfile.encode_day(day)
     raw = zlib.decompress(encoded[4:])
-    assert raw[0] == 2, "new files use compact delta timestamps"
-    assert struct.unpack_from("<6i", raw, dayfile.HEADER.size) == (
-        1125,
-        2500,
-        46500,
-        2500,
-        5500,
-        10000,
-    )
+    assert raw[0] == 3, "new files use version 3"
+    size = dayfile.HEADER.size
+    assert unplaned(raw, size, 3) == (1125, 2500, 46500)  # Steps between row starts.
+    # A row's end as its distance from the next row's start: 0 when it runs on into it.
+    assert unplaned(raw, size + 12, 3) == (0, 5500 - 46500, 10000)
+    assert dayfile.decode_day(encoded) == day
+
+
+def test_v2_known_answer_remains_readable():
+    import struct
+    import zlib
+
+    header = dayfile.HEADER.pack(2, round(START * 1000), round(END * 1000), 3, 0, *([0] * 18))
+    body = struct.pack("<6i", 1125, 2500, 46500, 2500, 5500, 10000)
+    body += bytes([4, 8, 12]) + bytes([255] * 3) * 17
+    day = dayfile.decode_day(dayfile.MAGIC + zlib.compress(header + body))
+    assert day == gapped_day()
+
+
+def test_v3_is_much_smaller_than_v2_for_steadily_recorded_days():
+    import random
+    import zlib
+    from array import array
+
+    rng = random.Random(3)
+    builder = dayfile.DayBuilder(START, END)
+    t = 0.0
+    for _ in range(20000):
+        t += rng.choice((0.4, 0.9, 1.3, 2.0, 2.2)) + rng.randrange(300) / 1000  # Jitter.
+        builder.add(change(round(t, 3), **{f"g{g}": rng.randrange(30) for g in range(10)}))
+    day = builder.day()
+    starts = dayfile._offsets(day, day.times)
+    v2 = dayfile.HEADER.pack(2, round(START * 1000), round(END * 1000), len(starts), 0, *([0] * 18))
+    v2 += array("i", (b - a for a, b in zip((0, *starts), starts, strict=False))).tobytes()
+    v2 += array(
+        "i", (e - s for s, e in zip(starts, dayfile._offsets(day, day.ends), strict=True))
+    ).tobytes()
+    v2 += b"".join(day.columns)
+    encoded = dayfile.encode_day(day)
+    assert len(encoded) < 0.8 * len(dayfile.MAGIC + zlib.compress(v2, 6))
     assert dayfile.decode_day(encoded) == day
 
 
@@ -148,6 +192,32 @@ def test_delta_layout_compacts_large_history_without_dropping_events():
     encoded = dayfile.encode_day(day)
     assert len(encoded) < 0.7 * len(zlib.compress(legacy, 6))
     assert dayfile.decode_day(encoded) == day
+
+
+def planes(*values):
+    import struct
+
+    raw = struct.pack(f"<{len(values)}i", *values)
+    return b"".join(raw[k::4] for k in range(4))
+
+
+@pytest.mark.parametrize(
+    "steps,ends",
+    [
+        ((-1,), (1,)),  # A row before the day.
+        ((0,), (-1,)),  # A row ending before it starts.
+        ((86400000,), (1,)),  # A row past the day's end.
+        ((0, 10), (2147483647, 0)),  # An end that overflows once its next start is added.
+    ],
+)
+def test_invalid_v3_time_ranges_are_rejected(steps, ends):
+    import zlib
+
+    rows = len(steps)
+    header = dayfile.HEADER.pack(3, 0, 86400000, rows, 0, *([0] * 18))
+    body = planes(*steps) + planes(*ends) + bytes([255]) * 18 * rows
+    with pytest.raises(ValueError):
+        dayfile.decode_day(dayfile.MAGIC + zlib.compress(header + body))
 
 
 @pytest.mark.parametrize("times", [(-1, 1), (0, -1), (86400000, 1)])

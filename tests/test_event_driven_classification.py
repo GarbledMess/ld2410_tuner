@@ -14,6 +14,7 @@ from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import test_tuner as harness
 
 inference = sys.modules["tuner_under_test.presence.inference"]
@@ -129,13 +130,15 @@ class TickTests(unittest.IsolatedAsyncioTestCase):
         self.sample(self.now, 10)
         auto = self.device["auto"]
         classified = deepcopy(auto["last_classification"])
-        segments = deepcopy(auto.get("segments", []))
+        counts = dict(auto.get("segment_counts", {}))
+        opened = auto.get("open_segment")
         for number in range(1, 20):
             self.sample(self.now + number * TICK, 10)
         last = auto["last_classification"]
         self.assertEqual(last["timestamp"], self.now + 19 * TICK)
         self.assertEqual({**last, "timestamp": 0}, {**classified, "timestamp": 0})
-        self.assertEqual(auto.get("segments", []), segments)
+        self.assertEqual(auto.get("segment_counts", {}), counts)
+        self.assertEqual(auto.get("open_segment"), opened)
         with patch.object(autolabelling.time, "time", return_value=self.now + 19 * TICK + 1):
             self.assertEqual(autolabelling.auto_learning_summary(self.device)["last"], last)
 
@@ -184,10 +187,8 @@ class TickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["state"], "present")
         self.run_ticks(3 * HEARTBEAT, 80, start=40 + TICK)
         self.assertEqual(self.device["auto"]["last_classification"]["state"], "present")
-        self.assertEqual(self.device["auto"]["segments"][-1]["state"], "present")
-        self.assertEqual(
-            len([s for s in self.device["auto"]["segments"] if s["state"] == "present"]), 1
-        )
+        self.assertEqual(self.device["auto"]["open_segment"], "present")
+        self.assertEqual(self.device["auto"]["segment_counts"]["present"], 1)
 
 
 class FilterTests(unittest.TestCase):
@@ -387,3 +388,117 @@ class ReplayTests(unittest.TestCase):
         report = tool.evaluate(rows, [KEY], steady_model(), "causal")
         self.assertEqual(report["readings"], 40)
         self.assertEqual(report["classifications"], 4)
+
+
+def segment_runtime(auto=None):
+    device = {} if auto is None else {"auto": auto}
+    owner = harness.mod.TunerRuntime(None, None, {"devices": {"a": device}})
+    return owner, device
+
+
+def update_segment(owner, device, state, now, model="external-test"):
+    autolabelling._update_auto_state(
+        owner,
+        "a",
+        device,
+        {
+            "state": state,
+            "confidence": 0.9,
+            "score": 0.8,
+            "active_gates": 1,
+            "top_gates": [],
+            "basis": "external",
+            "model": model,
+        },
+        now,
+    )
+
+
+def test_counts_follow_start_repeat_transition_unknown_and_resume():
+    owner, device = segment_runtime()
+    for state, now in (
+        ("present", 1),
+        ("present", 2),
+        ("not_present", 3),
+        ("unknown", 4),
+        ("unknown", 5),
+        ("not_present", 6),
+    ):
+        update_segment(owner, device, state, now)
+    auto = device["auto"]
+    assert auto["segment_counts"] == {"present": 1, "not_present": 2}
+    assert auto["open_segment"] == "not_present"
+    assert "segments" not in auto
+    summary = autolabelling.auto_learning_summary(device)
+    assert summary["segments"] == 3
+    assert summary["segments_by_state"] == {"present": 1, "not_present": 2}
+    summary["segments_by_state"]["present"] = 100
+    assert auto["segment_counts"]["present"] == 1
+    update_segment(owner, device, "unknown", 7)
+    assert auto["open_segment"] is None
+    assert auto["segment_counts"] == {"present": 1, "not_present": 2}
+
+
+def test_counts_are_not_capped_at_500():
+    owner, device = segment_runtime()
+    for index in range(602):
+        update_segment(owner, device, "present" if index % 2 else "not_present", index)
+    summary = autolabelling.auto_learning_summary(device)
+    assert summary["segments"] == 602
+    assert summary["segments_by_state"] == {"present": 301, "not_present": 301}
+    assert "segments" not in device["auto"]
+
+
+def test_model_change_starts_a_segment_even_when_label_matches():
+    owner, device = segment_runtime()
+    update_segment(owner, device, "present", 1)
+    update_segment(owner, device, "present", 2, model="replacement")
+    assert device["auto"]["segment_counts"] == {"present": 2}
+
+
+@pytest.mark.parametrize("ending,opened", [(None, "present"), (3, None)])
+def test_load_migrates_retained_segments_and_saves_compact_state(ending, opened):
+    auto = {
+        "segments": [
+            {"state": "not_present", "end": 1},
+            {"end": 2},
+            {"state": "present", "end": ending},
+        ],
+        "observations": {"present": 10},
+        "feedback": [{"correct": True}],
+    }
+    owner, device = segment_runtime(auto)
+    assert "segments" not in auto
+    assert auto["segment_counts"] == {"not_present": 1, "unknown": 1, "present": 1}
+    assert auto["open_segment"] == opened
+    assert auto["observations"] == {"present": 10}
+    assert auto["feedback"] == [{"correct": True}]
+    saved = deepcopy(owner.data)
+    harness.mod.TunerRuntime(None, None, saved)
+    assert saved == owner.data  # A second load never counts the same segments again.
+    update_segment(owner, device, "present", 10)
+    assert auto["segment_counts"]["present"] == 2  # Confirmation restarts after reload.
+
+
+def test_load_migrates_empty_list_and_preserves_new_counts():
+    _, device = segment_runtime({"segments": []})
+    assert device["auto"] == {"segment_counts": {}, "open_segment": None}
+    auto = {"segment_counts": {"present": 700}, "open_segment": "present"}
+    _, device = segment_runtime(auto)
+    assert device["auto"] == auto
+    assert autolabelling.auto_learning_summary({})["segments"] == 0
+
+
+def test_pausing_and_resuming_recording_closes_open_state_without_losing_counts():
+    owner, device = segment_runtime()
+    owner.hass = types.SimpleNamespace()
+    owner._schedule_save = lambda: None
+    owner.set_training_state = lambda *_: None
+    update_segment(owner, device, "present", 1)
+    with patch("tuner_under_test.history.storage.membership.membership_changed"):
+        owner.set_recording("a", False)
+        assert device["auto"]["open_segment"] is None
+        assert device["auto"]["segment_counts"] == {"present": 1}
+        owner.set_recording("a", True)
+    update_segment(owner, device, "present", 2)
+    assert device["auto"]["segment_counts"] == {"present": 2}

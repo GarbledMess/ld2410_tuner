@@ -104,6 +104,7 @@ class DayStore:
         """Recover the folder after a restart (executor)."""
         if not self.root.exists():
             return
+        summary_cache.prune(self.root)
         for leftover in self.root.glob("*.tmp"):
             leftover.unlink()  # Interrupted finished-day publication, never physical history.
         for folder in sorted(path for path in self.root.iterdir() if path.is_dir()):
@@ -406,33 +407,10 @@ class DayStore:
         return worker_snapshot.acquire(self, device_id, date, until, limits=limits)
 
     def summary(self, device_id, date, until=None):
-        """Acquire a physical index in an executor; generic day reads do no cache I/O.
-
-        Only immutable on-disk days have sidecars. Live and closing builders keep
-        their existing in-memory index lifetime and are never persisted here.
-        """
+        """Build the day's in-memory index (executor: day acquisition can read disk)."""
         summary_cache.worker_only()
-        path = self._path(device_id, date, ".day")
-        with self._lock:
-            live = self._live.get(device_id)
-            mutable = (live is not None and live.date == date) or date in self._closing.get(
-                device_id, {}
-            )
-        try:
-            identity = None if mutable else summary_cache.stamp(path)
-        except OSError:
-            identity = None
         day = self.day(device_id, date, until=until)
-        if day is None:
-            return None
-        if identity is None:
-            return summaries.of_day(day)
-        loaded = summary_cache.load(day, path, identity=identity)
-        if loaded is not None:
-            return summaries.remember(day, loaded)
-        result = summaries.of_day(day)
-        summary_cache.store(result, path, self.root, identity=identity)
-        return result
+        return None if day is None else summaries.of_day(day)
 
     def days(self, device_id):
         """Dates visible to HA snapshots; never performs filesystem operations."""

@@ -15,8 +15,8 @@ the same time when learning is off) and by the panel's "Refresh references" acti
 (sharing Seen by's semaphore, as executor work holds the GIL) copies each queued radar's
 history view on the event loop, computes in the executor and installs the result back on
 the loop. Radars queued while a pass is waiting or running join the next pass. A result is
-discarded, and the radar queued again, when its label revision or a related manual room
-label revision changed while it computed.
+discarded, and the radar queued again, when its label revision, a related manual room
+label revision or a room peer's labels changed while it computed.
 
 A pass takes each radar's stale mark when it copies the history; an event during the pass
 marks it again. A failed (while copying or computing), discarded or cancelled pass puts the
@@ -169,20 +169,28 @@ def _prepare(runtime, device_id, shared=None):
     attribution.prepare(runtime, view, device_id, shared)
     saved = view.data["room_snapshot"] or {"own": [], "groups": {}}
     related = truth.related_to(saved["groups"], saved["own"])
+    members = sorted(set(saved.get("members", ())) - {device_id})
     return {
         "device_id": device_id,
         "view": view,
         "related": related,
-        "stamp": _stamp(runtime, device_id, related),
+        "members": members,
+        "stamp": _stamp(runtime, device_id, related, members),
         "since": time.time(),
         "stale": device.pop(STALE, None),  # Events from now on mark the radar again.
     }
 
 
-def _stamp(runtime, device_id, related):
+def _stamp(runtime, device_id, related, members):
+    """What a result must still match: the radar's label revision, its related manual room
+    label revisions and the labels of the room peers its room truth was read from."""
     manual = runtime.data.get("room_label_revision", {})
-    device = runtime.data["devices"].get(device_id, {})
-    return device.get("label_revision", 0), tuple(manual.get(key, 0) for key in related)
+    devices = runtime.data["devices"]
+    return (
+        devices.get(device_id, {}).get("label_revision", 0),
+        tuple(manual.get(key, 0) for key in related),
+        tuple(attribution.member_signature(devices.get(key, {})) for key in members),
+    )
 
 
 def _restore_all(runtime, jobs):
@@ -220,7 +228,7 @@ def _install(runtime, job, result):
     device = runtime.data["devices"].get(device_id)
     if device is None:
         return
-    if _stamp(runtime, device_id, job["related"]) != job["stamp"]:
+    if _stamp(runtime, device_id, job["related"], job["members"]) != job["stamp"]:
         _restore_all(runtime, [job])
         runtime._reference_pending.add(device_id)  # Recomputed by the worker's next pass.
         return

@@ -85,6 +85,8 @@ def handle_state_change(runtime, event) -> None:
     value = _energy(new_state.state)
     if value is not None:
         runtime._live.setdefault(entity.device_id, {})[key] = value
+    else:
+        runtime._live.get(entity.device_id, {}).pop(key, None)
     ingest.change(runtime, entity.device_id, {key: value}, _event_time(new_state))
 
 

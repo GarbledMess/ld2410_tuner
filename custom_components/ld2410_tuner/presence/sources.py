@@ -1,8 +1,11 @@
 """Independent HA entities supplying automatic, never human, training labels."""
 
+import math
 import re
 import time
 from copy import deepcopy
+
+from homeassistant.helpers import entity_registry as er
 
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
 from . import reference_training, source_buffer
@@ -67,8 +70,10 @@ def _validate_buffers(values):
 def _validate_source(source):
     if not isinstance(source, dict) or source.get("kind") not in ("boolean", "bermuda"):
         raise ValueError("Choose Boolean entity or Bermuda area")
-    if set(source) != {"entity_id", "kind", "area"}:
+    keys = set(source) - ({"max_distance"} if source["kind"] == "bermuda" else set())
+    if keys != {"entity_id", "kind", "area"}:
         raise ValueError("Each source requires an entity, kind and area")
+    _validate_max_distance(source)
     entity_id = source["entity_id"]
     if not isinstance(entity_id, str) or not re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", entity_id):
         raise ValueError("Enter a valid Home Assistant entity ID")
@@ -78,7 +83,34 @@ def _validate_source(source):
         raise ValueError("Bermuda sources need the target area ID or name")
 
 
+def _validate_max_distance(source):
+    if "max_distance" not in source:
+        return
+    value = source["max_distance"]
+    if type(value) not in (int, float) or not 0 < value <= 100:
+        raise ValueError("Maximum distance must be greater than 0 and at most 100 metres")
+
+
+def _distance(hass, source):
+    registry = er.async_get(hass)
+    entry = registry.async_get(source["entity_id"])
+    if entry is None or entry.platform != "bermuda":
+        return None
+    entity_id = registry.async_get_entity_id("sensor", "bermuda", f"{entry.unique_id}_range")
+    entity = hass.states.get(entity_id) if entity_id else None
+    try:
+        value = float(entity.state) if entity else None
+    except (ValueError, TypeError):
+        return None
+    return value if value is not None and math.isfinite(value) else None
+
+
 def source_state(hass, source):
+    return _reading(hass, source)["present"]
+
+
+def _entity_state(hass, source):
+    """The source entity's own answer: on/off, or whether Bermuda puts it in the area."""
     entity = hass.states.get(source["entity_id"])
     if entity is None or str(entity.state).lower() in UNKNOWN:
         return None
@@ -94,13 +126,24 @@ def source_state(hass, source):
     return target in {str(value).casefold() for value in current if value is not None}
 
 
+def _reading(hass, source):
+    """In the area, a maximum distance decides: within it is present, beyond it is outside,
+    and an unusable distance is no state. The reading carries the distance only then."""
+    present = _entity_state(hass, source)
+    if not present or "max_distance" not in source:
+        return {**source, "present": present}
+    distance = _distance(hass, source)
+    present = distance <= source["max_distance"] if distance is not None else None
+    return {**source, "present": present, "distance": distance}
+
+
 def _read_sources(runtime, device):
     return read(runtime.hass, settings(device))
 
 
 def read(hass, config):
     """Read every configured source and reduce them to one present/not_present/unknown state."""
-    readings = [{**source, "present": source_state(hass, source)} for source in config["sources"]]
+    readings = [_reading(hass, source) for source in config["sources"]]
     states = [reading["present"] for reading in readings]
     label = "unknown"
     if True in states:

@@ -5,6 +5,12 @@ const testSourcePicker = require("./source_picker.cjs");
 module.exports = async function testSources(page, screenshotDir) {
   await page.evaluate(async () => {
     window.beforeSources = structuredClone(fixture);
+    fixture.rooms = {
+      groups: {},
+      members: {},
+      ...fixture.rooms,
+      areas: { office: "Office", bedroom: "Bedroom" },
+    };
     window.sourcesWS = panel._hass.callWS;
     window.beforeSourceStates = panel._hass.states;
     panel._hass.states = {
@@ -51,7 +57,125 @@ module.exports = async function testSources(page, screenshotDir) {
   await form.locator('[data-action="source-add"]').click();
   await form.locator("[data-source-kind]").nth(1).selectOption("bermuda");
   await form.locator("[data-source-entity]").nth(1).fill("sensor.phone_area");
-  await form.locator("[data-source-area]").fill("bedroom");
+  const area = form.locator("[data-source-area]");
+  assert.equal(await area.evaluate((element) => element.tagName), "SELECT");
+  assert.deepEqual(await area.locator("option").allTextContents(), [
+    "Choose an area",
+    "Bedroom",
+    "Office",
+  ]);
+  assert.equal(await area.inputValue(), "");
+  assert.equal(await area.evaluate((element) => element.required), true);
+  const beforeEmptySave = await page.evaluate(
+    () =>
+      requests.filter((message) =>
+        message.type.endsWith("/configure_presence_sources"),
+      ).length,
+  );
+  await form.locator('[data-action="sources-save"]').click();
+  await page.waitForFunction(() => panel._activeActions === 0);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        requests.filter((message) =>
+          message.type.endsWith("/configure_presence_sources"),
+        ).length,
+    ),
+    beforeEmptySave,
+  );
+  await area.selectOption("bedroom");
+  await form.locator("[data-source-max-distance]").fill("3");
+  assert.deepEqual(
+    await page.evaluate(() => {
+      return ["bEdRoOm", "old <area>", "office"].map((area) => {
+        const container = document.createElement("div");
+        container.innerHTML = panel._sourceRowHtml(
+          "a",
+          {
+            kind: "bermuda",
+            entity_id: "sensor.phone_area",
+            area,
+          },
+          0,
+        );
+        const select = container.querySelector("[data-source-area]");
+        return {
+          value: select.value,
+          text: select.selectedOptions[0].textContent,
+        };
+      });
+    }),
+    [
+      { value: "bedroom", text: "Bedroom" },
+      { value: "old <area>", text: "old <area> (not a current area)" },
+      { value: "office", text: "Office" },
+    ],
+  );
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const source = {
+        entity_id: "sensor.phone_area",
+        kind: "bermuda",
+        max_distance: 3,
+      };
+      return [
+        { present: true, distance: 2.3 },
+        { present: false, distance: 4.1 },
+        { present: null, distance: null },
+        // Outside the area, or no usable area: the backend sends no distance.
+        { present: false },
+        { present: null },
+      ].map((reading) => {
+        const container = document.createElement("div");
+        container.innerHTML = panel._sourceReadingHtml({
+          ...source,
+          ...reading,
+        });
+        return container.textContent;
+      });
+    }),
+    [
+      "sensor.phone_area: Present (2.3 m of 3 m)",
+      "sensor.phone_area: Too far (4.1 m of 3 m)",
+      "sensor.phone_area: No usable distance",
+      "sensor.phone_area: Off / outside target area",
+      "sensor.phone_area: No usable state",
+    ],
+  );
+  assert.equal(
+    await page.evaluate(() => {
+      const container = document.createElement("div");
+      container.innerHTML = panel._sourcesHtml("legacy", {
+        presence_sources: {
+          sources: [
+            {
+              kind: "bermuda",
+              entity_id: "sensor.phone_area",
+              area: " old area ",
+            },
+          ],
+        },
+      });
+      return panel._readSources(container).sources[0].area;
+    }),
+    " old area ",
+    "saving preserves an unknown legacy area exactly",
+  );
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const context = {
+        _roomsData: () => ({ areas: { street: "Straße", island: "ı" } }),
+        _esc: panel._esc,
+      };
+      return ["STRASSE", "ẞtraße", "i"].map((name) => {
+        const container = document.createElement("div");
+        container.innerHTML = panel._sourceAreaHtml.call(context, name);
+        return container.querySelector("select").value;
+      });
+    }),
+    ["street", "ẞtraße", "i"],
+    "legacy names use Unicode case folding without merging dotless i",
+  );
   await page.evaluate(() => panel.shadowRoot.activeElement.blur());
   await page.evaluate(() => panel._load());
   assert.equal(
@@ -63,6 +187,10 @@ module.exports = async function testSources(page, screenshotDir) {
     "bedroom",
   );
   assert.equal(await form.locator("[data-source-negative]").isChecked(), false);
+  assert.equal(
+    await form.locator("[data-source-max-distance]").inputValue(),
+    "3",
+  );
   await form.locator('[data-action="sources-save"]').click();
   await page.waitForFunction(() => panel._activeActions === 0);
   assert.deepEqual(
@@ -70,7 +198,12 @@ module.exports = async function testSources(page, screenshotDir) {
     {
       sources: [
         { entity_id: "binary_sensor.camera_person", kind: "boolean", area: "" },
-        { entity_id: "sensor.phone_area", kind: "bermuda", area: "bedroom" },
+        {
+          entity_id: "sensor.phone_area",
+          kind: "bermuda",
+          area: "bedroom",
+          max_distance: 3,
+        },
       ],
       mark_not_present: false,
       confidence: 90,
@@ -79,6 +212,7 @@ module.exports = async function testSources(page, screenshotDir) {
     },
   );
   await form.locator("[data-source-negative]").check();
+  await form.locator("[data-source-max-distance]").fill("");
   await form.locator("[data-source-confidence]").fill("85");
   await startBuffer.fill("12.5");
   await endBuffer.fill("8");
@@ -112,6 +246,15 @@ module.exports = async function testSources(page, screenshotDir) {
       () => fixture.devices.a.presence_sources.mark_not_present,
     ),
     true,
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      Object.hasOwn(
+        fixture.devices.a.presence_sources.sources[1],
+        "max_distance",
+      ),
+    ),
+    false,
   );
   assert.equal(
     await page.evaluate(

@@ -14,6 +14,7 @@ from ..const import (
     TRAINING_FIELDS,
 )
 from . import guesses, label_counts, live
+from .daystore import bounds
 from .policy import retention_seconds, settings
 
 
@@ -99,7 +100,9 @@ def newest(runtime, device_id, since):
     last = days.last(device_id)
     until = getattr(runtime, "_history_until", None)
     if days.current(device_id) is not None:  # As the store reads it: a view at its own time,
-        return until if until is not None else max(time.time(), days.seen(device_id))
+        observed = until if until is not None else max(time.time(), days.seen(device_id))
+        # and the live day ending at midnight until the store rolls to the next one.
+        return min(observed, bounds(days.live_date(device_id))[1])
     return last if last is not None and last >= since else None
 
 

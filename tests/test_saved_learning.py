@@ -6,7 +6,7 @@ import types
 import unittest
 from copy import deepcopy
 from datetime import datetime
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import test_tuner as harness
 
@@ -136,6 +136,26 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.nightly_tick(datetime.fromisoformat(instant))
         if self.runtime._nightly_task:
             await self.runtime._nightly_task
+
+    def test_due_day_uses_cached_home_assistant_timezone(self):
+        from homeassistant.util import dt as dt_util
+
+        config = {"enabled": True, "timezone": "Europe/London", "time": "03:00"}
+        cached = dt_util.get_time_zone(config["timezone"])
+        self.assertIs(cached, dt_util.get_time_zone(config["timezone"]))
+        with patch.object(dt_util, "get_time_zone", wraps=dt_util.get_time_zone) as lookup:
+            self.assertEqual(
+                schedule._due_day(config, datetime.fromisoformat("2026-09-26T02:00:00+00:00")),
+                "2026-09-26",
+            )
+        lookup.assert_called_once_with("Europe/London")
+
+    def test_due_day_unknown_timezone_keeps_lookup_error(self):
+        from zoneinfo import ZoneInfoNotFoundError
+
+        config = {"enabled": True, "timezone": "Unknown/Timezone", "time": "03:00"}
+        with self.assertRaises(ZoneInfoNotFoundError):
+            schedule._due_day(config, datetime.fromisoformat("2026-09-26T02:00:00+00:00"))
 
     async def test_midday_restart_does_not_catch_up_missed_overnight_learning(self):
         self.configure()

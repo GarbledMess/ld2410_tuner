@@ -129,6 +129,64 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.label_history_range("a", self.now + 5, self.now + 7, "unknown")
         assert measured() == {"human": (0, 1), "automatic": (4, 5)}  # Excluded: no evidence.
 
+    def test_bermuda_distance_readings_and_negative_evidence(self):
+        source = {**bermuda(), "max_distance": 3}
+        self.configure([source], negative=True)
+        self.registry.entities.update(
+            {
+                "sensor.phone_area": types.SimpleNamespace(platform="bermuda", unique_id="phone"),
+                "sensor.renamed_distance": types.SimpleNamespace(
+                    platform="bermuda", unique_id="phone_range"
+                ),
+            }
+        )
+        self.entity("sensor.phone_area", "Bedroom", area_id="bedroom")
+        for value, present, label, distance in (
+            ("2.3", True, "present", 2.3),
+            ("3", True, "present", 3.0),
+            ("0", True, "present", 0.0),
+            ("4.1", False, "not_present", 4.1),
+            ("unknown", None, "unknown", None),
+            ("unavailable", None, "unknown", None),
+            ("invalid", None, "unknown", None),
+            ("nan", None, "unknown", None),
+            ("inf", None, "unknown", None),
+        ):
+            self.entity("sensor.renamed_distance", value)
+            result = sources.read(self.hass, sources.settings(self.device))
+            assert result["state"] == label
+            assert result["readings"][0]["present"] is present
+            assert result["readings"][0]["distance"] == distance
+            estimate = sources.estimate(self.runtime, self.device)
+            assert (estimate["state"] if estimate else "unknown") == label
+        # Outside the target area, or with no usable area, the distance decides nothing,
+        # so the reading carries none (the panel must not call it "too far").
+        self.entity("sensor.renamed_distance", "4.1")
+        for area in ({"state": "Office", "area_id": "office"}, {"state": "unavailable"}):
+            self.entity("sensor.phone_area", area.pop("state"), **area)
+            (reading,) = sources.read(self.hass, sources.settings(self.device))["readings"]
+            assert "distance" not in reading
+
+    def test_bermuda_missing_distance_is_unknown_but_area_mismatch_is_false(self):
+        source = {**bermuda(), "max_distance": 3}
+        self.entity("sensor.phone_area", "Bedroom", area_id="bedroom")
+        assert sources.source_state(self.hass, source) is None
+        self.registry.entities["sensor.phone_area"] = types.SimpleNamespace(
+            platform="other", unique_id="phone"
+        )
+        assert sources.source_state(self.hass, source) is None
+        self.registry.entities["sensor.phone_area"].platform = "bermuda"
+        assert sources.source_state(self.hass, source) is None
+        self.registry.entities["sensor.phone_range"] = types.SimpleNamespace(
+            platform="bermuda", unique_id="phone_range"
+        )
+        assert sources.source_state(self.hass, source) is None
+        self.entity("sensor.phone_area", "Office", area_id="office")
+        assert sources.source_state(self.hass, source) is False
+        assert sources.source_state(self.hass, bermuda()) is False
+        self.entity("sensor.phone_area", "unknown", area_id="bedroom")
+        assert sources.source_state(self.hass, source) is None
+
     async def test_external_records_follow_automatic_expiry_and_recording_pause(self):
         from tuner_under_test.history import budget, ingest, spans
 
@@ -205,3 +263,20 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
 def test_invalid_settings_are_rejected(change):
     with pytest.raises(ValueError):
         sources.validate({**sources.DEFAULTS, **change})
+
+
+@pytest.mark.parametrize("distance", [0.1, 1, 3.5, 100])
+def test_bermuda_max_distance_is_preserved(distance):
+    source = {**bermuda(), "max_distance": distance}
+    assert sources.validate({**sources.DEFAULTS, "sources": [source]})["sources"] == [source]
+
+
+@pytest.mark.parametrize("distance", [0, -1, 100.1, float("nan"), float("inf"), True, "3", None])
+def test_invalid_bermuda_max_distance_is_rejected(distance):
+    with pytest.raises(ValueError):
+        sources.validate({**sources.DEFAULTS, "sources": [{**bermuda(), "max_distance": distance}]})
+
+
+def test_boolean_max_distance_is_rejected():
+    with pytest.raises(ValueError):
+        sources.validate({**sources.DEFAULTS, "sources": [{**boolean(), "max_distance": 3}]})

@@ -5,9 +5,10 @@ import logging
 import re
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfoNotFoundError
 
 from homeassistant.core import callback
+from homeassistant.util import dt as dt_util
 
 from ..calibration import automatic
 from ..calibration.service import LearningEvidenceChanged
@@ -68,7 +69,10 @@ def tick(runtime, now):
 
 def _due_day(config, now):
     """Learning starts near its scheduled time, never as an afternoon catch-up."""
-    local = now.astimezone(ZoneInfo(config["timezone"]))
+    zone = dt_util.get_time_zone(config["timezone"])
+    if zone is None:
+        raise ZoneInfoNotFoundError(f"No time zone found with key {config['timezone']}")
+    local = now.astimezone(zone)
     if not config["enabled"]:
         # Reference maintenance remains a once-daily refresh after missed schedules.
         return local.date().isoformat() if local.strftime("%H:%M") >= config["time"] else None

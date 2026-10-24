@@ -128,7 +128,8 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
         ) as spy:
             self.runtime.label_history_range("b", self.at(0), self.at(10), "not_present")
             assert self.b["label_revision"] == revision + 1
-            assert await self.request(None) == ["b"]
+            # Deliberate change: a room peer's references read b's labels, so a is stale too.
+            assert await self.request(None) == ["a", "b"]
             assert spy.call_count == 0, "room attribution ran on the event loop"
             await self.started()
             self.release.set()
@@ -156,6 +157,21 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
         assert max(rebuilt.values()) <= 2, rebuilt
         assert len(self.calls) <= 2
         assert self.inferred(self.b) == {"present"}
+
+    async def test_a_result_computed_before_a_peer_label_change_is_discarded(self):
+        """Regression: b's rebuild reads a's labels for room truth, but only b's own label
+        revision guarded the install, so a's edit mid-rebuild let the stale result in."""
+        self.scenario()
+        self.present()
+        self.hold()
+        await self.request({"b"})
+        await self.started()
+        before = deepcopy(self.b.get("reference_profile"))
+        self.runtime.label_history_range("a", self.at(QUIET), self.at(QUIET + 40), "present")
+        self.release.set()
+        await self.finish()
+        assert len(self.calls) == 2, "the stale result must be recomputed"
+        assert self.calls[1][1] == before, "the stale result must not be installed"
 
     async def test_a_result_computed_before_a_label_change_is_discarded(self):
         self.scenario()
@@ -443,6 +459,13 @@ class StaleReferenceTests(unittest.IsolatedAsyncioTestCase):
         await self.refresh(["a"])
         assert self.human(self.device) == {"present"}
         assert STALE not in self.device
+
+    async def test_device_label_edit_marks_the_radars_room_peers_stale(self):
+        # a's labels decide the room truth b's references are rebuilt from.
+        self.scenario()
+        self.runtime.label_history_range("a", self.at(QUIET), self.at(QUIET + 40), "present")
+        assert STALE in self.runtime.data["devices"]["a"]
+        assert STALE in self.b
 
     async def test_membership_and_recording_changes_mark_members_stale(self):
         from tuner_under_test.rooms import groups
@@ -783,6 +806,30 @@ class DailyReferenceRefreshTests(unittest.IsolatedAsyncioTestCase):
         await self.tick("2026-09-26T02:01:00+00:00")
         assert learned == [("b", "2026-09-26")]
         assert self.rebuilt == ["b"], "references were current: nothing rebuilt twice"
+
+
+class ChronologicalCapTests(unittest.TestCase):
+    """Each source and state keeps its newest MAX_PERIODS by time, not by list position."""
+
+    def period(self, start, room=False):
+        period = {"source": "entity", "state": "present", "start": start, "end": start + 5}
+        return {**period, "room": True} if room else period
+
+    def test_installing_room_evidence_keeps_newer_direct_evidence(self):
+        current = {"periods": [self.period(1000)]}
+        rebuilt = {"periods": [self.period(index * 10) for index in range(refs.MAX_PERIODS)]}
+        training._install_room_evidence(current, 0, [rebuilt])
+        starts = [p["start"] for p in current["periods"]]
+        assert len(starts) == refs.MAX_PERIODS
+        assert starts == sorted(starts) and starts[-1] == 1000 and 0 not in starts
+
+    def test_splicing_a_rebuild_keeps_newer_direct_evidence(self):
+        device = {"reference_profile": {**refs.empty(), "periods": [self.period(1000)]}}
+        rebuilt = [self.period(index * 10, room=True) for index in range(refs.MAX_PERIODS)]
+        training.splice(device, rebuilt, 0, 2000)
+        starts = [p["start"] for p in device["reference_profile"]["periods"]]
+        assert len(starts) == refs.MAX_PERIODS
+        assert starts == sorted(starts) and starts[-1] == 1000 and 0 not in starts
 
 
 class SensorFloorReferenceTests(unittest.IsolatedAsyncioTestCase):

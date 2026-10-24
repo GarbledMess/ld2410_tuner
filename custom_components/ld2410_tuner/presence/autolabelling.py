@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections import defaultdict
 from typing import Any
 
 from homeassistant.core import callback
@@ -35,6 +34,24 @@ from .inference import (
     hold,
     reclassify,
 )
+
+
+def migrate_segments(device):
+    """Replace retained legacy segment records once, immediately after store load."""
+    auto = device.get("auto", {})
+    segments = auto.pop("segments", None)
+    if segments is None:
+        return
+    counts = {}
+    for segment in segments:
+        state = segment.get("state", "unknown")
+        counts[state] = counts.get(state, 0) + 1
+    auto["segment_counts"] = counts
+    auto["open_segment"] = (
+        segments[-1].get("state", "unknown")
+        if segments and segments[-1].get("end") is None
+        else None
+    )
 
 
 @callback
@@ -120,28 +137,13 @@ def _update_auto_state(
     }
     if label == "unknown":
         auto["last_classification"].update(state="unknown", confidence=0.0)
-        segments = auto.get("segments", [])
-        if segments and segments[-1].get("end") is None:
-            segments[-1]["end"] = now
+        auto["open_segment"] = None
         return
     auto["last_classification"]["state"] = label
-    segments = auto.setdefault("segments", [])
-    if old != label or not segments or segments[-1].get("end") is not None:
-        if segments and segments[-1].get("end") is None:
-            segments[-1]["end"] = now
-        segments.append(
-            {
-                "start": now,
-                "end": None,
-                "state": label,
-                "confidence": result["confidence"],
-                "score": result["score"],
-                "basis": result.get("basis"),
-                "sources": result.get("sources", []),
-            }
-        )
-    if len(segments) > 500:
-        del segments[:-500]
+    counts = auto.setdefault("segment_counts", {})
+    if old != label or auto.get("open_segment") is None:
+        counts[label] = counts.get(label, 0) + 1
+        auto["open_segment"] = label
 
 
 def _confirmed_label(runtime, device_id, result, now):
@@ -161,13 +163,10 @@ def auto_learning_summary(
 ) -> dict[str, Any]:
     auto = device.get("auto", {})
     observation_counts = sum(auto.get("observations", {}).values())
-    segments = auto.get("segments", [])
+    counts = auto.get("segment_counts", {})
     last = auto.get("last_classification")
     if last and time.time() - last.get("timestamp", 0) > 15:
         last = None
-    counts = defaultdict(int)
-    for seg in segments:
-        counts[seg.get("state", "unknown")] += 1
     feedback_log = auto.get("feedback", [])
     feedback_summary = {}
     for label in ("present", "not_present"):
@@ -183,7 +182,7 @@ def auto_learning_summary(
         "stale_since": device.get(references.STALE),
         "observations": observation_counts,
         "observations_by_state": dict(auto.get("observations", {})),
-        "segments": len(segments),
+        "segments": sum(counts.values()),
         "segments_by_state": dict(counts),
         "last": last,
         "role": "confidence_weighted_training",

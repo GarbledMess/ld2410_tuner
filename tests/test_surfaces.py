@@ -101,10 +101,59 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
         self.runtime.handle_state_change(types.SimpleNamespace(data={"entity_id": energy}))
-        self.assertEqual(self.runtime._live["a"], {"g0_move": 30})
+        self.assertEqual(self.runtime._live["a"], {})
         self.registry.entities.clear()
         self.runtime.handle_registry_update(None)
         self.assertEqual(self.device["entities"], {})
+
+    def test_unavailable_gate_is_missing_from_live_and_new_session(self):
+        from datetime import UTC, datetime
+
+        from tuner_under_test.history import ingest
+
+        energy = "sensor.radar_g0_move_energy"
+        self.add_entity(energy)
+        self.registry.async_get = self.registry.entities.get
+        self.device["recording_enabled"] = False
+        for value in ("30", "unavailable", "invalid", "nan", "-1", "101"):
+            with self.subTest(value=value):
+                self.runtime._live["a"] = {"g0_move": 30, "g1_move": 12}
+                self.runtime.handle_state_change(
+                    types.SimpleNamespace(
+                        data={
+                            "entity_id": energy,
+                            "new_state": types.SimpleNamespace(
+                                state=value, last_updated=datetime(2026, 9, 26, tzinfo=UTC)
+                            ),
+                        }
+                    )
+                )
+                if value == "30":
+                    self.assertEqual(self.runtime._live["a"]["g0_move"], 30)
+                else:
+                    self.assertNotIn("g0_move", self.runtime._live["a"])
+        self.device["recording_enabled"] = True
+        ingest.change(self.runtime, "a", {"g1_move": 12}, 1790380801)
+        self.assertIsNone(self.runtime._days.current("a")[0])
+        self.assertEqual(self.runtime._days.current("a")[2], 12)
+
+    def test_unavailable_gate_does_not_create_live_device(self):
+        from datetime import UTC, datetime
+
+        energy = "sensor.radar_g0_move_energy"
+        self.add_entity(energy)
+        self.registry.async_get = self.registry.entities.get
+        self.runtime.handle_state_change(
+            types.SimpleNamespace(
+                data={
+                    "entity_id": energy,
+                    "new_state": types.SimpleNamespace(
+                        state="unavailable", last_updated=datetime(2026, 9, 26, tzinfo=UTC)
+                    ),
+                }
+            )
+        )
+        self.assertNotIn("a", self.runtime._live)
 
     def registry_device(self):
         self.configuration()
@@ -142,6 +191,64 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(
             "day_files", (await self.runtime.async_export_data())["devices"]["a"]["history"]
         )
+
+    async def test_concurrent_exports_are_bounded_and_release_after_completion(self):
+        from tuner_under_test.presentation import snapshots
+        from tuner_under_test.worker.supervisor import Busy
+
+        self.registry_device()
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def calculate(runtime, operation, prepare):
+            prepare()
+            started.set()
+            await release.wait()
+            return {}
+
+        with patch.object(snapshots.bridge, "calculate", side_effect=calculate):
+            first = asyncio.create_task(self.runtime.async_export_data("a"))
+            await started.wait()
+            second = asyncio.create_task(self.runtime.async_export_data("a"))
+            await asyncio.sleep(0)
+            try:
+                self.assertTrue(second.done())
+            finally:
+                release.set()
+                await first
+            with self.assertRaisesRegex(Busy, "Export is busy; retry shortly"):
+                await second
+            self.assertIn("a", (await self.runtime.async_export_data("a"))["devices"])
+
+    async def test_failed_and_cancelled_exports_release_admission(self):
+        from tuner_under_test.presentation import snapshots
+        from tuner_under_test.worker.supervisor import Busy
+
+        self.registry_device()
+        for outcome in ("failure", "cancel"):
+            with self.subTest(outcome=outcome):
+                started, release = asyncio.Event(), asyncio.Event()
+
+                async def calculate(runtime, operation, prepare, started=started, release=release):
+                    started.set()
+                    await release.wait()
+                    raise ValueError("synthetic export failure")
+
+                with patch.object(snapshots.bridge, "calculate", side_effect=calculate):
+                    first = asyncio.create_task(self.runtime.async_export_data("a"))
+                    await started.wait()
+                    try:
+                        with self.assertRaisesRegex(Busy, "Export is busy; retry shortly"):
+                            await self.runtime.async_export_data("missing")
+                    finally:
+                        if outcome == "cancel":
+                            first.cancel()
+                            error = asyncio.CancelledError
+                        else:
+                            release.set()
+                            error = ValueError
+                        with self.assertRaises(error):
+                            await first
+                self.assertEqual((await self.runtime.async_export_data("missing"))["devices"], {})
 
     async def test_periodic_sampling_yields_to_home_assistant_between_radars(self):
         from copy import deepcopy

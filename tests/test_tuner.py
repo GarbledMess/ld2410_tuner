@@ -11,8 +11,10 @@ import tempfile
 import time
 import types
 import unittest
+from functools import cache
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "ld2410_tuner"
 
@@ -33,6 +35,8 @@ def load_runtime():
         "homeassistant.helpers.area_registry",
         "homeassistant.helpers.event",
         "homeassistant.helpers.storage",
+        "homeassistant.util",
+        "homeassistant.util.dt",
     ]
     for name in modules:
         sys.modules[name] = types.ModuleType(name)
@@ -58,6 +62,15 @@ def load_runtime():
     events.async_track_state_change_event = lambda *a: lambda: None
     events.async_track_time_interval = lambda *a: lambda: None
     sys.modules["homeassistant.helpers.storage"].Store = object
+
+    @cache
+    def get_time_zone(name):
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            return None
+
+    sys.modules["homeassistant.util.dt"].get_time_zone = get_time_zone
     spec = importlib.util.spec_from_file_location(
         "tuner_under_test", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)]
     )
@@ -889,6 +902,17 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.settle.start()
         self.addCleanup(self.settle.stop)
         self.registry = types.SimpleNamespace(entities={})
+        self.registry.async_get = self.registry.entities.get
+        self.registry.async_get_entity_id = lambda domain, platform, unique_id: next(
+            (
+                entity_id
+                for entity_id, entry in self.registry.entities.items()
+                if entity_id.startswith(f"{domain}.")
+                and entry.platform == platform
+                and entry.unique_id == unique_id
+            ),
+            None,
+        )
         mod.er.async_get = lambda hass: self.registry
         config = tempfile.mkdtemp(prefix="ld2410-config-")
         self.addCleanup(shutil.rmtree, config, ignore_errors=True)

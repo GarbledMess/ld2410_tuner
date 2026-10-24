@@ -140,10 +140,10 @@ def test_coverage_ranges_equal_replay_including_unknown_rows_and_recording_gaps(
     ]
 
 
-def test_ensure_prepares_persistent_indexes_in_executor_for_restart(tmp_path):
+def test_ensure_rebuilds_counts_after_restart_without_persistent_indexes(tmp_path):
     import asyncio
 
-    from tuner_under_test.history import daystore, summaries
+    from tuner_under_test.history import daystore
     from tuner_under_test.worker import supervisor
     from worker_transport import Transport
 
@@ -167,13 +167,12 @@ def test_ensure_prepares_persistent_indexes_in_executor_for_restart(tmp_path):
     ):
         asyncio.run(label_counts.ensure(runtime, "a"))
     expected = runtime._label_counts["a"].raw
-    assert runtime._days._path("a", date, ".sum").exists()
+    assert not runtime._days._path("a", date, ".sum").exists()
     runtime._days = daystore.DayStore(runtime._days.root)
     asyncio.run(asyncio.to_thread(runtime._days.open, 700))
     runtime._label_counts.clear()
     with (
         patch.object(label_counts.time, "time", return_value=700),
-        patch.object(summaries.Summary, "__init__", side_effect=AssertionError("rebuilt")),
         patch.object(supervisor.Supervisor, "_process", process),
     ):
         asyncio.run(label_counts.ensure(runtime, "a"))
@@ -187,7 +186,7 @@ def test_storage_discards_auxiliary_index_before_trimming_physical_history(tmp_p
     date = daystore.date_of(0)
     day = synthetic_day()
     store.replace("a", date, day)
-    store.summary("a", date)
+    store._path("a", date, ".sum").write_bytes(b"legacy index")
     data = {"devices": {"a": {"history_labels": []}}}
     target = store._path("a", date, ".day").stat().st_size + budget.storage_bytes(data) + 1
     prepared, changes, report, staged = storage._prepare_day_save(store, data, 700, False, target)

@@ -35,6 +35,7 @@
     "startup_capacity": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/startup_capacity_checks.py",
     "production_worker_http": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/production_checks.py",
     "dense_legacy_learning": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/dense_history_checks.py",
+    "large_day_chart": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/large_day_checks.py",
     "python_qa": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/qa.py"
   }
 }

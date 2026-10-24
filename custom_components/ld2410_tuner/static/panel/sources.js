@@ -1,6 +1,15 @@
 import { readNumberFields } from "./forms.js";
 import { sourcePickerHtml, wireSourcePicker } from "./source_picker.js";
 
+function areaNameKey(value) {
+  // Expand case variants (including sharp S), while keeping dotless i distinct.
+  return value
+    .replaceAll("ẞ", "ss")
+    .split("ı")
+    .map((part) => part.toUpperCase().toLowerCase())
+    .join("ı");
+}
+
 export const panelSources = {
   // Sources belong to rooms and zones. A radar keeps its own form only outside every
   // group, or while it still has (or is editing) sources of its own to move.
@@ -57,7 +66,27 @@ export const panelSources = {
     let label = "No usable state";
     if (source.present != null)
       label = source.present ? "Present" : "Off / outside target area";
-    return `<div class="muted">${this._esc(source.entity_id)}: ${label}</div>`;
+    // A distance comes only with a reading in the target area, where it decides.
+    if ("distance" in source)
+      label =
+        source.distance == null
+          ? "No usable distance"
+          : `${source.present ? "Present" : "Too far"} (${source.distance} m of ${source.max_distance} m)`;
+    return `<div class="muted">${this._esc(source.entity_id)}: ${this._esc(label)}</div>`;
+  },
+
+  _sourceAreaHtml(saved = "") {
+    const areas = Object.entries(this._roomsData().areas).sort((a, b) =>
+      a[1].localeCompare(b[1]),
+    );
+    const selected =
+      areas.find(([id]) => id === saved)?.[0] ??
+      areas.find(([, name]) => areaNameKey(name) === areaNameKey(saved))?.[0] ??
+      saved;
+    const options = [["", "Choose an area"], ...areas];
+    if (selected && !areas.some(([id]) => id === selected))
+      options.push([selected, `${saved} (not a current area)`]);
+    return `<label>Target area<select data-source-area required>${options.map(([id, name]) => `<option value="${this._esc(id)}" ${id === selected ? "selected" : ""}>${this._esc(name)}</option>`).join("")}</select></label>`;
   },
 
   _sourceRowHtml(id, source, index) {
@@ -65,7 +94,7 @@ export const panelSources = {
     return `<fieldset class="source-row" data-source-row><legend>Source ${index + 1}</legend><div class="storage-fields">
       <label>Type<select data-source-kind><option value="boolean" ${source.kind !== "bermuda" ? "selected" : ""}>Boolean entity</option><option value="bermuda" ${source.kind === "bermuda" ? "selected" : ""}>Bermuda area</option></select></label>
       ${sourcePickerHtml((value) => this._esc(value), listId, source.entity_id)}
-      ${source.kind === "bermuda" ? `<label>Target area ID or name<input data-source-area value="${this._esc(source.area || "")}" required placeholder="bedroom"></label>` : ""}</div>
+      ${source.kind === "bermuda" ? `${this._sourceAreaHtml(source.area)}<label>Max distance (m)<input data-source-max-distance type="number" min="0.1" max="100" step="0.1" placeholder="Any" value="${this._esc(source.max_distance ?? "")}"></label>` : ""}</div>
       <button type="button" data-source-remove="${index}">Remove source</button></fieldset>`;
   },
 
@@ -74,7 +103,14 @@ export const panelSources = {
       sources: [...form.querySelectorAll("[data-source-row]")].map((row) => ({
         kind: row.querySelector("[data-source-kind]").value,
         entity_id: row.querySelector("[data-source-entity]").value.trim(),
-        area: row.querySelector("[data-source-area]")?.value.trim() || "",
+        area: row.querySelector("[data-source-area]")?.value || "",
+        ...(row.querySelector("[data-source-max-distance]")?.value
+          ? {
+              max_distance: Number(
+                row.querySelector("[data-source-max-distance]").value,
+              ),
+            }
+          : {}),
       })),
       mark_not_present: form.querySelector("[data-source-negative]").checked,
       confidence: Number(form.querySelector("[data-source-confidence]").value),
@@ -122,14 +158,14 @@ export const panelSources = {
         redraw();
       };
     const save = form.querySelector('[data-action="sources-save"]');
-    save.onclick = () =>
-      this._action(save, async () => {
-        if (
-          ![...form.querySelectorAll("input")].every((input) =>
-            input.reportValidity(),
-          )
+    save.onclick = () => {
+      if (
+        ![...form.querySelectorAll("input, select")].every((input) =>
+          input.reportValidity(),
         )
-          return;
+      )
+        return;
+      return this._action(save, async () => {
         const settings = this._readSources(form);
         await (groupId
           ? this._call("configure_room_sources", {
@@ -143,5 +179,6 @@ export const panelSources = {
         this._sourceDrafts.delete(id);
         await this._load(true);
       });
+    };
   },
 };

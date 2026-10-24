@@ -69,6 +69,38 @@ class RoomSourceTests(unittest.IsolatedAsyncioTestCase):
         self.run_ticks(1008, 1010)
         self.assertEqual(self.spans(), [(1000, 1010)])
 
+    def test_room_bermuda_honours_max_distance(self):
+        self.office()
+        self.configure(
+            sources=[
+                {
+                    "entity_id": "sensor.phone_area",
+                    "kind": "bermuda",
+                    "area": "office",
+                    "max_distance": 3,
+                }
+            ],
+            mark_not_present=True,
+        )
+        self.registry.entities.update(
+            {
+                "sensor.phone_area": types.SimpleNamespace(platform="bermuda", unique_id="phone"),
+                "sensor.phone_range": types.SimpleNamespace(
+                    platform="bermuda", unique_id="phone_range"
+                ),
+            }
+        )
+        self.states["sensor.phone_area"] = types.SimpleNamespace(state="office", attributes={})
+        self.states["sensor.phone_range"] = types.SimpleNamespace(state="4.1", attributes={})
+        self.run_ticks(1000, 1006)
+        self.assertEqual({x["state"] for x in self.sensor()}, {"not_present"})
+        self.states["sensor.phone_range"].state = "2.3"
+        self.run_ticks(1008, 1014)
+        self.assertEqual(self.sensor()[-1]["state"], "present")
+        self.states["sensor.phone_range"].state = "unknown"
+        self.run_ticks(1016, 1020)
+        self.assertEqual(self.sensor()[-1]["end"], 1016)
+
     def test_sensor_writes_never_touch_manual_labels(self):
         self.office()
         room_labels.label_room_range(self.runtime, GROUP, 1000, 1004, "not_present")

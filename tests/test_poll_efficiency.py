@@ -324,6 +324,24 @@ class EstimatePollTests(unittest.IsolatedAsyncioTestCase):
                 for key, ids in (("area:office", ["a", "b"]), (zone, ["a"])):
                     self.assertEqual(published[key]["estimate"], uncached(self.runtime, ids))
 
+    def test_the_estimate_just_after_midnight_is_the_uncached_one(self):
+        """Regression: until the store rolled to the new day, a member's open coverage read
+        past midnight while its open guess run ended there, so polls kept an estimate a
+        fresh read did not have (the test above failed 20-50 minutes after UTC midnight)."""
+        from unittest.mock import patch
+
+        from tuner_under_test.rooms import groups, room_labels
+
+        self.office()
+        zone = groups.configure(self.runtime, None, "Desk", "office", ["a"])["id"]
+        midnight = int(self.now) // 86400 * 86400
+        for step in range(10):
+            self.record("a", midnight - 60 + step * 6, "not_present")
+        for now in (midnight - 2, midnight + 2, midnight + 30):
+            published = self.poll(now)
+            with patch.object(room_labels.time, "time", return_value=now):
+                self.assertEqual(published[zone]["estimate"], uncached(self.runtime, ["a"]))
+
     def test_only_members_with_new_records_are_read_again(self):
         from unittest.mock import patch
 

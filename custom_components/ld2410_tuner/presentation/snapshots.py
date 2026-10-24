@@ -22,6 +22,7 @@ from ..rooms import layout, seen_by
 from ..runtime.schedule import settings
 from ..worker import bridge, codec
 from ..worker.display import check_export
+from ..worker.supervisor import Busy
 
 
 def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
@@ -33,6 +34,17 @@ def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
 
 async def async_export_data(runtime, device_id=None):
     """Resolve HA registry metadata on the loop, encode recorded history on our worker."""
+    if getattr(runtime, "_export_active", False):
+        raise Busy("Export is busy; retry shortly")
+    runtime._export_active = True
+    try:
+        return await _async_export_data(runtime, device_id)
+    finally:
+        runtime._export_active = False
+
+
+async def _async_export_data(runtime, device_id):
+    """Assemble an export while the caller owns the runtime's export slot."""
     _export_preflight(runtime)
     if device_id not in runtime.data.get("devices", {}):
         exported = _export_metadata(runtime, device_id)

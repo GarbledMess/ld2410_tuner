@@ -121,6 +121,9 @@ def _identity(period):
 
 
 def _newest(periods):
+    """In time order, each source and state's newest ``MAX_PERIODS``: folding finds a
+    source's latest period from the end of the list."""
+    periods = sorted(periods, key=lambda p: p["start"])
     excess = Counter((p["source"], p["state"]) for p in periods)
     for key in excess:
         excess[key] -= references.MAX_PERIODS
@@ -138,14 +141,9 @@ def _install_room_evidence(current, cutoff, profiles):
     """Automatic room truth feeds references with its own confidence, never as "human":
     room sensor labels as "entity"; the room estimate and human room Present attributed only
     by the radar's baseline (rule 2, an inference) as "radar"."""
-    current["periods"] = [p for p in current["periods"] if not p.get("room") or p["end"] < cutoff]
-    current["periods"].extend(
-        {**period, "room": True} for profile in profiles for period in profile["periods"]
-    )
-    for key in {(p["source"], p["state"]) for p in current["periods"] if p.get("room")}:
-        same = [p for p in current["periods"] if (p["source"], p["state"]) == key]
-        for old in same[: max(0, len(same) - references.MAX_PERIODS)]:
-            current["periods"].remove(old)
+    kept = [p for p in current["periods"] if not p.get("room") or p["end"] < cutoff]
+    rooms = [{**period, "room": True} for profile in profiles for period in profile["periods"]]
+    current["periods"] = _newest(kept + rooms)
 
 
 ROOM_ORIGIN = {"entity": {"automatic"}, "radar": {"estimate", "attributed"}}
@@ -207,8 +205,21 @@ def correct(runtime, device, ranges):
     device_id = _device_id(runtime, device)
     from . import rebuilds
 
-    rebuilds.mark_stale(runtime, {device_id})
+    # Room peers read this radar's labels for their room truth.
+    rebuilds.mark_stale(runtime, {device_id, *_room_peers(runtime, device_id)})
     runtime._auto_runtime.pop(device_id, None)
+
+
+def _room_peers(runtime, device_id):
+    from ..rooms import groups
+
+    _, _, definitions = groups.definitions(runtime)
+    return {
+        key
+        for item in definitions.values()
+        if device_id in item["device_ids"]
+        for key in item["device_ids"]
+    }
 
 
 def reset_entities(device):

@@ -185,6 +185,55 @@ def test_confirmed_spans_and_open_state_survive_raw_handoff(tmp_path):
     assert restored.builder.confirmed == live.builder.confirmed
 
 
+def _open_handoff(directory):
+    from tuner_under_test.worker import protocol, startup
+
+    live = daystore._Live(datetime.date(2025, 10, 15))
+    live.add(dayfile.Change(START, {0: 3}))
+    live.add(dayfile.Guess(START + 20, "present", 19, 1))
+    descriptor = startup.freeze_live("a", live, directory, 0)
+    return protocol.unpack(protocol.pack("result", descriptor), "result")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("current", [3] * 17),
+        ("current", ["3"] + [None] * 17),
+        ("current", [float("nan")] + [None] * 17),
+        ("run", [START + 20, "maybe", 19, 1]),
+        ("run", [START + 20, "present", 19]),
+        ("run", [START + 20, "present", 256, 1]),
+        ("version", "1"),
+        ("last", None),
+    ],
+)
+def test_inconsistent_live_state_is_rejected(tmp_path, field, value):
+    """Regression: an impossible open builder was installed and broke the next append."""
+    from tuner_under_test.worker import startup
+
+    descriptor = {**_open_handoff(tmp_path), field: value}
+    with pytest.raises(ValueError, match="live state"):
+        startup.load({"live": [descriptor]}, tmp_path)
+
+
+def test_an_open_vector_without_a_row_is_rejected(tmp_path):
+    from tuner_under_test.worker import startup
+
+    descriptor = startup.freeze_live("a", daystore._Live(datetime.date(2025, 10, 15)), tmp_path, 0)
+    descriptor["current"] = [20] * 18
+    with pytest.raises(ValueError, match="live state"):
+        startup.load({"live": [descriptor]}, tmp_path)
+
+
+def test_consistent_open_live_state_is_accepted(tmp_path):
+    from tuner_under_test.worker import startup
+
+    recovered = startup.load({"live": [_open_handoff(tmp_path)]}, tmp_path)
+    recovered.append("a", dayfile.Change(START + 30, {0: 4}))
+    assert list(recovered._live["a"].builder.columns[0]) == [3, 4]
+
+
 @pytest.mark.parametrize("obstruction", ["owner", "backup", "missing-stage"])
 def test_publication_failure_keeps_original_history(tmp_path, obstruction):
     from tuner_under_test.worker import startup
@@ -292,3 +341,35 @@ def test_startup_migration_requires_only_standard_library(tmp_path):
         check=False,
     )
     assert result.returncode == 0, result.stderr.decode()
+
+
+def test_initialize_publishes_legacy_summary_cleanup_on_executor(tmp_path):
+    from tuner_under_test.worker import startup, supervisor
+    from worker_transport import Transport
+
+    root = tmp_path / "history"
+    folder = root / "radar"
+    folder.mkdir(parents=True)
+    legacy = folder / "1970-01-01.sum"
+    legacy.write_bytes(b"legacy")
+    temporary = folder / "interrupted.sumtmp"
+    temporary.write_bytes(b"partial")
+    result = folder / "1970-01-01.res"
+    result.write_bytes(b"keep result")
+    owner = daystore.DayStore(root)
+    runtime = SimpleNamespace(
+        _days=owner,
+        data={"devices": {}},
+        hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
+    )
+    transport = Transport()
+
+    async def process(service, args):
+        return await transport.process(args)
+
+    with patch.object(supervisor.Supervisor, "_process", process):
+        asyncio.run(startup.initialize(runtime))
+    assert not legacy.exists()
+    assert not temporary.exists()
+    assert result.read_bytes() == b"keep result"
+    assert runtime._days is owner
