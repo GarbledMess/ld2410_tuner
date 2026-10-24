@@ -2,7 +2,7 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
-[Release notes](CHANGELOG.md) - 1.29.1 refreshes today's graphs much faster, sends them at half the size and stops a label change from freezing Home Assistant.
+[Release notes](CHANGELOG.md) - 1.30.0 makes Learn about twice as fast, halves the disk space history takes and adds an area picker and maximum distance to Bermuda sources.
 
 All collapsible sections start closed. Each heading describes what is inside;
 sections you open stay open during panel refreshes. History and Recommendations
@@ -950,11 +950,16 @@ from other entities**. Add one or more independent sources:
   `input_boolean`, a template binary sensor, or another entity reporting `on/off`
   or `true/false`. Camera video is not processed by the tuner. Build more elaborate
   logic in Home Assistant and expose its result as a boolean entity.
-- **Bermuda area**: select a person's current **Area** sensor and enter the target
-  Home Assistant area ID or name. Use current Area, not Area Last Seen, Distance,
+- **Bermuda area**: select a person's current **Area** sensor and choose the target
+  Home Assistant area from the area picker. Use current Area, not Area Last Seen, Distance,
   or a home/away tracker. Area IDs keep working when the room name changes.
   Add each person's tracked device separately; choose human-carried devices, not
-  pets or permanently placed beacons.
+  pets or permanently placed beacons. Optionally set **Max distance (m)** to require
+  the device to be within that distance of its current area scanner (up to 100 m).
+  Leave it blank for any distance. The tuner finds the matching Bermuda Distance
+  sensor automatically; a missing or unusable distance gives no label. A distance
+  above the limit counts as outside the area for negative labelling.
+  Saved area names still work; values for removed areas stay available in the picker.
 
 Search the Entity field by friendly name or entity ID, then tap a matching result.
 Results are rendered inside the panel so selection does not depend on the browser's

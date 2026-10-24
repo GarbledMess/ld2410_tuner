@@ -1,5 +1,58 @@
 # Release notes
 
+## 1.30.0 - 2026-10-24
+
+- Learn is much faster, with exactly the same results. On five real radars with about
+  four weeks of history, a Learn takes about half the processor time it did once a
+  radar has learnt before (19% less on the first run after its history or labels
+  change). A radar's own Learn now rates each candidate threshold from the few
+  stretches of history it changes, instead of re-adding all of them. What Learn works
+  out from each finished day is kept beside that day, so the next Learn reads it
+  instead of working it out again. It is worked out afresh whenever the day, its
+  labels or the integration's code change, and has its own 32 MB disk budget.
+- When there is no automatic weight, Learn no longer compares two policies that are
+  the same.
+- Recorded history takes about half the disk space. Finished days now store each
+  reading's end beside the next reading's start (they almost always meet) and their
+  time steps in a layout zlib packs better: on a real install, 24.6 MB of history
+  became 13.4 MB, with every reading unchanged. Existing days are rewritten once at the
+  next restart. Less space also means the storage limit trims history later.
+- Day summaries are no longer saved to disk. They took about 0.8 MB per day (more than
+  the history itself), loading one was slower than rebuilding it, and they did not fit
+  their budget on real installs. Existing summary files are removed at the next
+  restart, freeing up to 64 MB.
+- The saved state is smaller: each radar keeps a count of its classification segments
+  instead of the last 500 of them, which only the count was ever shown from (about a
+  quarter of the saved device data). The count is no longer capped at 500.
+- Bermuda presence sources: choose the target area from a list of your Home
+  Assistant areas instead of typing it (areas already saved by name keep working),
+  and optionally set a maximum distance. Within the area, the person then only counts
+  as present within that distance of the area's scanner, read from Bermuda's own
+  Distance sensor for that device; farther away counts as outside the area, and an
+  unknown distance gives no label.
+- Graphs, Learn and other history reads no longer fail on very busy days. A day of
+  more than about 645,000 recorded changes (possible with 18 gates reporting every
+  couple of seconds) was too big for the background worker's temporary-file limit
+  on Linux, so its graph or Learn job failed. That limit now matches the size of day
+  the worker already accepts.
+- Newer evidence is kept when a radar's references are full. Each kind of reference
+  evidence keeps its newest 24 periods, but newer direct observations could be
+  dropped in favour of older room evidence. The oldest periods now go first.
+- References now notice label edits on room-mates. A grouped radar's references
+  depend on the other radars' labels in its room. Editing one of them now marks the
+  room-mates' references out of date too, and a rebuild that was running during the
+  edit is redone instead of installing a stale result.
+- A gate that goes unavailable no longer carries its last reading into a new
+  recording session; it is recorded as missing until it reports again.
+- Just after midnight (UTC), the room estimate no longer briefly disagrees with
+  itself before the new day starts recording. This also fixes a test that failed
+  20-50 minutes after midnight.
+- Exports are taken one at a time: another export request while one is running gets
+  "busy, retry shortly" instead of queueing without limit.
+- Startup checks the recording state handed back by its worker before using it.
+- The learning schedule no longer reads time-zone files on Home Assistant's main
+  loop.
+
 ## 1.29.1 - 2026-10-23
 
 - Refresh today's graphs much faster. A day graph only recharts its newest few minutes
