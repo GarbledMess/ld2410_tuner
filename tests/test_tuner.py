@@ -962,6 +962,10 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         from tuner_under_test.history import commit
         from tuner_under_test.worker import bridge
 
+        # A label recount left in a worker thread would hold its input open past cleanup; a
+        # test that holds the worker forever (unload tests) is not waited for.
+        if rebuilds := list(self.runtime._label_rebuilds.values()):
+            await asyncio.wait(rebuilds, timeout=5)
         await bridge.stop(self.runtime)
         await commit.drain(self.runtime)
         tasks = list(self.runtime._timeout_tasks.values())

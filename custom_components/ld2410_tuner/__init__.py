@@ -196,6 +196,11 @@ async def _shutdown(runtime):
     for task in runtime._timeout_tasks.values():
         task.cancel()
     runtime._timeout_tasks.clear()
+    # A label recount still in the executor would otherwise install and save after unload.
+    label_rebuilds = list(runtime._label_rebuilds.values())
+    for task in label_rebuilds:
+        task.cancel()
+    await asyncio.gather(*label_rebuilds, return_exceptions=True)
     await rebuilds.stop(runtime)  # Drop queued reference rebuilds; stale marks are saved.
     for task in (runtime._save_task, runtime._flush_task):
         if task:

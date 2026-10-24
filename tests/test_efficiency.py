@@ -615,6 +615,29 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
             await harness.settled(self.runtime)
         self.assertIs(removed["histograms"], before, "left as it was when removed")
 
+    async def test_unloading_during_an_update_neither_rebuilds_nor_saves_afterwards(self):
+        from unittest.mock import AsyncMock
+
+        mod = harness.sys.modules["tuner_under_test"]
+        release, started, holding = await self.hold_updates()
+        fields = ("device_id", "state", "timeout_seconds")
+        before = self.device["histograms"]
+        with holding:
+            await self.route("set_training_state", fields, device_id="a", state="present")
+            await asyncio.wait_for(started.wait(), 5)
+            rebuilds = list(self.runtime._label_rebuilds.values())
+            with (
+                patch.object(mod.engineering, "stop", AsyncMock()),
+                patch.object(mod.schedule, "stop", AsyncMock()),
+            ):
+                await mod._shutdown(self.runtime)
+            release.set()
+            await asyncio.wait(rebuilds, timeout=5)
+        self.assertTrue(all(task.done() for task in rebuilds))
+        self.assertIs(self.device["histograms"], before, "an unloaded radar is left as it was")
+        save = self.runtime._save_task
+        self.assertTrue(save is None or save.done(), "nothing saves after the final save")
+
     async def test_counts_of_a_mostly_rewritten_history_are_counted_afresh_by_the_worker(self):
         import threading
 
