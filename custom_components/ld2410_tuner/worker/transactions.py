@@ -120,6 +120,9 @@ def copy_tree(root, target, selected=None):
 
 
 def _prepare(holder, root, operation, data, now, snapshot, fs_lock):
+    # Refused before anything is copied; here, not on the event loop, where a walk of a large
+    # home's data takes about 0.1 s.
+    storage_values.validate(data, max_bytes=MESSAGE_BYTES, max_nodes=MESSAGE_NODES)
     root.parent.mkdir(parents=True, exist_ok=True)
     directory = holder["directory"] = Path(
         tempfile.mkdtemp(prefix=".ld2410-storage-", dir=root.parent)
@@ -151,7 +154,6 @@ async def run(runtime, operation, data, accept, *, snapshot=None):
     holder = {}
 
     async def prepare():
-        storage_values.validate(data, max_bytes=MESSAGE_BYTES, max_nodes=MESSAGE_NODES)
         return await owned_preparation(
             runtime.hass.async_add_executor_job(
                 _prepare,

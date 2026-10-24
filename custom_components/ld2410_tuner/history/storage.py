@@ -119,13 +119,11 @@ def _prepare_save(store, candidate, now, clean, target):
 
 
 async def _save_days(runtime, values, clean, target, persist=True):
-    from ..worker import storage_values, transactions
+    from ..worker import transactions
 
     for _attempt in range(3):
-        storage_values.validate(
-            runtime.data, max_bytes=transactions.MESSAGE_BYTES, max_nodes=transactions.MESSAGE_NODES
-        )
-        original = budget.copy_data(runtime.data)
+        # Bounded; the copy is validated in the executor, before anything is copied for it.
+        original = budget.copy_data(runtime.data, max_nodes=transactions.MESSAGE_NODES)
         marks = {key: _observation_mark(runtime, key) for key in original["devices"]}
         candidate = original if values is None else {**original, "storage_settings": values}
 

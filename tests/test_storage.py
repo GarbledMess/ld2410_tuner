@@ -106,6 +106,24 @@ def test_copy_data_is_a_deep_copy():
     assert copied["devices"]["a"]["history_labels"] == [{"start": 1, "end": 2, "state": "present"}]
 
 
+def test_copy_data_keeps_tuples_and_scalar_keys_as_they_are():
+    data = {"runs": [(1.5, 2.5, "present")], 3: None, "nested": {"x": ((1,), [2])}}
+    copied = budget.copy_data(data)
+    assert copied == data
+    assert type(copied["runs"][0]) is tuple and type(copied["nested"]["x"][1]) is list
+    assert copied["nested"]["x"][1] is not data["nested"]["x"][1]
+
+
+def test_copy_data_refuses_unbounded_data_before_copying_it_all():
+    deep = []
+    for _ in range(25):
+        deep = [deep]
+    with pytest.raises(ValueError):
+        budget.copy_data({"deep": deep})
+    with pytest.raises(ValueError):
+        budget.copy_data({"wide": list(range(10))}, max_nodes=5)
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -238,6 +256,26 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
         assert not self.runtime._history_runtime
         await self.runtime.configure_storage({**policy.DEFAULTS, "max_mib": 3})
         assert not self.runtime._storage_status.get("blocked")
+
+    async def test_a_save_validates_the_stored_data_off_the_event_loop(self):
+        # Each walk of a 12-radar home's data takes about 0.1 s: the loop only takes the save's
+        # private copy (bounded, ``budget.copy_data``), which is validated in the executor.
+        import threading
+
+        storage_values = sys.modules["tuner_under_test.worker.storage_values"]
+        loop_thread, walks = threading.current_thread(), []
+        real = storage_values.validate
+
+        def spy(value, **kwargs):
+            if "devices" in value or "devices" in value.get("data", {}):  # Not a flush's {}.
+                walks.append(threading.current_thread() is loop_thread)
+            return real(value, **kwargs)
+
+        self.finished_sample(self.now - 60)
+        with patch.object(storage_values, "validate", spy):
+            await self.runtime.async_save()
+        assert walks.count(True) == 0
+        assert walks.count(False) >= 1  # The copy sent to the worker is still checked.
 
     async def test_manual_trim_flushes_pending_and_reports_age_removals(self):
         self.finished_sample(self.now - 10 * policy.DAY)
