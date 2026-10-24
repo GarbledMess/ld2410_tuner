@@ -2,7 +2,7 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
-[Release notes](CHANGELOG.md) - 1.30.0 makes Learn about twice as fast, halves the disk space history takes and adds an area picker and maximum distance to Bermuda sources.
+[Release notes](CHANGELOG.md) - 1.30.1 stops labelling history from freezing Home Assistant and applies the first label after a restart at once.
 
 All collapsible sections start closed. Each heading describes what is inside;
 sections you open stay open during panel refreshes. History and Recommendations
