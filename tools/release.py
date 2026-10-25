@@ -151,17 +151,25 @@ def main():
         sha = os.environ["GITHUB_SHA"]
         if git(root, "rev-parse", "HEAD") != sha:
             raise ValueError("Checkout does not match the triggering commit")
-        before = os.environ["PREVIOUS_SHA"]
-        version = changed_version(root, before)
-        if version is None:
-            print("Manifest version unchanged; no release needed")
+        api = GitHub(os.environ["GITHUB_REPOSITORY"], os.environ["GH_TOKEN"])
+        if pending_version(root, os.environ["PREVIOUS_SHA"], api) is None:
+            print("Manifest version unchanged and released; no release needed")
             return
     version, archive = build(root, args.output)
     print(f"Built {archive.name} for {version}")
     if args.publish:
-        publish(
-            GitHub(os.environ["GITHUB_REPOSITORY"], os.environ["GH_TOKEN"]), version, sha, archive
-        )
+        publish(api, version, sha, archive)
+
+
+def pending_version(root, before, api):
+    """A changed version, or an unchanged one whose release run never published it (a failed
+    run must not strand a version that later pushes leave unchanged)."""
+    version = changed_version(root, before)
+    if version is not None:
+        return version
+    version = json.loads((root / MANIFEST).read_text())["version"]
+    release = api.request(f"/releases/tags/v{version}", missing_ok=True)
+    return None if release and not release["draft"] else version
 
 
 def _verify_tag(api, tag, sha):

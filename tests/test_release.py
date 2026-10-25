@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
@@ -47,6 +48,52 @@ class ReleaseTests(unittest.TestCase):
             for bad in ("../x", "v1.0.0", "1.0.0; command", "01.0.0"):
                 with self.assertRaises(ValueError):
                     release.version_tuple(bad)
+
+    def _publish_main(self, release_found):
+        """Run main for a push that leaves 1.9.2 unchanged; return the publish mock."""
+        sha = "b" * 40
+        env = {
+            "GITHUB_EVENT_NAME": "push",
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_SHA": sha,
+            "PREVIOUS_SHA": "a" * 40,
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GH_TOKEN": "synthetic",
+        }
+        api = unittest.mock.Mock()
+        api.request.return_value = release_found
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / release.MANIFEST
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(json.dumps({"version": "1.9.2"}))
+            unchanged = json.dumps({"version": "1.9.2"})
+            with (
+                patch.dict(release.os.environ, env),
+                patch.object(sys, "argv", ["release.py", "--publish"]),
+                patch.object(release, "__file__", str(root / "tools" / "release.py")),
+                patch.object(
+                    release,
+                    "git",
+                    side_effect=lambda _root, cmd, *_: sha if cmd == "rev-parse" else unchanged,
+                ),
+                patch.object(release, "GitHub", return_value=api),
+                patch.object(release, "build", return_value=("1.9.2", root / "x.zip")),
+                patch.object(release, "publish") as publish,
+            ):
+                release.main()
+        return publish, api
+
+    def test_unchanged_version_publishes_when_its_release_never_finished(self):
+        for found in (None, {"draft": True}):
+            publish, api = self._publish_main(found)
+            api.request.assert_called_once_with("/releases/tags/v1.9.2", missing_ok=True)
+            publish.assert_called_once()
+            self.assertEqual(publish.call_args.args[1:3], ("1.9.2", "b" * 40))
+
+    def test_unchanged_version_with_a_published_release_is_skipped(self):
+        publish, _api = self._publish_main({"draft": False})
+        publish.assert_not_called()
 
     def test_archive_is_deterministic_and_excludes_private_untracked_files(self):
         with tempfile.TemporaryDirectory() as directory:
