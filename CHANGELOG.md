@@ -1,5 +1,40 @@
 # Release notes
 
+## 1.31.0 - unreleased
+
+- Much less work on Home Assistant's main loop and in the background, with exactly the
+  same results. Measured on a real install (desktop; a Raspberry Pi takes longer, in
+  proportion):
+  - Refreshing which radars see each room ("Seen by") takes about 2 s instead of 30 s
+    once warm (about 9 s the first time).
+  - The daily cleanup takes about 20 s instead of 64 s.
+  - A room assessment takes about 27 s instead of 80 s, and a room Learn about 420 s
+    instead of 590 s.
+  - A radar's Learn takes about a fifth less processor time: the threshold search skips
+    windows with no labelled time, which cannot change a score.
+  - Saving recorded history to disk holds the history store's lock only while taking
+    the records, and encodes each record once (about 30% less work per save).
+  - Learning references from live readings no longer rebuilds the radar's label index
+    every minute; it is kept until the radar's labels change.
+  - A save holds the main loop for about 37 ms instead of 267 ms.
+  - Startup replays the day's log about a third faster.
+  - Rebuilding references, sampling, charts, snapshots and comparisons each take
+    roughly a quarter to two thirds less processor time.
+- Room attribution is now worked out a day at a time, and finished days are kept beside
+  the history (within the existing result budget), so later runs only redo the days
+  that changed.
+- The JSON export now downloads as a file instead of being shown in the panel. The
+  download link is signed, admin-only and expires after 10 minutes.
+- Recorded data now sits inside each radar's card instead of at the top of the panel.
+- All Bermuda settings are now in one Bermuda section. For each tracked device, tick
+  the radars, rooms and zones it should label, optionally with a range and an area
+  other than the target's own (a zone's own area is any of its radars' areas). A
+  room's Bermuda labels still use that room's presence-source confidence, absence and
+  trim settings. Existing Bermuda sources in radar and room settings move into the
+  section once, keeping their ranges and areas, and the radar and room source editors
+  now offer only Boolean sources.
+- Unloading the integration can no longer save after Home Assistant has shut it down.
+
 ## 1.30.1 - 2026-10-24
 
 - Labelling history no longer freezes Home Assistant. Adding or editing a history period,
