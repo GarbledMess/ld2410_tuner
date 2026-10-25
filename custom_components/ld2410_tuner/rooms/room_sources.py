@@ -57,10 +57,34 @@ def forget(runtime, group_id):
     runtime._source_runtime.pop(_key(group_id), None)
     runtime._room_sensor_open.pop(group_id, None)
     runtime._room_sensor_checked.discard(group_id)
+    devices = runtime.data.get("bermuda", {}).get("devices", {})
+    for entity_id, device in list(devices.items()):
+        device.get("rooms", {}).pop(group_id, None)
+        if not device.get("radars") and not device.get("rooms"):
+            devices.pop(entity_id)
+
+
+def assignments_changed(runtime, group_id, recover=False):
+    """Close evidence and discard buffers before changing a central assignment."""
+    _finalise(runtime, group_id)
+    runtime._source_runtime.pop(_key(group_id), None)
+    if recover:
+        runtime._room_sensor_checked.discard(group_id)
+    else:
+        runtime._room_sensor_checked.add(group_id)
+    room_labels.bump_sensor_revision(runtime, group_id)
+
+
+def effective_settings(runtime, group_id):
+    from ..presence import bermuda
+
+    config = settings(runtime, group_id)
+    config["sources"].extend(bermuda.effective(runtime, group_id, "rooms"))
+    return config
 
 
 def summary(runtime, group_id):
-    evidence = sources.read(runtime.hass, settings(runtime, group_id))
+    evidence = sources.read(runtime.hass, effective_settings(runtime, group_id))
     buffered = bool(evidence["start_buffer_seconds"] or evidence["end_buffer_seconds"])
     buffering = (
         evidence["state"] == "present"
@@ -69,6 +93,7 @@ def summary(runtime, group_id):
     )
     return {
         **evidence,
+        "sources": settings(runtime, group_id)["sources"],
         "raw_state": evidence["state"],
         "buffering": buffering,
         "state": "unknown" if buffering else evidence["state"],
@@ -80,13 +105,18 @@ def sample_rooms(runtime, now) -> None:
     if runtime._storage_status.get("blocked"):
         return
     defined = groups.definitions(runtime)[2]
-    for group_id in list(runtime.data.get(STORE, {})):
+    from ..presence import bermuda
+
+    central = bermuda.settings(runtime)["devices"]
+    targets = set(runtime.data.get(STORE, {}))
+    targets.update(key for device in central.values() for key in device.get("rooms", {}))
+    for group_id in sorted(targets):
         if group_id in defined:
             _tick(runtime, group_id, now)
 
 
 def _tick(runtime, group_id, now):
-    config = settings(runtime, group_id)
+    config = effective_settings(runtime, group_id)
     state = sources.read(runtime.hass, config)["state"]
     if group_id not in runtime._room_sensor_checked:
         runtime._room_sensor_checked.add(group_id)

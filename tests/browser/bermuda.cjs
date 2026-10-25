@@ -29,10 +29,17 @@ module.exports = async function testBermuda(page, screenshotDir) {
       ...fixture.rooms,
       areas: { bedroom: "Bedroom", office: "Office" },
     };
+    fixture.rooms.groups["zone:bermuda"] = {
+      name: "Both rooms",
+      area_id: null,
+      kind: "zone",
+      device_ids: ["a", "b"],
+    };
     fixture.devices.a.area_id = "bedroom";
     fixture.devices.b.area_id = "office";
     fixture.devices.c.area_id = null;
     fixture.bermuda_radars = {
+      stored: { area_id: "office", reason: null },
       a: { area_id: "bedroom", reason: null },
       b: { area_id: "office", reason: null },
       c: {
@@ -112,6 +119,17 @@ module.exports = async function testBermuda(page, screenshotDir) {
       row.locator(`[data-bermuda-radar="${id}"] [data-bermuda-on]`);
     const range = (row, id) =>
       row.locator(`[data-bermuda-radar="${id}"] [data-bermuda-range]`);
+    const room = phone.locator('[data-bermuda-room="zone:bermuda"]');
+    assert.equal(
+      await phone.locator('[data-bermuda-radar="stored"]').count(),
+      1,
+      "stored radars remain targets even without a visible radar card",
+    );
+    assert.equal(await room.count(), 1, "rooms and zones are Bermuda targets");
+    assert.match(await room.innerText(), /Both rooms.*Bedroom.*Office/s);
+    await room.locator("[data-bermuda-on]").check();
+    await room.locator("[data-bermuda-area]").selectOption("office");
+    await room.locator("[data-bermuda-range]").fill("2");
     assert.equal(await on(phone, "a").isChecked(), true);
     assert.equal(await range(phone, "a").inputValue(), "3");
     assert.equal(
@@ -120,9 +138,9 @@ module.exports = async function testBermuda(page, screenshotDir) {
       "unchecked radar hides its range",
     );
     assert.equal(
-      await range(phone, "c").count(),
-      0,
-      "no-area radar has no range field",
+      await range(phone, "c").isVisible(),
+      false,
+      "unchecked no-area radar hides its range",
     );
     assert.match(
       await on(phone, "a").locator("..").innerText(),
@@ -134,6 +152,18 @@ module.exports = async function testBermuda(page, screenshotDir) {
     );
     assert.equal(await on(phone, "c").isDisabled(), true);
     assert.match(await phone.innerText(), /Home Assistant area/);
+    const noArea = phone.locator('[data-bermuda-radar="c"]');
+    await noArea.locator("[data-bermuda-area]").selectOption("office");
+    assert.equal(await on(phone, "c").isEnabled(), true);
+    await on(phone, "c").check();
+    await range(phone, "c").fill("1.5");
+    await noArea.locator("[data-bermuda-area]").selectOption("");
+    assert.equal(await on(phone, "c").isChecked(), false);
+    assert.equal(await on(phone, "c").isDisabled(), true);
+    assert.equal(await range(phone, "c").isVisible(), false);
+    await noArea.locator("[data-bermuda-area]").selectOption("office");
+    await on(phone, "c").check();
+    await range(phone, "c").fill("1.5");
     await on(watch, "b").check();
     assert.equal(await range(watch, "b").isVisible(), true);
     assert.equal(await range(watch, "b").isDisabled(), false);
@@ -193,13 +223,23 @@ module.exports = async function testBermuda(page, screenshotDir) {
         type: "ld2410_tuner/configure_bermuda",
         settings: {
           devices: {
-            "sensor.phone_area": { radars: { a: { max_distance: null } } },
-            "sensor.watch_area": { radars: { b: { max_distance: 4.5 } } },
+            "sensor.phone_area": {
+              radars: {
+                a: { max_distance: null, area: null },
+                c: { max_distance: 1.5, area: "office" },
+              },
+              rooms: { "zone:bermuda": { max_distance: 2, area: "office" } },
+            },
+            "sensor.watch_area": {
+              radars: { b: { max_distance: 4.5, area: null } },
+              rooms: {},
+            },
           },
         },
       },
     );
     await on(phone, "a").uncheck();
+    await on(phone, "c").uncheck();
     assert.equal(await range(phone, "a").isVisible(), false);
     await on(phone, "a").check();
     assert.equal(await range(phone, "a").isVisible(), true);
@@ -216,7 +256,14 @@ module.exports = async function testBermuda(page, screenshotDir) {
       await page.evaluate(() => fixture.bermuda),
       {
         devices: {
-          "sensor.watch_area": { radars: { b: { max_distance: 4.5 } } },
+          "sensor.phone_area": {
+            radars: {},
+            rooms: { "zone:bermuda": { max_distance: 2, area: "office" } },
+          },
+          "sensor.watch_area": {
+            radars: { b: { max_distance: 4.5, area: null } },
+            rooms: {},
+          },
         },
       },
       "hidden range fields do not keep unchecked assignments enabled",
@@ -230,11 +277,15 @@ module.exports = async function testBermuda(page, screenshotDir) {
       await panel._load(true);
     });
     assert.equal(await on(watch, "b").isChecked(), true);
-    assert.equal(await on(watch, "b").isDisabled(), true);
     assert.equal(
-      await range(watch, "b").count(),
-      0,
-      "even a checked no-area radar has no range input",
+      await on(watch, "b").isDisabled(),
+      false,
+      "saved assignment remains removable without a default area",
+    );
+    assert.equal(
+      await range(watch, "b").isVisible(),
+      true,
+      "checked target retains editable range and area",
     );
     await save.click();
     await page.waitForFunction(() => panel._activeActions === 0);
@@ -242,7 +293,7 @@ module.exports = async function testBermuda(page, screenshotDir) {
       await page.evaluate(
         () => fixture.bermuda.devices["sensor.watch_area"].radars.b,
       ),
-      { max_distance: 4.5 },
+      { max_distance: 4.5, area: null },
       "a hidden no-area range retains its saved assignment",
     );
     await page.evaluate(async () => {
@@ -269,12 +320,25 @@ module.exports = async function testBermuda(page, screenshotDir) {
       await page.setViewportSize({ width, height: 950 });
       await section.scrollIntoViewIfNeeded();
       for (const row of [phone, watch]) {
+        for (const area of await row
+          .locator(".bermuda-area:visible label")
+          .all()) {
+          assert.equal(
+            await area.evaluate((label) => {
+              const range = document.createRange();
+              range.selectNodeContents(label.firstChild);
+              return range.getClientRects().length;
+            }),
+            1,
+            "Area caption stays on one line",
+          );
+        }
         for (const id of ["a", "b"]) {
           const toggleBox = await on(row, id).boundingBox();
           const labelBox = await on(row, id).locator("..").boundingBox();
           assert.ok(
             labelBox.height <= 48,
-            "each radar label stays on one compact row",
+            `each radar label stays on one compact row: ${JSON.stringify({ width, id, labelBox, toggleBox })}`,
           );
           if (await on(row, id).isChecked()) {
             const rangeBox = await range(row, id).boundingBox();

@@ -11,21 +11,17 @@ function searchStatus(count) {
   return `${count} matching entities${suffix}`;
 }
 
-function eligible(entityId, state, kind) {
-  if (kind === "bermuda")
-    return (
-      entityId.startsWith("sensor.") && "area_id" in (state.attributes || {})
-    );
+function eligible(entityId, state) {
   return (
     /^(binary_sensor|input_boolean|switch)\./.test(entityId) ||
     ["on", "off", "true", "false"].includes(String(state.state).toLowerCase())
   );
 }
 
-function matchingEntities(states, kind, query) {
+function matchingEntities(states, query) {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   return Object.entries(states || {}).filter(([id, state]) => {
-    if (!eligible(id, state, kind)) return false;
+    if (!eligible(id, state)) return false;
     const text = `${id} ${state.attributes?.friendly_name || ""}`.toLowerCase();
     return words.every((word) => text.includes(word));
   });
@@ -54,11 +50,7 @@ export function wireSourcePicker(row, getStates, escape) {
     active = -1;
   };
   const show = () => {
-    const matches = matchingEntities(
-      getStates(),
-      row.querySelector("[data-source-kind]").value,
-      input.value,
-    );
+    const matches = matchingEntities(getStates(), input.value);
     list.innerHTML = matches
       .slice(0, RESULT_LIMIT)
       .map(

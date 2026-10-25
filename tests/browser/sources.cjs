@@ -65,65 +65,30 @@ module.exports = async function testSources(page, screenshotDir) {
     "new radar sources use the central Bermuda section",
   );
   assert.match(await form.innerText(), /Bermuda section/);
-  // Load a legacy Bermuda entry; its editor, validation and removal stay supported.
-  await page.evaluate(() => {
-    panel._sourceDrafts.get("a").sources[1].kind = "bermuda";
-    panel._draw();
-  });
-  await form.locator("[data-source-entity]").nth(1).fill("sensor.phone_area");
-  const area = form.locator("[data-source-area]");
-  assert.equal(await area.evaluate((element) => element.tagName), "SELECT");
-  assert.deepEqual(await area.locator("option").allTextContents(), [
-    "Choose an area",
-    "Bedroom",
-    "Office",
-  ]);
-  assert.equal(await area.inputValue(), "");
-  assert.equal(await area.evaluate((element) => element.required), true);
-  const beforeEmptySave = await page.evaluate(
-    () =>
-      requests.filter((message) =>
-        message.type.endsWith("/configure_presence_sources"),
-      ).length,
-  );
-  await form.locator('[data-action="sources-save"]').click();
-  await page.waitForFunction(() => panel._activeActions === 0);
-  assert.equal(
-    await page.evaluate(
-      () =>
-        requests.filter((message) =>
-          message.type.endsWith("/configure_presence_sources"),
-        ).length,
-    ),
-    beforeEmptySave,
-  );
-  await area.selectOption("bedroom");
-  await form.locator("[data-source-max-distance]").fill("3");
+  await form
+    .locator("[data-source-entity]")
+    .nth(1)
+    .fill("binary_sensor.watch_present");
+  assert.equal(await form.locator("[data-source-area]").count(), 0);
+  assert.equal(await form.locator("[data-source-max-distance]").count(), 0);
   assert.deepEqual(
-    await page.evaluate(() => {
-      return ["bEdRoOm", "old <area>", "office"].map((area) => {
+    await page.evaluate(() =>
+      ["bEdRoOm", "old <area>", "office"].map((area) => {
         const container = document.createElement("div");
-        container.innerHTML = panel._sourceRowHtml(
-          "a",
-          {
-            kind: "bermuda",
-            entity_id: "sensor.phone_area",
-            area,
-          },
-          0,
-        );
-        const select = container.querySelector("[data-source-area]");
+        container.innerHTML = panel._sourceAreaHtml(area, "Own area");
+        const select = container.querySelector("select");
         return {
           value: select.value,
           text: select.selectedOptions[0].textContent,
         };
-      });
-    }),
+      }),
+    ),
     [
       { value: "bedroom", text: "Bedroom" },
-      { value: "old <area>", text: "old <area> (not a current area)" },
+      { value: "old <area>", text: "old <area> (unknown area)" },
       { value: "office", text: "Office" },
     ],
+    "central area picker preserves migrated area names and unknown text",
   );
   assert.deepEqual(
     await page.evaluate(() => {
@@ -156,24 +121,23 @@ module.exports = async function testSources(page, screenshotDir) {
       "sensor.phone_area: No usable state",
     ],
   );
-  assert.equal(
-    await page.evaluate(() => {
-      const container = document.createElement("div");
-      container.innerHTML = panel._sourcesHtml("legacy", {
-        presence_sources: {
-          sources: [
-            {
-              kind: "bermuda",
-              entity_id: "sensor.phone_area",
-              area: " old area ",
-            },
-          ],
-        },
-      });
-      return panel._readSources(container).sources[0].area;
-    }),
-    " old area ",
-    "saving preserves an unknown legacy area exactly",
+  assert.deepEqual(
+    await page.evaluate(() =>
+      [false, true].map((room) => {
+        const container = document.createElement("div");
+        container.innerHTML = panel._sourceRowHtml(
+          "a",
+          { kind: "boolean", entity_id: "", area: "" },
+          0,
+          room,
+        );
+        return [...container.querySelectorAll("[data-source-kind] option")].map(
+          (o) => o.value,
+        );
+      }),
+    ),
+    [["boolean"], ["boolean"]],
+    "both editors only offer Boolean",
   );
   assert.deepEqual(
     await page.evaluate(() => {
@@ -194,17 +158,9 @@ module.exports = async function testSources(page, screenshotDir) {
   await page.evaluate(() => panel._load());
   assert.equal(
     await form.locator("[data-source-entity]").nth(1).inputValue(),
-    "sensor.phone_area",
-  );
-  assert.equal(
-    await form.locator("[data-source-area]").inputValue(),
-    "bedroom",
+    "binary_sensor.watch_present",
   );
   assert.equal(await form.locator("[data-source-negative]").isChecked(), false);
-  assert.equal(
-    await form.locator("[data-source-max-distance]").inputValue(),
-    "3",
-  );
   await form.locator('[data-action="sources-save"]').click();
   await page.waitForFunction(() => panel._activeActions === 0);
   assert.deepEqual(
@@ -213,10 +169,9 @@ module.exports = async function testSources(page, screenshotDir) {
       sources: [
         { entity_id: "binary_sensor.camera_person", kind: "boolean", area: "" },
         {
-          entity_id: "sensor.phone_area",
-          kind: "bermuda",
-          area: "bedroom",
-          max_distance: 3,
+          entity_id: "binary_sensor.watch_present",
+          kind: "boolean",
+          area: "",
         },
       ],
       mark_not_present: false,
@@ -226,7 +181,6 @@ module.exports = async function testSources(page, screenshotDir) {
     },
   );
   await form.locator("[data-source-negative]").check();
-  await form.locator("[data-source-max-distance]").fill("");
   await form.locator("[data-source-confidence]").fill("85");
   await startBuffer.fill("12.5");
   await endBuffer.fill("8");

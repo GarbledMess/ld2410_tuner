@@ -71,16 +71,16 @@ class RoomSourceTests(unittest.IsolatedAsyncioTestCase):
 
     def test_room_bermuda_honours_max_distance(self):
         self.office()
-        self.configure(
-            sources=[
-                {
-                    "entity_id": "sensor.phone_area",
-                    "kind": "bermuda",
-                    "area": "office",
-                    "max_distance": 3,
+        self.configure(mark_not_present=True, sources=[])
+        self.runtime.configure_bermuda(
+            {
+                "devices": {
+                    "sensor.phone_area": {
+                        "radars": {},
+                        "rooms": {GROUP: {"max_distance": 3, "area": None}},
+                    }
                 }
-            ],
-            mark_not_present=True,
+            }
         )
         self.registry.entities.update(
             {
@@ -100,6 +100,54 @@ class RoomSourceTests(unittest.IsolatedAsyncioTestCase):
         self.states["sensor.phone_range"].state = "unknown"
         self.run_ticks(1016, 1020)
         self.assertEqual(self.sensor()[-1]["end"], 1016)
+
+    def test_removing_zone_removes_central_assignments(self):
+        self.office()
+        zone = groups.configure(self.runtime, None, "Desk", None, ["a"])["id"]
+        self.runtime.configure_bermuda(
+            {
+                "devices": {
+                    "sensor.phone_area": {
+                        "radars": {"a": {"max_distance": 2}},
+                        "rooms": {zone: {"max_distance": 3}, GROUP: {"max_distance": 4}},
+                    }
+                }
+            }
+        )
+        groups.remove(self.runtime, zone)
+        saved = self.runtime.data["bermuda"]
+        self.assertNotIn(zone, saved["devices"]["sensor.phone_area"]["rooms"])
+        self.assertEqual(saved["devices"]["sensor.phone_area"]["radars"]["a"]["max_distance"], 2)
+        self.assertTrue(self.runtime.configure_bermuda(saved))
+
+    def test_central_changes_stale_learning_signatures_without_sensor_activity(self):
+        self.office()
+        baseline = jobs.set_context(self.runtime, [GROUP])[1]
+        settings = {
+            "devices": {"sensor.phone_area": {"radars": {}, "rooms": {GROUP: {"max_distance": 3}}}}
+        }
+        self.runtime.configure_bermuda(settings)
+        room_changed = jobs.set_context(self.runtime, [GROUP])[1]
+        self.assertNotEqual(room_changed, baseline)
+        settings["devices"]["sensor.phone_area"]["radars"]["a"] = {"max_distance": 2}
+        self.runtime.configure_bermuda(settings)
+        self.assertNotEqual(jobs.set_context(self.runtime, [GROUP])[1], room_changed)
+
+    def test_migrated_room_recovers_persisted_sensor_label(self):
+        self.office()
+        self.runtime.data["room_presence_sources"] = {
+            GROUP: values(
+                sources=[{"entity_id": "sensor.phone_area", "kind": "bermuda", "area": "office"}]
+            )
+        }
+        self.stored_sensor(1000)
+        from tuner_under_test.presence import bermuda
+
+        bermuda.migrate(self.runtime)
+        with patch.object(membership, "retrain", wraps=membership.retrain) as retrain:
+            self.run_ticks(1002, 1002)
+        retrain.assert_called_once()
+        self.assertIn("reference_stale_since", self.device)
 
     def test_sensor_writes_never_touch_manual_labels(self):
         self.office()

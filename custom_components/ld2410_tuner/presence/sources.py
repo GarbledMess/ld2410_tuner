@@ -61,8 +61,14 @@ def validate(values):
     if not isinstance(sources, list) or len(sources) > 16:
         raise ValueError("Choose at most 16 presence sources")
     for source in sources:
-        _validate_source(source)
+        _validate_editor_source(source)
     return deepcopy(values)
+
+
+def _validate_editor_source(source):
+    if isinstance(source, dict) and source.get("kind") == "bermuda":
+        raise ValueError("Configure tracked devices in the Bermuda section")
+    _validate_source(source)
 
 
 def _validate_buffers(values):
@@ -124,11 +130,12 @@ def _entity_state(hass, source):
             str(entity.state).lower()
         )
     attributes = entity.attributes
-    target = source["area"].strip().casefold()
+    areas = source["area"] if isinstance(source["area"], list) else [source["area"]]
+    targets = {area.strip().casefold() for area in areas}
     # Bermuda's current Area sensor exposes area_id/name. Do not use last-seen
     # sensors, the scanner's assigned area, or a home/away device tracker.
     current = [attributes.get("area_id"), attributes.get("area_name"), entity.state]
-    return target in {str(value).casefold() for value in current if value is not None}
+    return bool(targets & {str(value).casefold() for value in current if value is not None})
 
 
 def _reading(hass, source):

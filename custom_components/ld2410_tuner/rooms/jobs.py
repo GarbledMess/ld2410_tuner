@@ -71,7 +71,7 @@ def _source_signature(runtime, group_ids, found):
     definitions = groups.definitions(runtime)[2]
     related = truth.related_to(definitions, group_ids)
     members = {key for group in found.values() for key in group}
-    return {
+    result = {
         "retention": policy.settings(runtime.data),
         "members": {
             key: deepcopy(runtime.data["devices"][key].get("presence_sources", {}))
@@ -81,6 +81,27 @@ def _source_signature(runtime, group_ids, found):
             key: deepcopy(runtime.data.get("room_presence_sources", {}).get(key, {}))
             for key in related
         },
+    }
+    if central := _bermuda_signature(runtime, members, related):
+        result["bermuda"] = central
+    return result
+
+
+def _bermuda_signature(runtime, members, related):
+    from ..presence import bermuda
+
+    # Effective areas also stale a result when a target's default area changes.
+    targets = (("radars", members), ("rooms", related))
+    return {
+        kind: found
+        for kind, ids in targets
+        if (
+            found := {
+                key: entries
+                for key in sorted(ids)
+                if (entries := bermuda.effective(runtime, key, kind))
+            }
+        )
     }
 
 

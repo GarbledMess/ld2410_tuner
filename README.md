@@ -962,35 +962,38 @@ its open state during polling. It lists tracked phones and watches by friendly n
 and current area. Discovery uses Bermuda Area sensors with a matching range sensor
 in Home Assistant's entity registry, so renamed entity IDs work too.
 
-For each tracked device, turn on the radars it should label. Each selected radar uses
-its own device-registry **Home Assistant area**, rather than a manually chosen area.
-A radar without an area has disabled controls explaining how to enable them.
-Optionally enter **Range (m)** per radar (greater than zero, up to 100 m); blank
-accepts any distance. Click **Save Bermuda settings** to apply the assignments.
-Unsaved choices survive polling. Use human-carried devices, not pets or permanently
-placed beacons.
+The **Bermuda** section is the single place to configure tracked devices for both
+**Radars** and **Rooms** (including zones). Tick each target to enable it, optionally
+set **Range (m)** (greater than zero, up to 100 m; blank accepts any distance), and
+choose an **Area** override if needed. **Own area** defaults to the radar's
+device-registry area or the room's area. A zone without an area accepts any of its
+member radars' areas. Without a default area, choose an override before ticking
+the target. Click **Save Bermuda settings** to apply. Unsaved choices survive polling.
+Use human-carried devices, not pets or permanently placed beacons.
 
-The phone or watch must be in the radar's area. Within that area, the optional range
-limit uses the matching Bermuda range sensor. Missing or unusable range gives no
-label; exceeding the limit counts as outside the area for negative labelling.
-The enabled devices combine with the radar's other sources using its source
-confidence, **Mark “Not Present”**, and trim settings described below. These radar
-settings remain available for assigned radars even when they belong to a room.
-Room-level source configuration is separate and unchanged.
+Within the chosen area, range uses the matching Bermuda range sensor. Missing or
+unusable range gives no label; exceeding the limit counts as outside the area for
+negative labelling. Each target combines Bermuda with its Boolean sources using
+its existing source confidence, **Mark “Not Present”**, and trim settings. Radar
+source settings remain available for assigned radars even when they belong to a room.
+Room assignments create the same sensor room labels as other room sources.
 
-On the first startup after upgrading, existing per-radar Bermuda sources targeting
-the radar's own area (by ID or case-insensitive name) move to this section with their
-range limits. Sources intentionally targeting other areas stay in the radar's editor
-and continue working; they can still be edited or removed. New per-radar sources use
-the Boolean type; configure new tracked devices in **Bermuda**. Room-level editors
-still allow Bermuda sources with their own explicit target area.
+On first startup after upgrading, **all** per-radar and per-room Bermuda sources
+move into this section, preserving range and cross-area choices. Area names resolve
+to registry IDs; matching default areas become **Own area**. Unrecognised legacy
+area text remains active and appears as **unknown area**, and may be replaced with
+a current HA area. Previously migrated installations are upgraded too. Both source
+editors offer only **Boolean entity**; new Bermuda assignments belong here.
 
-Search the Entity field by friendly name or entity ID, then tap a matching result.
-Results are rendered inside the panel so selection does not depend on the browser's
-native suggestion popup. Desktop keyboard users can use arrow keys and Enter;
-Escape closes the results. Direct entity ID entry remains available. The list shows
-up to 30 matches at once; keep typing to narrow it. Source type limits the suggestions
-to boolean entities or Bermuda Area sensors, and unsaved choices survive polling.
+Each tracked-device/target pair has one assignment. If legacy duplicates conflict,
+an existing central assignment takes precedence, otherwise the first legacy source
+wins. Displaced source records are retained in `bermuda_migration_conflicts` in the
+integration data for recovery; they do not create additional active assignments.
+
+For Boolean sources, search the Entity field by friendly name or entity ID and tap
+a matching result. Desktop keyboard users can use arrow keys and Enter; Escape
+closes results. Direct entity ID entry remains available. The list shows up to 30
+matches; keep typing to narrow it. Unsaved choices survive polling.
 
 Any positive source starts or continues a Present period. **Mark “Not Present” defaults to
 OFF**: an off boolean or a person leaving the Bermuda area supplies no negative
@@ -1001,7 +1004,7 @@ room. Bermuda tracks a device, which may be left behind or not carried; cameras
 may have blind spots. See [Bermuda's Area sensor documentation](https://github.com/agittins/bermuda/wiki).
 
 **Trim start of presence** and **Trim end of presence** each default to **10
-seconds**, configurable per device from 0 to 3600 seconds. For an observed
+seconds**, configurable per radar or room from 0 to 3600 seconds. For an observed
 presence period from 12:00:00 to 12:01:00, the defaults label only readings from
 12:00:10 up to 12:00:50. Periods lasting 20 seconds or less contribute no automatic
 presence labels. During a longer period, labels are confirmed progressively;
