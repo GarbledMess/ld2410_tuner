@@ -402,6 +402,28 @@ class DayStore:
         self._remember((device_id, date), day)
         return dayfile.splice(day, late)
 
+    def guess_runs(self, device_id, date, until=None):
+        """The guess runs of ``day(device_id, date, until)``. A finished day that is not in
+        memory has only its runs read from its file, not its readings: on a busy day that is
+        a twentieth of the work (the room estimate after a restart, just after midnight)."""
+        with self._lock:
+            live = self._live.get(device_id)
+            resident = (
+                (live is not None and live.date == date)
+                or bool(self._late.get(device_id, {}).get(date))
+                or (device_id, date) in self._pending
+                or date in self._closing.get(device_id, {})
+                or device_id in self._clear_pending
+                or (device_id, date) in self._cache
+            )
+        if resident:
+            day = self.day(device_id, date, until=until)
+            return [] if day is None else list(day.guesses)
+        try:
+            return dayfile.decode_guesses(self._path(device_id, date, ".day").read_bytes())
+        except FileNotFoundError:
+            return []
+
     def worker_snapshot(self, device_id, date, until=None, *, limits=None):
         """Acquire one bounded detached day or finished-file reference (executor only)."""
         return worker_snapshot.acquire(self, device_id, date, until, limits=limits)

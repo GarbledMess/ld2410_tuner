@@ -488,3 +488,26 @@ def test_a_window_inside_the_live_day_needs_no_folder_listing(tmp_path, monkeypa
     monkeypatch.setattr(Path, "iterdir", lambda self: (_ for _ in ()).throw(AssertionError))
     assert spans._store_days(view, "radar", START + 86_400 + 20, START + 86_400 + 25) == listed
     assert listed == [daystore.date_of(START + 86_400)]
+
+
+def test_guess_runs_read_a_finished_day_without_decoding_its_readings(tmp_path):
+    from unittest.mock import patch
+
+    days = store(tmp_path)
+    days.append("radar", change(START + 1, g0=10))
+    days.append("radar", dayfile.Guess(START + 2, "present", 80, 0))
+    days.append("radar", change(START + 3, g0=20))
+    days.append("radar", dayfile.Guess(START + 60, None, 0, 0))
+    days.append("radar", dayfile.Guess(NEXT + 1, "not_present", 70, 0))  # The next day, live.
+    days.flush(now=NEXT + 5)
+    live = DAY + datetime.timedelta(days=1)
+    expected = {date: list(days.day("radar", date, until=NEXT + 5).guesses) for date in (DAY, live)}
+    assert expected[DAY], "the finished day records guess runs"
+    restarted = store(tmp_path)  # Nothing in memory: the finished day is only its file.
+    with patch.object(dayfile, "_time_columns", side_effect=AssertionError("readings decoded")):
+        assert restarted.guess_runs("radar", DAY) == expected[DAY]
+    assert days.guess_runs("radar", live, until=NEXT + 5) == expected[live]  # Held in memory.
+    assert days.guess_runs("radar", DAY) == expected[DAY]  # Cached by the store.
+    assert restarted.guess_runs("radar", DAY - datetime.timedelta(days=1)) == []
+    with pytest.raises(ValueError, match="Corrupt"):
+        dayfile.decode_guesses(dayfile.MAGIC + b"not zlib")

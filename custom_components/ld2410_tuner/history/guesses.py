@@ -207,6 +207,9 @@ def recorded(runtime, device_id, since=float("-inf")):
 
 
 def _day_runs(days, device_id, date, until):
+    runs = getattr(days, "guess_runs", None)  # The day store: without decoding readings.
+    if runs is not None:
+        return tuple(runs(device_id, date, until))
     day = days.day(device_id, date, until)
     return tuple(day.guesses) if day else ()
 
