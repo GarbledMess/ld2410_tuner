@@ -86,19 +86,6 @@ def test_accumulation_matches_independent_seeded_duration_oracle():
     )
 
 
-def test_existing_density_does_not_allocate_an_unused_default():
-    class ExistingDensity(dict):
-        def setdefault(self, key, default=None):
-            assert key not in self, "eager default allocated for an existing density"
-            return super().setdefault(key, default)
-
-    key = HISTORY_KEYS[0]
-    parent = Episode(0, 10, "present", ("synthetic",))
-    densities = ExistingDensity({(parent, key): [0.0] * 101})
-    event_quality._energies((20,) * 18, [key], parent, 2, {}, {key: [0.0] * 101}, densities)
-    assert densities[parent, key][20] == 2
-
-
 def test_objective_preference_switches_reuse_only_their_own_histograms():
     from types import SimpleNamespace
 

@@ -363,11 +363,7 @@ def _day_histograms(store, key, device, replacements, now, cutoff, counted=None)
     live_date = store.live_date(key)
     for date in store.days(key):
         pace.rest()
-        day = replacements.get((key, date))
-        if day is None:
-            day = store.day(key, date, until=now)
-        elif not len(day.times) and not day.guesses:
-            continue  # Emptied: its file goes.
+        day = _counted_day(store, key, date, replacements, now)
         if day is None:
             continue
         part = label_counts.empty()
@@ -396,6 +392,15 @@ def _day_histograms(store, key, device, replacements, now, cutoff, counted=None)
             for gate, series in raw.items()
         }
     )
+
+
+def _counted_day(store, key, date, replacements, now):
+    """The day as the cleanup leaves it: its replacement, or as it is; None when it has no
+    recorded time left (an emptied day's file goes)."""
+    day = replacements.get((key, date))
+    if day is None:
+        return store.day(key, date, until=now)
+    return day if len(day.times) or day.guesses else None
 
 
 def _day_metadata(store, prepared, changes, now, counts=None):

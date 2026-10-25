@@ -43,16 +43,24 @@ def _parent(reader, timestamp, state, owner, first, last):
 
 
 def _human(cells, keys):
+    """Each human episode's presence masks and readings, and the empty-labelled readings. A
+    run of cells under one parent episode keeps that episode's entries at hand (``_Run``):
+    looking each up again by episode, for every cell and gate, was most of a room learn's
+    evidence work."""
+    keys = tuple(keys)  # A mapping of gates (the learner's thresholds) is read in its order.
     episodes, masks, densities = {}, {}, {}
     empty = {key: [0.0] * 101 for key in keys}
     positions = tuple(HISTORY_KEYS.index(key) for key in keys)
+    sinks = [empty[key] for key in keys]
+    run = _Run(None, keys)
     for low, high, values, _state, parent in cells:
-        if parent is None:
+        if parent is None or not any(values[position] is not None for position in positions):
             continue
-        if not any(values[position] is not None for position in positions):
-            continue
-        episodes[parent] = None
-        _energies(values, keys, parent, high - low, masks, empty, densities, positions)
+        if parent is not run.parent:
+            run.merge(masks)
+            run, episodes[parent] = _Run(parent, keys), None
+        run.add(values, positions, high - low, masks, densities, sinks)
+    run.merge(masks)
     presence = {
         key: tuple(mask for (ep, gate), mask in masks.items() if gate == key) for key in keys
     }
@@ -62,24 +70,45 @@ def _human(cells, keys):
     return tuple(episodes), presence, empty, densities
 
 
-def _energies(values, keys, parent, duration, masks, empty, densities, positions=None):
-    if positions is None:
-        positions = tuple(HISTORY_KEYS.index(key) for key in keys)
-    for key, position in zip(keys, positions, strict=True):
-        value = values[position]
-        if value is None:
-            continue
-        energy = ceil(value)
-        if parent.state == "present":
-            token = (parent, key)
-            masks[token] = masks.get(token, 0) | (1 << energy)
-        else:
-            empty[key][energy] += duration
-        token = (parent, key)
+class _Run:
+    """One parent episode's mask bits and density histograms while its cells are read; its
+    entries are made at its first reading of each gate, in reading order."""
+
+    __slots__ = ("parent", "present", "keys", "tokens", "bits", "histograms")
+
+    def __init__(self, parent, keys):
+        self.parent, self.keys = parent, keys
+        self.present = parent is not None and parent.state == "present"
+        self.tokens, self.bits = [None] * len(keys), [0] * len(keys)
+        self.histograms = [None] * len(keys)
+
+    def add(self, values, positions, duration, masks, densities, sinks):
+        for gate, position in enumerate(positions):
+            value = values[position]
+            if value is None:
+                continue
+            energy = ceil(value)
+            histogram = self.histograms[gate] or self._first(gate, masks, densities)
+            if self.present:
+                self.bits[gate] |= 1 << energy
+            else:
+                sinks[gate][energy] += duration
+            histogram[energy] += duration
+
+    def _first(self, gate, masks, densities):
+        token = self.tokens[gate] = (self.parent, self.keys[gate])
+        if self.present:
+            masks.setdefault(token, 0)
         histogram = densities.get(token)
         if histogram is None:
             histogram = densities[token] = [0.0] * 101
-        histogram[energy] += duration
+        self.histograms[gate] = histogram
+        return histogram
+
+    def merge(self, masks):
+        for token, found in zip(self.tokens, self.bits, strict=True):
+            if found:
+                masks[token] |= found
 
 
 def _auto_parents(runs, owner):

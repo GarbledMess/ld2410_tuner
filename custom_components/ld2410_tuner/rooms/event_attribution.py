@@ -34,10 +34,17 @@ class Quiet:
 REST_CELLS = 4096  # Cells between ``pace.rest`` calls: each reads the thread's clock.
 
 
-def _cells(physical, edges):
-    for count, cell in enumerate(physical):
+def _resting(items):
+    """``items``, resting (``pace.rest``) every ``REST_CELLS``: Seen by and learning share the
+    CPU politely."""
+    for count, item in enumerate(items):
         if not count % REST_CELLS:
-            pace.rest()  # Background work: Seen by and learning share the CPU politely.
+            pace.rest()
+        yield item
+
+
+def _cells(physical, edges):
+    for cell in _resting(physical):
         cuts = [
             cell.start,
             *edges[bisect_right(edges, cell.start) : bisect_left(edges, cell.end)],
@@ -71,13 +78,9 @@ def _read_cells(read, cells, places):
 def _baseline(cells, quiet):
     """The radar's quiet readings (``quiet``: each cell's answer) as tail-quantile bins."""
     bins = [[0.0] * 101 for _ in HISTORY_KEYS]
-    for count, ((low, high, values), still) in enumerate(zip(cells, quiet, strict=True)):
-        if not count % REST_CELLS:
-            pace.rest()
+    for (low, high, values), still in _resting(zip(cells, quiet, strict=True)):
         if still:
-            for histogram, value in zip(bins, values, strict=True):
-                if value is not None:
-                    histogram[ceil(value)] += high - low
+            _add_readings(bins, values, high - low)
     return {
         i: Quiet([seconds / SAMPLE_SECONDS for seconds in hist])
         for i, hist in enumerate(bins)
@@ -85,17 +88,26 @@ def _baseline(cells, quiet):
     }
 
 
+def _add_readings(bins, values, seconds):
+    for histogram, value in zip(bins, values, strict=True):
+        if value is not None:
+            histogram[ceil(value)] += seconds
+
+
+def _present(label, values):
+    """A cell read Present with at least one gate reading."""
+    return (
+        label is not None and label[0] == "present" and any(value is not None for value in values)
+    )
+
+
 def _episodes(cells, labels):
     """``(first, stop)`` cell indices of each run of contiguous cells read Present."""
     first = None
-    for index, ((low, _high, values), label) in enumerate(zip(cells, labels, strict=True)):
-        if not index % REST_CELLS:
-            pace.rest()
-        present = (
-            label is not None
-            and label[0] == "present"
-            and any(value is not None for value in values)
-        )
+    for index, ((low, _high, values), label) in enumerate(
+        _resting(zip(cells, labels, strict=True))
+    ):
+        present = _present(label, values)
         if first is not None and (not present or cells[index - 1][1] != low):
             yield first, index
             first = None

@@ -3,8 +3,34 @@
 
 def _readings(rows, key):
     """``(energy, weight)`` of the rows that read gate ``key``, sorted: a row weighs the time it
-    held in six-second units (its fifth field), a sampled row one sample."""
-    return sorted((row[1][key], row[4] if len(row) > 4 else 1) for row in rows if key in row[1])
+    held in six-second units (its fifth field), a sampled row one sample. Rows whose readings
+    are kept as bytes in one layout (``evidence.Readings``) are read at the gate's position."""
+    position = _position(rows, key)
+    if position is None:
+        return sorted((row[1][key], _weight(row)) for row in rows if key in row[1])
+    if position is False:
+        return []  # The layout has no such gate.
+    return sorted(
+        (row[1].values[position], _weight(row)) for row in rows if row[1].values[position] <= 100
+    )
+
+
+def _weight(row):
+    return row[4] if len(row) > 4 else 1
+
+
+def _position(rows, key):
+    """The gate's position when every row's readings are bytes in one layout (False when
+    that layout lacks it), else None."""
+    from ..rooms.evidence import Readings
+
+    if not rows or rows[0][1].__class__ is not Readings:
+        return None
+    layout = rows[0][1].layout
+    if not all(row[1].__class__ is Readings and row[1].layout is layout for row in rows):
+        return None
+    position = layout.get(key)
+    return False if position is None else position
 
 
 def _at_rank(readings, rank):
