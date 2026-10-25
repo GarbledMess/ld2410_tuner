@@ -10,6 +10,7 @@ rate is the same whichever masks came before it.
 from bisect import bisect_right
 
 from ..calibration.intervals import across
+from . import replay
 
 # The masses integrated, in the order of each window's integrals.
 MASSES = (
@@ -65,6 +66,10 @@ class WindowRates:
             self.mass = mass
             self.present = [mass[key] for key in MASSES[:2]]
             self.empty = [mass[key] for key in MASSES[2:]]
+            self.scored = [
+                tuple(_scored(masses, start, end) for masses in (self.present, self.empty))
+                for _offset, _window, start, end in self.projector.frames
+            ]
             self.known, self.last = {}, {}
 
     def _sums(self, kind, bits):
@@ -115,12 +120,34 @@ class WindowRates:
             return ZERO
         found = self.known.get((index, hits))
         if found is None:
-            (low, high), (false_low, false_high) = self.projector._window(index, hits)
-            present = across(self.present, low, high) if low else (0.0, 0.0)
-            empty = across(self.empty, false_low, false_high) if false_low else (0.0, 0.0)
+            present = self._class_integrals(index, hits, 0, self.present)
+            empty = self._class_integrals(index, hits, 1, self.empty)
             if len(self.known) >= LIMIT:
                 self.known.clear()
             found = self.known[index, hits] = tuple(
                 round(value * SCALE) for value in (*present, *empty)
             )
         return found
+
+    def _class_integrals(self, index, hits, slot, masses):
+        """A class without weight cannot contribute, whatever the candidate's spans."""
+        if not self.scored[index][slot]:
+            return 0.0, 0.0
+        _offset, window, start, end = self.projector.frames[index]
+        low, high = replay.window_spans(
+            self.projector.present,
+            self.projector.absent,
+            ("lower", "upper")[slot],
+            window,
+            hits,
+            start,
+            end,
+        )
+        return across(masses, low, high) if low else (0.0, 0.0)
+
+
+def _scored(masses, start, end):
+    """Check weights rather than a rounded prefix difference to establish exact zero."""
+    first = max(0, bisect_right(masses[0].times, start) - 1)
+    stop = bisect_right(masses[0].times, end)
+    return any(any(mass.weights[first:stop]) for mass in masses)
