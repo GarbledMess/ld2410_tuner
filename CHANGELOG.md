@@ -1,6 +1,6 @@
 # Release notes
 
-## 1.31.0 - unreleased
+## 1.31.0 - 2026-10-25
 
 - Much less work on Home Assistant's main loop and in the background, with exactly the
   same results. Measured on a real install (desktop; a Raspberry Pi takes longer, in
