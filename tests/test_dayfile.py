@@ -345,3 +345,38 @@ def test_predecessor_before_day_start_keeps_legacy_lossless_encoding():
     encoded = dayfile.encode_day(day)
     assert zlib.decompress(encoded[4:])[0] == 1
     assert dayfile.decode_day(encoded) == day
+
+
+def test_rows_store_exactly_what_storing_each_gate_stores():
+    """Rows of whole readings and missing gates take the builder's direct path; a fractional
+    reading widens its gate's column to floats, before or after; the day is the same."""
+    import random
+
+    def slow(builder, time, vector):  # The builder's per-gate path.
+        if builder.current is not None:
+            builder.ends[-1] = time
+        builder.times.append(time)
+        builder.ends.append(time)
+        for gate, value in enumerate(vector):
+            builder._store(gate, value, None)
+        builder.current = vector
+
+    rnd = random.Random(3)
+    for trial in range(30):
+        records, t = [], START
+        for _ in range(200):
+            t += rnd.choice((0, 1, 6))  # Some at the same time: a change of the last row.
+            values = {
+                gate: rnd.choice((None, 0, 7, 99, 12.0) + ((3.5,) if trial % 3 == 0 else ()))
+                for gate in rnd.sample(range(18), rnd.randint(1, 18))
+            }
+            records.append(dayfile.Change(t, values))
+            if rnd.random() < 0.05:
+                records.append(dayfile.End(t + 2))
+        fast = dayfile.DayBuilder(START, START + 86_400)
+        reference = dayfile.DayBuilder(START, START + 86_400)
+        reference._row = lambda time, vector, b=reference: slow(b, time, vector)
+        for record in records:
+            fast.add(record)
+            reference.add(record)
+        assert dayfile.encode_day(fast.day()) == dayfile.encode_day(reference.day())

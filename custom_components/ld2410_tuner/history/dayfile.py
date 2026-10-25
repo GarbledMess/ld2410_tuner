@@ -290,9 +290,25 @@ class DayBuilder:
             self.ends[-1] = time
         self.times.append(time)
         self.ends.append(time)
-        for gate, value in enumerate(vector):
-            self._store(gate, value, None)
+        codes = self._codes(vector)
+        if codes is None:
+            for gate, value in enumerate(vector):
+                self._store(gate, value, None)
+        else:
+            for column, code in zip(self.columns, codes, strict=True):
+                column.append(code)
         self.current = vector
+
+    def _codes(self, vector):
+        """The row as ``_store`` keeps whole readings in byte columns, converted in C (replaying
+        a day's log at startup is mostly this); None when a gate needs ``_store``: a column of
+        floats, or a reading that is not a whole number."""
+        if not all(map(bytearray.__instancecheck__, self.columns)):
+            return None
+        try:
+            return bytes([MISSING if value is None else value for value in vector])
+        except TypeError:
+            return None
 
     def _store(self, gate, value, index):
         column = self._column(gate, value)
@@ -567,6 +583,9 @@ def _runs(raw, position, count, base):
     return runs, position
 
 
+CORRUPT = "Corrupt day file"
+
+
 def decode_day(data):
     try:
         raw, (version, start, end, count, runs, *floats), _readings = _body(data)
@@ -574,9 +593,9 @@ def decode_day(data):
         columns, position = _columns(raw, position, count, floats)
         guesses, position = _runs(raw, position, runs, start)
     except (zlib.error, struct.error, IndexError) as error:
-        raise ValueError("Corrupt day file") from error
+        raise ValueError(CORRUPT) from error
     if position != len(raw):
-        raise ValueError("Corrupt day file")
+        raise ValueError(CORRUPT)
     return Day(_seconds(start), _seconds(end), times, ends, columns, guesses)
 
 
@@ -587,9 +606,9 @@ def decode_guesses(data):
         raw, (_version, start, _end, _count, runs, *_floats), readings = _body(data)
         guesses, position = _runs(raw, readings, runs, start)
     except (zlib.error, struct.error, IndexError) as error:
-        raise ValueError("Corrupt day file") from error
+        raise ValueError(CORRUPT) from error
     if position != len(raw):
-        raise ValueError("Corrupt day file")
+        raise ValueError(CORRUPT)
     return guesses
 
 
@@ -607,5 +626,5 @@ def _body(data):
         or any(flag not in (0, 1) for flag in floats)
         or readings + runs * RUN.size != len(raw)
     ):
-        raise ValueError("Corrupt day file")
+        raise ValueError(CORRUPT)
     return raw, header, readings
