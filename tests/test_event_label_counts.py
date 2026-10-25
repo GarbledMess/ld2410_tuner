@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 import test_tuner as harness
-from tuner_under_test.history import dayfile, daystore, label_counts, labels
+from tuner_under_test.history import cleanup, dayfile, daystore, label_counts, labels
 
 DAY = 86400
 
@@ -242,3 +242,35 @@ class NativeLabelRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await harness.settled(self.runtime)
         assert result["observed_seconds"] == 0
         assert sum(self.device["histograms"]["g0_move"]["present"]) == 0
+
+
+def test_a_day_finishing_keeps_the_counts_of_the_days_before_it():
+    """Each finished day keeps its block while it is unchanged: the day being recorded
+    finishing (midnight) adds a day, it does not make every kept day look replaced."""
+    stretches = [([(day * DAY, vector(10))], day * DAY + 600) for day in range(3)]
+    runtime, device = view(stretches, [{"start": 0, "end": 4 * DAY, "state": "present"}])
+    runtime._days.flush(now=2 * DAY + 1)  # Days 0 and 1 finished; day 2 still recorded.
+    counted(runtime, device, 2 * DAY + 10)
+    runtime._days.append("arbitrary", dayfile.Change(2 * DAY + 900, {0: 20}))
+    runtime._days.flush(now=3 * DAY + 1)  # Day 2 finishes.
+    with patch.object(label_counts, "count", wraps=label_counts.count) as afresh:
+        found = deepcopy(counted(runtime, device, 3 * DAY + 10))
+    assert not afresh.called, "updated, not counted from scratch"
+    runtime._label_counts.clear()
+    assert found == counted(runtime, device, 3 * DAY + 10)  # As a count from scratch.
+
+
+def test_a_rewritten_day_is_counted_afresh():
+    stretches = [([(day * DAY, vector(10))], day * DAY + 600) for day in range(3)]
+    runtime, device = view(stretches, [{"start": 0, "end": 4 * DAY, "state": "present"}])
+    runtime._days.flush(now=3 * DAY + 1)
+    counted(runtime, device, 3 * DAY + 10)
+    date = daystore.date_of(DAY)
+    day = runtime._days.day("arbitrary", date)
+    runtime._days.commit(
+        runtime._days.stage([("arbitrary", date, cleanup.cut(day, [(DAY, DAY + 300)]))])
+    )
+    with patch.object(label_counts, "count", wraps=label_counts.count) as afresh:
+        found = counted(runtime, device, 3 * DAY + 10)
+    assert afresh.called, "a rewritten day's old counts cannot be taken away exactly"
+    assert found["g0_move"]["present"][10] == 250  # Three days of 600 s, less 300 s: 1500 s.

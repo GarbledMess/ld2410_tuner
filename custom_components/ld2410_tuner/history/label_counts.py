@@ -4,9 +4,10 @@ A device label edit (and a Seen by chip tap, which is one) rebuilds the radar's 
 every retained recorded second under its labels. The counts are kept per radar instead
 (``Counts``, on ``runtime._label_counts``). A rebuild recounts only what differs from the kept
 counts: finished days added or removed since, the days a changed label or the retention edge
-touches, and the day being recorded. Without kept counts (or after most days were replaced, as
-by a storage trim) the worker counts everything (``ensure``). Neither runs on the event loop: a
-label change applies at once and its histograms follow (``labels._rebuild_soon``).
+touches, and the day being recorded. Without kept counts (or after a kept day was rewritten or
+removed, as by thinning or a trim) the worker counts everything (``ensure``). Neither runs on
+the event loop: a label change applies at once and its histograms follow
+(``labels._rebuild_soon``).
 
 Counts are exact: every recorded second is counted under the label at its time and the
 retention cutoff, so the histograms equal a rebuild from scratch. They are kept in seconds and
@@ -143,14 +144,6 @@ class Counts:
         insort(self.lows, (block["start"], id(block)))
         self.width = max(self.width, block["end"] - block["start"])
 
-    def drop_block(self, key, read, cutoff):
-        """Uncount a kept day (counted at ``cutoff`` under ``read``) and forget it."""
-        if self.inert.pop(key, None) is not None:
-            return
-        block, low, _high = self.regular.pop(key)
-        del self.lows[bisect_left(self.lows, (low, key))]
-        self.recount(block, (read, cutoff), (None, None))
-
     def recount(self, block, old, new):
         """Move a day's seconds from their ``(read, cutoff)`` count to the new one; a None
         reader counts nothing."""
@@ -172,17 +165,15 @@ class Counts:
 
     def update(self, current, live, cutoff, index):
         """Bring the counts to the finished days ``current`` (id -> block), the ``live`` day,
-        ``cutoff`` and label ``index``. False, changing nothing, when most kept days are gone
-        (a rewritten history): counting afresh is then cheaper."""
+        ``cutoff`` and label ``index``. False, changing nothing, when a kept day was rewritten
+        or removed: its old counts cannot be read back (the day store holds only its new
+        content), so it is counted afresh."""
         old = label_lookup.index_reader(self.index), self.cutoff
         new = label_lookup.index_reader(index), cutoff
         kept = self.blocks()
-        removed = kept.keys() - current.keys()
-        if 2 * len(removed) > len(kept):
+        if kept.keys() - current.keys():
             return False
         self.count_live(self.live, *old, -1)
-        for key in removed:
-            self.drop_block(key, *old)
         changed = _changed(self.index, index)
         if self.cutoff != cutoff:
             changed = _merge([*changed, (min(self.cutoff, cutoff), max(self.cutoff, cutoff))])
@@ -261,7 +252,7 @@ async def refresh(runtime, device_id, device):
     """The kept counts of ``device`` brought to its labels now, in six-second units, with the
     label index they count. The update runs in the executor: it reads and indexes each day
     it recounts (about 1 s for a busy day). The radar must have kept counts. None, keeping
-    none, when most kept days are gone: counting afresh is then the worker's (``ensure``)."""
+    none, when a kept day was rewritten or removed: counting afresh is then the worker's."""
     kept, updating = runtime._label_counts, _updating(runtime)
     # Taken out while updating: counts left half-updated (or cancelled by a clear) are never
     # reused.
@@ -293,12 +284,13 @@ def _updating(runtime):
 
 
 def _day_blocks(runtime, device_id, max_days=None):
-    """Each finished recorded day as a block: the same object while the radar's finished days
-    are unchanged (``DayStore.mark``), so kept counts are not recounted."""
+    """Each finished recorded day as a block: the same object while that day is unchanged
+    (``DayStore.day_version``), so a day finishing or being rewritten leaves the other days'
+    kept counts as they are."""
     days = getattr(runtime, "_days", None)
     if days is None or device_id is None:
         return []
-    revision, live = days.mark(device_id)
+    _revision, live = days.mark(device_id)
     kept = runtime.__dict__.setdefault("_day_blocks", {})
     blocks = []
     for date in days.days(device_id):
@@ -306,6 +298,7 @@ def _day_blocks(runtime, device_id, max_days=None):
             continue
         _check_day_budget(len(blocks), max_days)
         known = kept.get((device_id, date))
+        revision = days.day_version(device_id, date)
         if known is None or known[0] != revision:
             start, end = daystore.bounds(date)
             block = {"kind": "day", "start": start, "end": end, "date": date}

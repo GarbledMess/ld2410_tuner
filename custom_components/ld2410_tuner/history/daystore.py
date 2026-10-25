@@ -649,6 +649,12 @@ class DayStore:
             return None
         return *known, found.st_mtime_ns, found.st_size
 
+    def day_version(self, device_id, date):
+        """Changes whenever the recorded ``date`` itself does (written, rewritten, deleted or
+        cleared), unlike ``mark``, which changes with any of the radar's days."""
+        with self._lock:
+            return self._generations.get(device_id, 0), self._changes.get((device_id, date), 0)
+
     def stored_file(self, device_id, date):
         """The finished ``date``'s day file as stored (None when ``identity`` is: the day is
         still changing or absent), so an export copies it instead of decoding it again."""
