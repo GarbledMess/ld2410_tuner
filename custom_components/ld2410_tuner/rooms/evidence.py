@@ -80,11 +80,18 @@ class Rows:
                 self.layout,
                 ends=None if self.ends is None else self.ends[index],
             )
-        values = bytes(column[index] for column in self.columns)
+        values = bytes([column[index] for column in self.columns])
         return self.times[index], Readings(self.layout, values), "unknown"
 
     def __iter__(self):
-        return map(self.__getitem__, range(len(self)))
+        layout = self.layout
+        values = map(bytes, zip(*self.columns, strict=True)) if self.columns else None
+        if values is None:
+            return ((time, Readings(layout, b""), "unknown") for time in self.times)
+        return (
+            (time, Readings(layout, row), "unknown")
+            for time, row in zip(self.times, values, strict=True)
+        )
 
     def column(self, key):
         return self.columns[self.layout[key]]
@@ -139,19 +146,19 @@ def _recorded(view, device_id, keys, end):
     ``MISSING``, which compares as no reading); one where none of them read is a barrier at
     its start."""
     indices = [HISTORY_KEYS.index(key) for key in keys]
-    times, ends, barriers = array("d"), array("d"), []
-    columns = [bytearray() for _ in keys]
+    times, ends, barriers, read = array("d"), array("d"), [], []
+    blank = bytes([MISSING]) * len(keys)
     for cell in spans.search_events(view, device_id, indices, end=end):  # In time order.
-        read = cell.values
-        if all(value == MISSING for value in read):
+        if cell.values == blank:
             barriers.append(cell.start)
             continue
         times.append(cell.start)
         ends.append(cell.end)
-        for column, value in zip(columns, read, strict=True):
-            column.append(value)
+        read.append(cell.values)
+    # Every row's readings end to end; each gate's column is every ``len(keys)``th byte.
+    joined, width = b"".join(read), len(keys)
     layout = {key: position for position, key in enumerate(keys)}
-    rows = Rows(times, [bytes(column) for column in columns], layout, ends=ends)
+    rows = Rows(times, [joined[gate::width] for gate in range(width)], layout, ends=ends)
     return rows, sorted(set(barriers))
 
 

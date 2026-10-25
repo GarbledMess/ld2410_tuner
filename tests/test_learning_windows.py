@@ -90,11 +90,16 @@ def test_narrow_windows_bisect_large_day_without_replaying_excluded_vectors():
     view = SimpleNamespace(
         _days=store, _learning_windows={"a": [(50.25, 52.5), (19000.5, 19001.5)]}
     )
-    original_vector = dayfile.Day.vector
-    with patch.object(dayfile.Day, "vector", autospec=True, side_effect=original_vector) as read:
+    original_vectors, read = dayfile.Day.vectors, []
+
+    def vectors(self, first, after):  # The rows each window's spans read.
+        read.append(after - first)
+        return original_vectors(self, first, after)
+
+    with patch.object(dayfile.Day, "vectors", vectors):
         found = list(spans.events(view, "a"))
     assert len(found) == 5
-    assert read.call_count == 5
+    assert sum(read) == 5
     assert sum(cell.end - cell.start for cell in found) == 3.25
 
 

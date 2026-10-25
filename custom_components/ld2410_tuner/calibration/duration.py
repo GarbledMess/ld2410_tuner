@@ -41,10 +41,16 @@ def _recent_start(windows):
 
 def _confidence_time(rows):
     """Assign observations midpoint cells; dense telemetry adds no time."""
-    times = [rows[0][0]] + [(a[0] + b[0]) / 2 for a, b in zip(rows, rows[1:], strict=False)]
+    from ..rooms.evidence import Rows
+    from .timing import sample_times
+
     if getattr(rows, "ends", None) is not None and rows.ends[0] is not None:
-        times = [row[0] for row in rows] + [rows.ends[-1]]
-    confidence = WeightedTime(times, [mass(row) for row in rows] + [0.0])
+        times = [*sample_times(rows), rows.ends[-1]]
+    else:
+        times = [rows[0][0]] + [(a[0] + b[0]) / 2 for a, b in zip(rows, rows[1:], strict=False)]
+    # Rows read as (time, readings, state): each counts once (``mass``).
+    weights = [1.0] * len(rows) if isinstance(rows, Rows) else [mass(row) for row in rows]
+    confidence = WeightedTime(times, [*weights, 0.0])
     # Candidate spans reuse the same sample midpoints and timing-shifted endpoints.
     # Remember their exact prefix values rather than locating each one millions of times.
     confidence.at = lru_cache(maxsize=4096)(confidence.at)

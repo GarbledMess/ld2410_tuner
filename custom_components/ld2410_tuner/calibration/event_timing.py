@@ -4,11 +4,12 @@ from bisect import bisect_left
 from math import isfinite
 
 from .event_replay import _filtered, _held
+from .timing import sample_times
 
 
 class EventWindow:
     def __init__(self, rows, hold, on_delay, off_delay):
-        self.times = [row[0] for row in rows]
+        self.times = sample_times(rows)
         self.ends = list(rows.ends)
         _validate(self.times, self.ends)
         self.hold, self.on, self.off = hold, on_delay, off_delay

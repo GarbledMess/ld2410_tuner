@@ -109,6 +109,7 @@ RUNTIME_FILES = (
     "presence/reference_training.py",
     "presentation/__init__.py",
     "presentation/charts.py",
+    "presentation/export_files.py",
     "presentation/recordings.py",
     "worker/recordings.py",
     "presentation/snapshots.py",

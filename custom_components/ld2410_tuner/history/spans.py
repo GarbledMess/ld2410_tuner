@@ -175,16 +175,16 @@ def _search_stored(view, device_id, indices, start, end):
 
 def _search_day(day, start, end, indices):
     first, after = bisect_right(day.ends, start), bisect_left(day.times, end)
+    times, ends = day.times, day.ends
     for low in range(first, after, 4096):
         pace.rest()
         high = min(low + 4096, after)
         columns = [quantize(day.columns[gate], low, high) for gate in indices]
-        for index in range(low, high):
-            pace.rest()
-            a, b = max(start, day.times[index]), min(end, day.ends[index])
+        rows = zip(*columns, strict=True) if columns else ((),) * (high - low)
+        for index, values in zip(range(low, high), rows, strict=True):
+            a, b = max(start, times[index]), min(end, ends[index])
             if b > a:
-                values = bytes(column[index - low] for column in columns)
-                yield Span(a, b, values, "event")
+                yield Span(a, b, bytes(values), "event")
 
 
 def _disjoint(items):

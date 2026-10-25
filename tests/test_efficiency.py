@@ -814,7 +814,7 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
     async def test_cleanup_discarded_by_new_samples_still_keeps_the_counts(self, clock):
         """Regression: a cleanup result dropped because a sample arrived meanwhile also
         dropped the counts it had made."""
-        from tuner_under_test.history import dayfile, spans
+        from tuner_under_test.history import dayfile, label_counts, spans
 
         self.now = NOW
         store = self.runtime._days
@@ -842,4 +842,8 @@ class NoLoopRecountTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preparations, 2, "changed history discards the first cleanup plan")
         self.assertIn("a", self.runtime._label_counts)
         self.assertEqual(list(spans.events(self.runtime, "a"))[-1].values[0], 9)
-        self.assertEqual(self.runtime._label_counts["a"].raw["g0_move"]["present"][9], 1)
+        # Kept counts are read brought up to date (the cleanup's own were of the live day as
+        # it saw it): the sample that arrived meanwhile is counted, without counting afresh.
+        with patch.object(label_counts, "count", side_effect=AssertionError("counted afresh")):
+            found = label_counts.current(self.runtime, self.device)
+        self.assertEqual(found["g0_move"]["present"][9], 1)
