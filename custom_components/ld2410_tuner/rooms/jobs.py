@@ -106,12 +106,13 @@ def set_views(runtime, members, since=None):
     Each view computes its radar's attribution once for the whole job, from the shared
     attribution cache where its inputs are unchanged (``attribution.prepare``)."""
     shared = {}  # The members' guesses, built once for the job's views.
-    for found in members.values():
-        for key, item in found.items():
-            if "view" not in item:
-                item["view"] = attribution.prepared_view(
-                    runtime, key, shared, **({} if since is None else {"since": since})
-                )
+    with attribution.shared_copies(runtime):  # And their labels, copied once.
+        for found in members.values():
+            for key, item in found.items():
+                if "view" not in item:
+                    item["view"] = attribution.prepared_view(
+                        runtime, key, shared, **({} if since is None else {"since": since})
+                    )
 
 
 async def on_views(runtime, members, job, *args):

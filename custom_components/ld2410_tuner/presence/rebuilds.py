@@ -133,9 +133,10 @@ async def _pass(runtime, device_ids):
     jobs, shared = [], {}  # ``shared``: the members' guesses, built once for the job.
 
     def prepare():
-        for key in device_ids:
-            if (job := _prepare(runtime, key, shared)) is not None:
-                jobs.append(job)
+        with attribution.shared_copies(runtime):
+            for key in device_ids:
+                if (job := _prepare(runtime, key, shared)) is not None:
+                    jobs.append(job)
         return {
             "views": {job["device_id"]: job["view"] for job in jobs},
             "parameters": {

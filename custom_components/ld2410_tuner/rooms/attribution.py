@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from array import array
 from bisect import bisect_left, bisect_right
+from contextlib import contextmanager
 from copy import deepcopy
 from itertools import chain, pairwise
 from math import inf, nextafter
@@ -267,7 +268,33 @@ def snapshot(runtime, device_id):
     _, _, definitions = groups.definitions(runtime)
     if device_id not in grouped(definitions):
         return None
-    return _inputs(runtime, device_id, definitions, deepcopy)
+    return _inputs(runtime, device_id, definitions, _copier(runtime))
+
+
+@contextmanager
+def shared_copies(runtime):
+    """Snapshots taken within share each copied input: a job preparing every radar of a
+    room copies each member's labels once, not once per radar (twelve radars: 144 copies)."""
+    previous = runtime.__dict__.get("_snapshot_copies")
+    runtime._snapshot_copies = {} if previous is None else previous
+    try:
+        yield
+    finally:
+        runtime._snapshot_copies = previous
+
+
+def _copier(runtime):
+    memo = runtime.__dict__.get("_snapshot_copies")
+    if memo is None:
+        return deepcopy
+
+    def copy(value):
+        found = memo.get(id(value))
+        if found is None or found[0] is not value:  # Keeps the original: its id stays its own.
+            found = memo[id(value)] = value, deepcopy(value)
+        return found[1]
+
+    return copy
 
 
 def _snapshot_for(runtime, device_id):

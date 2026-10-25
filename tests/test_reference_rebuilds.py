@@ -333,6 +333,39 @@ class LoopRebuildTests(unittest.IsolatedAsyncioTestCase):
             # A hang guard only: unload must return without the held rebuild finishing.
             await asyncio.wait_for(mod._shutdown(self.runtime), 30)
 
+    async def test_one_pass_copies_each_members_labels_once(self):
+        """A pass prepares every queued radar's view on the event loop; each view's room
+        snapshot holds all its members' labels. Copied once per pass, not once per radar."""
+        self.scenario()
+        self.present()
+        labels = self.runtime.data["devices"]["b"]["history_labels"] = [
+            {"start": self.at(0), "end": self.at(QUIET), "state": "not_present"}
+        ]
+        copied = []
+        real = attribution.deepcopy
+
+        def copy(value, *args):
+            copied.append(value is labels)
+            return real(value, *args)
+
+        with patch.object(attribution, "deepcopy", side_effect=copy):
+            await self.request({"a", "b"})
+            await self.finish()
+        assert copied.count(True) == 1
+
+    async def test_snapshots_share_copies_only_within_one_pass(self):
+        self.scenario()
+        labels = self.runtime.data["devices"]["b"]["history_labels"] = [
+            {"start": self.at(0), "end": self.at(QUIET), "state": "present"}
+        ]
+        with attribution.shared_copies(self.runtime):
+            first = attribution.snapshot(self.runtime, "a")["members"]["b"]["history_labels"]
+            second = attribution.snapshot(self.runtime, "b")["members"]["b"]["history_labels"]
+        assert first is second
+        assert first == labels and first is not labels
+        later = attribution.snapshot(self.runtime, "a")["members"]["b"]["history_labels"]
+        assert later == labels and later is not first
+
     async def test_unload_drops_the_queued_backlog_without_running_it(self):
         # Deliberate change: unload used to wait for every queued rebuild (it could take
         # minutes at 30 days); it now cancels the pass in flight and drops the queue.

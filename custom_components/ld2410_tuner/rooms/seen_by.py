@@ -92,12 +92,13 @@ def _view(runtime, definitions, group_id):
     # Shares the learner's attribution cache.
     shared = {}  # The members' guesses, built once for the job's views.
     since = None if SEEN_BY_HISTORY_HOURS is None else time.time() - SEEN_BY_HISTORY_HOURS * 3600
-    return {
-        key: attribution.prepared_view(
-            runtime, key, shared, **({} if since is None else {"since": since})
-        )
-        for key in own
-    }
+    with attribution.shared_copies(runtime):  # Each member's labels copied once for them all.
+        return {
+            key: attribution.prepared_view(
+                runtime, key, shared, **({} if since is None else {"since": since})
+            )
+            for key in own
+        }
 
 
 def _as_learned(result):
