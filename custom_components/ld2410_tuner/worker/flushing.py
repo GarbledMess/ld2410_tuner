@@ -84,6 +84,8 @@ def _target(store, now):
 class _RecordBudget:
     def __init__(self):
         self.records = 0
+        self.values = {}
+        self.encoded = {}
         # Reserve container/key overhead before considering individual records.
         self.nodes = 8192
         self.bytes = 65536
@@ -95,9 +97,12 @@ class _RecordBudget:
                 break
             value = _record(record)
             nodes = _nodes(value)
-            size = len(json.dumps(value, allow_nan=False, separators=(",", ":")).encode()) + 1
+            raw = json.dumps(value, allow_nan=False, separators=(",", ":")).encode()
+            size = len(raw) + 1
             if self.nodes + nodes > 1048576 or self.bytes + size > MAX_MESSAGE_BYTES:
                 break
+            self.values[id(record)] = value
+            self.encoded[id(record)] = raw
             self.records += 1
             self.nodes += nodes
             self.bytes += size
@@ -129,7 +134,7 @@ def _select_items(store, target, budget):
         count = budget.prefix(live.buffer, limit)
         if limit and not count:
             break
-        compact = closing and count == len(live.buffer)
+        compact = closing and count == store._flush_lengths[id(live)]
         descriptor = _batch_descriptor(live, compact)
         startup._budget({"live": [descriptor]})
         try:
@@ -177,38 +182,76 @@ def _select(store, target):
     late = _select_late(store, target, items, budget)
     if not items and not late and _target_pending(store, target):
         raise ValueError("Flush pending-record budget exceeded for one record")
-    return items, counts, late
+    return items, counts, late, budget
 
 
-def _detached(store, now, target=None):
+def _snapshot_items(store, target):
+    items, originals = [], {}
+    for (key, live, closing), limit in zip(target["items"], target["counts"], strict=True):
+        frozen = copy.copy(live)
+        store._flush_lengths[id(frozen)] = len(live.buffer)
+        frozen.buffer = live.buffer[: min(limit, MAX_RECORDS)]
+        items.append((key, frozen, closing))
+        originals[id(frozen)] = live
+        if store._closing.get(key, {}).get(live.date) is live:
+            store._closing[key][live.date] = frozen
+    return items, originals
+
+
+def _snapshot(store, target):
+    """Capture owners under lock; budget and encode their stable prefixes outside it."""
+    frozen = copy.copy(store)
+    frozen._generations = dict(store._generations)
+    frozen._flush_lengths = {}
+    frozen._closing = {key: dict(days) for key, days in store._closing.items()}
+    frozen._late = {
+        key: {
+            date: spans[: min(target["late"].get(key, {}).get(date, 0), MAX_RECORDS)]
+            for date, spans in dates.items()
+        }
+        for key, dates in store._late.items()
+    }
+    selected = dict(target)
+    selected["counts"] = list(target["counts"])
+    selected["items"], originals = _snapshot_items(frozen, target)
+    return frozen, selected, originals
+
+
+def _detached_budget(store, now, target=None):
     with store._lock:
         if target is None:
             target = _target(store, now)
-        items, counts, late = _select(store, target)
-        detached = [
-            (key, _copy_live(live, closing, count), closing)
-            for (key, live, closing), count in zip(items, counts, strict=True)
-        ]
-        late = copy.deepcopy(late)
-        affected = {(key, live.date, ".log") for key, live, _ in items}
-        affected.update((key, live.date, ".day") for key, live, done in items if done)
-        affected.update((key, date, ".day") for key, dates in late.items() for date in dates)
-        ownership = {
-            "items": items,
-            "counts": counts,
-            "late": late,
-            "generations": dict(store._generations),
-            "affected": affected,
-        }
-    return detached, late, ownership
+        frozen, target, originals = _snapshot(store, target)
+    items, counts, late, budget = _select(frozen, target)
+    detached = [
+        (key, _copy_live(live, closing, count), closing)
+        for (key, live, closing), count in zip(items, counts, strict=True)
+    ]
+    items = [(key, originals[id(live)], closing) for key, live, closing in items]
+    affected = {(key, live.date, ".log") for key, live, _ in items}
+    affected.update((key, live.date, ".day") for key, live, done in items if done)
+    affected.update((key, date, ".day") for key, dates in late.items() for date in dates)
+    ownership = {
+        "items": items,
+        "counts": counts,
+        "late": late,
+        "generations": frozen._generations,
+        "affected": affected,
+    }
+    return detached, late, ownership, budget
+
+
+def _detached(store, now, target=None):
+    return _detached_budget(store, now, target)[:3]
 
 
 def _copy_live(live, closing, count):
-    if closing:
-        return copy.deepcopy(live)
+    # Closing builders are immutable; current builders are not transferred.
+    # Serialized record copies already belong to the capture budget.
     detached = copy.copy(live)
-    detached.builder = dayfile.DayBuilder(live.builder.start, live.builder.end)
-    detached.buffer = copy.deepcopy(live.buffer[:count])
+    if not closing:
+        detached.builder = dayfile.DayBuilder(live.builder.start, live.builder.end)
+    detached.buffer = live.buffer[:count]
     return detached
 
 
@@ -227,7 +270,7 @@ def _descriptor(live):
 def capture(store, directory, now, target=None):
     """Detach bounded raw columns; original buffers remain owned until publication."""
     directory = Path(directory)
-    items, late, ownership = _detached(store, now, target)
+    items, late, ownership, budget = _detached_budget(store, now, target)
     descriptors = []
     records = []
     for index, (key, live, closing) in enumerate(items):
@@ -235,23 +278,41 @@ def capture(store, directory, now, target=None):
         descriptor["closing"] = closing
         descriptor["finished"] = live.date < date_of(now)
         descriptors.append(descriptor)
-        records.append([_record(record) for record in live.buffer])
+        records.append([budget.values[id(record)] for record in live.buffer])
     startup._budget({"live": descriptors}, max_items=128)
     payload = {
         "records": records,
         "late": {
             key: {
-                date.isoformat(): [_record(span) for span in spans] for date, spans in dates.items()
+                date.isoformat(): [budget.values[id(span)] for span in spans]
+                for date, spans in dates.items()
             }
             for key, dates in late.items()
         },
     }
     codec.validate(payload, max_nodes=1048576, max_bytes=MAX_MESSAGE_BYTES)
-    raw = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode()
+    raw = _capture_bytes(items, late, budget)
     if len(raw) > MAX_MESSAGE_BYTES:
         raise ValueError("Flush record bytes exceeded")
     (directory / "flush-records.json").write_bytes(raw)
     return {"live": descriptors, "generations": ownership["generations"]}, ownership
+
+
+def _record_bytes(records, budget):
+    return b"[" + b",".join(budget.encoded[id(record)] for record in records) + b"]"
+
+
+def _capture_bytes(items, late, budget):
+    """Join already encoded records without traversing them again."""
+    records = b",".join(_record_bytes(live.buffer, budget) for _, live, _ in items)
+    devices = []
+    for key, dates in late.items():
+        days = [
+            json.dumps(date.isoformat()).encode() + b":" + _record_bytes(spans, budget)
+            for date, spans in dates.items()
+        ]
+        devices.append(json.dumps(key).encode() + b":{" + b",".join(days) + b"}")
+    return b'{"records":[' + records + b'],"late":{' + b",".join(devices) + b"}}"
 
 
 def _load(request):

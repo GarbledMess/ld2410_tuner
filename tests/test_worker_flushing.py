@@ -460,3 +460,112 @@ def test_closing_days_share_resident_heap_budget_across_batches(tmp_path):
     assert not any(store._closing.values())
     for key in ("a", "b"):
         assert store.day(key, date(2026, 10, 19)).vector(0)[0] == 20
+
+
+@pytest.mark.parametrize("cap", [0, 1, 4, 100])
+def test_record_budget_matches_original_computation(cap):
+    import json
+
+    from tuner_under_test.worker import flushing
+
+    records = [
+        dayfile.Change(10, {0: 1, 2: None, 3: 2.5}),
+        dayfile.End(11),
+        dayfile.Guess(12, "présent", 80, 1),
+        dayfile.GuessSpan(13, 2, 3, "present", 70, 2),
+    ]
+    budget = flushing._RecordBudget()
+    count = budget.prefix(records, cap)
+    values = [flushing._record(record) for record in records[:cap]]
+    assert count == min(cap, len(records))
+    assert budget.records == count
+    assert budget.nodes == 8192 + sum(flushing._nodes(value) for value in values)
+    assert budget.bytes == 65536 + sum(
+        len(json.dumps(value, allow_nan=False, separators=(",", ":")).encode()) + 1
+        for value in values
+    )
+
+
+def test_capture_wire_matches_original_serialization(tmp_path):
+    import json
+
+    from tuner_under_test.worker import flushing
+
+    store = DayStore(tmp_path / "source")
+    start = bounds(date(2026, 10, 20))[0]
+    records = [
+        dayfile.Change(start + 1, {0: 20, 2: 2.5}),
+        dayfile.Guess(start + 2, "present", 80, 1),
+        dayfile.End(start + 3),
+    ]
+    for record in records:
+        store.append("a", record)
+    _, ownership = flushing.capture(store, tmp_path, start + 4)
+    expected = {"records": [[flushing._record(record) for record in records]], "late": {}}
+    assert (tmp_path / "flush-records.json").read_bytes() == json.dumps(
+        expected, allow_nan=False, separators=(",", ":")
+    ).encode()
+    assert ownership["counts"] == [3]
+
+
+def test_closing_capture_isolated_from_late_append_during_freeze(tmp_path):
+    import json
+
+    from tuner_under_test.worker import flushing, startup
+
+    store = DayStore(tmp_path / "source")
+    start = bounds(date(2026, 10, 19))[0]
+    first = dayfile.Change(start + 1, {0: 20})
+    store.append("a", first)
+    store.append("a", dayfile.Change(start + 86401, {0: 30}))
+    closing = store._closing["a"][date(2026, 10, 19)]
+    before = list(closing.builder.times)
+    freeze = startup.freeze_live
+    span = dayfile.GuessSpan(start + 86402, start + 2, start + 3, "present", 80, 1)
+
+    def append_then_freeze(*args):
+        if not store._late:
+            store.append("a", span)
+        return freeze(*args)
+
+    with patch.object(startup, "freeze_live", side_effect=append_then_freeze):
+        _, ownership = flushing.capture(store, tmp_path, start + 86403)
+    assert list(closing.builder.times) == before
+    assert closing.builder.confirmed == []
+    assert ownership["late"] == {}
+    assert store._late["a"][date(2026, 10, 19)] == [span]
+    assert span not in store._live["a"].buffer[:-1]
+    assert json.loads((tmp_path / "flush-records.json").read_bytes())["late"] == {}
+
+
+def test_capture_budgets_outside_lock_and_owns_original_prefix(tmp_path):
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tuner_under_test.worker import flushing
+
+    store = DayStore(tmp_path / "source")
+    start = bounds(date(2026, 10, 20))[0]
+    first = dayfile.Change(start + 1, {0: 20})
+    following = dayfile.Change(start + 2, {0: 30})
+    store.append("a", first)
+    original = store._live["a"]
+    prefix = flushing._RecordBudget.prefix
+
+    def append_during_budget(budget, records, limit):
+        pool = ThreadPoolExecutor(1)
+        try:
+            pool.submit(store.append, "a", following).result(timeout=5)
+        finally:
+            pool.shutdown(wait=False)
+        return prefix(budget, records, limit)
+
+    with patch.object(flushing._RecordBudget, "prefix", append_during_budget):
+        _, ownership = flushing.capture(store, tmp_path, start + 3)
+    assert ownership["items"][0][1] is original
+    assert ownership["counts"] == [1]
+    assert json.loads((tmp_path / "flush-records.json").read_bytes())["records"] == [
+        [[0, first.time, [[0, 20]]]]
+    ]
+    flushing._ack(store, ownership, {"a"})
+    assert original.buffer == [following]
