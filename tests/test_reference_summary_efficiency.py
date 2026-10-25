@@ -271,3 +271,42 @@ def test_own_label_shortcut_removes_stale_owned_room_periods():
         training.rebuild_human(view, device)
     assert device["reference_profile"]["periods"]
     assert all(not period.get("room") for period in device["reference_profile"]["periods"])
+
+
+def test_unfamiliar_channels_are_those_far_from_every_value_seen():
+    """The nearest seen value, found by bisection in a kept sorted support, is as far as the
+    nearest of all of them: the same channels are unfamiliar."""
+    import random
+    from unittest.mock import patch
+
+    from tuner_under_test.const import HISTORY_KEYS
+    from tuner_under_test.presence import references
+
+    def reference(profile, values):  # Every seen value, every time.
+        support = references._support(
+            tuple(p["data"] for p in profile.get("periods", []) if p["source"] != "radar")
+        )
+        return [
+            key
+            for key, value in values.items()
+            if support.get(key) and min(abs(value - seen) for seen in support[key]) > 6
+        ]
+
+    rnd = random.Random(8)
+    for _ in range(40):
+        periods = []
+        for source in ("human", "entity", "radar"):
+            for _ in range(rnd.randint(0, 4)):
+                histograms = {
+                    key: {str(v): 1.0 for v in rnd.sample(range(101), rnd.randint(1, 6))}
+                    for key in rnd.sample(HISTORY_KEYS, 5)
+                }
+                periods.append({"source": source, "data": references.encode(histograms)})
+        profile = {"periods": periods}
+        for _ in range(20):
+            values = {key: rnd.choice((0, 6, 7, 50.5, 93, 100, 12.75)) for key in HISTORY_KEYS}
+            assert references.unfamiliar(profile, values) == reference(profile, values)
+    with patch.object(references, "_support", wraps=references._support) as gathered:
+        for _ in range(10):
+            references.unfamiliar(profile, values)
+    assert gathered.call_count <= 1, "an unchanged profile's support is kept"

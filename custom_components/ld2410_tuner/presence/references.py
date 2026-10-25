@@ -3,6 +3,7 @@
 import base64
 import json
 import zlib
+from bisect import bisect_left
 from collections import Counter
 from functools import lru_cache
 from math import ceil, floor, isfinite
@@ -282,14 +283,27 @@ def _combine_channel(pools, key, latest, available, now):
 
 def unfamiliar(profile, values):
     """Flag channels outside both independent reference distributions."""
-    support = _support(
+    support = _sorted_support(
         tuple(p["data"] for p in profile.get("periods", []) if p["source"] != "radar")
     )
     return [
         key
         for key, value in values.items()
-        if support.get(key) and min(abs(value - seen) for seen in support[key]) > 6
+        if support.get(key) and _distance(support[key], value) > 6
     ]
+
+
+@lru_cache(maxsize=64)
+def _sorted_support(data):
+    """``_support`` sorted, kept per profile: it changes when evidence is folded in, about once
+    a minute, and every sample in between asks it again."""
+    return {key: tuple(sorted(seen)) for key, seen in _support(data).items()}
+
+
+def _distance(seen, value):
+    """How far ``value`` is from the nearest of the sorted values ``seen``: its neighbours."""
+    index = bisect_left(seen, value)
+    return min(abs(value - seen[i]) for i in (index - 1, index) if 0 <= i < len(seen))
 
 
 def _support(data):
