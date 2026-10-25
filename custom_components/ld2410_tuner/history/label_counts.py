@@ -391,6 +391,26 @@ def _from_worker(history, cutoff, index, result):
     return counts
 
 
+def adopt(runtime, device_id, counted):
+    """Keep the counts a storage cleanup made of the radar's days as it left them
+    (``budget.prepare_days``), instead of the worker counting them all again (``ensure``).
+    Skipped when the radar's days are no longer those counted (a day finished meanwhile); a
+    live day it did not see is counted by the next update."""
+    if device_id not in runtime.data["devices"] or device_id in _updating(runtime):
+        return
+    days = getattr(runtime, "_days", None)
+    live = None if days is None else days.live_date(device_id)
+    history = _day_blocks(runtime, device_id)
+    if [block["date"].isoformat() for block in history] != counted["dates"]:
+        return
+    if counted["live_date"] is not None and (
+        live is None or live.isoformat() != counted["live_date"]
+    ):
+        return  # The live day it counted is not the one being recorded now.
+    index = label_lookup.label_index(runtime.data["devices"][device_id])
+    runtime._label_counts[device_id] = _from_worker(history, counted["cutoff"], index, counted)
+
+
 def forget(runtime, device_id):
     """Drop a radar's kept counts (its history was cleared)."""
     getattr(runtime, "_label_counts", {}).pop(device_id, None)

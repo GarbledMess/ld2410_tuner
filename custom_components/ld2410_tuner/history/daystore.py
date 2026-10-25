@@ -467,9 +467,10 @@ class DayStore:
         self._write_day(device_id, date, day)
         self._rewrite(device_id)
 
-    def stage(self, changes):
-        """Encode replacements off-loop; visible days stay untouched until commit."""
-        staged = []
+    def stage(self, changes, encoded=None):
+        """Encode replacements off-loop (or write them as ``encoded``, by ``(key, date)``);
+        visible days stay untouched until commit."""
+        staged, encoded = [], encoded or {}
         try:
             for key, date, day in changes:
                 self._refuse_live(key, date)
@@ -479,7 +480,8 @@ class DayStore:
                 ) as out:
                     temporary = Path(out.name)
                     staged.append((key, date, day, temporary))
-                    out.write(dayfile.encode_day(day))
+                    data = encoded.get((key, date))
+                    out.write(dayfile.encode_day(day) if data is None else data)
         except BaseException:
             self.discard(staged)
             raise

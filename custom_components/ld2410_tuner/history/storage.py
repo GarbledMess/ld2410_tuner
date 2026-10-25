@@ -6,7 +6,7 @@ from copy import deepcopy
 
 from ..const import TRAINING_FIELDS
 from ..rooms import groups, membership
-from . import budget, commit, ingest, pace, policy, summary_cache
+from . import budget, commit, ingest, label_counts, pace, policy, summary_cache
 
 _LOGGER = logging.getLogger(__name__)
 GUARDED = ("history_labels", "label_revision", *TRAINING_FIELDS)
@@ -112,10 +112,11 @@ def _prepare_save(store, candidate, now, clean, target):
                 "Optional history indexes could not be removed. Retry when their files are "
                 "available; recorded history was not trimmed to make room for the indexes."
             )
+    encoded = {}
     prepared, changes, report = budget.prepare_days(
-        store, candidate, now, clean, target, before=store.size() + json_bytes
+        store, candidate, now, clean, target, before=store.size() + json_bytes, encoded=encoded
     )
-    return prepared, changes, report, store.stage(changes)
+    return prepared, changes, report, store.stage(changes, encoded)
 
 
 async def _save_days(runtime, values, clean, target, persist=True):
@@ -247,6 +248,8 @@ def _accept_worker(runtime, original, marks, values, clean, persist):
             )
         if not await commit.publish(runtime, staged, valid, install):
             return None
+        for key, counted in result.get("counts", {}).items():
+            label_counts.adopt(runtime, key, counted)  # Published: the days it counted.
         if persist:
             await runtime.store.async_save(prepared)
         return report

@@ -15,10 +15,18 @@ def execute(request):
     _restore_live(store, request.get("live", {}))
     target = request.get("target")
     json_bytes, prune = _prune(store, candidate, target, root)
+    counts, encoded = {}, {}
     prepared, changes, report = budget.prepare_days(
-        store, candidate, now, request.get("clean", False), target, before=store.size() + json_bytes
+        store,
+        candidate,
+        now,
+        request.get("clean", False),
+        target,
+        before=store.size() + json_bytes,
+        counts=counts,
+        encoded=encoded,
     )
-    staged = store.stage(changes)
+    staged = store.stage(changes, encoded)
     handoff = []
     for index, (key, date, day, temporary) in enumerate(staged):
         handoff.append(
@@ -29,7 +37,13 @@ def execute(request):
                 "day": startup.write_day(day, directory, index),
             }
         )
-    return {"prepared": prepared, "report": report, "changes": handoff, "prune": prune}
+    return {
+        "prepared": prepared,
+        "report": report,
+        "changes": handoff,
+        "prune": prune,
+        "counts": counts,
+    }
 
 
 def load(result, directory):

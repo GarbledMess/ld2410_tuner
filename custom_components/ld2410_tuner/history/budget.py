@@ -162,12 +162,14 @@ def _day_ranges(day, device):
 
 
 class _Planned:
-    """The planned total size, kept per cut day: a new cut re-encodes only its own day (the
-    original once), not every day cut so far."""
+    """The planned total size, kept per cut day: a new cut re-encodes only its own day, not
+    every day cut so far. Each day's latest replacement is kept with its encoding (``replaced``)
+    for the cleanup to stage; the original counts as the file it is."""
 
     def __init__(self, store, data, cuts):
-        self.store, self.base = store, store.size() + storage_bytes(data)
-        self.original, self.change = {}, {}
+        self.store = store
+        self.base = None if data is None else store.size() + storage_bytes(data)
+        self.original, self.change, self.replaced = {}, {}, {}
         for token, ranges in cuts.items():
             self.cut(token, ranges)
 
@@ -178,18 +180,26 @@ class _Planned:
         pace.rest()
         day = self.store.day(*token)
         if token not in self.original:
-            self.original[token] = len(dayfile.encode_day(day))
+            self.original[token] = self._stored_bytes(token, day)
         updated = cut(day, ranges)
-        size = len(dayfile.encode_day(updated)) if len(updated.times) or updated.guesses else 0
-        self.change[token] = size - self.original[token]
+        encoded = dayfile.encode_day(updated) if len(updated.times) or updated.guesses else b""
+        self.replaced[token] = updated, encoded
+        self.change[token] = len(encoded) - self.original[token]
+
+    def _stored_bytes(self, token, day):
+        from . import dayfile
+
+        try:
+            return self.store._path(*token, ".day").stat().st_size
+        except OSError:
+            return len(dayfile.encode_day(day))
 
     @property
     def total(self):
         return self.base + sum(self.change.values())
 
-
-def _planned_bytes(store, data, cuts):
-    return _Planned(store, data, cuts).total
+    def total_with(self, data):
+        return self.store.size() + storage_bytes(data) + sum(self.change.values())
 
 
 def _day_candidates(store, data):
@@ -215,27 +225,31 @@ def _ceiling_plan(store, data, cuts, target):
     return cuts
 
 
-def _replacement_days(store, data, cuts):
-    from .cleanup import cut
-
+def _replacement_days(store, data, cuts, planned):
     changes, automatic, human = [], 0.0, 0.0
     for (key, date), ranges in cuts.items():
         pace.rest()
-        original = store.day(key, date)
-        removed = _removed_seconds(original, ranges, data["devices"][key])
+        removed = _removed_seconds(store.day(key, date), ranges, data["devices"][key])
         automatic += removed[0]
         human += removed[1]
-        changes.append((key, date, cut(original, ranges)))
+        changes.append((key, date, planned.replaced[key, date][0]))
     return changes, automatic, human
 
 
-def _bounded_days(store, data, cuts, now, target):
+def _bounded_days(store, data, cuts, now, target, counts=None, encoded=None):
     while True:
-        changes, automatic, human = _replacement_days(store, data, cuts)
+        planned = _Planned(store, None, cuts)
+        changes, automatic, human = _replacement_days(store, data, cuts, planned)
         prepared = copy_data(data)
-        _day_metadata(store, prepared, changes, now)
-        used = _planned_bytes(store, prepared, cuts)
+        _day_metadata(store, prepared, changes, now, counts)
+        used = planned.total_with(prepared)
         if used <= target:
+            if encoded is not None:  # Staged as they were measured: each encoded once.
+                encoded.update(
+                    (token, replaced[1])
+                    for token, replaced in planned.replaced.items()
+                    if replaced[1]
+                )
             return prepared, changes, automatic, human, used
         previous = {key: list(ranges) for key, ranges in cuts.items()}
         _ceiling_plan(store, prepared, cuts, target)
@@ -261,10 +275,15 @@ def _expire_labels(data, cutoff):
             device["history_labels"] = expired_labels(device["history_labels"], cutoff)
 
 
-def prepare_days(store, data, now, clean=False, target=None, before=None):
+def prepare_days(
+    store, data, now, clean=False, target=None, before=None, counts=None, encoded=None
+):
     """Prepare immutable replacements and a seconds report; mutate no files or live state.
     ``before`` is the current total size when the caller measured it already. A save that
-    cleans nothing and fits returns ``data`` as it is (callers pass their own snapshot)."""
+    cleans nothing and fits returns ``data`` as it is (callers pass their own snapshot).
+    ``counts`` (a dict) receives each changed radar's labelled counts behind its new
+    histograms, as ``label_counts.adopt`` keeps them; ``encoded`` (a dict) each replacement
+    day's encoding, for ``DayStore.stage``."""
     ceiling = int(settings(data)["max_mib"] * MIB)
     target = ceiling if target is None else min(ceiling, target)
     before = store.size() + storage_bytes(data) if before is None else before
@@ -275,7 +294,9 @@ def prepare_days(store, data, now, clean=False, target=None, before=None):
     # Cuts only shrink the store: the ceiling needs planning only when it is exceeded already.
     planned = plan(store, data, now, settings(data), target=target if before > target else None)
     cuts = {(key, date): ranges for key, date, ranges in planned}
-    prepared, changes, automatic, human, used = _bounded_days(store, data, cuts, now, target)
+    prepared, changes, automatic, human, used = _bounded_days(
+        store, data, cuts, now, target, counts, encoded
+    )
     if clean:  # After planning: the removed time is reported under the labels it had.
         _expire_labels(prepared, now - settings(data)["human_days"] * DAY)
     return prepared, changes, _report(before, used, ceiling, now, automatic, human)
@@ -330,20 +351,42 @@ def _seconds_within(day, device, windows):
     return totals
 
 
-def _day_histograms(store, key, device, replacements, now, cutoff):
-    """The radar's histograms after the planned replacements, as a label edit stores them."""
+def _day_histograms(store, key, device, replacements, now, cutoff, counted=None):
+    """The radar's histograms after the planned replacements, as a label edit stores them.
+    ``counted`` (a dict) receives the counts behind them: the finished days' and the live
+    day's apart, with the dates counted (``label_counts.adopt``)."""
     from ..calibration.constants import SAMPLE_SECONDS
     from . import label_counts, spans
 
-    raw = label_counts.empty()
+    raw, finished, live, dates = label_counts.empty(), label_counts.empty(), None, []
     read = _history_label_reader(device)
+    live_date = store.live_date(key)
     for date in store.days(key):
         pace.rest()
         day = replacements.get((key, date))
         if day is None:
             day = store.day(key, date, until=now)
-        if day is not None:
-            label_counts._count_native(raw, spans.day_spans(day), read, cutoff, 1)
+        elif not len(day.times) and not day.guesses:
+            continue  # Emptied: its file goes.
+        if day is None:
+            continue
+        part = label_counts.empty()
+        label_counts._count_native(part, spans.day_spans(day), read, cutoff, 1)
+        label_counts._combine(raw, part)
+        if date == live_date:
+            live = part
+        else:
+            label_counts._combine(finished, part)
+            dates.append(date.isoformat())
+    if counted is not None:
+        counted.update(
+            seconds=finished,
+            live=live,
+            inert=[],
+            dates=dates,
+            live_date=None if live_date is None else live_date.isoformat(),
+            cutoff=cutoff,
+        )
     return label_counts.stored(
         {
             gate: {
@@ -355,11 +398,16 @@ def _day_histograms(store, key, device, replacements, now, cutoff):
     )
 
 
-def _day_metadata(store, prepared, changes, now):
+def _day_metadata(store, prepared, changes, now, counts=None):
     replacements = {(key, date): day for key, date, day in changes}
+    if counts is not None:
+        counts.clear()  # A ceiling plan's next attempt counts again.
     for key in {key for key, _date, _day in changes}:
         device = prepared["devices"][key]
         cutoff = max(0, now - settings(prepared)["human_days"] * DAY)
-        device["histograms"] = _day_histograms(store, key, device, replacements, now, cutoff)
+        counted = None if counts is None else counts.setdefault(key, {})
+        device["histograms"] = _day_histograms(
+            store, key, device, replacements, now, cutoff, counted
+        )
         device["label_revision"] = device.get("label_revision", 0) + 1
         device.pop("last_learning", None)

@@ -1,5 +1,6 @@
 """Finished-day retention removes elapsed ranges without bridging their gaps."""
 
+import bisect
 import datetime
 import unittest
 
@@ -149,6 +150,43 @@ class TestDayStorage(unittest.IsolatedAsyncioTestCase):
 
         self.runtime._record_history_sample("a", {"g0_move": 10}, START)
         ingest.end(self.runtime, "a", START + 120)
+
+    async def test_a_cleanup_keeps_the_counts_it_made_of_the_days_it_left(self):
+        """The cleanup counts the labelled time of the days it leaves for the histograms; the
+        radar keeps those counts instead of a worker counting all its history again."""
+        from copy import deepcopy
+
+        from tuner_under_test.history import ingest, label_counts
+
+        self.recorded()  # Ten days old and unlabelled: thinned away.
+        later = START + 8 * policy.DAY
+        self.runtime._record_history_sample("a", {"g0_move": 20}, later)
+        ingest.end(self.runtime, "a", later + 60)
+        await self.runtime.label_history_range("a", later, later + 60, "present")
+        await test_tuner.settled(self.runtime)
+        before = len(self.worker_transport.requests)
+        assert await self.runtime.async_clean_history(persist=False)
+        operations = [request["operation"] for request in self.worker_transport.requests[before:]]
+        assert "maintenance" in operations
+        assert "recount" not in operations, "the cleanup's counts are kept"
+        kept = deepcopy(self.runtime._label_counts["a"].raw)
+        assert kept["g0_move"]["present"][20] == 10
+        self.runtime._label_counts.clear()
+        assert kept == label_counts.current(self.runtime, self.device)
+
+    async def test_counts_of_other_days_are_not_kept(self):
+        from tuner_under_test.history import label_counts
+
+        self.recorded()
+        self.runtime._days.flush(now=self.now)
+        live = self.runtime._days.live_date("a")
+        finished = [day.isoformat() for day in self.runtime._days.days("a") if day != live]
+        counted = {"seconds": label_counts.empty(), "live": None, "inert": [], "cutoff": 0}
+        for dates, live in (([], None), (finished, "1999-01-01")):
+            label_counts.adopt(self.runtime, "a", {**counted, "dates": dates, "live_date": live})
+            assert "a" not in self.runtime._label_counts
+        label_counts.adopt(self.runtime, "a", {**counted, "dates": finished, "live_date": None})
+        assert "a" in self.runtime._label_counts
 
     async def test_trim_removes_finished_day_and_reports_recorded_seconds(self):
         self.recorded()
@@ -406,3 +444,75 @@ def test_removed_time_is_read_from_the_cut_ranges_alone():
             [b - a for b, a in zip(before, after, strict=True)], abs=1e-6
         )
         assert sum(removed) > 0 or not list(spans.day_spans(day))
+
+
+def test_a_cut_keeps_each_guess_run_within_the_time_it_keeps():
+    """Each kept stretch takes the guess runs over it, clipped to it: found by bisection when
+    the runs are in order and apart, by a scan of them all otherwise."""
+    import random
+    from array import array
+
+    def reference(day, cuts):  # Every run against every kept stretch.
+        windows = list(dayfile.gaps(day.start, day.end, cleanup._cut_union(cuts)))
+        return [
+            (max(a, low), min(b, high), *rest)
+            for low, high in windows
+            if bisect.bisect_right(day.ends, low) < bisect.bisect_left(day.times, high)
+            for a, b, *rest in day.guesses
+            if b > low and a < high
+        ]
+
+    rnd = random.Random(9)
+    for trial in range(40):
+        times = array("d", (i * 60.0 for i in range(1000)))
+        ends = array("d", (t + 60 for t in times))
+        runs, t = [], 0.0
+        while t < 60_000:
+            start = t + rnd.choice((0, 30, 300))
+            t = start + rnd.choice((60, 600, 3000))
+            runs.append((start, t, rnd.choice(("present", "not_present")), 50, 0))
+        if trial % 4 == 0:  # Out of order and overlapping: the scan.
+            rnd.shuffle(runs)
+            runs.append((100.0, 9000.0, "present", 60, 0))
+        day = dayfile.Day(0.0, 86_400.0, times, ends, [bytes(1000)], runs)
+        cuts = [
+            (low, low + rnd.uniform(10, 900))
+            for low in sorted(rnd.uniform(0, 61_000) for _ in range(200))
+        ]
+        assert cleanup.cut(day, cuts).guesses == reference(day, cuts)
+
+
+def test_a_cleanup_encodes_each_replacement_day_once(tmp_path):
+    """Measured and staged from one encoding: the original is its file, not re-encoded."""
+    from unittest.mock import patch
+
+    store = daystore.DayStore(tmp_path / "history")
+    for index in range(3):
+        day = fixture()
+        shift = index * policy.DAY
+        day = dayfile.Day(
+            day.start + shift,
+            day.end + shift,
+            *(type(c)("d", (t + shift for t in c)) for c in (day.times, day.ends)),
+            day.columns,
+            [],
+        )
+        store.replace("radar", DATE + datetime.timedelta(days=index), day)
+    labels = [  # The first minute of each day is labelled: kept, so each day is rewritten.
+        {"start": START + i * policy.DAY, "end": START + i * policy.DAY + 60, "state": "present"}
+        for i in range(3)
+    ]
+    data = {"devices": {"radar": {"history_labels": labels}}}
+    encoded = {}
+    with patch.object(dayfile, "encode_day", wraps=dayfile.encode_day) as encode:
+        _prepared, changes, report = budget.prepare_days(
+            store, data, START + 20 * policy.DAY, clean=True, encoded=encoded
+        )
+        staged = store.stage(changes, encoded)
+    assert len(changes) == 3
+    assert report["removed_automatic_seconds"] == 3 * 60
+    assert encode.call_count == len(changes)
+    store.commit(staged)
+    for _key, date, day in changes:
+        assert rows(store.day("radar", date)) == rows(day)
+        assert len(day.times) and day.ends[-1] - day.start <= 60  # The labelled minute.
