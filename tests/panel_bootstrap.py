@@ -10,18 +10,23 @@ from unittest.mock import AsyncMock, Mock, patch
 from test_tuner import mod
 
 
+def fake_hass(config):
+    """Only the Home Assistant boundaries the integration touches at setup."""
+    return SimpleNamespace(
+        data={},
+        config=SimpleNamespace(path=lambda *parts: str(Path(config, *parts))),
+        bus=SimpleNamespace(async_listen=Mock(return_value=Mock())),
+        http=SimpleNamespace(async_register_static_paths=AsyncMock(), register_view=Mock()),
+        async_add_executor_job=asyncio.to_thread,
+        async_create_task=asyncio.create_task,
+        async_create_background_task=lambda target, name: asyncio.create_task(target),
+    )
+
+
 async def panel_registration():
     """Start and stop the integration with only Home Assistant boundaries stubbed."""
     with TemporaryDirectory(prefix="ld2410-panel-") as config:
-        hass = SimpleNamespace(
-            data={},
-            config=SimpleNamespace(path=lambda *parts: str(Path(config, *parts))),
-            bus=SimpleNamespace(async_listen=Mock(return_value=Mock())),
-            http=SimpleNamespace(async_register_static_paths=AsyncMock()),
-            async_add_executor_job=asyncio.to_thread,
-            async_create_task=asyncio.create_task,
-            async_create_background_task=lambda target, name: asyncio.create_task(target),
-        )
+        hass = fake_hass(config)
         store = SimpleNamespace(
             async_load=AsyncMock(return_value={"devices": {}}), async_save=AsyncMock()
         )
