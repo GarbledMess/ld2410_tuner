@@ -273,11 +273,17 @@ class TransportTests(unittest.TestCase):
                     "GITHUB_REF": "refs/heads/main",
                     "GITHUB_SHA": "a" * 40,
                     "PREVIOUS_SHA": "b" * 40,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GH_TOKEN": "synthetic",
                 },
             ),
             patch.object(sys, "argv", ["release.py", "--publish"]),
             patch.object(release, "git", return_value="a" * 40),
             patch.object(release, "changed_version", return_value=None),
+            # The unchanged version is already published.
+            patch.object(
+                release, "GitHub", return_value=Mock(request=Mock(return_value={"draft": False}))
+            ),
             patch.object(release, "build") as build,
             patch.object(release, "publish") as publish,
         ):
