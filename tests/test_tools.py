@@ -190,6 +190,13 @@ class PackageTests(unittest.TestCase):
         }
         self.assertEqual(assets, set(validator.RUNTIME_FILES))
 
+    def test_duplicate_runtime_files_are_rejected(self):
+        self.assertEqual(len(validator.RUNTIME_FILES), len(set(validator.RUNTIME_FILES)))
+        doubled = validator.RUNTIME_FILES + validator.RUNTIME_FILES[:1]
+        with patch.object(validator, "RUNTIME_FILES", doubled):
+            with self.assertRaisesRegex(ValueError, "Duplicate integration file: __init__.py"):
+                validator.validate(ROOT)
+
     def test_invalid_hacs_metadata_and_json_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
