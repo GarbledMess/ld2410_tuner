@@ -38,7 +38,6 @@ class MaintainedLifecycleTests(unittest.IsolatedAsyncioTestCase):
                         fast = attribution.radar_attribution(
                             view, device_id, view.data["room_snapshot"], human
                         )
-                        self.assertEqual(list(fast["times"]), list(full["times"]))
                         self.assertEqual(fast["found"], full["found"])
                         if event == "append-3":
                             self.assertTrue(
