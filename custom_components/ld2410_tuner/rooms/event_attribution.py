@@ -1,6 +1,5 @@
 """Exact observed-duration room attribution, preserving the existing union rule."""
 
-from array import array
 from bisect import bisect_left, bisect_right
 from itertools import accumulate
 from math import ceil, floor, inf, nextafter
@@ -13,7 +12,7 @@ from ..calibration.constants import (
     SAMPLE_SECONDS,
 )
 from ..const import HISTORY_KEYS
-from ..history import pace, spans
+from ..history import pace
 from ..history.label_lookup import _history_label_reader
 from ..presence.inference import MIN_REFERENCE
 
@@ -170,42 +169,11 @@ def _cached(runtime, key, edges, reads, own):
 
 
 def _found(runtime, device_id, edges, reads, own):
-    """The expensive part: cells, the quiet baseline and every group's episode decisions."""
-    from . import attribution
+    """The expensive part: cells, the quiet baseline and every group's episode decisions, made
+    a day at a time so finished days are reused (``attribution_days``)."""
+    from . import attribution_days
 
-    cells = list(_cells(_physical(runtime, device_id), edges))
-    places = _places(cells, edges)
-    quiet = _read_cells(attribution.quiet_reader(own, reads), cells, places)
-    baseline = _baseline(cells, quiet)
-    owned = _read_cells(own, cells, places)
-    found = {
-        group: [
-            (
-                (cells[first][0], _closed(cells[stop - 1][1])),
-                _decision(set(owned[first:stop]), cells[first:stop], baseline),
-            )
-            for first, stop in _episodes(cells, _read_cells(read, cells, places))
-        ]
-        for group, read in reads.items()
-    }
-    return array("d", (low for low, _high, _values in cells)), found
-
-
-def _physical(runtime, device_id):
-    """The radar's spans in the job's window (Seen by bounds it to recent hours). A job's view
-    keeps the latest radar's: its human-truth and full-truth attributions read the same."""
-    since = getattr(runtime, "_attribution_since", 0) or float("-inf")
-    until = getattr(runtime, "_attribution_until", float("inf"))
-    if getattr(runtime, "_history_until", None) is None:
-        return spans.events(runtime, device_id, start=since, end=until)
-    key = device_id, since, until
-    kept = runtime.__dict__.get("_native_physical")
-    if kept is None or kept[0] != key:
-        kept = runtime._native_physical = (
-            key,
-            list(spans.events(runtime, device_id, start=since, end=until)),
-        )
-    return kept[1]
+    return attribution_days.found(runtime, device_id, edges, reads, own)
 
 
 def calculate(runtime, device_id, saved, human, others):
@@ -226,9 +194,8 @@ def calculate(runtime, device_id, saved, human, others):
     edges = sorted(
         {*own.edges, *(edge for context in contexts.values() for edge in truth.edges(context))}
     )
-    times, found = _cached(runtime, (device_id, human, others is None), edges, reads, own)
+    found = _cached(runtime, (device_id, human, others is None), edges, reads, own)
     return {
-        "times": times,
         "own": own,
         "truths": reads,
         "contexts": contexts,

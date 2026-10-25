@@ -380,8 +380,7 @@ def radar_attribution(runtime, device_id, saved, human=True, others=None, *, reu
     the radar's baseline, rather than its own label). ``human`` True reads human room truth
     and the human-only baseline (``room_targets``); False reads full room truth: sensor labels
     and the estimate from ``others`` (members' guess cells, read when None; ``auto_targets``).
-    Also returns the radar's sample ``times`` (an array of floats; its gate values are not
-    kept), ``own`` label reader, per-group ``truths`` and ``contexts``.
+    Also returns the radar's ``own`` label reader, per-group ``truths`` and ``contexts``.
 
     In a job ``prepare``d for it (a reference rebuild or a Seen by build), both answers come
     from one computation (``_both``) and its ``found`` lists from the attribution cache."""
@@ -445,7 +444,6 @@ def release(views) -> None:
     for view in views:
         getattr(view, "_native_found_job", {}).clear()
         getattr(view, "_attribution_guesses", {}).clear()
-        view.__dict__.pop("_native_physical", None)
 
 
 def _targets(device_id, learned, own, automatic=False):

@@ -18,7 +18,7 @@ MAX_RAW_BYTES = 16 * 1024 * 1024
 MAX_VALUE_BYTES = 1024 * 1024
 MAX_ENTRIES = 256
 MAX_DISK_BYTES = 32 * 1024 * 1024  # All results, apart from the physical indexes' budget.
-NAMES = frozenset(("rows", "chunks", "quality"))
+NAMES = frozenset(("rows", "chunks", "quality", "attribution"))
 MEMORY = 64  # Days' result files kept parsed in this process.
 PRUNE_EVERY = 64
 _files = OrderedDict()  # Sidecar path -> (its stamp, day identity, producer, entries).
@@ -37,6 +37,8 @@ def _producer():
         "history/dayfile.py",
         "history/day_results.py",
         "history/result_cache.py",
+        "rooms/attribution_days.py",
+        "rooms/event_attribution.py",
     ):
         digest.update((root / name).read_bytes())
     return digest.hexdigest()
@@ -92,12 +94,35 @@ def _quality(value):
         _require(span[0] <= span[1])
 
 
+def _attribution(value):
+    """A day's room attribution part (``rooms.attribution_days._measure``)."""
+    _require(type(value) is tuple and len(value) == 2)
+    histograms, groups = value
+    _histogram(histograms)
+    _require(type(groups) is tuple)
+    for runs in groups:
+        _require(type(runs) is tuple)
+        for run in runs:
+            _attributed_run(run)
+
+
+def _attributed_run(run):
+    _require(type(run) is tuple and len(run) == 5)
+    start, end, present, empty, gates = run
+    _require(type(start) is float and type(end) is float and isfinite(start) and start < end)
+    _require(type(present) is bool and type(empty) is bool)
+    _require(type(gates) is array and gates.typecode == "d" and len(gates) >= 18 * 4)
+    _require(all(isfinite(value) for value in gates))
+
+
 def _validate(name, value):
     _require(name in NAMES)
     if name == "rows":
         _require(type(value) is int and value >= 0)
     elif name == "quality":
         _quality(value)
+    elif name == "attribution":
+        _attribution(value)
     elif value is not None:
         _require(type(value) is tuple)
         for chunk in value:

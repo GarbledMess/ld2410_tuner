@@ -125,9 +125,7 @@ def test_shared_reads_attribute_exactly_as_reading_every_cell():
         for human, others in ((True, None), (False, runs)):
             found = event_attribution.calculate(view, "a", saved, human, others)["found"]
             view.__dict__.pop("_native_found_job", None)  # A job's view keeps its answers.
-            with patch.object(
-                event_attribution, "_found", side_effect=lambda *a: (None, reference(*a)[1])
-            ):
+            with patch.object(event_attribution, "_found", side_effect=lambda *a: reference(*a)[1]):
                 expected = event_attribution.calculate(view, "a", saved, human, others)["found"]
             view.__dict__.pop("_native_found_job", None)
             assert found == expected, (seed, human)

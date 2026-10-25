@@ -854,8 +854,8 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
             getattr(self.runtime, "_native_found_job", {}), "native results never outlive a job"
         )
 
-    async def test_a_job_cache_hit_decodes_no_history_and_release_drops_its_times(self):
-        """A native memo hit reuses physical folds; release frees their column times."""
+    async def test_a_job_cache_hit_decodes_no_history_and_release_drops_its_results(self):
+        """A native memo hit reuses physical folds; release frees the job's results."""
         from tuner_under_test.rooms import attribution, event_attribution
 
         desk, episode, _members, _room = self.shared_radar_desk()
@@ -865,9 +865,7 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(event_attribution, "_found", wraps=event_attribution._found) as spy:
             again = attribution.radar_attribution(view, "a", view.data["room_snapshot"])
         self.assertNotIn("rows", first)
-        self.assertTrue(all(type(t) is float for t in first["times"]))
-        self.assertGreater(len(first["times"]), 0)
-        self.assertLess(len(first["times"]), 130, "change-only columns avoid repeated sample rows")
+        self.assertNotIn("times", first, "sample times are not kept")
         self.assertEqual(spy.call_args_list, [], "a job memo hit folds no physical history")
         self.assertIs(again["found"], first["found"])
         self.assertTrue(first["found"][desk])

@@ -1,6 +1,7 @@
 """Raw learner guesses stay separate from trusted reference and display attribution."""
 
 import unittest
+from unittest.mock import patch
 
 import test_rooms
 from tuner_under_test.history import dayfile, guesses
@@ -19,17 +20,28 @@ class RawLearningAttributionTests(unittest.IsolatedAsyncioTestCase):
             value = 60 + offset // 6 % 2
             self.runtime._record_history_sample("a", {"g0_move": value}, start + offset)
 
-        def times(until=None):
+        from tuner_under_test.history import spans
+        from tuner_under_test.rooms import attribution_days
+
+        def read(until=None):  # The spans attribution reads, a day at a time.
             view = attribution.prepared_view(self.runtime, "a")
             if until is not None:
                 view._attribution_until = until
-            return list(
-                attribution.radar_attribution(view, "a", view.data["room_snapshot"])["times"]
-            )
+            found = []
+            real = spans.events
 
-        full, cutoff = times(), start + 30
-        self.assertEqual(times(cutoff), [t for t in full if t < cutoff])
-        self.assertLess(len(times(cutoff)), len(full))
+            def events(*args, **kwargs):
+                items = list(real(*args, **kwargs))
+                found.extend(items)
+                return items
+
+            with patch.object(attribution_days.spans, "events", side_effect=events):
+                attribution.radar_attribution(view, "a", view.data["room_snapshot"])
+            return [item.start for item in found]
+
+        full, cutoff = read(), start + 30
+        self.assertEqual(read(cutoff), [t for t in full if t < cutoff])
+        self.assertLess(len(read(cutoff)), len(full))
 
     def test_raw_reader_reaches_derived_room_truth_without_changing_default(self):
         self.office()
