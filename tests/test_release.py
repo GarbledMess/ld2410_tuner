@@ -67,7 +67,7 @@ class ReleaseTests(unittest.TestCase):
                 release.build(root, root / "dist")
             self.assertEqual(before, archive.read_bytes())
             with zipfile.ZipFile(archive) as z:
-                self.assertEqual(set(z.namelist()), set(release.RUNTIME_FILES))
+                self.assertEqual(sorted(z.namelist()), sorted(set(release.RUNTIME_FILES)))
                 self.assertEqual(json.loads(z.read("manifest.json"))["version"], "1.9.2")
 
     def test_publish_uploads_draft_before_exposing_release(self):

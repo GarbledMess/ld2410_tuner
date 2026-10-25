@@ -109,7 +109,6 @@ RUNTIME_FILES = (
     "presence/rebuilds.py",
     "presence/reference_training.py",
     "presence/reference_summary.py",
-    "presence/reference_summary.py",
     "presentation/__init__.py",
     "presentation/charts.py",
     "presentation/export_files.py",
@@ -202,7 +201,11 @@ def validate(root: Path) -> None:
 
     _validate_hacs(root)
     package = components / DOMAIN
+    seen = set()
     for name in RUNTIME_FILES:
+        if name in seen:
+            raise ValueError(f"Duplicate integration file: {name}")
+        seen.add(name)
         if not (package / name).is_file():
             raise ValueError(f"Missing integration file: {name}")
 
