@@ -7,22 +7,19 @@ const bytes = (value = 0) =>
 const disabled = (value) => (value ? "disabled" : "");
 
 export const RECORDED_STYLES = `
-  #recorded-data { font-size:14px; }
-  #recorded-data > summary { cursor:pointer; min-height:44px; align-content:center; }
-  #recorded-data > summary h2 { display:inline; font-size:16px; margin:0; }
-  #recorded-data .raw-controls { display:flex; flex-wrap:wrap; align-items:end; gap:8px; margin:12px 0; }
-  #recorded-data label { display:flex; flex-direction:column; gap:4px; min-width:0; }
-  #recorded-data select { max-width:100%; }
-  #recorded-data [data-raw-device] { width:280px; }
-  #recorded-data .raw-days { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; max-height:240px; overflow:auto; }
-  #recorded-data .raw-days button { text-align:left; }
-  #recorded-data .raw-days button[aria-pressed="true"] { outline:2px solid var(--primary-color); outline-offset:-2px; }
-  #recorded-data .raw-days small { display:block; color:var(--secondary-text-color); }
-  #recorded-data .raw-table { max-width:100%; max-height:420px; overflow:auto; border:1px solid var(--divider-color); border-radius:8px; }
-  #recorded-data th { position:sticky; top:0; background:var(--card-background-color); }
-  #recorded-data td { font-variant-numeric:tabular-nums; }
-  #recorded-data h3 { font-size:15px; margin:14px 0 8px; }
-  #recorded-data p { line-height:1.5; }
+  .raw-recordings { font-size:14px; }
+  .raw-recordings .raw-controls { display:flex; flex-wrap:wrap; align-items:end; gap:8px; margin:12px 0; }
+  .raw-recordings label { display:flex; flex-direction:column; gap:4px; min-width:0; }
+  .raw-recordings select { max-width:100%; }
+  .raw-recordings .raw-days { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; max-height:240px; overflow:auto; }
+  .raw-recordings .raw-days button { text-align:left; }
+  .raw-recordings .raw-days button[aria-pressed="true"] { outline:2px solid var(--primary-color); outline-offset:-2px; }
+  .raw-recordings .raw-days small { display:block; color:var(--secondary-text-color); }
+  .raw-recordings .raw-table { max-width:100%; max-height:420px; overflow:auto; border:1px solid var(--divider-color); border-radius:8px; }
+  .raw-recordings th { position:sticky; top:0; background:var(--card-background-color); }
+  .raw-recordings td { font-variant-numeric:tabular-nums; }
+  .raw-recordings h3 { font-size:15px; margin:14px 0 8px; }
+  .raw-recordings p { line-height:1.5; }
 `;
 
 function dayList(s, esc) {
@@ -80,17 +77,11 @@ function readingView(s, esc) {
     ${s.exportStatus ? `<p role="status">${esc(s.exportStatus)}</p>` : ""}</section>`;
 }
 
-export function recordedHtml(s, esc, devices = {}) {
-  const options = s.devices
-    .map(
-      (d) =>
-        `<option value="${esc(d.id)}" ${d.id === s.device ? "selected" : ""}>${esc(devices[d.id]?.name || d.name)}</option>`,
-    )
-    .join("");
-  return `<div class="raw-controls">${options ? `<label>Radar<select data-raw-device ${disabled(s.export)}>${options}</select></label>` : ""}<button data-raw-inventory ${disabled(s.loading || s.export)}>Refresh days</button></div>
-    ${s.storage ? `<p class="muted">Recorded history: ${bytes(s.storage.history_bytes ?? s.devices.reduce((sum, d) => sum + d.bytes, 0))}. Retained recovery files: ${bytes(s.storage.recovery_bytes)}. Sizes are actual disk bytes; recovery files are separate from the recordings below.</p>` : ""}
+export function recordedHtml(s, esc) {
+  return `<div class="raw-controls"><button data-raw-inventory ${disabled(s.loading || s.export)}>Refresh days</button></div>
+    ${s.storage ? `<p class="muted">Total recorded history: ${bytes(s.storage.history_bytes ?? s.devices.reduce((sum, d) => sum + d.bytes, 0))}. Retained recovery files: ${bytes(s.storage.recovery_bytes)}. Sizes are actual disk bytes; recovery files are separate from the recordings below.</p>` : ""}
     ${s.loading ? '<p role="status" class="is-busy">Loading recorded data…</p>' : ""}
     ${s.error ? `<p role="alert" class="warn">${esc(s.error)}</p>` : ""}
-    ${!s.loading && !s.error && s.started && !s.devices.length ? "<p>No recorded radars found.</p>" : ""}
+    ${!s.loading && !s.error && s.started && !s.days ? "<p>No recorded days for this radar.</p>" : ""}
     ${dayList(s, esc)}${readingView(s, esc)}`;
 }

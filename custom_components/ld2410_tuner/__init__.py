@@ -31,7 +31,7 @@ from .const import (
 )
 from .history import ingest, pace
 from .history.daystore import DayStore
-from .presence import rebuilds, reference_training
+from .presence import bermuda, rebuilds, reference_training
 from .presentation import export_files
 from .runtime import engineering, schedule
 from .runtime.coordinator import TunerRuntime
@@ -90,6 +90,7 @@ async def _start_runtime(hass):
     except BaseException:
         await bridge.stop(runtime)
         raise
+    bermuda.migrate(runtime)
     schedule.restore(runtime)
     try:
         await reference_training.initialize(runtime)

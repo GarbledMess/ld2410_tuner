@@ -31,7 +31,17 @@ export const panelView = {
         .source-picker [data-source-option]:hover, .source-picker [aria-selected="true"] { background:var(--secondary-background-color); outline:2px solid var(--primary-color); outline-offset:-2px; }
         .source-picker-status { padding:8px; }
         .source-row input, .source-row select { min-width:0; width:100%; box-sizing:border-box; }
-        .presence-sources .source-negative { flex-direction:row; align-items:center; }
+        #bermuda { overflow-wrap:anywhere; }
+        #bermuda .bermuda-radars { display:grid; gap:4px; }
+        #bermuda .bermuda-radar { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; min-width:0; }
+        #bermuda .source-negative { display:flex; flex:1; min-width:0; min-height:44px; gap:8px; }
+        #bermuda .bermuda-range { display:flex; flex:none; align-items:center; gap:4px; font-size:12px; }
+        #bermuda .bermuda-range[hidden] { display:none; }
+        #bermuda .bermuda-range input { width:64px; min-width:0; min-height:36px; padding:6px; box-sizing:border-box; }
+        #bermuda .field-note { flex-basis:100%; margin:0 0 4px; }
+        #bermuda fieldset { padding:8px 10px; }
+        #bermuda fieldset > .muted { margin:4px 0 8px; font-size:12px; }
+        .presence-sources .source-negative, #bermuda .source-negative { flex-direction:row; align-items:center; }
         .source-negative input { width:22px; height:22px; min-height:22px; flex:none; }
         .storage-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin:12px 0; }
         .storage-fields label, .storage-trim label { display:flex; flex-direction:column; gap:5px; }
@@ -62,9 +72,9 @@ export const panelView = {
         .card,.panel-card { min-width:0; align-self:start; background:var(--ha-card-background,var(--card-background-color,#fff)); border-radius:12px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 2px 8px rgba(0,0,0,.12)); }
         .panel-card { margin-bottom:14px; }
         .panel-intro .subtitle { margin:0; line-height:1.5; }
-        .global-settings-card > summary { cursor:pointer; min-height:44px; align-content:center; }
-        .global-settings-card > summary h2 { display:inline; }
-        .global-settings-card h2 { margin:0 0 6px; font-size:16px; }
+        .global-settings-card > summary, #bermuda > summary { cursor:pointer; min-height:44px; align-content:center; }
+        .global-settings-card > summary h2, #bermuda > summary h2 { display:inline; }
+        .global-settings-card h2, #bermuda > summary h2 { margin:0 0 6px; font-size:16px; }
         .global-settings-card h3 { margin:0; font-size:15px; }
         .settings-section { border-top:1px solid var(--divider-color); padding-top:12px; margin-top:12px; }
         .settings-section .global-settings { margin:0; }
@@ -312,10 +322,6 @@ export const panelView = {
         <div class="subtitle">Review room presence, label recorded periods, and tune your radars. Your labels take priority over automatic estimates.</div>
         <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         </header>
-        <details id="recorded-data" class="panel-card raw-recordings-card">
-          <summary><h2>Recorded data</h2><span class="section-description">Exact gate readings by radar and day, file sizes and CSV downloads.</span></summary>
-          <div data-raw-content></div>
-        </details>
         <details class="panel-card global-settings-card">
           <summary><h2 id="global-settings-title">Global settings</h2><span class="section-description">Learning schedules, recording storage and timing.</span></summary>
           <section class="settings-section" aria-labelledby="overnight-settings-title">
@@ -329,6 +335,10 @@ export const panelView = {
           <p>Label a room or zone when it is occupied or empty; its radars learn from it. A zone inside a room makes the room occupied. See the README for how labels combine.</p>
         </details>
         <div id="layout"></div>
+        <details id="bermuda" class="panel-card bermuda-card">
+          <summary><h2>Bermuda</h2><span class="section-description">Choose tracked devices, radar areas and optional ranges.</span></summary>
+          <div data-bermuda-content></div>
+        </details>
       </div>`;
     // If a poll landed while a field was focused, it's queued instead of
     // applied (see _load). Once focus leaves the panel, catch up on that
@@ -384,9 +394,9 @@ export const panelView = {
   _draw() {
     this._drawLearningSchedule();
     this._drawStorage();
-    this._drawRecordedData();
     this._drawTimingSettings();
     this._drawLayout();
+    this._drawBermuda();
   },
 
   // Shared per-radar disclosure state is mirrored into every copy.

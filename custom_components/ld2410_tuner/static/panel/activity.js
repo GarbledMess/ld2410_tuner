@@ -59,6 +59,7 @@ export const panelActivity = {
       control
         .closest("#timing-controls")
         ?.querySelector(".settings-action-status") ||
+      control.closest("#bermuda")?.querySelector(".settings-action-status") ||
       this.shadowRoot.querySelector("#snapshot-status");
     if (status) {
       status.textContent = this._actionLabel(control.dataset.action);
@@ -72,6 +73,7 @@ export const panelActivity = {
       {
         learn: "Learning thresholds…",
         recording: "Saving recording setting…",
+        "bermuda-save": "Saving Bermuda settings…",
         "sources-save": "Saving presence sources…",
         "storage-save": "Saving global policy and cleaning history…",
         "storage-trim": "Trimming recorded data…",

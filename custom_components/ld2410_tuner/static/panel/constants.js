@@ -35,6 +35,7 @@ export const SECTION_DEFAULTS = {
   auto: true,
   details: true,
   actions: true,
+  recorded: true,
 };
 
 export const SECTION_DESCRIPTIONS = {
@@ -43,5 +44,6 @@ export const SECTION_DESCRIPTIONS = {
   history: "Review recordings and label past periods.",
   auto: "Presence estimates, confidence and reference updates.",
   details: "Learn, compare and apply gate thresholds.",
+  recorded: "Exact gate readings by day, file sizes and CSV downloads.",
   actions: "Download recordings or remove stored data.",
 };

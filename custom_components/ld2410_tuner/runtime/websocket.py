@@ -14,6 +14,15 @@ def _websocket_routes():
     state = {vol.Required("state"): vol.In(TRAINING_STATES)}
     return [
         ("snapshot", {}, "snapshot", (), None, False),
+        ("bermuda_devices", {}, "bermuda_devices", (), None, False),
+        (
+            "configure_bermuda",
+            {vol.Required("settings"): dict},
+            "configure_bermuda",
+            ("settings",),
+            "invalid_request",
+            False,
+        ),
         (
             "recording_days",
             {

@@ -2,63 +2,72 @@ import { rawCsvPage } from "./recorded_csv.js";
 import { recordedHtml } from "./recorded_view.js";
 
 export const panelRecordedData = {
-  _drawRecordedData() {
-    if (this._recordedData) return;
-    this._recordedData = { devices: [], kind: "move", request: 0, back: [] };
-    const card = this.shadowRoot.querySelector("#recorded-data");
-    card.ontoggle = () => {
-      if (card.open && !this._recordedData.started) void this._rawBootstrap();
-    };
-    this._renderRecordedData();
+  _recordedState(id) {
+    this._recordedData ||= new Map();
+    if (!this._recordedData.has(id))
+      this._recordedData.set(id, {
+        device: id,
+        devices: [],
+        kind: "move",
+        request: 0,
+        back: [],
+      });
+    return this._recordedData.get(id);
   },
 
-  _renderRecordedData() {
-    const container = this.shadowRoot.querySelector("[data-raw-content]");
-    this._updateHtml(
-      container,
-      recordedHtml(
-        this._recordedData,
-        (v) => this._esc(v),
-        this._data?.devices,
-      ),
-    );
+  _recordedHtml(id) {
+    return `<div class="raw-recordings" data-raw-content data-preserve-children>${recordedHtml(this._recordedState(id), (v) => this._esc(v))}</div>`;
+  },
+
+  _wireRecordedData(card, id) {
+    const container = card.querySelector("[data-raw-content]");
     container.onclick = (event) => {
       const button = event.target.closest("button");
-      if (button && !button.disabled) this._rawAction(button.dataset);
+      if (button && !button.disabled) this._rawAction(id, button.dataset);
     };
     container.onchange = (event) => {
-      if (event.target.matches("[data-raw-device]"))
-        void this._rawDays(event.target.value);
       if (event.target.matches("[data-raw-kind]")) {
-        this._recordedData.kind = event.target.value;
-        this._renderRecordedData();
+        this._recordedState(id).kind = event.target.value;
+        this._renderRecordedData(id);
       }
     };
   },
 
-  _rawAction(data) {
-    const s = this._recordedData;
-    if ("rawInventory" in data) void this._rawBootstrap();
-    if ("rawOpen" in data) void this._rawRows(data.rawOpen);
-    if ("rawRefresh" in data) void this._rawRows(s.date);
-    if ("rawNext" in data)
-      void this._rawRows(s.date, s.page.next_offset, "next");
-    if ("rawPrev" in data) void this._rawRows(s.date, s.back.at(-1), "prev");
-    if ("rawDays" in data) void this._rawDays(s.device, Number(data.rawDays));
-    if ("rawDownload" in data) void this._rawDownload();
-    if ("rawCancel" in data) {
-      s.export.cancelled = true;
-      s.exportStatus = "Cancelling export after the current page…";
-      this._renderRecordedData();
+  _renderRecordedData(id) {
+    const s = this._recordedState(id);
+    for (const card of this._placements(id)) {
+      const container = card.querySelector("[data-raw-content]");
+      this._updateHtml(
+        container,
+        recordedHtml(s, (v) => this._esc(v)),
+      );
     }
   },
 
-  async _rawRequest(work) {
-    const s = this._recordedData;
+  _rawAction(id, data) {
+    const s = this._recordedState(id);
+    if ("rawInventory" in data) void this._rawBootstrap(id);
+    if ("rawOpen" in data) void this._rawRows(id, data.rawOpen);
+    if ("rawRefresh" in data) void this._rawRows(id, s.date);
+    if ("rawNext" in data)
+      void this._rawRows(id, s.date, s.page.next_offset, "next");
+    if ("rawPrev" in data)
+      void this._rawRows(id, s.date, s.back.at(-1), "prev");
+    if ("rawDays" in data) void this._rawDays(id, Number(data.rawDays));
+    if ("rawDownload" in data) void this._rawDownload(id);
+    if ("rawCancel" in data) {
+      s.export.cancelled = true;
+      s.exportStatus = "Cancelling export after the current page…";
+      this._renderRecordedData(id);
+    }
+  },
+
+  async _rawRequest(id, work) {
+    const s = this._recordedState(id);
     const request = ++s.request;
     s.loading = true;
     s.error = null;
-    this._renderRecordedData();
+    this._renderRecordedData(id);
     const call = (type, parameters = {}) =>
       this._queueChartCall(async () => {
         if (request !== s.request || !this.isConnected)
@@ -73,19 +82,17 @@ export const panelRecordedData = {
     } finally {
       if (request === s.request) {
         s.loading = false;
-        this._renderRecordedData();
+        this._renderRecordedData(id);
       }
     }
   },
 
-  async _rawBootstrap() {
-    const s = this._recordedData;
+  async _rawBootstrap(id) {
+    const s = this._recordedState(id);
     s.started = true;
-    await this._rawRequest(async (call) => {
+    await this._rawRequest(id, async (call) => {
       const inventory = await call("recording_days");
-      const device =
-        inventory.devices.find((d) => d.id === s.device)?.id ||
-        inventory.devices[0]?.id;
+      const device = id;
       const days = device
         ? await call("recording_days", { device_id: device })
         : null;
@@ -103,26 +110,26 @@ export const panelRecordedData = {
     });
   },
 
-  async _rawDays(device, offset = 0) {
-    const s = this._recordedData;
+  async _rawDays(id, offset = 0) {
+    const s = this._recordedState(id);
     Object.assign(s, {
-      device,
+      device: id,
       days: null,
       page: null,
       date: null,
       back: [],
       exportStatus: null,
     });
-    await this._rawRequest(async (call) => {
-      const days = await call("recording_days", { device_id: device, offset });
+    await this._rawRequest(id, async (call) => {
+      const days = await call("recording_days", { device_id: id, offset });
       return () => {
         s.days = days;
       };
     });
   },
 
-  async _rawRows(date, offset = 0, direction = null) {
-    const s = this._recordedData;
+  async _rawRows(id, date, offset = 0, direction = null) {
+    const s = this._recordedState(id);
     if (date !== s.date)
       Object.assign(s, { page: null, back: [], exportStatus: null });
     s.date = date;
@@ -130,7 +137,7 @@ export const panelRecordedData = {
     const parameters = { device_id: s.device, date, offset, limit: 100 };
     if (direction)
       Object.assign(parameters, { end: prior.end, revision: prior.revision });
-    await this._rawRequest(async (call) => {
+    await this._rawRequest(id, async (call) => {
       const page = await call("recording_rows", parameters);
       return () => {
         if (direction === "next") s.back.push(prior.offset);
@@ -141,16 +148,16 @@ export const panelRecordedData = {
     });
   },
 
-  async _rawDownload() {
-    const s = this._recordedData;
+  async _rawDownload(id) {
+    const s = this._recordedState(id);
     if (s.export || !s.page) return;
     const task = { cancelled: false };
     const { device, date, page } = s;
     s.export = task;
     s.exportStatus = "Preparing CSV…";
-    this._renderRecordedData();
+    this._renderRecordedData(id);
     try {
-      const chunks = await this._rawExportPages(task, {
+      const chunks = await this._rawExportPages(id, task, {
         device_id: device,
         date,
         end: page.end,
@@ -170,11 +177,11 @@ export const panelRecordedData = {
       s.exportStatus = `Export failed: ${error?.message || error}. No partial file was downloaded.`;
     } finally {
       s.export = null;
-      this._renderRecordedData();
+      this._renderRecordedData(id);
     }
   },
 
-  async _rawExportPages(task, parameters) {
+  async _rawExportPages(id, task, parameters) {
     const chunks = [];
     let offset = 0;
     while (offset !== null && !task.cancelled) {
@@ -199,8 +206,9 @@ export const panelRecordedData = {
         throw new Error("Recording page did not advance");
       chunks.push(rawCsvPage(page, offset === 0));
       offset = page.next_offset;
-      this._recordedData.exportStatus = `Exporting ${page.offset + page.rows.length} of ${page.total} rows…`;
-      this._renderRecordedData();
+      this._recordedState(id).exportStatus =
+        `Exporting ${page.offset + page.rows.length} of ${page.total} rows…`;
+      this._renderRecordedData(id);
     }
     return chunks;
   },

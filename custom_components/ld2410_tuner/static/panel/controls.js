@@ -35,6 +35,7 @@ export const panelControls = {
     this._wireComparison(card, id);
     this._wireLearningJob(card, id, d);
     this._wireRecording(card, id, d);
+    this._wireRecordedData(card, id);
     this._wireSources(card, id, d);
     this._wireChartControls(card, id);
     this._restoreDraft(card, id);
@@ -85,6 +86,12 @@ export const panelControls = {
             );
           else this._chartState.get(id).historyLinked = false;
         }
+        if (
+          key === "recorded" &&
+          !willCollapse &&
+          !this._recordedState(id).started
+        )
+          void this._rawBootstrap(id);
         if (key === "chart" && !willCollapse)
           this._maybeFetchChart(id, d, false);
       };

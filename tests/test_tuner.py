@@ -653,12 +653,26 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
         # plus configure_automatic_weight (P2b), less the learn_room and apply_room aliases (P5).
         # Recording inventory, raw day pages, and room charts add three read-only commands; the
         # JSON export's file download adds one.
-        self.assertEqual(len(self.commands), 35)
+        self.assertEqual(len(self.commands), 37)  # + Bermuda discovery and configuration.
         self.assertIn(f"{mod.DOMAIN}/room_series", self.commands)
         self.assertTrue(all(command.admin_only for command in self.commands.values()))
         self.hass.data[mod.DOMAIN] = types.SimpleNamespace(snapshot=lambda: {"reloaded": True})
         await self.call("snapshot")
         self.connection.send_result.assert_called_once_with(7, {"reloaded": True})
+
+    async def test_bermuda_commands_discover_configure_and_report_validation(self):
+        self.runtime.bermuda_devices = unittest.mock.Mock(
+            return_value=[{"entity_id": "sensor.phone_area"}]
+        )
+        self.runtime.configure_bermuda = unittest.mock.Mock(return_value={"devices": {}})
+        await self.call("bermuda_devices")
+        self.connection.send_result.assert_called_with(7, [{"entity_id": "sensor.phone_area"}])
+        await self.call("configure_bermuda", settings={"devices": {}})
+        self.runtime.configure_bermuda.assert_called_once_with({"devices": {}})
+        self.connection.send_result.assert_called_with(7, {"devices": {}})
+        self.runtime.configure_bermuda.side_effect = ValueError("Unknown radar")
+        await self.call("configure_bermuda", settings={"devices": {}})
+        self.connection.send_error.assert_called_with(7, "invalid_request", "Unknown radar")
 
     async def test_automatic_weight_command_configures_and_reports_invalid_values(self):
         settings = sys.modules["tuner_under_test.calibration.settings"]

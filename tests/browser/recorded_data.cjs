@@ -3,11 +3,12 @@ const path = require("node:path");
 const fs = require("node:fs/promises");
 
 module.exports = async function testRecordedData(page, screenshotDir) {
-  const card = page.locator("#recorded-data");
-  assert.equal(await card.count(), 1, "raw recordings have their own card");
+  const radar = page.locator('[data-placement][data-device-id="a"]').first();
+  const card = radar.locator('.subsection[data-section="recorded"]');
+  assert.equal(await card.count(), 1, "raw recordings belong to their radar");
   assert.equal(
-    await card.getAttribute("open"),
-    null,
+    await card.locator(".subsection-head").getAttribute("aria-expanded"),
+    "false",
     "raw recordings start closed",
   );
   await page.evaluate(() => {
@@ -76,10 +77,16 @@ module.exports = async function testRecordedData(page, screenshotDir) {
     };
   });
   try {
-    await card.locator(":scope > summary").click();
+    await page.evaluate(() => {
+      panel._collapsed.delete("a");
+      panel._draw();
+    });
+    assert.equal(await page.locator("#recorded-data").count(), 0);
+    assert.equal(await card.locator("[data-raw-device]").count(), 0);
+    await card.locator(".subsection-head").click();
     await card.locator('[data-raw-open="2026-10-21"]').click();
     await page.waitForFunction(
-      () => panel._recordedData?.page?.rows.length === 2,
+      () => panel._recordedData.get("a")?.page?.rows.length === 2,
     );
     const table = card.locator("[data-raw-values]");
     assert.match(
@@ -105,7 +112,9 @@ module.exports = async function testRecordedData(page, screenshotDir) {
       "unavailable gates remain missing",
     );
     await card.locator("[data-raw-next]").click();
-    await page.waitForFunction(() => panel._recordedData?.page?.offset === 2);
+    await page.waitForFunction(
+      () => panel._recordedData.get("a")?.page?.offset === 2,
+    );
     assert.equal(await table.locator("tbody tr").count(), 1);
     assert.match(
       await table.innerText(),
@@ -120,7 +129,9 @@ module.exports = async function testRecordedData(page, screenshotDir) {
       "snapshot polls do not refetch raw data",
     );
     await card.locator("[data-raw-prev]").click();
-    await page.waitForFunction(() => panel._recordedData?.page?.offset === 0);
+    await page.waitForFunction(
+      () => panel._recordedData.get("a")?.page?.offset === 0,
+    );
     const downloaded = page.waitForEvent("download");
     await card.locator("[data-raw-download]").click();
     const download = await downloaded;
@@ -144,6 +155,24 @@ module.exports = async function testRecordedData(page, screenshotDir) {
       exportCalls.every((m) => m.end === 1792627200 && m.revision === 7),
       "CSV pages pin the same recording snapshot",
     );
+    await page.evaluate(async () => {
+      await panel._rawDays("b");
+    });
+    assert.equal(
+      await page.evaluate(() => panel._recordedData.get("a").page.rows.length),
+      2,
+      "another radar's day navigation preserves this radar's rows",
+    );
+    assert.equal(
+      await page.evaluate(() => panel._recordedData.get("b").device),
+      "b",
+    );
+    assert.equal(await page.evaluate(() => rawCalls.at(-1).device_id), "b");
+    assert.equal(
+      await card.locator(".subsection-head").getAttribute("aria-expanded"),
+      "true",
+      "recorded section remains open after polling",
+    );
     await testCancelledExport(page, card);
     await testCancelledExport(page, card, true);
     await testStaleRead(page, card);
@@ -152,7 +181,7 @@ module.exports = async function testRecordedData(page, screenshotDir) {
       window.rawFailure = true;
     });
     await card.locator("[data-raw-refresh]").click();
-    await page.waitForFunction(() => !!panel._recordedData?.error);
+    await page.waitForFunction(() => !!panel._recordedData.get("a")?.error);
     assert.match(await card.innerText(), /Synthetic raw read failure/);
     assert.equal(
       await table.locator("tbody tr").count(),
@@ -171,7 +200,9 @@ module.exports = async function testRecordedData(page, screenshotDir) {
     });
     await card.locator("[data-raw-refresh]").click();
     await page.waitForFunction(
-      () => !panel._recordedData?.loading && !panel._recordedData?.error,
+      () =>
+        !panel._recordedData.get("a")?.loading &&
+        !panel._recordedData.get("a")?.error,
     );
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 950 });
@@ -191,7 +222,7 @@ module.exports = async function testRecordedData(page, screenshotDir) {
     await page.evaluate(() => {
       panel._hass.callWS = rawOriginalWS;
     });
-    await card.locator(":scope > summary").click();
+    await card.locator(".subsection-head").click();
     await page.setViewportSize({ width: 1400, height: 1000 });
   }
 };
@@ -221,7 +252,7 @@ async function testCancelledExport(page, card, detach = false) {
   if (detach) await page.evaluate(() => panel.remove());
   else await card.locator("[data-raw-cancel]").click();
   await page.evaluate(() => rawRelease());
-  await page.waitForFunction(() => !panel._recordedData.export);
+  await page.waitForFunction(() => !panel._recordedData.get("a").export);
   if (detach) await page.evaluate(() => document.body.append(panel));
   assert.match(await card.innerText(), /Export cancelled/);
   assert.equal(downloads, 0, "cancelling must not download a partial file");
@@ -245,11 +276,8 @@ async function testStaleRead(page, card) {
   });
   await card.locator("[data-raw-refresh]").click();
   await page.waitForFunction(() => !!window.rawRelease);
-  await card.locator("[data-raw-device]").selectOption("archived");
-  await page.waitForFunction(
-    () =>
-      panel._recordedData.device === "archived" && !panel._recordedData.loading,
-  );
+  // Refreshing the days supersedes an in-flight row request for this radar.
+  await page.evaluate(() => panel._rawDays("a"));
   await page.evaluate(async () => {
     rawRelease();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -258,11 +286,10 @@ async function testStaleRead(page, card) {
   assert.equal(
     await card.locator("[data-raw-values]").count(),
     0,
-    "late readings from the previous radar must not appear under the new radar",
+    "late readings must not replace the newer day-list view",
   );
   await card.locator('[data-raw-open="2026-10-21"]').click();
-  await page.waitForFunction(() => panel._recordedData.page?.rows.length === 2);
-  await card.locator("[data-raw-device]").selectOption("a");
-  await card.locator('[data-raw-open="2026-10-21"]').click();
-  await page.waitForFunction(() => panel._recordedData.page?.rows.length === 2);
+  await page.waitForFunction(
+    () => panel._recordedData.get("a").page?.rows.length === 2,
+  );
 }
