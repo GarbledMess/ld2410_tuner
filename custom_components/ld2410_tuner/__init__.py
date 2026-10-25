@@ -41,6 +41,8 @@ from .worker import bridge, startup
 _LOGGER = logging.getLogger(__name__)
 _STARTUP = f"{DOMAIN}_startup"
 STATIC_PATH = Path(__file__).parent / "static"
+FINAL_SAVE_TIMEOUT = 60  # Shutdown must reach the direct history write.
+FINAL_HISTORY_SAVE_TIMEOUT = 30
 
 
 class TunerStore(Store):
@@ -186,7 +188,7 @@ async def _stop_runtime(runtime):
 async def _shutdown(runtime):
     runtime._sampling_stopped = True
     pace.stop()  # Background work is abandoned at its next step, never awaited to the end.
-    await bridge.stop(runtime)  # Close admission and reap numerical children before unload.
+    worker_stopped = await _stop_workers(runtime)
     await engineering.stop(runtime)
     await schedule.stop(runtime)
     if runtime.unsub:
@@ -216,7 +218,44 @@ async def _shutdown(runtime):
             await asyncio.gather(task, return_exceptions=True)
     ingest.stop(runtime, time.time())  # Nothing is observed while stopped.
     from .history import commit
-    from .worker import transactions
 
     await commit.drain(runtime)
-    await transactions.final_save(runtime)
+    await _final_history_save(runtime, worker_stopped=worker_stopped)
+
+
+async def _stop_workers(runtime):
+    """Keep history recovery reachable when numerical cleanup fails."""
+    from .worker.supervisor import CleanupFailed
+
+    try:
+        await bridge.stop(runtime)
+    except CleanupFailed:
+        _LOGGER.exception(
+            "Numerical worker cleanup failed during shutdown; saving history directly"
+        )
+        return False
+    return True
+
+
+async def _final_history_save(runtime, *, worker_stopped=True):
+    """Recover buffered history even when shutdown's worker transaction fails."""
+    from .worker import flushing, transactions
+
+    failed = not worker_stopped
+    if worker_stopped:
+        try:
+            async with asyncio.timeout(FINAL_SAVE_TIMEOUT):
+                await transactions.final_save(runtime)
+        except Exception:
+            failed = True
+            _LOGGER.exception("Final recorded history save failed during shutdown")
+    store = runtime._days
+    if store is None or not (failed or flushing._pending(store)):
+        return
+    try:
+        async with asyncio.timeout(FINAL_HISTORY_SAVE_TIMEOUT):
+            await runtime.hass.async_add_executor_job(store.flush, time.time())
+    except Exception:
+        _LOGGER.warning("Direct recorded history save failed during shutdown", exc_info=True)
+    else:
+        _LOGGER.warning("Recorded history saved by direct day-store flush during shutdown")

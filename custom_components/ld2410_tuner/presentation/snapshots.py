@@ -20,6 +20,7 @@ from ..history import pace, policy, recording, storage
 from ..presence import bermuda, rebuilds, sources
 from ..rooms import jobs as room_jobs
 from ..rooms import layout, seen_by
+from ..runtime import history_save
 from ..runtime.schedule import settings
 from ..worker import bridge, codec
 from ..worker.display import check_export
@@ -115,6 +116,11 @@ def snapshot(runtime) -> dict[str, Any]:
         "bermuda_devices": bermuda.devices(runtime),
         "bermuda_radars": bermuda.radars(runtime),
         "storage": storage.summary(runtime),
+        "history_save": {
+            "saved_at": runtime._history_saved_at,
+            "waiting_since": runtime._history_waiting_since,
+            "stall_seconds": history_save.HISTORY_STALL_SECONDS,
+        },
     }
 
     _snapshot_devices(runtime, registry, result)

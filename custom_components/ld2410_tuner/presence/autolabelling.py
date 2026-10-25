@@ -57,9 +57,11 @@ def migrate_segments(device):
 @callback
 def sample_devices(runtime, _now=None) -> None:
     from ..rooms import room_sources
+    from ..runtime import history_save
 
     _sample_devices(runtime)
     room_sources.sample_rooms(runtime, time.time())
+    history_save.check(runtime)
 
 
 def _classify_auto(runtime, device: dict[str, Any], values: dict[str, float]) -> dict[str, Any]:
@@ -261,9 +263,11 @@ def _feedback_reading(auto):
 async def async_sample_devices(runtime, _now=None):
     """The periodic poll yields between radars and never overlaps another periodic poll."""
     from ..rooms import room_sources
+    from ..runtime import history_save
 
     if getattr(runtime, "_sampling_active", False) or getattr(runtime, "_sampling_stopped", False):
         return
+    history_save.check(runtime)
     runtime._sampling_active = True
     try:
         for device_id in list(runtime.data["devices"]):

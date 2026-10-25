@@ -581,3 +581,89 @@ def test_failed_input_cleanup_quarantines_future_jobs(script):
             await worker.aclose()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("age", [0, 59.999, 60, 120])
+def test_background_age_bounds_foreground_priority(script, monkeypatch, age):
+    """A continuous stream gets priority only until durability's maximum wait."""
+
+    async def run():
+        worker = supervisor.Supervisor(script)
+        clock = [100.0]
+        worker._clock = lambda: clock[0]
+        worker.BACKGROUND_MAX_WAIT = 60
+        entered, release = asyncio.Event(), asyncio.Event()
+        order = []
+
+        async def process(_args):
+            return b"result"
+
+        monkeypatch.setattr(worker, "_process", process)
+
+        async def blocked():
+            entered.set()
+            await release.wait()
+            return ()
+
+        def job(name):
+            async def ready():
+                order.append(name)
+                return ()
+
+            return ready
+
+        first = asyncio.create_task(worker.run(blocked))
+        await entered.wait()
+        background = asyncio.create_task(
+            worker.run_when_available(job("background"), background=True)
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        clock[0] += age
+        foreground = [
+            asyncio.create_task(worker.run_when_available(job(f"foreground-{index}")))
+            for index in range(5)
+        ]
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(first, background, *foreground)
+        expected = [f"foreground-{index}" for index in range(5)]
+        expected.insert(0 if age >= 60 else 5, "background")
+        assert order == expected
+        await worker.aclose()
+
+    asyncio.run(run())
+
+
+def test_supervisor_diagnostics_report_active_and_waiting_age(script, monkeypatch):
+    async def run():
+        worker = supervisor.Supervisor(script)
+        clock = [100.0]
+        worker._clock = lambda: clock[0]
+        entered = asyncio.Event()
+
+        async def blocked():
+            entered.set()
+            await asyncio.Event().wait()
+
+        first = asyncio.create_task(worker.run_when_available(blocked, background=True))
+        await entered.wait()
+        queued = [
+            asyncio.create_task(worker.run_when_available(blocked, background=background))
+            for background in (True, False)
+        ]
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        clock[0] += 75
+        assert worker.diagnostics() == {
+            "active": {"background": True, "running_seconds": 75},
+            "foreground": 1,
+            "background": 1,
+            "oldest_wait_seconds": 75,
+        }
+        await worker.aclose()
+        await asyncio.gather(first, *queued, return_exceptions=True)
+        assert worker.diagnostics()["active"] is None
+
+    asyncio.run(run())

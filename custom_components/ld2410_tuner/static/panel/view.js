@@ -321,6 +321,7 @@ export const panelView = {
       </style>
       <div class="wrap">
         <div id="error" role="alert" class="notice warn panel-card" hidden></div>
+        <div id="history-save-warning" role="alert" class="notice warn panel-card" hidden></div>
         <header class="panel-card panel-intro">
         <h1>LD2410 Tuner <span class="panel-version" aria-label="Loaded panel version" title="Version requested when this panel loaded. Reload the page after updating.">${this._frontendVersion ? `v${this._esc(this._frontendVersion)}` : "Version unavailable"}</span></h1>
         <div class="subtitle">Review room presence, label recorded periods, and tune your radars. Your labels take priority over automatic estimates.</div>
@@ -396,11 +397,24 @@ export const panelView = {
   },
 
   _draw() {
+    this._drawHistorySaveWarning();
     this._drawLearningSchedule();
     this._drawStorage();
     this._drawTimingSettings();
     this._drawLayout();
     this._drawBermuda();
+  },
+
+  _drawHistorySaveWarning() {
+    const warning = this.shadowRoot.querySelector("#history-save-warning");
+    const waitingSince = this._data?.history_save?.waiting_since;
+    const seconds = Date.now() / 1000 - waitingSince;
+    const limit = this._data?.history_save?.stall_seconds ?? 900;
+    const stalled = Number.isFinite(waitingSince) && seconds >= limit;
+    warning.hidden = !stalled;
+    warning.textContent = stalled
+      ? `Recorded history has not been saved for ${Math.floor(seconds / 60)} min. Recent readings are only in memory and would be lost on a restart.`
+      : "";
   },
 
   // Shared per-radar disclosure state is mirrored into every copy.

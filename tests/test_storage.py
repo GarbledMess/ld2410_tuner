@@ -152,6 +152,14 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
     asyncTearDown = harness.RuntimeTests.asyncTearDown
     sample = harness.RuntimeTests.sample
 
+    def test_snapshot_exposes_history_save_progress(self):
+        self.runtime._history_saved_at = NOW - 600
+        self.runtime._history_waiting_since = NOW - 300
+        self.assertEqual(
+            self.runtime.snapshot()["history_save"],
+            {"saved_at": NOW - 600, "waiting_since": NOW - 300, "stall_seconds": 900},
+        )
+
     def finished_sample(self, timestamp):
         from tuner_under_test.history import ingest
 
