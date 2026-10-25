@@ -1,6 +1,7 @@
 """Pure, bounded-file planning: age cleanup first, automatic history before human."""
 
 import json
+import math
 
 from ..const import STORAGE_KEY, STORAGE_MINOR_VERSION, STORAGE_VERSION
 from . import guesses, pace
@@ -221,12 +222,10 @@ def _replacement_days(store, data, cuts):
     for (key, date), ranges in cuts.items():
         pace.rest()
         original = store.day(key, date)
-        updated = cut(original, ranges)
-        old = _day_seconds(original, data["devices"][key])
-        new = _day_seconds(updated, data["devices"][key])
-        automatic += old[0] - new[0]
-        human += old[1] - new[1]
-        changes.append((key, date, updated))
+        removed = _removed_seconds(original, ranges, data["devices"][key])
+        automatic += removed[0]
+        human += removed[1]
+        changes.append((key, date, cut(original, ranges)))
     return changes, automatic, human
 
 
@@ -304,16 +303,30 @@ def _report(before, used, ceiling, now, automatic, human):
 
 
 def _day_seconds(day, device):
+    return _seconds_within(day, device, ((-math.inf, math.inf),))
+
+
+def _removed_seconds(day, ranges, device):
+    """``_day_seconds`` of what cutting ``ranges`` out of ``day`` removes: ``cleanup.cut``
+    keeps the rest of the day exactly, so only the time inside the ranges is read."""
+    from .cleanup import _cut_union
+
+    return _seconds_within(day, device, _cut_union(ranges))
+
+
+def _seconds_within(day, device, windows):
+    """Observed ``[automatic, human-labelled]`` seconds of ``day`` within ``windows``."""
     from . import spans
 
     read = _history_label_reader(device)
     totals = [0.0, 0.0]
-    for span in spans.day_spans(day):
-        if not any(value is not None for value in span.values):
-            continue
-        edges = [span.start, *(t for t in read.edges if span.start < t < span.end), span.end]
-        for low, high in zip(edges, edges[1:], strict=False):
-            totals[read(low) in ("present", "not_present")] += high - low
+    for low, high in windows:
+        for span in spans.day_spans(day, low, high):
+            if not any(value is not None for value in span.values):
+                continue
+            edges = [span.start, *(t for t in read.edges if span.start < t < span.end), span.end]
+            for start, end in zip(edges, edges[1:], strict=False):
+                totals[read(start) in ("present", "not_present")] += end - start
     return totals
 
 

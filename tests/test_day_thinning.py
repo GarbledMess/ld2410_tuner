@@ -3,6 +3,7 @@
 import datetime
 import unittest
 
+import pytest
 import test_tuner  # noqa: F401
 from tuner_under_test.history import budget, cleanup, dayfile, daystore, policy
 
@@ -362,3 +363,46 @@ def test_hourly_planning_reads_no_unchanged_day(tmp_path, monkeypatch):
     store._cache.clear()
     monkeypatch.setattr(store, "day", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
     assert budget.plan(store, data, now + 3600, policy.DEFAULTS) == first
+
+
+def test_removed_time_is_read_from_the_cut_ranges_alone():
+    """What a cut removes, by label, is the time it covers: the day's time before less its
+    time after, without reading every span of the day twice."""
+    import random
+    from array import array
+
+    from tuner_under_test.history import spans
+
+    rnd = random.Random(5)
+    for _ in range(20):
+        rows = 400
+        times = array("d", sorted(rnd.uniform(0, 86_000) for _ in range(rows)))
+        ends = array("d", (min(t + rnd.choice((0.5, 6, 30)), 86_400) for t in times))
+        ends = array(
+            "d", ((min(end, times[i + 1]) if i + 1 < rows else end) for i, end in enumerate(ends))
+        )
+        columns = [bytes(rnd.choice((255, 3, 40)) for _ in range(rows)) for _ in range(18)]
+        day = dayfile.Day(0.0, 86_400.0, times, ends, columns, [])
+        labels = []
+        for start in sorted(rnd.uniform(0, 86_000) for _ in range(6)):
+            labels.append(
+                {
+                    "start": start,
+                    "end": start + rnd.uniform(10, 4000),
+                    "state": rnd.choice(("present", "not_present", "unknown")),
+                }
+            )
+        device = {"history_labels": labels, "training_state": "unknown"}
+        cuts = [
+            (low, low + rnd.uniform(1, 9000))
+            for low in sorted(rnd.uniform(-100, 86_000) for _ in range(3))
+        ]
+        before, after = (
+            budget._day_seconds(day, device),
+            budget._day_seconds(cleanup.cut(day, cuts), device),
+        )
+        removed = budget._removed_seconds(day, cuts, device)
+        assert removed == pytest.approx(
+            [b - a for b, a in zip(before, after, strict=True)], abs=1e-6
+        )
+        assert sum(removed) > 0 or not list(spans.day_spans(day))
