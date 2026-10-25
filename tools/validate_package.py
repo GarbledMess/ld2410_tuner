@@ -107,6 +107,8 @@ RUNTIME_FILES = (
     "presence/references.py",
     "presence/rebuilds.py",
     "presence/reference_training.py",
+    "presence/reference_summary.py",
+    "presence/reference_summary.py",
     "presentation/__init__.py",
     "presentation/charts.py",
     "presentation/export_files.py",

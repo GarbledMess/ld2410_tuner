@@ -278,44 +278,50 @@ def _fold_native(runtime, device_id, label_at, room, automatic, profiles, cutoff
     """Fold indexed observed ranges without materialising full-vector readings."""
     from math import inf
 
-    from ..history import spans, summaries
+    from ..history import spans
+    from .reference_summary import BatchSummary, RebuildFold
 
     cutoff = max(cutoff, getattr(runtime, "_physical_history_start", -inf))
     end = _reference_end(runtime)
     if end <= cutoff:
         return
-    native = {source: references.SpanFold(profile) for source, profile in profiles.items()}
+    native = {source: RebuildFold(profile) for source, profile in profiles.items()}
     readers = [read for read in (label_at, room, automatic) if read is not None]
     edges = _native_edges(readers)
     for date in spans._store_days(runtime, device_id, cutoff, end):
         pace.rest()
-        summary = summaries.of(runtime, device_id, date)
-        if summary is not None:
-            _fold_summary(summary, cutoff, end, edges, (label_at, room, automatic), native)
+        day = runtime._days.day(device_id, date, until=getattr(runtime, "_history_until", None))
+        if day is not None:
+            _fold_batch(BatchSummary(day), cutoff, end, edges, (label_at, room, automatic), native)
     for fold in native.values():
-        fold.close()
+        fold.finish()
 
 
-def _fold_summary(summary, cutoff, end, edges, readers, native):
-    from ..history.spans import Span
-
-    for start, stop in summary.coverage_ranges(cutoff, end):
-        cell = Span(start, stop, (), "event")
-        for low, high in _native_pieces(cell, edges):
-            found = _span_evidence(*readers, low)
-            if found:
-                _fold_summary_piece(summary, low, high, found, native)
-
-
-def _fold_summary_piece(summary, start, end, found, native):
+def _fold_batch(summary, cutoff, end, edges, readers, native):
     from math import floor
 
-    while start < end:
-        stop = min(end, (floor(start / references.PERIOD_SECONDS) + 1) * references.PERIOD_SECONDS)
-        histograms = summary.histograms(start, stop)
+    from ..history.spans import Span
+
+    pieces = []
+    for start, stop in summary.coverage_ranges(cutoff, end):
+        for low, high in _native_pieces(Span(start, stop, (), "event"), edges):
+            found = _span_evidence(*readers, low)
+            while found and low < high:
+                after = min(
+                    high, (floor(low / references.PERIOD_SECONDS) + 1) * references.PERIOD_SECONDS
+                )
+                pieces.append((low, after, found))
+                low = after
+    # Bound temporary histogram/snapshot memory even for heavily edited label histories.
+    for first in range(0, len(pieces), 128):
+        _fold_batch_pieces(summary, pieces[first : first + 128], native)
+
+
+def _fold_batch_pieces(summary, pieces, native):
+    histograms = summary.histograms_many([(low, high) for low, high, _ in pieces])
+    for (low, high, found), bins in zip(pieces, histograms, strict=True):
         for state, source, confidence in found:
-            native[source].add_histograms(start, stop, histograms, state, source, confidence)
-        start = stop
+            native[source].add_histograms(low, high, bins, state, source, confidence)
 
 
 def observe_span(
