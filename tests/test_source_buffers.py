@@ -132,7 +132,10 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
         assert absent[0][2:] == ("not_present", 18, EXTERNAL)
 
     def test_or_handoff_between_boolean_and_bermuda_is_continuous(self):
-        self.configure(sources=[boolean(), bermuda()])
+        self.configure()
+        # Legacy input migrates centrally; the editor now accepts only Boolean sources.
+        self.device["presence_sources"]["sources"].append(bermuda())
+        sys.modules["tuner_under_test.presence.bermuda"].migrate(self.runtime)
         self.entity("sensor.phone_area", "Office", area_id="office")
         for second in (0, 6, 12):
             self.tick(second)

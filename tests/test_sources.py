@@ -38,16 +38,30 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.states[entity_id] = types.SimpleNamespace(state=state, attributes=attributes)
 
     def configure(self, entries=None, negative=False):
-        return self.runtime.configure_presence_sources(
+        entries = entries or [boolean()]
+        legacy = [entry for entry in entries if entry["kind"] == "bermuda"]
+        config = self.runtime.configure_presence_sources(
             "a",
             {
-                "sources": entries or [boolean()],
+                "sources": [entry for entry in entries if entry["kind"] != "bermuda"],
                 "mark_not_present": negative,
                 "confidence": 90,
                 "start_buffer_seconds": 0,
                 "end_buffer_seconds": 0,
             },
         )
+        # Exercise preserved legacy reading semantics through central assignments.
+        self.runtime.data["bermuda"] = {
+            "devices": {
+                entry["entity_id"]: {
+                    "radars": {
+                        "a": {"max_distance": entry.get("max_distance"), "area": entry["area"]}
+                    }
+                }
+                for entry in legacy
+            }
+        }
+        return config
 
     def test_boolean_on_records_automatic_not_human_and_survives_a_save(self):
         self.configure()
@@ -153,7 +167,7 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
             ("inf", None, "unknown", None),
         ):
             self.entity("sensor.renamed_distance", value)
-            result = sources.read(self.hass, sources.settings(self.device))
+            result = sources._read_sources(self.runtime, self.device)
             assert result["state"] == label
             assert result["readings"][0]["present"] is present
             assert result["readings"][0]["distance"] == distance
@@ -164,7 +178,7 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.entity("sensor.renamed_distance", "4.1")
         for area in ({"state": "Office", "area_id": "office"}, {"state": "unavailable"}):
             self.entity("sensor.phone_area", area.pop("state"), **area)
-            (reading,) = sources.read(self.hass, sources.settings(self.device))["readings"]
+            (reading,) = sources._read_sources(self.runtime, self.device)["readings"]
             assert "distance" not in reading
 
     def test_bermuda_missing_distance_is_unknown_but_area_mismatch_is_false(self):
@@ -268,13 +282,14 @@ def test_invalid_settings_are_rejected(change):
 @pytest.mark.parametrize("distance", [0.1, 1, 3.5, 100])
 def test_bermuda_max_distance_is_preserved(distance):
     source = {**bermuda(), "max_distance": distance}
-    assert sources.validate({**sources.DEFAULTS, "sources": [source]})["sources"] == [source]
+    sources._validate_source(source)
+    assert source["max_distance"] == distance
 
 
 @pytest.mark.parametrize("distance", [0, -1, 100.1, float("nan"), float("inf"), True, "3", None])
 def test_invalid_bermuda_max_distance_is_rejected(distance):
     with pytest.raises(ValueError):
-        sources.validate({**sources.DEFAULTS, "sources": [{**bermuda(), "max_distance": distance}]})
+        sources._validate_source({**bermuda(), "max_distance": distance})
 
 
 def test_boolean_max_distance_is_rejected():

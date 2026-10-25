@@ -1,0 +1,9 @@
+{
+  "source_paths": ["custom_components", "tests"],
+  "domains": ["ld2410_tuner"],
+  "command_timeout": 900,
+  "commands": {
+    "bermuda": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/bermuda_checks.py",
+    "ha_logs": "chroot /work/os /bin/sh -c 'docker logs ha-lab 2>&1 | grep -i -E \"ld2410|error|traceback\" | tail -40'"
+  }
+}

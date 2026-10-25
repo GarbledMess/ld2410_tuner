@@ -34,8 +34,12 @@ export const panelView = {
         #bermuda { overflow-wrap:anywhere; }
         #bermuda .bermuda-radars { display:grid; gap:4px; }
         #bermuda .bermuda-radar { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; min-width:0; }
-        #bermuda .source-negative { display:flex; flex:1; min-width:0; min-height:44px; gap:8px; }
+        #bermuda .source-negative { display:flex; flex:1 0 145px; min-width:0; min-height:44px; gap:8px; }
         #bermuda .bermuda-range { display:flex; flex:none; align-items:center; gap:4px; font-size:12px; }
+        #bermuda .bermuda-area { max-width:100%; }
+        #bermuda .bermuda-area label { display:flex; align-items:center; gap:4px; font-size:12px; white-space:nowrap; }
+        #bermuda .bermuda-area select { width:auto; max-width:160px; min-height:36px; }
+        #bermuda .bermuda-area[hidden] { display:none; }
         #bermuda .bermuda-range[hidden] { display:none; }
         #bermuda .bermuda-range input { width:64px; min-width:0; min-height:36px; padding:6px; box-sizing:border-box; }
         #bermuda .field-note { flex-basis:100%; margin:0 0 4px; }
@@ -336,7 +340,7 @@ export const panelView = {
         </details>
         <div id="layout"></div>
         <details id="bermuda" class="panel-card bermuda-card">
-          <summary><h2>Bermuda</h2><span class="section-description">Choose tracked devices, radar areas and optional ranges.</span></summary>
+          <summary><h2>Bermuda</h2><span class="section-description">Choose tracked devices, target areas and optional ranges.</span></summary>
           <div data-bermuda-content></div>
         </details>
       </div>`;

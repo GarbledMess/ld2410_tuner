@@ -38,7 +38,7 @@ export const panelSources = {
     const full = (config.sources || []).length >= 16;
     const limitId = `source-limit-${Array.from(groupId || id, (char) => char.codePointAt(0).toString(16)).join("-")}`;
     const intro = groupId
-      ? "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor to label this whole room. Their output is stored as read-only sensor room labels; your manual room labels always win."
+      ? "Use camera human detection or any on/off or true/false entity to label this whole room. Configure tracked phones and watches in the Bermuda section. Their output is stored as read-only sensor room labels; your manual room labels always win."
       : "Use camera human detection or any on/off or true/false entity. Configure tracked phones and watches in the Bermuda section below the radar cards. Choose independent sources, not this radar's own presence output.";
     return `<details class="presence-sources" ${open}><summary>${groupId ? "Room presence sources" : this._inAnyGroup(id) ? "Radar presence sources (move these to its room)" : "Automatic labels from other entities"}<span class="section-description">Create presence labels from cameras and other sensors.</span></summary>
       <p class="muted">${intro} Any positive source starts or continues a presence period.</p>
@@ -78,7 +78,7 @@ export const panelSources = {
     return `<div class="muted">${this._esc(source.entity_id)}: ${this._esc(label)}</div>`;
   },
 
-  _sourceAreaHtml(saved = "") {
+  _sourceAreaHtml(saved = "", placeholder = "Choose an area") {
     const areas = Object.entries(this._roomsData().areas).sort((a, b) =>
       a[1].localeCompare(b[1]),
     );
@@ -86,18 +86,17 @@ export const panelSources = {
       areas.find(([id]) => id === saved)?.[0] ??
       areas.find(([, name]) => areaNameKey(name) === areaNameKey(saved))?.[0] ??
       saved;
-    const options = [["", "Choose an area"], ...areas];
+    const options = [["", placeholder], ...areas];
     if (selected && !areas.some(([id]) => id === selected))
-      options.push([selected, `${saved} (not a current area)`]);
+      options.push([selected, `${saved} (unknown area)`]);
     return `<label>Target area<select data-source-area required>${options.map(([id, name]) => `<option value="${this._esc(id)}" ${id === selected ? "selected" : ""}>${this._esc(name)}</option>`).join("")}</select></label>`;
   },
 
   _sourceRowHtml(id, source, index, room = false) {
     const listId = `source-options-${id}-${index}`;
     return `<fieldset class="source-row" data-source-row><legend>Source ${index + 1}</legend><div class="storage-fields">
-      <label>Type<select data-source-kind><option value="boolean" ${source.kind !== "bermuda" ? "selected" : ""}>Boolean entity</option>${room || source.kind === "bermuda" ? `<option value="bermuda" ${source.kind === "bermuda" ? "selected" : ""}>Bermuda area</option>` : ""}</select></label>
-      ${sourcePickerHtml((value) => this._esc(value), listId, source.entity_id)}
-      ${source.kind === "bermuda" ? `${this._sourceAreaHtml(source.area)}<label>Max distance (m)<input data-source-max-distance type="number" min="0.1" max="100" step="0.1" placeholder="Any" value="${this._esc(source.max_distance ?? "")}"></label>` : ""}</div>
+      <label>Type<select data-source-kind><option value="boolean">Boolean entity</option></select></label>
+      ${sourcePickerHtml((value) => this._esc(value), listId, source.entity_id)}</div>
       <button type="button" data-source-remove="${index}">Remove source</button></fieldset>`;
   },
 

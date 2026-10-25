@@ -124,24 +124,21 @@ module.exports = async function testSourcePicker(page, screenshotDir) {
   await input.fill("test_69");
   assert.equal(await options.count(), 1);
 
-  // A legacy Bermuda field still offers only Area sensors.
-  await page.evaluate(() => {
-    const form = panel.shadowRoot.querySelector(
-      '[data-device-id="a"] .presence-sources',
-    );
-    panel._sourceDrafts.set("a", panel._readSources(form));
-    panel._sourceDrafts.get("a").sources[0].kind = "bermuda";
-    panel._draw();
-  });
+  // Bermuda assignments now live exclusively in the dedicated section.
+  assert.deepEqual(
+    await row
+      .locator("[data-source-kind] option")
+      .evaluateAll((options) => options.map((option) => option.value)),
+    ["boolean"],
+  );
   await input.fill("phone");
-  assert.equal(await options.count(), 1);
   assert.equal(
-    await options.first().getAttribute("data-source-option"),
-    "sensor.phone_area",
+    await options.count(),
+    0,
+    "Area sensors are no longer suggested in source editors",
   );
   await input.fill("camera");
-  assert.equal(await options.count(), 0);
-  await row.locator("[data-source-kind]").selectOption("boolean");
+  assert.equal(await options.count(), 1);
 
   const viewport = page.viewportSize();
   await page.setViewportSize({ width: 390, height: 844 });
