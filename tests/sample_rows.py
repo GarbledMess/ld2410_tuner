@@ -38,7 +38,8 @@ def cells_of(rows, step=STEP):
 
 def baseline_of(rows, quiet_at):
     """The radar's empty baseline from the readings of ``rows`` where ``quiet_at``."""
-    return event_attribution._baseline(cells_of(rows), quiet_at)
+    cells = cells_of(rows)
+    return event_attribution._baseline(cells, [quiet_at(cell[0]) for cell in cells])
 
 
 def attribute(rows, episode, base, radar_label_at):
@@ -49,13 +50,18 @@ def attribute(rows, episode, base, radar_label_at):
     return {"state": result["state"], "confidence": result["confidence"]}
 
 
+def episodes_of(cells, read):
+    """The runs of contiguous ``cells`` that ``read`` answers Present at."""
+    labels = [read(cell[0]) for cell in cells]
+    return [cells[first:stop] for first, stop in event_attribution._episodes(cells, labels)]
+
+
 def found_of(radar, rows, radar_label_at, group_truths):
     """``radar``'s attributions over each group's episodes, as ``radar_attribution`` finds
     them (``weighted_member_target``'s ``found``)."""
     cells = cells_of(rows)
-    base = event_attribution._baseline(
-        cells, attribution.quiet_reader(radar_label_at, group_truths)
-    )
+    quiet_at = attribution.quiet_reader(radar_label_at, group_truths)
+    base = event_attribution._baseline(cells, [quiet_at(cell[0]) for cell in cells])
     return {
         group: {
             radar: [
@@ -63,7 +69,7 @@ def found_of(radar, rows, radar_label_at, group_truths):
                     (episode[0][0], event_attribution._closed(episode[-1][1])),
                     event_attribution._decide(episode, radar_label_at, base),
                 )
-                for episode in event_attribution._episodes(cells, read)
+                for episode in episodes_of(cells, read)
             ]
         }
         for group, read in group_truths.items()

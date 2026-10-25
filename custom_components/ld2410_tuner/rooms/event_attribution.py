@@ -31,9 +31,13 @@ class Quiet:
         return min(100, bisect_right(self.cumulative, rank)) + ATTRIBUTION_MARGIN
 
 
+REST_CELLS = 4096  # Cells between ``pace.rest`` calls: each reads the thread's clock.
+
+
 def _cells(physical, edges):
-    for cell in physical:
-        pace.rest()  # Background work: Seen by and learning share the CPU politely.
+    for count, cell in enumerate(physical):
+        if not count % REST_CELLS:
+            pace.rest()  # Background work: Seen by and learning share the CPU politely.
         cuts = [
             cell.start,
             *edges[bisect_right(edges, cell.start) : bisect_left(edges, cell.end)],
@@ -43,11 +47,34 @@ def _cells(physical, edges):
             yield low, high, cell.values
 
 
+def _places(cells, edges):
+    """Where each cell starts among ``edges``: the stretch between two edges, and whether it
+    starts on the edge itself. Cells of one place read alike from every reader here."""
+    places = []
+    for low, _high, _values in cells:
+        index = bisect_right(edges, low)
+        places.append((index, index > 0 and edges[index - 1] == low))
+    return places
+
+
+def _read_cells(read, cells, places):
+    """``read`` at each cell's start, read once for each run of cells in one place: own
+    labels, room truth and the estimate can change their answer only at the edges."""
+    answers, last, answer = [], None, None
+    for (low, _high, _values), place in zip(cells, places, strict=True):
+        if place != last:
+            answer, last = read(low), place
+        answers.append(answer)
+    return answers
+
+
 def _baseline(cells, quiet):
+    """The radar's quiet readings (``quiet``: each cell's answer) as tail-quantile bins."""
     bins = [[0.0] * 101 for _ in HISTORY_KEYS]
-    for low, high, values in cells:
-        pace.rest()
-        if quiet(low):
+    for count, ((low, high, values), still) in enumerate(zip(cells, quiet, strict=True)):
+        if not count % REST_CELLS:
+            pace.rest()
+        if still:
             for histogram, value in zip(bins, values, strict=True):
                 if value is not None:
                     histogram[ceil(value)] += high - low
@@ -58,21 +85,24 @@ def _baseline(cells, quiet):
     }
 
 
-def _episodes(cells, read):
-    current = []
-    for cell in cells:
-        pace.rest()
-        low, high, values = cell
-        label = read(low)
-        usable = any(value is not None for value in values)
-        present = usable and label is not None and label[0] == "present"
-        if current and (not present or current[-1][1] != low):
-            yield current
-            current = []
-        if present:
-            current.append(cell)
-    if current:
-        yield current
+def _episodes(cells, labels):
+    """``(first, stop)`` cell indices of each run of contiguous cells read Present."""
+    first = None
+    for index, ((low, _high, values), label) in enumerate(zip(cells, labels, strict=True)):
+        if not index % REST_CELLS:
+            pace.rest()
+        present = (
+            label is not None
+            and label[0] == "present"
+            and any(value is not None for value in values)
+        )
+        if first is not None and (not present or cells[index - 1][1] != low):
+            yield first, index
+            first = None
+        if present and first is None:
+            first = index
+    if first is not None:
+        yield first, len(cells)
 
 
 def _sustained(cells, gate, ceiling):
@@ -90,7 +120,12 @@ def _sustained(cells, gate, ceiling):
 
 
 def _decide(cells, own, baseline):
-    states = {own(low) for low, _high, _values in cells}
+    return _decision({own(low) for low, _high, _values in cells}, cells, baseline)
+
+
+def _decision(states, cells, baseline):
+    """An episode's answer: from the radar's own labels (``states``) inside it, else whether
+    it read sustained above its quiet baseline."""
     for state, answer in (("present", "yes"), ("not_present", "no")):
         if state in states:
             return {"state": answer, "confidence": 1.0, "inferred": False}
@@ -126,22 +161,39 @@ def _found(runtime, device_id, edges, reads, own):
     """The expensive part: cells, the quiet baseline and every group's episode decisions."""
     from . import attribution
 
-    physical = spans.events(  # Within the job's window (Seen by may bound it to recent hours).
-        runtime,
-        device_id,
-        start=getattr(runtime, "_attribution_since", 0) or float("-inf"),
-        end=getattr(runtime, "_attribution_until", float("inf")),
-    )
-    cells = list(_cells(physical, edges))
-    baseline = _baseline(cells, attribution.quiet_reader(own, reads))
+    cells = list(_cells(_physical(runtime, device_id), edges))
+    places = _places(cells, edges)
+    quiet = _read_cells(attribution.quiet_reader(own, reads), cells, places)
+    baseline = _baseline(cells, quiet)
+    owned = _read_cells(own, cells, places)
     found = {
         group: [
-            ((episode[0][0], _closed(episode[-1][1])), _decide(episode, own, baseline))
-            for episode in _episodes(cells, read)
+            (
+                (cells[first][0], _closed(cells[stop - 1][1])),
+                _decision(set(owned[first:stop]), cells[first:stop], baseline),
+            )
+            for first, stop in _episodes(cells, _read_cells(read, cells, places))
         ]
         for group, read in reads.items()
     }
     return array("d", (low for low, _high, _values in cells)), found
+
+
+def _physical(runtime, device_id):
+    """The radar's spans in the job's window (Seen by bounds it to recent hours). A job's view
+    keeps the latest radar's: its human-truth and full-truth attributions read the same."""
+    since = getattr(runtime, "_attribution_since", 0) or float("-inf")
+    until = getattr(runtime, "_attribution_until", float("inf"))
+    if getattr(runtime, "_history_until", None) is None:
+        return spans.events(runtime, device_id, start=since, end=until)
+    key = device_id, since, until
+    kept = runtime.__dict__.get("_native_physical")
+    if kept is None or kept[0] != key:
+        kept = runtime._native_physical = (
+            key,
+            list(spans.events(runtime, device_id, start=since, end=until)),
+        )
+    return kept[1]
 
 
 def calculate(runtime, device_id, saved, human, others):

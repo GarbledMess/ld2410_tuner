@@ -445,6 +445,7 @@ def release(views) -> None:
     for view in views:
         getattr(view, "_native_found_job", {}).clear()
         getattr(view, "_attribution_guesses", {}).clear()
+        view.__dict__.pop("_native_physical", None)
 
 
 def _targets(device_id, learned, own, automatic=False):

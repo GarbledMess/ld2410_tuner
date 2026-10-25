@@ -1,10 +1,10 @@
 """Attribution: did this radar see the occupied episode, compared with its own empty baseline."""
 
 import test_tuner  # noqa: F401  (registers tuner_under_test)
-from sample_rows import attribute, baseline_of, cells_of, found_of
+from sample_rows import attribute, baseline_of, cells_of, episodes_of, found_of
 from tuner_under_test.calibration import constants
 from tuner_under_test.const import HISTORY_KEYS
-from tuner_under_test.rooms import attribution, event_attribution
+from tuner_under_test.rooms import attribution
 
 QUIET = [i % 10 for i in range(100)]  # 99th percentile 9, so "above" means > 9 + margin.
 
@@ -21,7 +21,7 @@ def episodes(truth_at, times):
     """Each episode's first and last reading time: runs of recorded readings (each held until
     the next, at most a sample) under present truth."""
     cells = cells_of([(t, {"g0_move": 1}, "unknown") for t in times])
-    return [(run[0][0], run[-1][0]) for run in event_attribution._episodes(cells, truth_at)]
+    return [(run[0][0], run[-1][0]) for run in episodes_of(cells, truth_at)]
 
 
 def decide(values, base_values=QUIET, label_at=unlabelled):
