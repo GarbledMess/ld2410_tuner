@@ -596,12 +596,18 @@ async def _drain(runtime):
 
 async def flush(runtime, *, locked=False):
     """Production flush route; callers already owning storage may retain that lock."""
+    from ..runtime import history_save
+
     if runtime._days is None or not _pending(runtime._days):
+        history_save.completed(runtime)
         return 0
     if locked:
-        return await _drain(runtime)
-    async with runtime._storage_lock:
-        return await _drain(runtime) if _pending(runtime._days) else 0
+        written = await _drain(runtime)
+    else:
+        async with runtime._storage_lock:
+            written = await _drain(runtime) if _pending(runtime._days) else 0
+    history_save.completed(runtime)
+    return written
 
 
 def _pending(store):

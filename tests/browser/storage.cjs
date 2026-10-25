@@ -2,6 +2,60 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 
 module.exports = async function testStorage(page, screenshotDir) {
+  const originalSize = page.viewportSize();
+  await page.evaluate(async () => {
+    window.beforeHistorySave = structuredClone(fixture.history_save);
+    window.historySaveDateNow = Date.now;
+    const now = Date.now();
+    Date.now = () => now;
+    fixture.history_save = {
+      saved_at: Date.now() / 1000 - 600,
+      waiting_since: Date.now() / 1000 - 899,
+      stall_seconds: 900,
+    };
+    await panel._load();
+  });
+  await page.evaluate(async () => {
+    const settings = panel.shadowRoot.querySelector(".global-settings-card");
+    window.historySaveSettingsOpen = settings.open;
+    settings.open = true;
+    window.historySaveStorageOpen = panel._storageOpen;
+    panel.shadowRoot.querySelector("#storage-controls details").open = true;
+    panel.shadowRoot.querySelector('[data-storage="human_days"]').focus();
+    fixture.history_save.waiting_since = Date.now() / 1000 - 900;
+    await panel._load();
+  });
+  assert.equal(await page.evaluate(() => panel._isEditing()), true);
+  const historyWarning = page.locator("#history-save-warning");
+  assert.equal(await historyWarning.isVisible(), true);
+  assert.equal(
+    await historyWarning.innerText(),
+    "Recorded history has not been saved for 15 min. Recent readings are only in memory and would be lost on a restart.",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await historyWarning.isVisible(), true);
+  const warningBox = await historyWarning.boundingBox();
+  assert.ok(warningBox.x >= 0 && warningBox.x + warningBox.width <= 390);
+  await page.evaluate(async () => {
+    fixture.history_save.waiting_since = Date.now() / 1000 - 899;
+    await panel._load();
+  });
+  assert.equal(await historyWarning.isVisible(), false);
+  await page.evaluate(async () => {
+    fixture.history_save.waiting_since = null;
+    await panel._load();
+  });
+  assert.equal(await historyWarning.isVisible(), false);
+  await page.evaluate(async () => {
+    panel.shadowRoot.activeElement.blur();
+    panel._storageOpen = historySaveStorageOpen;
+    panel.shadowRoot.querySelector(".global-settings-card").open =
+      historySaveSettingsOpen;
+    fixture.history_save = beforeHistorySave;
+    Date.now = historySaveDateNow;
+    await panel._load();
+  });
+  await page.setViewportSize(originalSize);
   await page.evaluate(async () => {
     window.storageWS = panel._hass.callWS;
     window.beforeStorage = structuredClone(fixture);

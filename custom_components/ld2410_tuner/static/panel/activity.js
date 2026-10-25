@@ -154,6 +154,7 @@ export const panelActivity = {
     const timer = this._loaded ? null : setTimeout(show, 0);
     try {
       this._data = await this._call("snapshot");
+      this._drawHistorySaveWarning();
       this._ensureComparisons();
       this._refreshRecoveryProgress();
       this._refreshLearningProgress();

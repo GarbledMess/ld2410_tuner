@@ -117,6 +117,7 @@ RUNTIME_FILES = (
     "presentation/snapshots.py",
     "runtime/__init__.py",
     "runtime/coordinator.py",
+    "runtime/history_save.py",
     "runtime/schedule.py",
     "runtime/tasks.py",
     "runtime/discovery.py",

@@ -1,5 +1,16 @@
 # Release notes
 
+## 1.31.1 - unreleased
+
+- Recorded history is far harder to lose when saving stalls. On one install a save never
+  finished, leaving five hours of readings in memory only, and the restart for an update
+  lost them, with nothing in the log. Saves of recorded history can no longer be held back
+  indefinitely by other work queued for the worker: once one has waited a minute, it runs
+  as soon as the current job ends. At shutdown, readings still in memory are written
+  straight to disk if the normal final save fails or takes over a minute.
+- If recorded history still goes unsaved for 15 minutes, the panel shows a warning, and the
+  log says so once with details of what saving is waiting for (and again when it resumes).
+
 ## 1.31.0 - 2026-10-25
 
 - Much less work on Home Assistant's main loop and in the background, with exactly the

@@ -25,7 +25,7 @@ from ..rooms import jobs as room_jobs
 from ..rooms import learning as room_learning
 from ..rooms import room_labels, room_sources
 from ..worker import priority
-from . import discovery, schedule
+from . import discovery, history_save, schedule
 
 STATE_SAVE_SECONDS = 300  # Recording state saves; history goes to the day logs.
 
@@ -104,10 +104,14 @@ class TunerRuntime:
         self._save_dirty = False
         self._flush_task = None
         self._state_saved = None
+        self._history_saved_at = time.time()
+        self._history_waiting_since = None
+        self._history_stall_warned = False
 
     def _schedule_flush(self) -> None:
         """Append recorded changes to the day logs shortly (executor): recording needs no JSON
         save, only its log appended."""
+        history_save.check(self)
         if self._flush_task and not self._flush_task.done():
             return
         self._flush_task = self.hass.async_create_background_task(

@@ -13,6 +13,7 @@ import os
 import signal
 import subprocess  # nosec B404
 import sys
+import time
 from pathlib import Path
 
 from .diagnostics import Observation, safely
@@ -178,6 +179,9 @@ class Supervisor:
         self.max_pending = max_pending
         self._queue, self._waiting = [], set()
         self._active = None
+        self._active_details = None
+        self._clock = time.monotonic
+        self.BACKGROUND_MAX_WAIT = 60
         self._jobs, self._cancelled = set(), set()
         self._closed, self._closing = False, None
         self._failure = None
@@ -226,13 +230,41 @@ class Supervisor:
         self._queue[:] = [ticket for ticket in self._queue if not ticket[1].done()]
         if not self._queue:
             return
-        ticket = next((item for item in self._queue if not item[0]), self._queue[0])
+        ticket = self._next_ticket()
         self._queue.remove(ticket)
         self._active = ticket[1]
+        self._active_details = ticket[0], self._clock()
         ticket[1].set_result(None)
 
+    def _next_ticket(self):
+        now = self._clock()
+        aged = [
+            ticket
+            for ticket in self._queue
+            if ticket[0] and now - ticket[2] >= self.BACKGROUND_MAX_WAIT
+        ]
+        if aged:
+            return min(aged, key=lambda ticket: ticket[2])
+        return next((ticket for ticket in self._queue if not ticket[0]), self._queue[0])
+
+    def diagnostics(self):
+        """Describe admission without retaining history inputs or exposing job arguments."""
+        now = self._clock()
+        queue = [ticket for ticket in self._queue if not ticket[1].done()]
+        background = sum(ticket[0] for ticket in queue)
+        active = None
+        if self._active_details is not None:
+            priority, started = self._active_details
+            active = {"background": priority, "running_seconds": max(0, now - started)}
+        return {
+            "active": active,
+            "foreground": len(queue) - background,
+            "background": background,
+            "oldest_wait_seconds": max((max(0, now - ticket[2]) for ticket in queue), default=0),
+        }
+
     async def _execute(self, prepare, finish, consume, background):
-        ticket = background, asyncio.get_running_loop().create_future()
+        ticket = background, asyncio.get_running_loop().create_future(), self._clock()
         self._queue.append(ticket)
         self._dispatch()
         try:
@@ -253,6 +285,7 @@ class Supervisor:
                 self._queue.remove(ticket)
             if self._active is ticket[1]:
                 self._active = None
+                self._active_details = None
             self._dispatch()
 
     async def _owned(self, prepare, finish, consume):
