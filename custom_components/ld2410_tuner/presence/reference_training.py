@@ -341,12 +341,11 @@ def observe_spans(runtime, device, items):
     bootstrap independent references. ``values`` is a complete HISTORY_KEYS vector; missing
     gates are None.
     """
-    from ..history.label_lookup import _history_label_reader
     from ..history.spans import Span
 
     # Live room evidence is Empty only (``_room_quiet``), which changes only at room label
     # edges; attributed Present enters through ``rebuild_human``, never per poll.
-    edges = sorted({*_native_edges([_history_label_reader(device)]), *_room_edges(runtime)})
+    edges = _live_label_edges(runtime, device)
     fold = None  # Made on the first evidence: no evidence leaves the profile untouched.
     for start, end, values, label, confidence, external in items:
         for low, high in _native_pieces(Span(start, end, tuple(values), "event"), edges):
@@ -356,6 +355,19 @@ def observe_spans(runtime, device, items):
                 fold.add(low, high, _native_values(values), *found)
     if fold is not None:
         fold.close()
+
+
+def _live_label_edges(runtime, device):
+    """Keep label indexes outside persisted devices; live expiry is an indexed edge. Room
+    edges are read afresh: sensor labels extend without any revision changing."""
+    from ..history.label_lookup import _history_label_reader
+
+    caches = getattr(runtime, "_reference_label_readers", None)
+    if caches is None:
+        caches = runtime._reference_label_readers = {}
+    cache = caches.setdefault(_device_id(runtime, device), {})
+    reader = _history_label_reader(device, cache=cache)
+    return sorted({*reader.edges, *_room_edges(runtime)})
 
 
 def _room_edges(runtime):

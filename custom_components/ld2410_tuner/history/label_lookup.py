@@ -6,9 +6,21 @@ from bisect import bisect_right
 from collections import defaultdict
 
 
-def _history_label_reader(device, groups=True):
+def _history_label_reader(device, groups=True, *, cache=None):
     """Resolve labels once, keeping last-label-wins semantics in logarithmic time."""
-    return index_reader(label_index(device, groups))
+    if cache is None:
+        return index_reader(label_index(device, groups))
+    signature = (
+        device.get("label_revision", 0),
+        device.get("training_label_start"),
+        device.get("training_expires_at"),
+        device.get("training_state", "unknown"),
+    )
+    saved = cache.get(groups)
+    if saved is None or saved[0] is not device or saved[1] != signature:
+        saved = device, signature, index_reader(label_index(device, groups))
+        cache[groups] = saved
+    return saved[2]
 
 
 def label_index(device, groups=True):
