@@ -104,6 +104,18 @@ class Day:
     def vector(self, index):
         return tuple(_read(column, index) for column in self.columns)
 
+    def vectors(self, first, after):
+        """``vector`` of each row in ``[first, after)``: native byte columns are read a row
+        at a time in C, about ten times faster than one value at a time."""
+        columns = self.columns
+        if not columns or not all(isinstance(column, bytes) for column in columns):
+            return (self.vector(index) for index in range(first, after))
+        rows = zip(*(column[first:after] for column in columns), strict=True)
+        return (
+            tuple(None if value == MISSING else value for value in row) if MISSING in row else row
+            for row in rows
+        )
+
 
 def _read(column, index):
     value = column[index]
@@ -556,20 +568,8 @@ def _runs(raw, position, count, base):
 
 
 def decode_day(data):
-    if data[:4] != MAGIC:
-        raise ValueError("Not a recorded day file")
     try:
-        raw = zlib.decompress(data[4:])
-        version, start, end, count, runs, *floats = HEADER.unpack_from(raw)
-        if version not in VERSIONS:
-            raise ValueError(f"Unsupported day file version {version}")
-        expected = HEADER.size + count * (8 + sum(4 if flag else 1 for flag in floats))
-        if (
-            end < start
-            or any(flag not in (0, 1) for flag in floats)
-            or expected + runs * RUN.size != len(raw)
-        ):
-            raise ValueError("Corrupt day file")
+        raw, (version, start, end, count, runs, *floats), _readings = _body(data)
         times, ends, position = _time_columns(raw, HEADER.size, count, start, end, version)
         columns, position = _columns(raw, position, count, floats)
         guesses, position = _runs(raw, position, runs, start)
@@ -578,3 +578,34 @@ def decode_day(data):
     if position != len(raw):
         raise ValueError("Corrupt day file")
     return Day(_seconds(start), _seconds(end), times, ends, columns, guesses)
+
+
+def decode_guesses(data):
+    """A day file's guess runs, as ``decode_day`` reads them, without decoding its readings
+    (the runs follow them): a fraction of the work for a busy day."""
+    try:
+        raw, (_version, start, _end, _count, runs, *_floats), readings = _body(data)
+        guesses, position = _runs(raw, readings, runs, start)
+    except (zlib.error, struct.error, IndexError) as error:
+        raise ValueError("Corrupt day file") from error
+    if position != len(raw):
+        raise ValueError("Corrupt day file")
+    return guesses
+
+
+def _body(data):
+    """The checked decompressed body, its header and where the readings end."""
+    if data[:4] != MAGIC:
+        raise ValueError("Not a recorded day file")
+    raw = zlib.decompress(data[4:])
+    header = version, start, end, count, runs, *floats = HEADER.unpack_from(raw)
+    if version not in VERSIONS:
+        raise ValueError(f"Unsupported day file version {version}")
+    readings = HEADER.size + count * (8 + sum(4 if flag else 1 for flag in floats))
+    if (
+        end < start
+        or any(flag not in (0, 1) for flag in floats)
+        or readings + runs * RUN.size != len(raw)
+    ):
+        raise ValueError("Corrupt day file")
+    return raw, header, readings

@@ -98,3 +98,36 @@ def test_retention_clips_native_predecessor_without_reimporting_expired_coverage
         (80, 100, 10, "event"),
     ]
     assert not spans.has_events(retained, "radar-any-name", end=40)
+
+
+def reference_spans(day, start, end):
+    """``day_spans`` as read one row at a time (``Day.vector``): what any faster read gives."""
+    return [
+        (max(start, low), min(end, high), day.vector(index), "event")
+        for index, (low, high) in enumerate(zip(day.times, day.ends, strict=True))
+        if min(end, high) > max(start, low)
+    ]
+
+
+def test_day_spans_read_every_row_as_its_vector_with_missing_readings_and_clipping():
+    import math
+    from array import array
+
+    rows = 300
+    times = array("d", (i * 2.0 for i in range(rows)))
+    ends = array("d", (t + 1.5 for t in times))
+    columns = [bytes((i * (g + 3) + g) % 256 for i in range(rows)) for g in range(18)]
+    native = dayfile.Day(0.0, 86400.0, times, ends, columns, [])
+    legacy = dayfile.Day(  # Legacy float columns: NaN is a missing reading.
+        0.0,
+        86400.0,
+        times,
+        ends,
+        [array("d", (math.nan if v == 255 else v / 2 for v in c)) for c in columns],
+        [],
+    )
+    assert any(255 in column for column in columns), "rows with missing readings are covered"
+    for day in (native, legacy, dayfile.Day(0.0, 86400.0, times, ends, [], [])):
+        for start, end in ((-math.inf, math.inf), (101.25, 403.0), (0.0, 0.0), (999.0, 1e9)):
+            found = [(s.start, s.end, s.values, s.mode) for s in spans.day_spans(day, start, end)]
+            assert found == reference_spans(day, start, end)

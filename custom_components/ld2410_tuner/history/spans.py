@@ -132,13 +132,14 @@ def _merged_windows(windows):
 
 
 def day_spans(day, start=-math.inf, end=math.inf):
-    for index in range(bisect_right(day.ends, start), len(day.times)):
-        pace.rest()
-        if day.times[index] >= end:
-            return
-        low, high = max(start, day.times[index]), min(end, day.ends[index])
+    first, after = bisect_right(day.ends, start), bisect_left(day.times, end)
+    times, ends = day.times, day.ends
+    for index, values in zip(range(first, after), day.vectors(first, after), strict=True):
+        if not (index - first) % 4096:
+            pace.rest()
+        low, high = max(start, times[index]), min(end, ends[index])
         if high > low:
-            yield Span(low, high, day.vector(index), "event")
+            yield Span(low, high, values, "event")
 
 
 def events(view, device_id, *, start=-math.inf, end=math.inf):
