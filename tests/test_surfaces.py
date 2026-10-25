@@ -3,7 +3,6 @@
 import asyncio
 import importlib
 import sys
-import threading
 import types
 import unittest
 from pathlib import Path
@@ -165,32 +164,16 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    async def test_export_builds_recorded_days_off_the_event_loop(self):
-        import base64
-
-        from tuner_under_test.history import dayfile
-        from tuner_under_test.worker import display
-
+    async def test_the_statistics_export_has_no_day_files_and_no_worker_job(self):
         self.registry_device()
         self.runtime._record_history_sample("a", {"g0_move": 37}, self.now - 6)
-        loop_thread = threading.get_ident()
-
-        def encoded_days(view, device_id, real=display.recorded_days):
-            self.assertNotEqual(threading.get_ident(), loop_thread)
-            return real(view, device_id)
-
-        with patch.object(display, "recorded_days", side_effect=encoded_days) as encoded:
+        with patch.object(mod.bridge, "calculate", side_effect=AssertionError("worker job")):
             exported = await self.runtime.async_export_data("a")
-        self.assertEqual(encoded.call_count, 1)
-        files = exported["devices"]["a"]["history"]["day_files"]
-        self.assertEqual(len(files), 1)
-        recorded = dayfile.decode_day(base64.b64decode(next(iter(files.values()))))
-        self.assertEqual(recorded.columns[0][0], 37)
-        self.assertEqual(self.worker_transport.requests[-1]["operation"], "export_days")
-        self.assertEqual((await self.runtime.async_export_data("missing"))["devices"], {})
-        self.assertNotIn(
-            "day_files", (await self.runtime.async_export_data())["devices"]["a"]["history"]
-        )
+            everything = await self.runtime.async_export_data()
+            missing = await self.runtime.async_export_data("missing")
+        self.assertNotIn("day_files", exported["devices"]["a"]["history"])
+        self.assertNotIn("day_files", everything["devices"]["a"]["history"])
+        self.assertEqual(missing["devices"], {})
 
     async def test_concurrent_exports_are_bounded_and_release_after_completion(self):
         from tuner_under_test.presentation import snapshots
@@ -199,14 +182,13 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
         self.registry_device()
         started, release = asyncio.Event(), asyncio.Event()
 
-        async def calculate(runtime, operation, prepare):
-            prepare()
+        async def create(runtime, device_id, exported):
             started.set()
             await release.wait()
             return {}
 
-        with patch.object(snapshots.bridge, "calculate", side_effect=calculate):
-            first = asyncio.create_task(self.runtime.async_export_data("a"))
+        with patch.object(snapshots.export_files, "create", side_effect=create):
+            first = asyncio.create_task(self.runtime.async_export_file("a"))
             await started.wait()
             second = asyncio.create_task(self.runtime.async_export_data("a"))
             await asyncio.sleep(0)
@@ -228,13 +210,13 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(outcome=outcome):
                 started, release = asyncio.Event(), asyncio.Event()
 
-                async def calculate(runtime, operation, prepare, started=started, release=release):
+                async def create(runtime, device_id, exported, started=started, release=release):
                     started.set()
                     await release.wait()
                     raise ValueError("synthetic export failure")
 
-                with patch.object(snapshots.bridge, "calculate", side_effect=calculate):
-                    first = asyncio.create_task(self.runtime.async_export_data("a"))
+                with patch.object(snapshots.export_files, "create", side_effect=create):
+                    first = asyncio.create_task(self.runtime.async_export_file("a"))
                     await started.wait()
                     try:
                         with self.assertRaisesRegex(Busy, "Export is busy; retry shortly"):
@@ -385,7 +367,9 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
     async def test_setup_reload_and_unload_register_resources_once(self):
         self.hass.data = {}
         self.hass.bus = types.SimpleNamespace(async_listen=Mock(return_value=Mock()))
-        self.hass.http = types.SimpleNamespace(async_register_static_paths=AsyncMock())
+        self.hass.http = types.SimpleNamespace(
+            async_register_static_paths=AsyncMock(), register_view=Mock()
+        )
         store = types.SimpleNamespace(
             async_load=AsyncMock(return_value={"devices": {}}), async_save=AsyncMock()
         )
@@ -426,6 +410,8 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
             await mod.async_setup_entry(self.hass, None)
             await self.initialization()
             self.assertEqual(self.hass.http.async_register_static_paths.await_count, 1)
+            [(view,)] = [call.args for call in self.hass.http.register_view.mock_calls]
+            self.assertEqual(view.url, "/api/ld2410_tuner/export/{token}")  # Once, as the panel.
             await mod.async_unload_entry(self.hass, None)
         with (
             patch.object(mod.frontend, "async_panel_exists", return_value=True, create=True),
@@ -445,7 +431,9 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
         then called room_series on the old backend and got "Unknown command."."""
         self.hass.data = {}
         self.hass.bus = types.SimpleNamespace(async_listen=Mock(return_value=Mock()))
-        self.hass.http = types.SimpleNamespace(async_register_static_paths=AsyncMock())
+        self.hass.http = types.SimpleNamespace(
+            async_register_static_paths=AsyncMock(), register_view=Mock()
+        )
         store = types.SimpleNamespace(
             async_load=AsyncMock(return_value={"devices": {}}), async_save=AsyncMock()
         )
@@ -485,7 +473,9 @@ class SurfaceTests(unittest.IsolatedAsyncioTestCase):
         every converted day: setup commits the conversion and cleans in the background."""
         self.hass.data = {}
         self.hass.bus = types.SimpleNamespace(async_listen=Mock(return_value=Mock()))
-        self.hass.http = types.SimpleNamespace(async_register_static_paths=AsyncMock())
+        self.hass.http = types.SimpleNamespace(
+            async_register_static_paths=AsyncMock(), register_view=Mock()
+        )
         self.hass.async_create_background_task = lambda target, name: asyncio.create_task(target)
         store = types.SimpleNamespace(
             # A converted radar never cleaned yet: its first cleanup is due.

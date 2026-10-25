@@ -64,7 +64,7 @@ def test_chart_completes_while_learning_holds_the_numerical_worker(children):
 def test_display_jobs_still_run_one_child_at_a_time(children):
     async def run():
         runtime = owner()
-        operations = ["charts", "charts", "export_days", "recording_rows"] * 2
+        operations = ["charts", "charts", "recording_rows"] * 2
         results = await asyncio.gather(
             *(bridge.calculate(runtime, operation, dict) for operation in operations)
         )

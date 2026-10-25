@@ -508,6 +508,10 @@ after label changes; their older measurements are identified in the panel.
 The Recommendations section contains Learn/Apply and one device-wide report;
 expand its gate table for individual thresholds and sample counts. The chart shows
 the selected gate's results. Exports and Clear data are grouped under Data & export.
+**Export JSON** downloads a file holding the radar's settings, statistics, learning results
+and every recorded day (lossless day files: weeks of history can be several megabytes).
+Home Assistant writes it and keeps it for 10 minutes, the life of its download link.
+**Export CSV** holds one row of statistics and recommendations per gate.
 Actions display a named spinner and lock conflicting controls on that device until
 they finish. Slow background refreshes show a separate loading indicator.
 

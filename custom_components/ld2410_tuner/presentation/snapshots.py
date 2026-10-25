@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import base64
 import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 from homeassistant.helpers import device_registry as dr
@@ -15,7 +15,7 @@ from ..calibration import settings as learning_settings
 from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
-from ..history import dayfile, pace, policy, recording, storage
+from ..history import pace, policy, recording, storage
 from ..presence import rebuilds, sources
 from ..rooms import jobs as room_jobs
 from ..rooms import layout, seen_by
@@ -23,6 +23,7 @@ from ..runtime.schedule import settings
 from ..worker import bridge, codec
 from ..worker.display import check_export
 from ..worker.supervisor import Busy
+from . import export_files
 
 
 def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
@@ -33,42 +34,38 @@ def export_data(runtime, device_id: str | None = None) -> dict[str, Any]:
 
 
 async def async_export_data(runtime, device_id=None):
-    """Resolve HA registry metadata on the loop, encode recorded history on our worker."""
+    """The export's metadata and statistics (the CSV's source), without day files: the JSON
+    export with day files is downloaded as a file (``async_export_file``)."""
+    async with _export_slot(runtime):
+        _export_preflight(runtime, device_id)
+        exported = _export_metadata(runtime, device_id)
+        codec.pack_result(exported)  # It must fit one bounded response.
+        return exported
+
+
+async def async_export_file(runtime, device_id):
+    """The radar's JSON export, day files included, written to a file: its download link."""
+    if device_id not in runtime.data.get("devices", {}):
+        raise ValueError("Unknown radar")
+    async with _export_slot(runtime):
+        _export_preflight(runtime, device_id)
+        return await export_files.create(runtime, device_id, _export_metadata(runtime, device_id))
+
+
+@asynccontextmanager
+async def _export_slot(runtime):
     if getattr(runtime, "_export_active", False):
         raise Busy("Export is busy; retry shortly")
     runtime._export_active = True
     try:
-        return await _async_export_data(runtime, device_id)
+        yield
     finally:
         runtime._export_active = False
 
 
-async def _async_export_data(runtime, device_id):
-    """Assemble an export while the caller owns the runtime's export slot."""
-    _export_preflight(runtime)
-    if device_id not in runtime.data.get("devices", {}):
-        exported = _export_metadata(runtime, device_id)
-    else:
-        exported = {}
-
-        def prepare():
-            _export_preflight(runtime)
-            exported.update(_export_metadata(runtime, device_id))
-            return {
-                "views": {device_id: runtime._history_view(device_id, members=False)},
-                "parameters": {"device_id": device_id},
-            }
-
-        days = await bridge.calculate(runtime, "export_days", prepare)
-        if device_id in exported["devices"]:
-            exported["devices"][device_id]["history"]["day_files"] = days
-    check_export(exported)
-    codec.pack_result(exported)  # The assembled metadata plus days must fit one bounded response.
-    return exported
-
-
-def _export_preflight(runtime):
-    """Cap metadata sources before registry refresh and result summarization."""
+def _export_preflight(runtime, device_id=None):
+    """Cap metadata sources before registry refresh and result summarization: the exported
+    radar's, or each radar's for an export of them all."""
     bridge.preflight(runtime)
     fields = (
         "histograms",
@@ -85,12 +82,9 @@ def _export_preflight(runtime):
         "comparison",
         "timing_configuration",
     )
-    check_export(
-        {
-            key: {field: device.get(field) for field in fields}
-            for key, device in runtime.data.get("devices", {}).items()
-        }
-    )
+    devices = runtime.data.get("devices", {})
+    for key in [device_id] if device_id in devices else devices:
+        check_export({field: devices[key].get(field) for field in fields})
 
 
 def _export_metadata(runtime, device_id):
@@ -106,18 +100,7 @@ def _export_metadata(runtime, device_id):
 
 @pace.background
 def _recorded_days(runtime, device_id):
-    """``{date: base64 day file}`` of the radar's recorded days, the day being recorded as it
-    stands: the stored format, compressed and lossless (``history.dayfile.decode_day``)."""
-    days = runtime._days
-    if days is None:
-        return {}
-    found = {}
-    for date in days.days(device_id):
-        pace.rest()
-        day = days.day(device_id, date)
-        if day is not None:
-            found[date.isoformat()] = base64.b64encode(dayfile.encode_day(day)).decode("ascii")
-    return found
+    return export_files.day_files(runtime._days, device_id)
 
 
 def snapshot(runtime) -> dict[str, Any]:

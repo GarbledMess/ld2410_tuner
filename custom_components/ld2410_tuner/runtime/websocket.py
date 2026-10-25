@@ -212,6 +212,7 @@ def _websocket_routes():
             None,
             False,
         ),
+        ("export_file", device, "async_export_file", ("device_id",), None, False),
         ("clear", device, "clear_samples", ("device_id",), None, True),
         (
             "label_history",

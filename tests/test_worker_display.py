@@ -7,7 +7,6 @@ import pytest
 import test_tuner  # noqa: F401
 from test_event_fitting import view
 from test_event_quality import block
-from tuner_under_test.history import dayfile
 from tuner_under_test.worker import capture, codec, display
 
 
@@ -138,21 +137,6 @@ def test_async_chart_captures_requested_window_and_expands_outside_event_loop(mo
     asyncio.run(run())
 
 
-def test_display_export_detached_is_lossless(tmp_path):
-    from tuner_under_test.worker import calculations
-
-    source = view([block(0, 600, 40)], [])
-    with ThreadPoolExecutor() as executor:
-        request = executor.submit(capture.prepare_multi, {"any-name": source}, tmp_path).result()
-    request.update(operation="export_days", parameters=codec.encode({"device_id": "any-name"}))
-    actual = calculations.execute(request)
-    assert list(actual) == ["1970-01-01"]
-    decoded = dayfile.decode_day(base64.b64decode(actual["1970-01-01"]))
-    assert list(decoded.times) == [0]
-    assert list(decoded.ends) == [600]
-    assert list(decoded.columns[0]) == [40]
-
-
 def test_export_size_preflight_rejects_metadata_before_copy():
     from tuner_under_test.worker.display import check_export
 
@@ -206,23 +190,6 @@ def test_async_export_rejects_large_metadata_before_registry_access():
     asyncio.run(run())
 
 
-def test_export_day_budget_rejects_instead_of_falling_back(monkeypatch):
-    from tuner_under_test.worker import display
-
-    source = view([block(0, 600, 40)], [])
-    monkeypatch.setattr(display, "EXPORT_BYTES", 10)
-    with pytest.raises(ValueError, match="Export day data.*budget"):
-        display.recorded_days(source, "any-name")
-
-
-def test_export_missing_day_store_is_empty():
-    from types import SimpleNamespace
-
-    from tuner_under_test.worker.display import recorded_days
-
-    assert recorded_days(SimpleNamespace(_days=None), "a") == {}
-
-
 @pytest.mark.parametrize("value", [[None] * 32769, [[[[None]]]]])
 def test_export_rejects_excess_nodes_or_depth(monkeypatch, value):
     from tuner_under_test.worker import display
@@ -232,7 +199,7 @@ def test_export_rejects_excess_nodes_or_depth(monkeypatch, value):
         display.check_export(value)
 
 
-@pytest.mark.parametrize("operation", ["charts", "summary", "export_days"])
+@pytest.mark.parametrize("operation", ["charts", "summary"])
 def test_display_runs_in_independent_python_without_homeassistant(tmp_path, operation):
     import json
     import subprocess
@@ -242,12 +209,11 @@ def test_display_runs_in_independent_python_without_homeassistant(tmp_path, oper
     from tuner_under_test.const import HISTORY_KEYS
     from tuner_under_test.worker import calculations, protocol
 
-    source = view([block(0, 86400 if operation in ("charts", "summary") else 600, 40)], [])
+    source = view([block(0, 86400, 40)], [])
     with ThreadPoolExecutor() as executor:
         request = executor.submit(capture.prepare_multi, {"any-name": source}, tmp_path).result()
     parameters = {"device_id": "any-name"}
-    if operation in ("charts", "summary"):
-        parameters.update(keys=list(HISTORY_KEYS), hours=24, max_points=1000, end=86400)
+    parameters.update(keys=list(HISTORY_KEYS), hours=24, max_points=1000, end=86400)
     if operation == "summary":
         parameters["summary"] = True
         operation = "charts"

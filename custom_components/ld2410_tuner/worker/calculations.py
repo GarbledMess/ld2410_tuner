@@ -246,7 +246,6 @@ def execute(request):
         "references",
         "recount",
         "charts",
-        "export_days",
         "recording_rows",
     ):
         raise ValueError("Unsupported worker operation")
@@ -277,10 +276,10 @@ def _other(operation, views, parameters):
         from .recordings import calculate, pack_page
 
         return pack_page(calculate(views[parameters["device_id"]], **parameters))
-    if operation in ("charts", "export_days"):
+    if operation == "charts":
         from .display import calculate, calculate_charts
 
-        if operation == "charts" and "device_ids" in parameters:
+        if "device_ids" in parameters:
             return calculate_charts(views, parameters)
         return calculate(operation, views[parameters["device_id"]], parameters)
     if operation.startswith("room_"):

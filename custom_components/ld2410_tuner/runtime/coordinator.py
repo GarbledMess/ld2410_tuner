@@ -212,4 +212,5 @@ class TunerRuntime:
     _apply_validated = calibration._apply_validated
     export_data = presentation.export_data
     async_export_data = presentation.async_export_data
+    async_export_file = presentation.async_export_file
     snapshot = presentation.snapshot

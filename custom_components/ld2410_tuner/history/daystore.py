@@ -627,6 +627,16 @@ class DayStore:
             return None
         return *known, found.st_mtime_ns, found.st_size
 
+    def stored_file(self, device_id, date):
+        """The finished ``date``'s day file as stored (None when ``identity`` is: the day is
+        still changing or absent), so an export copies it instead of decoding it again."""
+        if self.identity(device_id, date) is None:
+            return None
+        try:
+            return self._path(device_id, date, ".day").read_bytes()
+        except OSError:
+            return None
+
     def _revise(self, device_id):
         with self._lock:
             self._revision[device_id] = self._revision.get(device_id, 0) + 1

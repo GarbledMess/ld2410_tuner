@@ -37,10 +37,30 @@ def load_runtime():
         "homeassistant.helpers.storage",
         "homeassistant.util",
         "homeassistant.util.dt",
+        "homeassistant.components.http.auth",
+        "aiohttp",
+        "aiohttp.web",
     ]
     for name in modules:
         sys.modules[name] = types.ModuleType(name)
     sys.modules["homeassistant.components.http"].StaticPathConfig = object
+    sys.modules["homeassistant.components.http"].HomeAssistantView = type(
+        "HomeAssistantView", (), {}
+    )
+    sys.modules["homeassistant.components.http.auth"].async_sign_path = (
+        lambda hass, path, expiration, **kwargs: (
+            f"{path}?authSig=signed-{expiration.total_seconds():g}"
+        )
+    )
+    web = sys.modules["aiohttp"].web = sys.modules["aiohttp.web"]
+
+    class FileResponse:
+        def __init__(self, path, *, headers=None, **kwargs):
+            self.path, self.headers = Path(path), dict(headers or {})
+
+    web.FileResponse = FileResponse
+    web.HTTPNotFound = type("HTTPNotFound", (Exception,), {"status": 404})
+    web.HTTPForbidden = type("HTTPForbidden", (Exception,), {"status": 403})
     sys.modules["homeassistant.config_entries"].ConfigEntry = object
     core = sys.modules["homeassistant.core"]
     core.HomeAssistant = object
@@ -631,8 +651,9 @@ class WebsocketTests(unittest.IsolatedAsyncioTestCase):
     async def test_commands_remain_admin_only_and_lookup_live_runtime(self):
         # 29 before learning sets, plus learn_set and apply_set, plus refresh_references (P1),
         # plus configure_automatic_weight (P2b), less the learn_room and apply_room aliases (P5).
-        # Recording inventory, raw day pages, and room charts add three read-only commands.
-        self.assertEqual(len(self.commands), 34)
+        # Recording inventory, raw day pages, and room charts add three read-only commands; the
+        # JSON export's file download adds one.
+        self.assertEqual(len(self.commands), 35)
         self.assertIn(f"{mod.DOMAIN}/room_series", self.commands)
         self.assertTrue(all(command.admin_only for command in self.commands.values()))
         self.hass.data[mod.DOMAIN] = types.SimpleNamespace(snapshot=lambda: {"reloaded": True})

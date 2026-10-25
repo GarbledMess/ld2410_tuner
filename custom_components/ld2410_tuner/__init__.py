@@ -32,6 +32,7 @@ from .const import (
 from .history import ingest, pace
 from .history.daystore import DayStore
 from .presence import rebuilds, reference_training
+from .presentation import export_files
 from .runtime import engineering, schedule
 from .runtime.coordinator import TunerRuntime
 from .runtime.websocket import _register_websocket_commands
@@ -123,6 +124,11 @@ async def _start_runtime(hass):
     # the background, like the hourly one.
     runtime._enforce_history_retention()
 
+    await export_files.clear(hass)  # A previous run's download links are gone with it.
+    if not hass.data.get(f"{DOMAIN}_export_view"):
+        hass.http.register_view(export_files.ExportView(hass))
+        hass.data[f"{DOMAIN}_export_view"] = True
+
     if not hass.data.get(f"{DOMAIN}_static_registered"):
         # HACS replaces the installed files before Home Assistant restarts. Serving a copy
         # taken now keeps the panel matched to this running backend until that restart.
@@ -202,6 +208,7 @@ async def _shutdown(runtime):
         task.cancel()
     await asyncio.gather(*label_rebuilds, return_exceptions=True)
     await rebuilds.stop(runtime)  # Drop queued reference rebuilds; stale marks are saved.
+    await export_files.discard(runtime)
     for task in (runtime._save_task, runtime._flush_task):
         if task:
             task.cancel()

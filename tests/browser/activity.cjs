@@ -5,7 +5,12 @@ module.exports = async function testActivity(page) {
   await page.evaluate(() => {
     window.activityWS = panel._hass.callWS;
     window.activityDownload = panel._download;
+    window.activityDownloadLink = panel._downloadLink;
+    window.downloadedLinks = [];
     panel._download = () => {};
+    panel._downloadLink = async (url, filename) => {
+      window.downloadedLinks.push([url, filename]);
+    };
     panel._setSectionCollapsed("a", "actions", false);
     panel._setSectionCollapsed("a", "auto", false);
     panel._draw();
@@ -22,7 +27,7 @@ module.exports = async function testActivity(page) {
   });
   for (const [action, endpoint, label] of [
     ["learn", "start_learning", "Learning thresholds"],
-    ["json", "export", "Preparing JSON"],
+    ["json", "export_file", "Preparing JSON"],
     ["csv", "export", "Preparing CSV"],
     ["auto-feedback", "auto_feedback", "Saving feedback"],
   ]) {
@@ -57,14 +62,24 @@ module.exports = async function testActivity(page) {
     const before = await page.evaluate(() => requests.length);
     await control.evaluate((el) => el.onclick({ currentTarget: el }));
     assert.equal(await page.evaluate(() => requests.length), before);
-    await page.evaluate(() => window.finishActivity({ devices: {} }));
+    await page.evaluate(() =>
+      window.finishActivity({
+        devices: {},
+        url: "/api/ld2410_tuner/export/0123?authSig=signed",
+        filename: "ld2410-tuner-a.json",
+      }),
+    );
     await page.waitForFunction(() => panel._activeActions === 0);
     assert.equal(await card.locator(".action-status").innerText(), "");
     assert.equal(await control.isDisabled(), false);
   }
+  // The JSON export downloads the file the server wrote, from its signed link.
+  assert.deepEqual(await page.evaluate(() => window.downloadedLinks), [
+    ["/api/ld2410_tuner/export/0123?authSig=signed", "ld2410-tuner-a.json"],
+  ]);
   // An export failure follows the same visible error and cleanup path.
   await page.evaluate(() => {
-    window.pendingAction = "export";
+    window.pendingAction = "export_file";
     window.failActivity = null;
   });
   await card.locator('[data-action="json"]').click();
@@ -83,7 +98,7 @@ module.exports = async function testActivity(page) {
         this,
         type,
         data,
-        type === "export" ? 40 : timeout,
+        type === "export_file" ? 40 : timeout,
       );
     };
   });
@@ -114,6 +129,7 @@ module.exports = async function testActivity(page) {
     window.pendingAction = null;
     panel._hass.callWS = activityWS;
     panel._download = activityDownload;
+    panel._downloadLink = activityDownloadLink;
     panel._actionError = "";
     panel._showError("");
   });

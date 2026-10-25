@@ -42,7 +42,7 @@ def preflight(runtime):
 
 # Read-only display jobs get their own single child, so a chart never waits behind
 # learning. Each lane still runs one low-priority, resource-limited child at a time.
-DISPLAY = frozenset({"charts", "export_days", "recording_rows"})
+DISPLAY = frozenset({"charts", "recording_rows"})
 
 
 def _service(runtime, operation=None):

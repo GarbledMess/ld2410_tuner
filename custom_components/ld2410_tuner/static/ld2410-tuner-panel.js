@@ -131,15 +131,34 @@ class LD2410TunerPanel extends HTMLElement {
   }
 
   async _export(id, format) {
-    const data = await this._call("export", { device_id: id });
-    if (format === "csv")
+    if (format === "csv") {
+      const data = await this._call("export", { device_id: id });
       this._download(this._csv(data), `ld2410-tuner-${id}.csv`, "text/csv");
-    else
-      this._download(
-        JSON.stringify(data, null, 2),
-        `ld2410-tuner-${id}.json`,
-        "application/json",
-      );
+      return;
+    }
+    // Weeks of day files are megabytes: the server writes the file, the browser downloads it.
+    const { url, filename } = await this._call("export_file", {
+      device_id: id,
+    });
+    await this._downloadLink(url, filename, "application/json");
+  }
+
+  async _downloadLink(url, filename, type) {
+    const probe = new File([], filename, { type });
+    if (navigator.share && navigator.canShare?.({ files: [probe] })) {
+      // Sharing (mobile) hands over the file itself.
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Download failed (${response.status})`);
+      const file = new File([await response.blob()], filename, { type });
+      navigator
+        .share({ title: "LD2410 Tuner export", files: [file] })
+        .catch(() => {});
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
   }
 
   _download(content, filename, type) {
