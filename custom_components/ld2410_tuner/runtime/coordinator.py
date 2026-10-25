@@ -16,7 +16,7 @@ from ..calibration import settings as learning_settings
 from ..const import STORE_DELAY
 from ..history import labels as manual_training
 from ..history import recording, storage
-from ..presence import autolabelling, rebuilds, sources
+from ..presence import autolabelling, bermuda, rebuilds, sources
 from ..presentation import charts, recordings
 from ..presentation import snapshots as presentation
 from ..rooms import application as room_application
@@ -54,6 +54,7 @@ class TunerRuntime:
         self.unsub_nightly = None
         self._nightly_task = None
         self.data.setdefault("devices", {})
+        self.data.setdefault("bermuda", {"devices": {}})
         for device in self.data["devices"].values():
             autolabelling.migrate_segments(device)
         self._save_task: asyncio.Task | None = None
@@ -161,6 +162,8 @@ class TunerRuntime:
     configure_storage = storage.configure
     trim_storage = storage.trim
     set_recording = storage.set_recording
+    bermuda_devices = bermuda.devices
+    configure_bermuda = bermuda.configure
     configure_presence_sources = sources.configure
     configure_learning_schedule = schedule.configure
     configure_automatic_weight = learning_settings.configure

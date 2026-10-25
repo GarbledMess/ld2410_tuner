@@ -23,6 +23,9 @@ export const panelSources = {
     return (
       !this._inAnyGroup(id) ||
       !!d.presence_sources?.sources?.length ||
+      Object.values(this._data?.bermuda?.devices || {}).some(
+        (device) => id in device.radars,
+      ) ||
       !!this._sourceDrafts?.has(id)
     );
   },
@@ -36,10 +39,10 @@ export const panelSources = {
     const limitId = `source-limit-${Array.from(groupId || id, (char) => char.codePointAt(0).toString(16)).join("-")}`;
     const intro = groupId
       ? "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor to label this whole room. Their output is stored as read-only sensor room labels; your manual room labels always win."
-      : "Use camera human detection, any on/off or true/false entity, or Bermuda's current Area sensor. Choose independent sources, not this radar's own presence output.";
+      : "Use camera human detection or any on/off or true/false entity. Configure tracked phones and watches in the Bermuda section below the radar cards. Choose independent sources, not this radar's own presence output.";
     return `<details class="presence-sources" ${open}><summary>${groupId ? "Room presence sources" : this._inAnyGroup(id) ? "Radar presence sources (move these to its room)" : "Automatic labels from other entities"}<span class="section-description">Create presence labels from cameras and other sensors.</span></summary>
       <p class="muted">${intro} Any positive source starts or continues a presence period.</p>
-      <div class="source-rows">${(config.sources || []).map((source, index) => this._sourceRowHtml(id, source, index)).join("")}</div>
+      <div class="source-rows">${(config.sources || []).map((source, index) => this._sourceRowHtml(id, source, index, !!groupId)).join("")}</div>
       <button data-action="source-add" type="button" ${full ? `disabled aria-describedby="${limitId}"` : ""}>Add source</button>
       ${full ? `<p class="field-note" id="${limitId}">Up to 16 sources can be used. Remove one to add another.</p>` : ""}
       <div class="storage-fields"><label class="source-negative"><input type="checkbox" data-source-negative ${config.mark_not_present ? "checked" : ""}> Mark “Not Present”</label>
@@ -89,10 +92,10 @@ export const panelSources = {
     return `<label>Target area<select data-source-area required>${options.map(([id, name]) => `<option value="${this._esc(id)}" ${id === selected ? "selected" : ""}>${this._esc(name)}</option>`).join("")}</select></label>`;
   },
 
-  _sourceRowHtml(id, source, index) {
+  _sourceRowHtml(id, source, index, room = false) {
     const listId = `source-options-${id}-${index}`;
     return `<fieldset class="source-row" data-source-row><legend>Source ${index + 1}</legend><div class="storage-fields">
-      <label>Type<select data-source-kind><option value="boolean" ${source.kind !== "bermuda" ? "selected" : ""}>Boolean entity</option><option value="bermuda" ${source.kind === "bermuda" ? "selected" : ""}>Bermuda area</option></select></label>
+      <label>Type<select data-source-kind><option value="boolean" ${source.kind !== "bermuda" ? "selected" : ""}>Boolean entity</option>${room || source.kind === "bermuda" ? `<option value="bermuda" ${source.kind === "bermuda" ? "selected" : ""}>Bermuda area</option>` : ""}</select></label>
       ${sourcePickerHtml((value) => this._esc(value), listId, source.entity_id)}
       ${source.kind === "bermuda" ? `${this._sourceAreaHtml(source.area)}<label>Max distance (m)<input data-source-max-distance type="number" min="0.1" max="100" step="0.1" placeholder="Any" value="${this._esc(source.max_distance ?? "")}"></label>` : ""}</div>
       <button type="button" data-source-remove="${index}">Remove source</button></fieldset>`;

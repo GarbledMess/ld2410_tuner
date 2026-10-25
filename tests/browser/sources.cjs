@@ -55,7 +55,21 @@ module.exports = async function testSources(page, screenshotDir) {
     .locator("[data-source-entity]")
     .fill("binary_sensor.camera_person");
   await form.locator('[data-action="source-add"]').click();
-  await form.locator("[data-source-kind]").nth(1).selectOption("bermuda");
+  assert.deepEqual(
+    await form
+      .locator("[data-source-kind]")
+      .nth(1)
+      .locator("option")
+      .evaluateAll((options) => options.map((option) => option.value)),
+    ["boolean"],
+    "new radar sources use the central Bermuda section",
+  );
+  assert.match(await form.innerText(), /Bermuda section/);
+  // Load a legacy Bermuda entry; its editor, validation and removal stay supported.
+  await page.evaluate(() => {
+    panel._sourceDrafts.get("a").sources[1].kind = "bermuda";
+    panel._draw();
+  });
   await form.locator("[data-source-entity]").nth(1).fill("sensor.phone_area");
   const area = form.locator("[data-source-area]");
   assert.equal(await area.evaluate((element) => element.tagName), "SELECT");

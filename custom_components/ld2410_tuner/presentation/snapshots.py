@@ -17,7 +17,7 @@ from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
 from ..history import pace, policy, recording, storage
-from ..presence import rebuilds, sources
+from ..presence import bermuda, rebuilds, sources
 from ..rooms import jobs as room_jobs
 from ..rooms import layout, seen_by
 from ..runtime.schedule import settings
@@ -111,6 +111,9 @@ def snapshot(runtime) -> dict[str, Any]:
         "devices": {},
         "learning_schedule": {**settings(runtime), **learning_settings.summary(runtime.data)},
         "timing_settings": timing_config.settings(runtime),
+        "bermuda": bermuda.settings(runtime),
+        "bermuda_devices": bermuda.devices(runtime),
+        "bermuda_radars": bermuda.radars(runtime),
         "storage": storage.summary(runtime),
     }
 

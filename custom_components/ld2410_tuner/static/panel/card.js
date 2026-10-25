@@ -111,6 +111,7 @@ export const panelCards = {
         "Recommendations",
         this._recommendationsHtml(d, id),
       ),
+      this._section(id, "recorded", "Recorded data", this._recordedHtml(id)),
       this._section(id, "actions", "Data & export", this._dataActionsHtml()),
     ].join("");
   },

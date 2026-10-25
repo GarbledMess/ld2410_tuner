@@ -559,8 +559,9 @@ time under the same CPU and memory limits.
 
 ## Recorded data
 
-The **Recorded data** card, closed by default, shows exactly what is stored for each
-radar, including removed (archived) radars that still have recordings. It lists the
+Each radar card has a **Recorded data** section, closed by default, showing exactly
+what is stored for that radar. Its open state survives polling, and each radar keeps
+its own day, page and export progress. It lists the
 recorded days with their actual disk sizes, plus any recovery files retained from
 an interrupted storage transaction, which are counted separately. Opening a day
 shows its stored rows: start and end times to the millisecond (UTC), the duration,
@@ -947,23 +948,42 @@ label edits defer or retry cleanup instead of overwriting new evidence.
 
 ## Automatic labels from cameras, boolean entities and Bermuda
 
-In each device's **Current presence label** section, expand **Automatic labels
-from other entities**. Add one or more independent sources:
+Each radar's **Current presence label** section contains its presence-source settings.
+For cameras and other boolean entities, expand **Automatic labels from other entities**
+and add independent sources: a camera's human-detection binary sensor, an
+`input_boolean`, a template binary sensor, or any entity reporting `on/off` or
+`true/false`. Camera video is not processed by the tuner. Build more elaborate
+logic in Home Assistant and expose its result as a boolean entity.
 
-- **Boolean entity**: select a camera's human-detection binary sensor, an
-  `input_boolean`, a template binary sensor, or another entity reporting `on/off`
-  or `true/false`. Camera video is not processed by the tuner. Build more elaborate
-  logic in Home Assistant and expose its result as a boolean entity.
-- **Bermuda area**: select a person's current **Area** sensor and choose the target
-  Home Assistant area from the area picker. Use current Area, not Area Last Seen, Distance,
-  or a home/away tracker. Area IDs keep working when the room name changes.
-  Add each person's tracked device separately; choose human-carried devices, not
-  pets or permanently placed beacons. Optionally set **Max distance (m)** to require
-  the device to be within that distance of its current area scanner (up to 100 m).
-  Leave it blank for any distance. The tuner finds the matching Bermuda Distance
-  sensor automatically; a missing or unusable distance gives no label. A distance
-  above the limit counts as outside the area for negative labelling.
-  Saved area names still work; values for removed areas stay available in the picker.
+### Bermuda
+
+The top-level **Bermuda** section, after the radar cards, starts closed and remembers
+its open state during polling. It lists tracked phones and watches by friendly name
+and current area. Discovery uses Bermuda Area sensors with a matching range sensor
+in Home Assistant's entity registry, so renamed entity IDs work too.
+
+For each tracked device, turn on the radars it should label. Each selected radar uses
+its own device-registry **Home Assistant area**, rather than a manually chosen area.
+A radar without an area has disabled controls explaining how to enable them.
+Optionally enter **Range (m)** per radar (greater than zero, up to 100 m); blank
+accepts any distance. Click **Save Bermuda settings** to apply the assignments.
+Unsaved choices survive polling. Use human-carried devices, not pets or permanently
+placed beacons.
+
+The phone or watch must be in the radar's area. Within that area, the optional range
+limit uses the matching Bermuda range sensor. Missing or unusable range gives no
+label; exceeding the limit counts as outside the area for negative labelling.
+The enabled devices combine with the radar's other sources using its source
+confidence, **Mark “Not Present”**, and trim settings described below. These radar
+settings remain available for assigned radars even when they belong to a room.
+Room-level source configuration is separate and unchanged.
+
+On the first startup after upgrading, existing per-radar Bermuda sources targeting
+the radar's own area (by ID or case-insensitive name) move to this section with their
+range limits. Sources intentionally targeting other areas stay in the radar's editor
+and continue working; they can still be edited or removed. New per-radar sources use
+the Boolean type; configure new tracked devices in **Bermuda**. Room-level editors
+still allow Bermuda sources with their own explicit target area.
 
 Search the Entity field by friendly name or entity ID, then tap a matching result.
 Results are rendered inside the panel so selection does not depend on the browser's

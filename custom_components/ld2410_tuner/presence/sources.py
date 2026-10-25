@@ -32,11 +32,16 @@ def configure(runtime, device_id, values):
     if validated != settings(device):
         reference_training.reset_entities(device)
     device["presence_sources"] = validated
+    reset_runtime(runtime, device_id)
+    runtime._schedule_save()
+    return settings(device)
+
+
+def reset_runtime(runtime, device_id):
+    device = runtime.data["devices"][device_id]
     runtime._auto_runtime.pop(device_id, None)
     runtime._source_runtime.pop(device_id, None)
     device.get("auto", {}).pop("last_classification", None)
-    runtime._schedule_save()
-    return settings(device)
 
 
 def validate(values):
@@ -138,7 +143,12 @@ def _reading(hass, source):
 
 
 def _read_sources(runtime, device):
-    return read(runtime.hass, settings(device))
+    from . import bermuda
+
+    config = settings(device)
+    device_id = _device_id(runtime, device)
+    config["sources"].extend(bermuda.effective(runtime, device_id))
+    return read(runtime.hass, config)
 
 
 def read(hass, config):
@@ -175,6 +185,7 @@ def summary(runtime, device):
     )
     return {
         **evidence,
+        "sources": settings(device)["sources"],
         "raw_state": evidence["state"],
         "buffering": buffering,
         "state": "unknown" if buffering else evidence["state"],

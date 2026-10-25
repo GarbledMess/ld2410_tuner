@@ -124,8 +124,15 @@ module.exports = async function testSourcePicker(page, screenshotDir) {
   await input.fill("test_69");
   assert.equal(await options.count(), 1);
 
-  // Same source field switches to Bermuda suggestions without mixing boolean entities.
-  await row.locator("[data-source-kind]").selectOption("bermuda");
+  // A legacy Bermuda field still offers only Area sensors.
+  await page.evaluate(() => {
+    const form = panel.shadowRoot.querySelector(
+      '[data-device-id="a"] .presence-sources',
+    );
+    panel._sourceDrafts.set("a", panel._readSources(form));
+    panel._sourceDrafts.get("a").sources[0].kind = "bermuda";
+    panel._draw();
+  });
   await input.fill("phone");
   assert.equal(await options.count(), 1);
   assert.equal(

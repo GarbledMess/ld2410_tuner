@@ -51,11 +51,14 @@ async function testTree(page) {
   assert.equal(await office.evaluate((node) => node.open), true);
   assert.match(await office.locator(":scope > summary").innerText(), /Office/);
   assert.match(
-    await layout.locator('[data-leaf-id="zone:desk"] h3').innerText(),
+    await layout.locator('[data-leaf-id="zone:desk"] > summary h3').innerText(),
     /Desk/,
   );
   const rest = layout.locator('[data-leaf-id="area:office/rest"]');
-  assert.match(await rest.locator("h3").innerText(), /Elsewhere in Office/);
+  assert.match(
+    await rest.locator(":scope > summary h3").innerText(),
+    /Elsewhere in Office/,
+  );
   assert.equal(
     await rest.locator('[data-device-id="c"] .not-recording').innerText(),
     "Not recording",
@@ -373,7 +376,10 @@ async function testFallback(page) {
   const layout = page.locator("#layout");
   const leaves = layout.locator("[data-leaf-id]");
   assert.equal(await leaves.count(), 1, "one flat leaf without layout");
-  assert.match(await leaves.locator("h3").innerText(), /All radars/);
+  assert.match(
+    await leaves.locator(":scope > summary h3").innerText(),
+    /All radars/,
+  );
   for (const id of ["a", "b", "c", "door"])
     assert.equal(
       await leaves.locator(`[data-device-id="${id}"]`).count(),
