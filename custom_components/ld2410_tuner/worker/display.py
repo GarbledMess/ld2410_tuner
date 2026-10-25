@@ -3,7 +3,6 @@
 import base64
 import binascii
 import json
-import math
 import zlib
 
 from ..const import HISTORY_KEYS
@@ -128,29 +127,40 @@ def unpack_chart(value):
 
 
 def _validate_chart(value):
-    codec.validate(value, max_nodes=2_000_000, max_bytes=CHART_RAW_BYTES)
+    codec.validate_schema(
+        value, _validate_chart_shape, max_nodes=2_000_000, max_bytes=CHART_RAW_BYTES
+    )
+
+
+def _validate_chart_shape(value, budget):
     fields = {"start", "end", "bucket_seconds", "series", "labels"}
     summary_fields = {"start", "end", "bucket_seconds", "points"}
     if type(value) is not dict or set(value) not in (fields, summary_fields):
         raise ValueError("Invalid chart fields")
+    budget.keys(value)
+    # Root, field names and their values; child containers are already counted.
+    budget.add(1 + 2 * len(value), sum(map(len, value)))
     for name in ("start", "end", "bucket_seconds"):
         _number(value[name])
     if value["end"] < value["start"] or value["bucket_seconds"] <= 0:
         raise ValueError("Invalid chart window")
     if set(value) == summary_fields:
         for point in _bounded_list(value["points"], len(HISTORY_KEYS) * 1000):
-            _validate_point(point)
+            _validate_point(point, budget)
         return
-    _validate_full_chart(value)
+    _validate_full_chart(value, budget)
 
 
-def _validate_full_chart(value):
+def _validate_full_chart(value, budget):
     series = value["series"]
     _validate_gates(series)
-    for item in series.values():
-        _validate_series(item)
+    budget.keys(series)
+    for key, item in series.items():
+        budget.string(key)
+        budget.add(2)  # Gate name and series mapping.
+        _validate_series(item, budget)
     for label in _bounded_list(value["labels"], 8192):
-        _validate_label(label)
+        _validate_label(label, budget)
 
 
 def _validate_gates(series):
@@ -160,20 +170,25 @@ def _validate_gates(series):
         raise ValueError("Invalid chart gates")
 
 
-def _validate_label(label):
+def _validate_label(label, budget):
     if type(label) is not dict or set(label) != {"start", "end", "state"}:
         raise ValueError("Invalid chart label")
+    budget.keys(label)
+    budget.add(7, 13)
+    budget.string(label["state"])
     _number(label["start"])
     _number(label["end"])
     if type(label["state"]) is not str or label["end"] < label["start"]:
         raise ValueError("Invalid chart label values")
 
 
-def _validate_series(item):
+def _validate_series(item, budget):
     if type(item) is not dict or set(item) != {"points"}:
         raise ValueError("Invalid chart series fields")
+    budget.keys(item)
+    budget.add(2, 6)  # The points field name and its list.
     for point in _bounded_list(item["points"], 1000):
-        _validate_point(point)
+        _validate_point(point, budget)
 
 
 def _bounded_list(values, limit):
@@ -182,9 +197,11 @@ def _bounded_list(values, limit):
     return values
 
 
-def _validate_point(entry):
+def _validate_point(entry, budget):
     if type(entry) is not dict or set(entry) != _POINT_FIELDS:
         raise ValueError("Invalid chart point")
+    budget.keys(entry)
+    budget.add(15, _POINT_BYTES)  # One mapping plus seven keys and values.
     for field in POINT_FIELDS[:-1]:
         _number(entry[field])
     if type(entry["break_before"]) is not bool:
@@ -192,10 +209,11 @@ def _validate_point(entry):
 
 
 _POINT_FIELDS = set(POINT_FIELDS)
+_POINT_BYTES = sum(map(len, POINT_FIELDS))
 
 
 def _number(value):
-    if type(value) not in (int, float) or not math.isfinite(value):
+    if not codec.schema_number(value):
         raise ValueError("Invalid chart number")
 
 

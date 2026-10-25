@@ -5,6 +5,7 @@ import math
 from bisect import bisect_right
 
 from ..const import HISTORY_KEYS
+from . import codec, protocol
 
 
 def calculate(view, device_id, date, offset, limit, end, revision):
@@ -65,8 +66,6 @@ def unpack_page(value):
     import json
     import zlib
 
-    from . import protocol
-
     if type(value) is not dict or set(value) != {"recording_zlib"}:
         raise ValueError("Invalid recording page envelope")
     encoded = value["recording_zlib"]
@@ -86,12 +85,16 @@ def unpack_page(value):
 
 
 def _validate_page(value):
-    from . import codec
+    codec.validate_schema(
+        value, _validate_page_shape, max_nodes=PAGE_NODES, max_bytes=PAGE_RAW_BYTES
+    )
 
-    codec.validate(value, max_nodes=PAGE_NODES, max_bytes=PAGE_RAW_BYTES)
+
+def _validate_page_shape(value, budget):
     fields = {"date", "keys", "rows", "total", "offset", "next_offset", "end", "revision"}
     if type(value) is not dict or set(value) != fields or value["keys"] != list(HISTORY_KEYS):
         raise ValueError("Invalid recording page fields")
+    _page_budget(value, budget)
     date = datetime.date.fromisoformat(value["date"])
     if date.isoformat() != value["date"]:
         raise ValueError("Invalid recording date")
@@ -99,32 +102,44 @@ def _validate_page(value):
     rows = value["rows"]
     if type(rows) is not list or len(rows) > PAGE_ROWS:
         raise ValueError("Invalid recording row budget")
+    budget.add(21 * len(rows))  # Each row is one list plus twenty scalar values.
     for row in rows:
         _validate_row(row, value["end"])
 
 
+def _page_budget(value, budget):
+    budget.keys(value)
+    if type(value["keys"]) is not list:
+        raise ValueError("Invalid recording page fields")
+    # Eight fields plus the root; the keys list adds its eighteen strings.
+    budget.add(17 + len(HISTORY_KEYS))
+    for key, item in value.items():
+        budget.string(key)
+        if key not in ("keys", "rows"):
+            budget.string(item)
+    for key in value["keys"]:
+        budget.string(key)
+
+
 def _validate_page_metadata(value):
     for field in ("total", "offset", "revision"):
-        if type(value[field]) is not int or value[field] < 0:
+        if type(value[field]) is not int or not 0 <= value[field] < 2**63:
             raise ValueError("Invalid recording page metadata")
     after = value["next_offset"]
     if after is not None and (
         type(after) is not int or not value["offset"] < after < value["total"]
     ):
         raise ValueError("Invalid recording next offset")
-    if type(value["end"]) not in (int, float) or not math.isfinite(value["end"]):
+    if not codec.schema_number(value["end"]):
         raise ValueError("Invalid recording cutoff")
 
 
 def _validate_row(row, end):
     if type(row) is not list or len(row) != 20:
         raise ValueError("Invalid recording row shape")
-    if any(type(value) not in (int, float) or not math.isfinite(value) for value in row[:2]):
+    if any(not codec.schema_number(value) for value in row[:2]):
         raise ValueError("Invalid recording row times")
     if not row[0] <= row[1] <= end:
         raise ValueError("Invalid recording row interval")
-    if any(
-        value is not None and (type(value) not in (int, float) or not math.isfinite(value))
-        for value in row[2:]
-    ):
+    if any(value is not None and (not codec.schema_number(value)) for value in row[2:]):
         raise ValueError("Invalid recording gate value")
