@@ -8,7 +8,7 @@ from ..const import TRAINING_FIELDS
 from ..history import policy
 from ..runtime.tasks import finish_task
 from ..worker import bridge
-from . import comparison, comparison_cache, results, settings
+from . import comparison, comparison_cache, results, service, settings
 from . import thresholds as threshold_domain
 from .constants import METHOD
 from .timing_config import read_timing, timing_signature
@@ -43,14 +43,25 @@ def _pattern(result, entities, constraints=None, learner_policy=None):
     }
 
 
-def _context(runtime, device_id):
+def _configuration(runtime, device_id, state_get):
+    """Share reads for the standard reader while honoring custom runtime readers."""
+    reader = runtime._threshold_configuration
+    if (
+        state_get is not None
+        and getattr(reader, "__func__", None) is service._threshold_configuration
+    ):
+        return reader(device_id, state_get=state_get)
+    return reader(device_id)
+
+
+def _context(runtime, device_id, *, state_get=None):
     device = runtime.data["devices"].get(device_id)
     if device is None:
         raise ValueError("Unknown device")
-    entities, current = runtime._threshold_configuration(device_id)
+    entities, current = _configuration(runtime, device_id, state_get)
     saved = results.saved_results(device)
     timing = read_timing(runtime, device_id)
-    constraints = threshold_domain.read(runtime, entities)
+    constraints = threshold_domain.read(runtime, entities, state_get=state_get)
     learner_policy = settings.signature(runtime.data)
     patterns = {
         slot: _pattern(saved.get(slot), entities, constraints, learner_policy)
@@ -79,9 +90,9 @@ def _context(runtime, device_id):
     return context, signature
 
 
-def summary(runtime, device_id):
+def summary(runtime, device_id, *, state_get=None):
     try:
-        context, signature = _context(runtime, device_id)
+        context, signature = _context(runtime, device_id, state_get=state_get)
     except ValueError as error:
         return {"state": "unavailable", "reason": str(error)}
     report = comparison_cache.report(runtime.data["devices"][device_id], context)

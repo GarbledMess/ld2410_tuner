@@ -28,8 +28,9 @@ def pattern_key(context, pattern):
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def stored(device, context, pattern):
-    record = device.get(FIELD, {}).get(pattern_key(context, pattern))
+def stored(device, context, pattern, key=None):
+    key = pattern_key(context, pattern) if key is None else key
+    record = device.get(FIELD, {}).get(key)
     if not isinstance(record, dict) or record.get("scorer_version") != comparison.SCORER_VERSION:
         return None
     if "score" not in record:
@@ -39,17 +40,13 @@ def stored(device, context, pattern):
     return record
 
 
-def missing(device, context, retry_unscored=False):
+def missing(device, context, retry_unscored=False, *, keys=None):
     wanted, seen = {}, set()
     for slot, pattern in context["patterns"].items():
-        if (
-            pattern is None
-            or pattern.get("joint")
-            or not comparison.complete_thresholds(pattern["thresholds"], context["keys"])
-        ):
+        if not _scorable(context, pattern):
             continue
-        key = pattern_key(context, pattern)
-        record = stored(device, context, pattern)
+        key = pattern_key(context, pattern) if keys is None else keys[slot]
+        record = stored(device, context, pattern, key)
         needs_score = record is None or (retry_unscored and record["score"] is None)
         if needs_score and key not in seen:
             wanted[slot] = pattern
@@ -58,14 +55,20 @@ def missing(device, context, retry_unscored=False):
 
 
 def report(device, context):
+    keys = {
+        slot: pattern_key(context, pattern)
+        for slot, pattern in context["patterns"].items()
+        if _scorable(context, pattern)
+    }
     patterns = {
-        slot: _item(device, context, pattern) for slot, pattern in context["patterns"].items()
+        slot: _item(device, context, pattern, keys.get(slot))
+        for slot, pattern in context["patterns"].items()
     }
     dates = {
         item["evaluated_at"] for item in patterns.values() if item.get("evaluated_at") is not None
     }
     return {
-        "state": "pending" if missing(device, context) else "ready",
+        "state": "pending" if missing(device, context, keys=keys) else "ready",
         "model": comparison.SCORE_MODEL,
         "scorer_version": comparison.SCORER_VERSION,
         **_policy(context),
@@ -75,7 +78,15 @@ def report(device, context):
     }
 
 
-def _item(device, context, pattern):
+def _scorable(context, pattern):
+    return (
+        pattern is not None
+        and not pattern.get("joint")
+        and comparison.complete_thresholds(pattern["thresholds"], context["keys"])
+    )
+
+
+def _item(device, context, pattern, key=None):
     if pattern is None:
         return {"score": None, "reason": "No saved result", "applicable": False}
     if pattern.get("joint"):
@@ -90,7 +101,7 @@ def _item(device, context, pattern):
             "reason": "A complete threshold set for the active gates is unavailable",
             "applicable": False,
         }
-    record = stored(device, context, pattern)
+    record = stored(device, context, pattern, key)
     if record is None:
         return {
             "score": None,

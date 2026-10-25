@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from contextlib import asynccontextmanager
+from functools import cache
 from typing import Any
 
 from homeassistant.helpers import device_registry as dr
@@ -179,7 +180,8 @@ def _snapshot_device(runtime, device_id, device, registry):
     # Device name/area are resolved from the registry.
     name, area_id = _snapshot_identity(runtime, device_id)
 
-    current = _snapshot_thresholds(runtime, device_id, registry)
+    state_get = cache(runtime.hass.states.get)
+    current = _snapshot_thresholds(runtime, device_id, registry, state_get=state_get)
 
     histograms = runtime._ensure_histograms(device)
     sample_counts, histogram_stats = _histogram_details(histograms)
@@ -203,7 +205,7 @@ def _snapshot_device(runtime, device_id, device, registry):
         },
         "current_thresholds": current,
         "timing_configuration": read_timing(runtime, device_id),
-        "comparison": comparison_jobs.summary(runtime, device_id),
+        "comparison": comparison_jobs.summary(runtime, device_id, state_get=state_get),
         "last_learning": device.get("last_learning"),
         "learning_results": saved_results(device),
         "nightly_learning": device.get("nightly_learning"),
@@ -234,7 +236,8 @@ def _export_device(runtime, did, devreg, registry):
         return None
     dev = devreg.async_get(did)
     histograms = runtime._ensure_histograms(device)
-    current_thresholds = _snapshot_thresholds(runtime, did, registry)
+    state_get = cache(runtime.hass.states.get)
+    current_thresholds = _snapshot_thresholds(runtime, did, registry, state_get=state_get)
 
     return {
         "name": (dev.name_by_user or dev.name or did) if dev else did,
@@ -257,7 +260,7 @@ def _export_device(runtime, did, devreg, registry):
         },
         "current_thresholds": current_thresholds,
         "timing_configuration": read_timing(runtime, did),
-        "comparison": comparison_jobs.summary(runtime, did),
+        "comparison": comparison_jobs.summary(runtime, did, state_get=state_get),
         "last_learning": device.get("last_learning"),
         "learning_results": saved_results(device),
         "nightly_learning": device.get("nightly_learning"),
@@ -281,7 +284,8 @@ def _snapshot_identity(runtime, device_id):
     return name, area_id
 
 
-def _snapshot_thresholds(runtime, device_id, registry):
+def _snapshot_thresholds(runtime, device_id, registry, *, state_get=None):
+    state_get = runtime.hass.states.get if state_get is None else state_get
     current = {}
     for entity in entity_index.read(runtime, registry).by_device.get(device_id, ()):
         if entity.domain != "number":
@@ -289,7 +293,7 @@ def _snapshot_thresholds(runtime, device_id, registry):
         match = GATE_RE.match(entity.entity_id.split(".", 1)[1])
         if match and match.group("metric") == "threshold":
             key = f"g{match.group('gate')}_{match.group('kind')}"
-            value = _threshold_reading(runtime.hass.states.get(entity.entity_id))
+            value = _threshold_reading(state_get(entity.entity_id))
             if value is not None:
                 current[key] = value
     return current

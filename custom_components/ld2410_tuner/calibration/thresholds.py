@@ -52,9 +52,7 @@ def permitted(values, domains):
     )
 
 
-def read(runtime, entities):
+def read(runtime, entities, *, state_get=None):
     states = getattr(getattr(runtime, "hass", None), "states", None)
-    return {
-        key: from_state(states.get(entity_id) if states else None)
-        for key, entity_id in entities.items()
-    }
+    state_get = (states.get if states else lambda _: None) if state_get is None else state_get
+    return {key: from_state(state_get(entity_id)) for key, entity_id in entities.items()}

@@ -159,10 +159,12 @@ def _fit_history(runtime, device_id, entities, current):
     return learned
 
 
-def _threshold_configuration(runtime, device_id):
+def _threshold_configuration(runtime, device_id, *, state_get=None):
     entities, current, limits = {}, {}, {}
     registry = er.async_get(runtime.hass)
-    _read_threshold_configuration(runtime, device_id, registry, entities, current, limits)
+    _read_threshold_configuration(
+        runtime, device_id, registry, entities, current, limits, state_get
+    )
     entities = {
         key: entity_id
         for key, entity_id in entities.items()
@@ -307,11 +309,14 @@ def _validate_current_evidence(runtime, device_id, learned):
         raise ValueError("Automatic evidence policy changed; learn again before applying")
 
 
-def _read_threshold_configuration(runtime, device_id, registry, entities, current, limits):
+def _read_threshold_configuration(
+    runtime, device_id, registry, entities, current, limits, state_get=None
+):
+    state_get = runtime.hass.states.get if state_get is None else state_get
     for entity in entity_index.read(runtime, registry).by_device.get(device_id, ()):
         if entity.domain != "number":
             continue
-        value = device_io.number_value(runtime.hass.states.get(entity.entity_id))
+        value = device_io.number_value(state_get(entity.entity_id))
         _distance_limit(entity.entity_id, value, limits)
         match = GATE_RE.match(entity.entity_id.split(".", 1)[1])
         if match and match.group("metric") == "threshold":

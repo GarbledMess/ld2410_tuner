@@ -120,7 +120,9 @@ class _DeviceObjective(Objective):
         end,
         model,
         reference=False,
+        prepare_preferences=True,
     ):
+        self._prepare_preferences = prepare_preferences
         self.device_id = device_id
         self._preference_histograms = None
         targets = _Targets(view, device_id, model, start, end)
@@ -181,6 +183,8 @@ class _DeviceObjective(Objective):
         return super()._support(label)
 
     def _member_preferences(self, members, room):
+        if not getattr(self, "_prepare_preferences", True):
+            return {}
         if self._preference_histograms is None:
             self._preference_histograms = prepare(
                 self.regions,
@@ -426,6 +430,7 @@ def _objective(
     end,
     reference=False,
     quality_context=None,
+    prepare_preferences=True,
 ):
     raw = guesses.of(view, device_id)
     room = _room_evidence(view, device_id, raw, start, end)
@@ -445,7 +450,18 @@ def _objective(
             regimes={},
         )
     return _DeviceObjective(
-        view, device_id, keys, current, timing, weight, constraints, start, end, model, reference
+        view,
+        device_id,
+        keys,
+        current,
+        timing,
+        weight,
+        constraints,
+        start,
+        end,
+        model,
+        reference,
+        prepare_preferences,
     )
 
 
@@ -464,6 +480,7 @@ def assess(view, device_id, thresholds, timing=None, *, quality_context=None, st
         start,
         end,
         quality_context=quality_context,
+        prepare_preferences=False,
     )
     return _assess_objective(objective, thresholds, quality_context is not False)
 
@@ -497,23 +514,14 @@ def compare(view, device_id, context):
         start,
         end,
         quality_context=None if context.get("quality_version") else False,
+        prepare_preferences=False,
     )
     corrected = bool(context.get("quality_version"))
     patterns = {
         name: _compare_pattern(pattern, objective, context["keys"], corrected)
         for name, pattern in context["patterns"].items()
     }
-    counts = {
-        source: {
-            state: sum(
-                (b - a) / SAMPLE_SECONDS
-                for a, b, _, label, origin, _ in objective.regions
-                if label == state and origin == source
-            )
-            for state in evidence.LABELS
-        }
-        for source in ("human", "automatic")
-    }
+    counts, incomplete = _region_counts(objective.regions, context["keys"])
     attribution.release([view])
     result = {
         "model": SCORE_MODEL,
@@ -521,17 +529,29 @@ def compare(view, device_id, context):
         "best_slots": best_slots(patterns),
         "counts": counts,
         "timing": context["timing"],
-        "incomplete_samples": sum(
-            (b - a) / SAMPLE_SECONDS
-            for a, b, readings, *_ in objective.regions
-            if any(key not in readings for key in context["keys"])
-        ),
+        "incomplete_samples": incomplete,
         "outliers": {"method": "native_intervals_retained", "excluded": False},
         "missed_time_cost": MISSED_TIME_COST,
     }
     if corrected:
         result["quality"] = objective.quality[device_id].audit()
     return result
+
+
+def _region_counts(regions, keys):
+    """Keep each sum's region order while collecting metadata in one pass."""
+    counts = {source: {state: [] for state in evidence.LABELS} for source in ("human", "automatic")}
+    incomplete = []
+    for low, high, readings, label, source, _ in regions:
+        amount = (high - low) / SAMPLE_SECONDS
+        if source in counts and label in counts[source]:
+            counts[source][label].append(amount)
+        if any(key not in readings for key in keys):
+            incomplete.append(amount)
+    return {
+        source: {state: sum(values) for state, values in states.items()}
+        for source, states in counts.items()
+    }, sum(incomplete)
 
 
 def _compare_pattern(pattern, objective, keys, corrected):

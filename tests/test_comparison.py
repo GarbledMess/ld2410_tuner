@@ -148,6 +148,55 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
     asyncTearDown = harness.RuntimeTests.asyncTearDown
     configuration = harness.RuntimeTests.configuration
 
+    async def test_snapshot_comparison_matches_standalone_and_refreshes_states(self):
+        self.configuration()
+        self.scoring_executor()
+        await self.runtime.compare_results("a")
+        from tuner_under_test.presentation import snapshots
+
+        with patch.object(snapshots, "_snapshot_identity", return_value=("Radar", None)):
+            first = snapshots._snapshot_device(self.runtime, "a", self.device, self.registry)
+        assert first["comparison"] == jobs.summary(self.runtime, "a")
+        for entity_id, state in self.states.items():
+            if entity_id.endswith("_threshold"):
+                state.state = "40"
+        with patch.object(snapshots, "_snapshot_identity", return_value=("Radar", None)):
+            snapshot = snapshots._snapshot_device(self.runtime, "a", self.device, self.registry)
+        assert snapshot["comparison"] == jobs.summary(self.runtime, "a")
+        assert set(snapshot["current_thresholds"].values()) == {40.0}
+
+    async def test_snapshot_preserves_threshold_configuration_errors(self):
+        from tuner_under_test.presentation import snapshots
+
+        self.configuration()
+        for value in ("unknown", "1", "9", "2.5"):
+            self.states["number.radar_max_move_distance_gate"].state = value
+            expected = jobs.summary(self.runtime, "a")
+            with patch.object(snapshots, "_snapshot_identity", return_value=("Radar", None)):
+                snapshot = snapshots._snapshot_device(self.runtime, "a", self.device, self.registry)
+            assert snapshot["comparison"] == expected
+            assert expected == {
+                "state": "unavailable",
+                "reason": "Maximum distance gate is unavailable or outside 2\u20138",
+            }
+
+    async def test_cache_report_matches_original_composition(self):
+        from tuner_under_test.calibration import comparison_cache as cache
+
+        self.configuration()
+        self.scoring_executor()
+        await self.runtime.compare_results("a")
+        ctx, _ = jobs._context(self.runtime, "a")
+        for mutate in (False, True):
+            if mutate:
+                ctx["patterns"]["live"]["thresholds"]["g0_still"] = 99
+            report = cache.report(self.device, ctx)
+            assert report["patterns"] == {
+                slot: cache._item(self.device, ctx, pattern)
+                for slot, pattern in ctx["patterns"].items()
+            }
+            assert report["state"] == ("pending" if cache.missing(self.device, ctx) else "ready")
+
     def scoring_executor(self):
         calls = []
 
@@ -363,3 +412,78 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.scoring_executor()
         assert (await self.runtime.compare_results("a", True))["state"] == "ready"
         self.hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.parametrize("corrected", [False, True])
+def test_fixed_comparison_matches_eager_preferences(corrected):
+    from tuner_under_test.calibration import event_fitting
+
+    settings = context()
+    if corrected:
+        settings["quality_version"] = 1
+    expected = calculate(settings=settings)
+    # Force the original eager method, including when fixed scoring opts out.
+    prepare = event_fitting._DeviceObjective._member_preferences
+
+    def eager(objective, members, room):
+        objective._prepare_preferences = True
+        return prepare(objective, members, room)
+
+    with patch.object(event_fitting._DeviceObjective, "_member_preferences", eager):
+        assert calculate(settings=settings) == expected
+
+
+def test_comparison_region_metadata_matches_original_sums():
+    from tuner_under_test.calibration import event_fitting
+
+    original = event_fitting._objective
+    objectives = []
+
+    def capture(*args, **kwargs):
+        objective = original(*args, **kwargs)
+        objectives.append(objective)
+        return objective
+
+    rows = [(timestamp / 7, readings, label) for timestamp, readings, label in recordings()]
+    rows[0][1].pop("g0_still")
+    with patch.object(event_fitting, "_objective", capture):
+        report = calculate(rows=rows)
+    regions = objectives[0].regions
+    assert report["counts"] == {
+        source: {
+            state: sum(
+                (b - a) / event_fitting.SAMPLE_SECONDS
+                for a, b, _, label, origin, _ in regions
+                if label == state and origin == source
+            )
+            for state in ("present", "not_present")
+        }
+        for source in ("human", "automatic")
+    }
+    assert report["incomplete_samples"] == sum(
+        (b - a) / event_fitting.SAMPLE_SECONDS
+        for a, b, readings, *_ in regions
+        if any(key not in readings for key in context()["keys"])
+    )
+
+
+@pytest.mark.parametrize("quality_context", [None, False])
+def test_fixed_assessment_matches_eager_preferences(quality_context):
+    from tuner_under_test.calibration import event_fitting
+
+    view = harness.types.SimpleNamespace(
+        data={"devices": {"a": {}}, "room_snapshot": None}, _history_runtime={}
+    )
+    harness.record_samples(view, "a", recordings(), [])
+    thresholds = {"g0_still": 20, "g1_still": 20}
+    prepare = event_fitting._DeviceObjective._member_preferences
+    expected = event_fitting.assess(view, "a", thresholds, quality_context=quality_context)
+
+    def eager(objective, members, room):
+        objective._prepare_preferences = True
+        return prepare(objective, members, room)
+
+    with patch.object(event_fitting._DeviceObjective, "_member_preferences", eager):
+        assert (
+            event_fitting.assess(view, "a", thresholds, quality_context=quality_context) == expected
+        )
