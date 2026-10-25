@@ -2,7 +2,7 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
-[Release notes](CHANGELOG.md) - 1.30.1 stops labelling history from freezing Home Assistant and applies the first label after a restart at once.
+[Release notes](CHANGELOG.md) - 1.31.0 makes the integration do far less work (Seen by about 13x faster, daily cleanup and room assessment about 3x, a radar's Learn a fifth less), downloads the export as a file and puts every Bermuda setting in one section.
 
 All collapsible sections start closed. Each heading describes what is inside;
 sections you open stay open during panel refreshes. History and Recommendations
