@@ -1,6 +1,6 @@
 # Release notes
 
-## 1.31.1 - unreleased
+## 1.31.1 - 2026-10-26
 
 - Recorded history is far harder to lose when saving stalls. On one install a save never
   finished, leaving five hours of readings in memory only, and the restart for an update
