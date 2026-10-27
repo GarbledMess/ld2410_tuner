@@ -17,12 +17,7 @@ def _derived(runtime):
     devices = runtime.data["devices"]
     found = {}
     for key, item in groups.definitions(runtime)[2].items():
-        # Like areas, a saved zone counts only its recording radars.
-        recording = [
-            member
-            for member in item["device_ids"]
-            if devices.get(member, {}).get("recording_enabled", True)
-        ]
+        recording = groups.recording_members(item, devices)
         if len(recording) != 1:
             continue
         found.setdefault(recording[0], []).extend(

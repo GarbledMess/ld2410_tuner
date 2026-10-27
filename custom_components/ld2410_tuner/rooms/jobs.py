@@ -90,19 +90,7 @@ def _source_signature(runtime, group_ids, found):
 def _bermuda_signature(runtime, members, related):
     from ..presence import bermuda
 
-    # Effective areas also stale a result when a target's default area changes.
-    targets = (("radars", members), ("rooms", related))
-    return {
-        kind: found
-        for kind, ids in targets
-        if (
-            found := {
-                key: entries
-                for key in sorted(ids)
-                if (entries := bermuda.effective(runtime, key, kind))
-            }
-        )
-    }
+    return {key: entries for key in sorted(related) if (entries := bermuda.effective(runtime, key))}
 
 
 def _set_context(runtime, group_ids):

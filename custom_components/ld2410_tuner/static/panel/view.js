@@ -32,20 +32,24 @@ export const panelView = {
         .source-picker-status { padding:8px; }
         .source-row input, .source-row select { min-width:0; width:100%; box-sizing:border-box; }
         #bermuda { overflow-wrap:anywhere; }
-        #bermuda .bermuda-radars { display:grid; gap:4px; }
-        #bermuda .bermuda-radar { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; min-width:0; }
-        #bermuda .source-negative { display:flex; flex:1 0 145px; min-width:0; min-height:44px; gap:8px; }
-        #bermuda .bermuda-range { display:flex; flex:none; align-items:center; gap:4px; font-size:12px; }
-        #bermuda .bermuda-area { max-width:100%; }
-        #bermuda .bermuda-area label { display:flex; align-items:center; gap:4px; font-size:12px; white-space:nowrap; }
-        #bermuda .bermuda-area select { width:auto; max-width:160px; min-height:36px; }
-        #bermuda .bermuda-area[hidden] { display:none; }
-        #bermuda .bermuda-range[hidden] { display:none; }
-        #bermuda .bermuda-range input { width:64px; min-width:0; min-height:36px; padding:6px; box-sizing:border-box; }
-        #bermuda .field-note { flex-basis:100%; margin:0 0 4px; }
-        #bermuda fieldset { padding:8px 10px; }
-        #bermuda fieldset > .muted { margin:4px 0 8px; font-size:12px; }
-        .presence-sources .source-negative, #bermuda .source-negative { flex-direction:row; align-items:center; }
+        #bermuda [data-bermuda-content] { max-width:760px; }
+        #bermuda h3 { font-size:14px; margin:20px 0 8px; }
+        #bermuda .bermuda-list { border-top:1px solid var(--divider-color); margin-bottom:16px; }
+        #bermuda .bermuda-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:10px 0; border-bottom:1px solid var(--divider-color); min-width:0; }
+        #bermuda .bermuda-toggle { display:flex; align-items:center; gap:8px; min-height:44px; min-width:0; flex:1 1 140px; cursor:pointer; }
+        #bermuda input[role="switch"] { appearance:none; position:relative; width:36px; height:22px; min-height:22px; margin:0; border:1px solid var(--divider-color); border-radius:12px; background:var(--secondary-background-color); flex:none; cursor:pointer; }
+        #bermuda input[role="switch"]::before { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:var(--secondary-text-color); }
+        #bermuda input[role="switch"]:checked { background:var(--primary-color); border-color:var(--primary-color); }
+        #bermuda input[role="switch"]:checked::before { left:17px; background:var(--card-background-color); }
+        #bermuda input[role="switch"]:focus-visible { outline:2px solid var(--primary-color); outline-offset:3px; }
+        #bermuda .bermuda-device-name { display:grid; gap:4px; flex:1 1 240px; min-width:0; }
+        #bermuda .bermuda-device-name .muted { font-size:12px; }
+        #bermuda .bermuda-device .bermuda-toggle { flex:0 0 auto; }
+        #bermuda .bermuda-range, #bermuda .bermuda-global { display:flex; align-items:center; gap:8px; }
+        #bermuda input[type="number"] { width:120px; min-width:0; min-height:44px; padding:8px; box-sizing:border-box; border:1px solid var(--divider-color); border-radius:9px; color:var(--primary-text-color); background:var(--card-background-color); font:inherit; font-size:13px; }
+        #bermuda .bermuda-global input { width:88px; }
+        #bermuda input:disabled { opacity:.5; }
+        .presence-sources .source-negative { flex-direction:row; align-items:center; }
         .source-negative input { width:22px; height:22px; min-height:22px; flex:none; }
         .storage-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin:12px 0; }
         .storage-fields label, .storage-trim label { display:flex; flex-direction:column; gap:5px; }
@@ -341,7 +345,7 @@ export const panelView = {
         </details>
         <div id="layout"></div>
         <details id="bermuda" class="panel-card bermuda-card">
-          <summary><h2>Bermuda</h2><span class="section-description">Choose tracked devices, target areas and optional ranges.</span></summary>
+          <summary><h2>Bermuda</h2><span class="section-description">Use phones and watches to mark rooms Present.</span></summary>
           <div data-bermuda-content></div>
         </details>
       </div>`;

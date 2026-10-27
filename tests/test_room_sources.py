@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import test_rooms as rooms_harness
 import test_tuner as harness
-from tuner_under_test.rooms import groups, jobs, membership, room_labels, truth
+from tuner_under_test.rooms import attribution, groups, jobs, membership, room_labels, truth
 from tuner_under_test.rooms.intervals import Timeline
 
 room_sources = sys.modules["tuner_under_test.rooms.room_sources"]
@@ -46,8 +46,203 @@ class RoomSourceTests(unittest.IsolatedAsyncioTestCase):
             x for x in room_labels.room_labels_for(self.runtime, GROUP) if x["source"] == "sensor"
         ]
 
+    def bermuda_settings(self, **changes):
+        # Saved unavailable devices remain configurable, like a temporarily offline phone.
+        self.runtime.data["bermuda"] = {
+            "devices": ["sensor.phone_area"],
+            "max_distance": None,
+            "rooms": {},
+        }
+        return {
+            "devices": ["sensor.phone_area"],
+            "max_distance": 3,
+            "rooms": {GROUP: {"max_distance": None}},
+            **changes,
+        }
+
+    def test_global_range_change_finalises_and_stales(self):
+        self.office()
+        self.configure()
+        settings = self.bermuda_settings()
+        self.runtime.configure_bermuda(settings)
+        self.entity("on")
+        self.run_ticks(1000, 1006)
+        before = jobs.set_context(self.runtime, [GROUP])[1]
+        revision = self.runtime.data["room_sensor_revision"][GROUP]
+        self.runtime.configure_bermuda(settings)
+        assert self.runtime.data["room_sensor_revision"][GROUP] == revision
+        assert GROUP in self.runtime._room_sensor_open
+        settings["max_distance"] = 4
+        self.runtime.configure_bermuda(settings)
+        assert GROUP not in self.runtime._room_sensor_open
+        assert f"room:{GROUP}" not in self.runtime._source_runtime
+        assert self.runtime.data["room_sensor_revision"][GROUP] > revision
+        assert "reference_stale_since" in self.device
+        assert jobs.set_context(self.runtime, [GROUP])[1] != before
+        settings["rooms"][GROUP]["max_distance"] = 2
+        self.runtime.configure_bermuda(settings)
+        revision = self.runtime.data["room_sensor_revision"][GROUP]
+        before = jobs.set_context(self.runtime, [GROUP])[1]
+        settings["max_distance"] = 5
+        self.runtime.configure_bermuda(settings)
+        assert self.runtime.data["room_sensor_revision"][GROUP] == revision
+        assert jobs.set_context(self.runtime, [GROUP])[1] == before
+
+    def test_or_handoff_between_boolean_and_bermuda_is_continuous(self):
+        self.office()
+        self.configure(start_buffer_seconds=10, end_buffer_seconds=10)
+        self.runtime.configure_bermuda(self.bermuda_settings(max_distance=None))
+        self.states["sensor.phone_area"] = types.SimpleNamespace(state="outside", attributes={})
+        self.entity("on")
+        self.run_ticks(1000, 1012)
+        self.entity("off")
+        self.states["sensor.phone_area"].state = "office"
+        self.run_ticks(1014, 1030)
+        assert self.spans() == [(1010, 1020)]
+        assert self.runtime._source_runtime[f"room:{GROUP}"]["start"] == 1000
+
     def spans(self):
         return [(x["start"], x["end"]) for x in self.sensor()]
+
+    def singleton(self, nonrecording=False):
+        self.office()
+        self.runtime.data["room_groups"] = {
+            GROUP: {
+                "name": "Office",
+                "area_id": "office",
+                "kind": "area",
+                "device_ids": ["a", "b"] if nonrecording else ["a"],
+            }
+        }
+        if nonrecording:
+            self.runtime.data["devices"]["b"]["recording_enabled"] = False
+
+    def test_singleton_sensor_labels_train_without_a_baseline(self):
+        self.singleton()
+        self.configure()
+        self.entity("on")
+        self.run_ticks(1000, 1006)
+        target = attribution.auto_targets(self.runtime, "a")
+        assert target is not None
+        assert target(1002) == ("present", "automatic", 0.8)
+        self.entity("off")
+        self.run_ticks(1008, 1010)
+        assert "reference_stale_since" in self.device
+
+    def test_singleton_sensor_and_manual_states(self):
+        self.singleton()
+        for source, origin, confidence in (("sensor", "automatic", 0.8), ("manual", "human", 1.0)):
+            for state in ("present", "not_present"):
+                with self.subTest(source=source, state=state):
+                    self.runtime.data["room_labels"] = {
+                        GROUP: [
+                            {
+                                "start": 1000,
+                                "end": 1006,
+                                "state": state,
+                                "source": source,
+                                "confidence": confidence,
+                            }
+                        ]
+                    }
+                    read = (
+                        attribution.auto_targets if source == "sensor" else attribution.room_targets
+                    )
+                    target = read(self.runtime, "a")
+                    assert target is not None
+                    assert target(1002) == (state, origin, confidence)
+
+    def test_singleton_one_recording_member_uses_shared_manual_rule(self):
+        self.singleton(nonrecording=True)
+        self.configure()
+        self.entity("on")
+        self.run_ticks(1000, 1006)
+        target = attribution.auto_targets(self.runtime, "a")
+        assert target is not None
+        assert target(1002) == ("present", "automatic", 0.8)
+        room_labels.label_room_range(self.runtime, GROUP, 1000, 1006, "present")
+        assert self.device["group_labels"][0]["state"] == "present"
+        assert attribution.room_targets(self.runtime, "a")(1002) == ("present", "human", 1.0)
+
+    def test_singleton_estimate_never_trains_itself(self):
+        self.singleton()
+        del self.runtime._history_view
+        self.device.setdefault("auto", {})["last_classification"] = {
+            "state": "present",
+            "confidence": 1.0,
+            "basis": "reference",
+            "timestamp": 1000,
+        }
+        self.runtime._record_history_sample("a", {"g0_move": 60}, 1000)
+        self.device["auto"]["last_classification"]["timestamp"] = 1006
+        self.runtime._record_history_sample("a", {"g0_move": 60}, 1006)
+        assert attribution.member_guess(self.runtime, "a").at(1002) is not None
+        saved = attribution.snapshot(self.runtime, "a")
+        assert saved is not None
+        learned = attribution.radar_attribution(self.runtime, "a", saved, human=False)
+        assert learned["contexts"][GROUP]["estimate"] is None
+        target = attribution.auto_targets(self.runtime, "a")
+        assert target is None or target(1002) is None
+
+    def test_singleton_and_multi_group_truth_order(self):
+        self.singleton()
+        multi = "zone:other"
+        self.runtime.data["room_groups"][multi] = {
+            "name": "Other",
+            "area_id": None,
+            "kind": "zone",
+            "device_ids": ["a", "b"],
+        }
+
+        def sensor(state):
+            return {
+                "start": 1000,
+                "end": 1006,
+                "state": state,
+                "source": "sensor",
+                "confidence": 0.8,
+            }
+
+        self.runtime.data["room_labels"] = {GROUP: [sensor("present")]}
+        assert attribution.auto_targets(self.runtime, "a")(1002) == ("present", "automatic", 0.8)
+        self.runtime.data["room_labels"][GROUP] = [sensor("not_present")]
+        assert attribution.auto_targets(self.runtime, "a")(1002) is None
+        self.runtime.data["room_labels"][multi] = [sensor("not_present")]
+        assert attribution.auto_targets(self.runtime, "a")(1002) == (
+            "not_present",
+            "automatic",
+            0.8,
+        )
+        self.runtime.data["room_labels"][GROUP] = [
+            sensor("present"),
+            {**sensor("unknown"), "source": "manual"},
+        ]
+        assert attribution.auto_targets(self.runtime, "a")(1002) is None
+
+    async def test_singleton_sensor_reaches_learning_input(self):
+        from tuner_under_test.calibration import event_fitting
+
+        self.singleton()
+        del self.runtime._history_view
+        self.configure()
+        self.entity("on")
+        self.run_ticks(1000, 1006)
+        self.runtime._record_history_sample("a", {"g0_move": 60}, 1000)
+        self.runtime._record_history_sample("a", {"g0_move": 60}, 1006)
+
+        def measured():
+            with patch("time.time", return_value=1012):
+                return event_fitting.assess(
+                    self.runtime, "a", {"g0_move": 20}, quality_context=False
+                )
+
+        found = measured()
+        assert found["automatic"]["duration"]["present_seconds"] == 6
+        assert found["human"]["duration"]["present_seconds"] == 0
+        await self.runtime.label_history_range("a", 1000, 1006, "not_present")
+        found = measured()
+        assert found["human"]["duration"]["empty_seconds"] == 6
+        assert found["automatic"]["duration"]["present_seconds"] == 0
 
     def test_room_source_present_extends_sensor_label(self):
         self.office()
@@ -72,16 +267,6 @@ class RoomSourceTests(unittest.IsolatedAsyncioTestCase):
     def test_room_bermuda_honours_max_distance(self):
         self.office()
         self.configure(mark_not_present=True, sources=[])
-        self.runtime.configure_bermuda(
-            {
-                "devices": {
-                    "sensor.phone_area": {
-                        "radars": {},
-                        "rooms": {GROUP: {"max_distance": 3, "area": None}},
-                    }
-                }
-            }
-        )
         self.registry.entities.update(
             {
                 "sensor.phone_area": types.SimpleNamespace(platform="bermuda", unique_id="phone"),
@@ -90,10 +275,11 @@ class RoomSourceTests(unittest.IsolatedAsyncioTestCase):
                 ),
             }
         )
+        self.runtime.configure_bermuda(self.bermuda_settings())
         self.states["sensor.phone_area"] = types.SimpleNamespace(state="office", attributes={})
         self.states["sensor.phone_range"] = types.SimpleNamespace(state="4.1", attributes={})
         self.run_ticks(1000, 1006)
-        self.assertEqual({x["state"] for x in self.sensor()}, {"not_present"})
+        self.assertEqual(self.sensor(), [])  # Out-of-range Bermuda supplies no absence.
         self.states["sensor.phone_range"].state = "2.3"
         self.run_ticks(1008, 1014)
         self.assertEqual(self.sensor()[-1]["state"], "present")
@@ -101,35 +287,23 @@ class RoomSourceTests(unittest.IsolatedAsyncioTestCase):
         self.run_ticks(1016, 1020)
         self.assertEqual(self.sensor()[-1]["end"], 1016)
 
-    def test_removing_zone_removes_central_assignments(self):
+    def test_removing_room_retains_enabled_devices(self):
         self.office()
-        zone = groups.configure(self.runtime, None, "Desk", None, ["a"])["id"]
-        self.runtime.configure_bermuda(
-            {
-                "devices": {
-                    "sensor.phone_area": {
-                        "radars": {"a": {"max_distance": 2}},
-                        "rooms": {zone: {"max_distance": 3}, GROUP: {"max_distance": 4}},
-                    }
-                }
-            }
-        )
-        groups.remove(self.runtime, zone)
+        self.runtime.configure_bermuda(self.bermuda_settings())
+        room_sources.forget(self.runtime, GROUP)
         saved = self.runtime.data["bermuda"]
-        self.assertNotIn(zone, saved["devices"]["sensor.phone_area"]["rooms"])
-        self.assertEqual(saved["devices"]["sensor.phone_area"]["radars"]["a"]["max_distance"], 2)
+        self.assertEqual(saved["rooms"], {})
+        self.assertEqual(saved["devices"], ["sensor.phone_area"])
         self.assertTrue(self.runtime.configure_bermuda(saved))
 
     def test_central_changes_stale_learning_signatures_without_sensor_activity(self):
         self.office()
         baseline = jobs.set_context(self.runtime, [GROUP])[1]
-        settings = {
-            "devices": {"sensor.phone_area": {"radars": {}, "rooms": {GROUP: {"max_distance": 3}}}}
-        }
+        settings = self.bermuda_settings()
         self.runtime.configure_bermuda(settings)
         room_changed = jobs.set_context(self.runtime, [GROUP])[1]
         self.assertNotEqual(room_changed, baseline)
-        settings["devices"]["sensor.phone_area"]["radars"]["a"] = {"max_distance": 2}
+        settings["rooms"][GROUP]["max_distance"] = 2
         self.runtime.configure_bermuda(settings)
         self.assertNotEqual(jobs.set_context(self.runtime, [GROUP])[1], room_changed)
 

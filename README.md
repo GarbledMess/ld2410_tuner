@@ -100,9 +100,11 @@ zones work** help.
 
 You can label a room or zone Present, Empty or Unknown directly on its timeline.
 These manual room labels are a separate record from each radar's own labels.
-A room or zone with exactly one radar is that radar: its manual labels train the
-radar as the radar's own labels would, and the radar's own labels win where both
-exist. **Seen by** still shows what the radar's own energy and labels say.
+In a room or zone with exactly one radar, manual room labels and sensor labels
+from room presence sources both train that radar. Manual labels keep their human
+weight; sensor labels use their automatic confidence. The radar's own manual
+labels win where they overlap. **Seen by** still shows what the radar's own energy
+and labels say.
 Sensor-derived room labels come from optional room presence sources (camera,
 boolean entity or Bermuda) and are stored separately; a sensor label change only
 marks the members' references out of date (see below). Editing a manual label
@@ -957,51 +959,51 @@ logic in Home Assistant and expose its result as a boolean entity.
 
 ### Bermuda
 
-The top-level **Bermuda** section, after the radar cards, starts closed and remembers
-its open state during polling. It lists tracked phones and watches by friendly name
-and current area. Discovery uses Bermuda Area sensors with a matching range sensor
-in Home Assistant's entity registry, so renamed entity IDs work too.
+Bermuda marks a room Present when any enabled phone or watch is in that area
+and within range. It never marks a room Empty. Use human-carried devices, not pets
+or permanently placed beacons.
 
-The **Bermuda** section is the single place to configure tracked devices for both
-**Radars** and **Rooms** (including zones). Tick each target to enable it, optionally
-set **Range (m)** (greater than zero, up to 100 m; blank accepts any distance), and
-choose an **Area** override if needed. **Own area** defaults to the radar's
-device-registry area or the room's area. A zone without an area accepts any of its
-member radars' areas. Without a default area, choose an override before ticking
-the target. Click **Save Bermuda settings** to apply. Unsaved choices survive polling.
-Use human-carried devices, not pets or permanently placed beacons.
+Open **Bermuda** after the radar cards. Switch on the phones or watches to use,
+switch on the rooms, then click **Save Bermuda settings**. Each enabled device
+counts for every enabled room. Rooms must be Home Assistant areas with at least
+one radar; zones, manual groups and individual radars are not Bermuda targets.
+The section starts closed, remembers its open state, and keeps unsaved edits
+during polling.
 
-Within the chosen area, range uses the matching Bermuda range sensor. Missing or
-unusable range gives no label; exceeding the limit counts as outside the area for
-negative labelling. Each target combines Bermuda with its Boolean sources using
-its existing source confidence, **Mark “Not Present”**, and trim settings. Radar
-source settings remain available for assigned radars even when they belong to a room.
-Room assignments create the same sensor room labels as other room sources.
+**Only within** sets the global range in metres; blank means any distance. A blank
+room range inherits that global value. Numbers must be greater than 0 and at most
+100. A reading exactly at the limit counts. Bermuda uses the matching range
+sensor; missing, unavailable or out-of-range readings give no information.
+With no range limit, an area match is enough.
 
-On first startup after upgrading, **all** per-radar and per-room Bermuda sources
-move into this section, preserving range and cross-area choices. Area names resolve
-to registry IDs; matching default areas become **Own area**. Unrecognised legacy
-area text remains active and appears as **unknown area**, and may be replaced with
-a current HA area. Previously migrated installations are upgraded too. Both source
-editors offer only **Boolean entity**; new Bermuda assignments belong here.
+Phones and watches show their friendly name and current area. Discovery matches
+Bermuda Area and range sensors through Home Assistant's entity registry, including
+renamed entities. Saved unavailable devices stay listed and can be switched off.
+Bermuda combines with other room sources: any positive source wins. The room's
+source confidence, trim and buffer settings apply. Room sensor labels also train
+a room's only radar; multi-radar rooms keep the existing attribution rules.
 
-Each tracked-device/target pair has one assignment. If legacy duplicates conflict,
-an existing central assignment takes precedence, otherwise the first legacy source
-wins. Displaced source records are retained in `bermuda_migration_conflicts` in the
-integration data for recovery; they do not create additional active assignments.
+On upgrade, old Bermuda assignments convert automatically to area rooms. When
+several assignments map to one room, the largest numeric range wins; any unlimited
+assignment makes that room unlimited. The global range starts unlimited. Targets
+without a current area room, including unknown old area names, stay inactive and
+are retained in `bermuda_migration_conflicts` in the integration data for recovery.
+Rooms use their own source settings or defaults, rather than copying radar
+settings. Existing stored sensor labels are unchanged.
 
 For Boolean sources, search the Entity field by friendly name or entity ID and tap
 a matching result. Desktop keyboard users can use arrow keys and Enter; Escape
 closes results. Direct entity ID entry remains available. The list shows up to 30
 matches; keep typing to narrow it. Unsaved choices survive polling.
 
-Any positive source starts or continues a Present period. **Mark “Not Present” defaults to
-OFF**: an off boolean or a person leaving the Bermuda area supplies no negative
-label. If you enable it, every selected source must explicitly report absence.
-Missing, unavailable, unknown or non-boolean states do not count as absence.
-Only enable negative labelling when the selected sources cover everyone in the
-room. Bermuda tracks a device, which may be left behind or not carried; cameras
-may have blind spots. See [Bermuda's Area sensor documentation](https://github.com/agittins/bermuda/wiki).
+Any positive source starts or continues a Present period. **Mark “Not Present”
+defaults to OFF**. When enabled, it requires at least one boolean source and every
+boolean source must explicitly report absence. Missing, unavailable, unknown or
+non-boolean states do not count as absence. Bermuda never supplies absence; with
+Bermuda alone, a room cannot receive an Empty label from sources.
+Only enable negative labelling when the boolean sources cover everyone in the
+room. A phone may be left behind or not carried, and cameras may have blind spots.
+See [Bermuda's Area sensor documentation](https://github.com/agittins/bermuda/wiki).
 
 **Trim start of presence** and **Trim end of presence** each default to **10
 seconds**, configurable per radar or room from 0 to 3600 seconds. For an observed

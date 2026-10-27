@@ -54,7 +54,7 @@ class TunerRuntime:
         self.unsub_nightly = None
         self._nightly_task = None
         self.data.setdefault("devices", {})
-        self.data.setdefault("bermuda", {"devices": {}})
+        self.data.setdefault("bermuda", {"devices": [], "max_distance": None, "rooms": {}})
         for device in self.data["devices"].values():
             autolabelling.migrate_segments(device)
         self._save_task: asyncio.Task | None = None

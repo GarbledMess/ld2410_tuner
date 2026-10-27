@@ -248,6 +248,9 @@ def test_independent_room_empty_and_attributed_present_keep_device_precedence():
     from tuner_under_test.calibration.event_fitting import fit
 
     source, saved = fixture()
+    # This regression exercises inferred multi-radar evidence; singleton truth is direct.
+    saved["groups"]["zone"]["device_ids"].append("other")
+    saved["members"]["other"] = {}
     source.hass = None
     source.data["room_snapshot"] = saved
     result = fit(source, "any-name", ["g0_move"], {"g0_move": 80}, automatic_weight=0.5)

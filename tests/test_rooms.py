@@ -660,10 +660,18 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
     async def test_estimate_only_episodes_are_marked(self):
         self.office()
         starts = self.record(2)
+        # Estimate attribution applies to multi-radar groups; singleton estimates are excluded.
+        self.runtime.data["room_groups"][self.zone]["device_ids"] = ["a", "b"]
         later = starts[-1] + 144
         for step in range(12):
             self.guess(later + step * 6, "present" if step < 6 else "not_present")
+            self.runtime.data["devices"]["b"].setdefault("auto", {})["last_classification"] = {
+                "state": "present" if step < 6 else "not_present",
+                "confidence": 1.0,
+                "timestamp": later + step * 6,
+            }
             self.runtime._record_history_sample("a", {"g0_move": 60}, later + step * 6)
+            self.runtime._record_history_sample("b", {"g0_move": 60}, later + step * 6)
         self.read_time = later + 72
         await self.poll()
         episodes = (await self.poll())["room_attribution"][self.zone]
@@ -739,7 +747,7 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         from tuner_under_test.rooms import attribution, seen_by
 
         self.office()
-        self.zone = groups.configure(self.runtime, None, "Desk", "office", ["a"])["id"]
+        self.zone = groups.configure(self.runtime, None, "Desk", "office", ["a", "b"])["id"]
         first = self.now - 3600
         t, zone, area = first, [], []
         # Human Empty (area Empty empties the zone): a quiet at 2, 60 samples.
@@ -827,7 +835,7 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         learner = attribution.radar_attribution(self.runtime, "a", saved)["found"][desk][-1][1]
         self.assertEqual((learner["state"], learner["inferred"]), ("yes", True))
         self.assertEqual(
-            attribution.room_targets(self.runtime, "a")(episode)[:2], ("present", "attributed")
+            attribution.room_targets(self.runtime, "a")(episode)[:2], ("present", "human")
         )
         start, end = episode - 1200, episode + 60
         report = assessment.calculate(members, start, end, room)
@@ -1085,10 +1093,18 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
     async def test_rows_split_where_the_learner_switches_attribution(self):
         self.office()
         starts = self.record(10)  # 60 quiet samples: confidence 0.6
+        self.runtime.data["room_groups"][self.zone]["device_ids"] = ["a", "b"]
         b = starts[-1] + 144
         # Human Present for the first half; the recorded estimate keeps it occupied after.
         human = {"start": b, "end": b + 36, "state": "present", "source": "manual"}
         self.later_run(b, [60] * 12, [human], guess="present")
+        for step in range(12):
+            self.runtime.data["devices"]["b"].setdefault("auto", {})["last_classification"] = {
+                "state": "present",
+                "confidence": 1.0,
+                "timestamp": b + step * 6,
+            }
+            self.runtime._record_history_sample("b", {"g0_move": 60}, b + step * 6)
         await self.poll()
         rows = (await self.poll())["room_attribution"][self.zone]
         self.assertEqual(
