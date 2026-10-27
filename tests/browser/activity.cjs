@@ -118,6 +118,14 @@ module.exports = async function testActivity(page) {
     window.finishActivity = null;
     panel._load();
   });
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(
+    await page.evaluate(() => panel._loading),
+    true,
+    "resizing completes while a snapshot request is still held",
+  );
+  await page.setViewportSize(viewport);
   await page.waitForTimeout(500);
   assert.equal(await page.locator("#snapshot-status.is-busy").count(), 0);
   assert.equal(await page.locator("#snapshot-status").innerText(), "");

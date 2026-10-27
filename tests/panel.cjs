@@ -30,6 +30,7 @@ const testLayout = require("./browser/layout.cjs");
 const testCardConsistency = require("./browser/consistency.cjs");
 const testCollapsedDefaults = require("./browser/collapsed.cjs");
 const testChartQueue = require("./browser/chart_queue.cjs");
+const testViewport = require("./browser/viewport.cjs");
 const { execFileSync } = require("node:child_process");
 (async () => {
   const registration = JSON.parse(
@@ -50,6 +51,33 @@ const { execFileSync } = require("node:child_process");
       locale: "en-GB", // Dates and times as the assertions expect, on any machine.
     });
     page.setDefaultTimeout(5000);
+    const setViewportSize = page.setViewportSize.bind(page);
+    page.setViewportSize = async (size) => {
+      await setViewportSize(size);
+      // ResizeObserver repaints charts after the viewport command returns.
+      // Wait for layout, not requests: tests also resize during held loads.
+      await page.waitForFunction(({ width, height }) => {
+        if (window.innerWidth !== width || window.innerHeight !== height)
+          return false;
+        const canvases =
+          window.panel?.shadowRoot?.querySelectorAll("[data-chart-canvas]") ||
+          [];
+        return [...canvases].every((canvas) => {
+          const svg = canvas.querySelector(":scope > svg");
+          if (
+            !canvas.checkVisibility({ visibilityProperty: true }) ||
+            !canvas.clientWidth ||
+            !svg
+          )
+            return true;
+          const minimum = canvas.hasAttribute("data-room-graph") ? 320 : 240;
+          return (
+            svg.viewBox.baseVal.width ===
+            Math.max(minimum, Math.round(canvas.clientWidth))
+          );
+        });
+      }, size);
+    };
     const errors = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
@@ -276,6 +304,7 @@ const { execFileSync } = require("node:child_process");
     );
     const cards = page.locator(".card");
     await cards.first().waitFor();
+    await testViewport(page);
     assert.equal(await cards.count(), 3);
     assert.match(await cards.first().locator(".name").innerText(), /73%/);
     await cards.first().locator('[data-action="toggle"]').click();
