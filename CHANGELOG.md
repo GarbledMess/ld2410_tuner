@@ -1,5 +1,10 @@
 # Release notes
 
+## 1.32.0 - unreleased
+
+- Cached results are no longer lost on Windows when another program briefly holds the
+  cache file; the write is retried.
+
 ## 1.31.1 - 2026-10-26
 
 - Recorded history is far harder to lose when saving stalls. On one install a save never

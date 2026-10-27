@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+import time
 import zlib
 from array import array
 from collections import OrderedDict
@@ -272,11 +273,19 @@ def _write(path, identity, encoded):
         with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".restmp", delete=False) as out:
             temporary = out.name
             out.write(encoded)
-        if not _current(path, identity):
-            return False
-        os.replace(temporary, path.with_suffix(".res"))
-        temporary = None
-        return True
+        for attempt in range(5):
+            if not _current(path, identity):
+                return False
+            try:
+                os.replace(temporary, path.with_suffix(".res"))
+            except PermissionError as error:
+                # Windows readers (including scanners) may briefly deny delete sharing.
+                if getattr(error, "winerror", None) not in (5, 32, 33) or attempt == 4:
+                    raise
+                time.sleep(0.01 * 2**attempt)
+            else:
+                temporary = None
+                return True
     finally:
         if temporary is not None:
             summary_cache._remove(Path(temporary))
