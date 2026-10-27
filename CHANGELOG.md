@@ -2,6 +2,9 @@
 
 ## 1.32.0 - unreleased
 
+- Learning a room or zone no longer runs out of memory. On real history a seven-day fit
+  of one radar needed about half the memory it did, and room learning no longer fails with
+  "Invalid physical history window" when room labels start before the learning window.
 - Cached results are no longer lost on Windows when another program briefly holds the
   cache file; the write is retried.
 

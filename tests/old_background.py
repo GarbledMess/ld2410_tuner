@@ -330,13 +330,14 @@ def attributions(radar, rows, radar_label_at, group_truths):
 
 
 def evidence_rows(view, device_id, keys, start, end):
-    """``evidence.read``'s ``(rows, barriers)`` from the recorded spans up to ``end``: a span
+    """``evidence.read``'s ``(rows, barriers)`` from spans within ``[start, end)``: a span
     where any of ``keys`` read is a row ``(span start, {gate: energy rounded up}, "unknown")``;
     one where none of them read is a barrier at its start."""
     from tuner_under_test.history import spans
 
     rows, barriers = [], []
-    for cell in spans.events(view, device_id, end=end):
+    # The fit's start bounds its evidence; the old oracle accidentally ignored it.
+    for cell in spans.events(view, device_id, start=start, end=end):
         values = {
             key: math.ceil(cell.values[HISTORY_KEYS.index(key)])
             for key in keys

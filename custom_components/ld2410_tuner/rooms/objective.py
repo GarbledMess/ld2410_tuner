@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from hashlib import blake2b
+from itertools import repeat
 
 from ..calibration import thresholds as threshold_domain
 from ..calibration.constants import SAMPLE_SECONDS
@@ -13,6 +14,7 @@ from ..calibration.separation import gate_preference
 from ..calibration.settings import DEFAULT_AUTOMATIC_WEIGHT
 from . import adaptive, attribution, evidence, replay, roles, truth, window_rates
 from .intervals import Timeline
+from .preferences import PreferenceRows
 
 # Projections of a radar kept for reuse: the other radars do not change while one is searched.
 RECENT = 4
@@ -30,16 +32,17 @@ def _supported_tables(rows, key, tables, supported):
     flags = bytes(0x31 if value in supported else 0x30 for value in range(256))
     column = rows.column(key)
     allowed = int(column.translate(flags)[::-1], 2) if column else 0
-    return tuple(bits & allowed for bits in tables)
+    shared = dict(zip(tables, tables, strict=True))
+    return tuple(shared.setdefault(found, found) for found in (bits & allowed for bits in tables))
 
 
 def _held(rows):
     """How long each row held, in six-second units (a sampled row: one sample)."""
     if rows.ends is None:
-        return [1] * len(rows)
-    return [
+        return repeat(1, len(rows))
+    return (
         (end - start) / SAMPLE_SECONDS for start, end in zip(rows.times, rows.ends, strict=True)
-    ]
+    )
 
 
 class Radar:
@@ -127,7 +130,9 @@ def room_mass(context, coverage, start, end):
     times = sorted(boundaries)
     available = Timeline(coverage)
     labels = [
-        truth.room_truth(context, (a + b) / 2) if available.at((a + b) / 2) else None
+        truth.room_truth(context, (a + b) / 2)
+        if start <= (a + b) / 2 < end and available.at((a + b) / 2)
+        else None
         for a, b in zip(times, times[1:], strict=False)
     ]
     sampled = [*times[:-1], end]  # The four masses share their times.
@@ -220,6 +225,7 @@ class Objective:
             item["thresholds"],
             start,
             end,
+            timing=item["timing"],
             automatic_reader=adaptive.CorrectedReader(model) if model else None,
         )
         return inputs, Radar(item, inputs, model)
@@ -275,21 +281,22 @@ class Objective:
     def _preferences(self, device_id, target):
         """Gate preferences from room truth as this radar's evidence; ``target`` is the
         learner's own target for it in this group (``roles.target``)."""
-        groups = {source: {label: [] for label in evidence.LABELS} for source in SOURCES}
         rows = self.inputs[device_id]["rows"]
-        labels = dict(zip(rows.times, truth.room_truths(self.truth, rows.times), strict=True))
-        for row, weight in zip(rows, _held(rows), strict=True):
-            label = _member_label(labels[row[0]], target, row[0])
+        groups = {
+            source: {label: PreferenceRows(rows, label) for label in evidence.LABELS}
+            for source in SOURCES
+        }
+        labels = truth.room_truths(self.truth, rows.times)
+        for index, (timestamp, weight, room_label) in enumerate(
+            zip(rows.times, _held(rows), labels, strict=True)
+        ):
+            label = _member_label(room_label, target, timestamp)
             if label:
                 state, source, confidence = label
-                if (
-                    self.quality is not None
-                    and source == "automatic"
-                    and labels[row[0]][1] == "human"
-                ):
+                if self.quality is not None and source == "automatic" and room_label[1] == "human":
                     model = self.quality[device_id]
-                    confidence = model.correct(confidence, model.context.basis_at(row[0]), state)
-                groups[source][state].append((row[0], row[1], state, confidence, weight))
+                    confidence = model.correct(confidence, model.context.basis_at(timestamp), state)
+                groups[source][state].add(index, weight, confidence)
         return {
             key: gate_preference(
                 key, groups["human"], self._automatic_preferences(device_id, key, groups), value
@@ -302,12 +309,14 @@ class Objective:
             return groups["automatic"]
         radar = self.radars[device]
         return {
-            state: [
-                row
-                for row in rows
-                if not (self.reference and self.totals["human", state])
-                and (state != "present" or row[1].get(key) in radar.supported_values[key])
-            ]
+            state: rows.restricted(
+                key,
+                frozenset()
+                if self.reference and self.totals["human", state]
+                else radar.supported_values[key]
+                if state == "present"
+                else None,
+            )
             for state, rows in groups["automatic"].items()
         }
 

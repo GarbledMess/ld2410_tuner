@@ -139,7 +139,13 @@ def human_episodes(members, start, end, room, owner):
     """Original explicit room union truth on physical shared recording coverage."""
     inputs = {
         key: evidence.read(
-            item["view"], key, item["thresholds"], start, end, automatic_reader=guesses.EMPTY
+            item["view"],
+            key,
+            item["thresholds"],
+            start,
+            end,
+            automatic_reader=guesses.EMPTY,
+            timing=item["timing"],
         )
         for key, item in members.items()
     }
@@ -152,13 +158,15 @@ def human_episodes(members, start, end, room, owner):
     ]
     coverage = replay.shared(item["coverage"] for item in physical)
     boundaries = sorted(
-        {
+        edge
+        for edge in {
             start,
             end,
             *context["boundaries"],
             *(edge for item in inputs.values() for edge in item["boundaries"]),
             *(edge for span in coverage for edge in span),
         }
+        if start <= edge <= end
     )
     result = []
     for low, high in zip(boundaries, boundaries[1:], strict=False):
@@ -203,9 +211,11 @@ def _held_score(groups, thresholds, episodes, start, end):
     for gid, found in groups.items():
         physical = [
             replay.radar(
-                (inputs := evidence.read(item["view"], key, item["thresholds"], start, end))[
-                    "rows"
-                ],
+                (
+                    inputs := evidence.read(
+                        item["view"], key, item["thresholds"], start, end, timing=item["timing"]
+                    )
+                )["rows"],
                 thresholds[key],
                 item["timing"],
                 inputs["barriers"],
@@ -285,6 +295,7 @@ def _validated_policy(groups, start, end, rooms, weight, cutoff, episodes, audit
                 for gid, item in objective.groups.items()
             }
         errors.append(empty)
+        del objective
     ref, pos = [item["score"] for item in reports.values()]
     decision = select(
         ref,
@@ -318,6 +329,7 @@ def _candidate_sources(groups, start, end, quality):
                 item["thresholds"],
                 start,
                 end,
+                timing=item["timing"],
                 automatic_reader=CorrectedReader(quality[key]),
             )
             shared[key] = {

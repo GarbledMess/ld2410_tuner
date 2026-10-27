@@ -19,7 +19,7 @@
        "not_present": 0.675,
        "present": 0
       },
-      "fingerprint": "0605fff7ea1819e87fabd6f362556aadf3e3be7512aea9847c5cd848c0ec1eec",
+      "fingerprint": "a68add1a11156748c3943c694d3e617b51577cadddb05a646a51f9db4d689d86",
       "gate_support": {
        "g0_move": {
         "credible_ceiling": 5,
@@ -40,7 +40,7 @@
        "present": 1
       },
       "provenance": "recorded_basis_only",
-      "quality_version": 4,
+      "quality_version": 5,
       "raw_episode_mass": {
        "not_present": 0.9,
        "present": 0
@@ -57,7 +57,7 @@
       "reliability": {}
      },
      "provenance": "recorded_basis_only",
-     "quality_version": 4,
+     "quality_version": 5,
      "reason": "no_valid_chronological_cut",
      "selected": "corrected_positive",
      "validated": false
@@ -305,7 +305,7 @@
        "not_present": 0.675,
        "present": 0
       },
-      "fingerprint": "5eb06585e89db38fd5ba610fdbfcd30d3002e99e559f0f7412df23084dadf854",
+      "fingerprint": "4c5f1309d1353ab218a966366911853d55d01a069e196d79327d753d558955e3",
       "gate_support": {
        "g0_move": {
         "credible_ceiling": 5,
@@ -326,7 +326,7 @@
        "present": 1
       },
       "provenance": "recorded_basis_only",
-      "quality_version": 4,
+      "quality_version": 5,
       "raw_episode_mass": {
        "not_present": 0.9,
        "present": 0
@@ -343,7 +343,7 @@
       "reliability": {}
      },
      "provenance": "recorded_basis_only",
-     "quality_version": 4,
+     "quality_version": 5,
      "reason": "no_valid_chronological_cut",
      "selected": "corrected_positive",
      "validated": false
@@ -591,7 +591,7 @@
        "not_present": 0,
        "present": 0.44999999999999996
       },
-      "fingerprint": "3c4541d4662feaa395f502f11539220ecdcf0349a6af8004ebe392b674ba566e",
+      "fingerprint": "da2bc906145b44f216b85142576d35a8c8e30655f1168b82f321d8fcdc465045",
       "gate_support": {
        "g0_move": {
         "credible_ceiling": 5,
@@ -625,7 +625,7 @@
        "present": 1
       },
       "provenance": "recorded_basis_only",
-      "quality_version": 4,
+      "quality_version": 5,
       "raw_episode_mass": {
        "not_present": 0,
        "present": 0.6
@@ -642,7 +642,7 @@
       "reliability": {}
      },
      "provenance": "recorded_basis_only",
-     "quality_version": 4,
+     "quality_version": 5,
      "reason": "no_valid_chronological_cut",
      "selected": "corrected_positive",
      "validated": false

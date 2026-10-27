@@ -132,6 +132,7 @@ RUNTIME_FILES = (
     "rooms/fitting.py",
     "rooms/learning.py",
     "rooms/objective.py",
+    "rooms/preferences.py",
     "rooms/evidence.py",
     "rooms/event_attribution.py",
     "rooms/groups.py",

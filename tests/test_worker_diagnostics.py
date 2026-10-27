@@ -234,3 +234,28 @@ def test_unavailable_stderr_does_not_fail_child_milestone(monkeypatch):
 
     monkeypatch.setattr(diagnostics.os, "write", unavailable)
     diagnostics.emit("protected")
+
+
+def test_manifest_context_counts_metadata_without_reading_history(tmp_path):
+    from tuner_under_test.worker import diagnostics, manifest
+
+    path = tmp_path / "manifest.sqlite"
+    day = {
+        "device_id": "synthetic",
+        "date": "2026-01-01",
+        "path": str(tmp_path / "nonexistent.day"),
+        "identity": [1, 2, 3, 125],
+    }
+    with manifest.Writer(path) as write:
+        write("first", {"days": [day]})
+        write("second", {"days": [day]})
+    request = {"operation": "room_fit", "manifest": str(path)}
+    assert diagnostics.describe(request, 80) == {
+        "operation": "room_fit",
+        "views": 2,
+        "day_references": 2,
+        "unique_files": 1,
+        "history_file_bytes": 125,
+        "request_bytes": 80,
+    }
+    assert "views" not in request

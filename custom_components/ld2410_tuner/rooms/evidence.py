@@ -2,9 +2,11 @@
 
 from array import array
 from itertools import islice
+from math import inf
 from operator import le
 
 from ..calibration.constants import AGREEING_MEMBERS
+from ..calibration.event_replay import _timing
 from ..calibration.metrics import bit_planes
 from ..const import HISTORY_KEYS
 from ..history import guesses, spans
@@ -115,9 +117,13 @@ class Rows:
         )
 
 
-def read(view, device_id, keys, start, end, *, automatic_reader=None):
+def read(view, device_id, keys, start, end, *, automatic_reader=None, timing=None):
     device = view.data["devices"][device_id]
-    rows, barriers = _recorded(view, device_id, keys, end)
+    # Allow an on-delay to settle and the resulting hold/off-delay tail to expire.
+    # Query clipping keeps the value of a physical cell straddling this boundary;
+    # coverage gaps still reset timing. Attribution has its own prepared context.
+    warmup = sum(_timing(timing))
+    rows, barriers = _recorded(view, device_id, keys, end, start=start - warmup)
     automatic = (
         guesses.evidence(view, device_id, start) if automatic_reader is None else automatic_reader
     )
@@ -140,23 +146,23 @@ def read(view, device_id, keys, start, end, *, automatic_reader=None):
     }
 
 
-def _recorded(view, device_id, keys, end):
-    """``(rows, barriers)`` of the recorded spans up to ``end``: a span where any of ``keys``
-    read is a row (from its start to its end; a gate that did not read is kept as
+def _recorded(view, device_id, keys, end, *, start=-inf):
+    """``(rows, barriers)`` of the recorded spans in ``[start, end)``: a span where any of
+    ``keys`` read is a row (from its start to its end; a gate that did not read is kept as
     ``MISSING``, which compares as no reading); one where none of them read is a barrier at
     its start."""
     indices = [HISTORY_KEYS.index(key) for key in keys]
-    times, ends, barriers, read = array("d"), array("d"), [], []
+    times, ends, barriers, read = array("d"), array("d"), [], bytearray()
     blank = bytes([MISSING]) * len(keys)
-    for cell in spans.search_events(view, device_id, indices, end=end):  # In time order.
+    for cell in spans.search_events(view, device_id, indices, start=start, end=end):
         if cell.values == blank:
             barriers.append(cell.start)
             continue
         times.append(cell.start)
         ends.append(cell.end)
-        read.append(cell.values)
+        read.extend(cell.values)
     # Every row's readings end to end; each gate's column is every ``len(keys)``th byte.
-    joined, width = b"".join(read), len(keys)
+    joined, width = bytes(read), len(keys)
     layout = {key: position for position, key in enumerate(keys)}
     rows = Rows(times, [joined[gate::width] for gate in range(width)], layout, ends=ends)
     return rows, sorted(set(barriers))

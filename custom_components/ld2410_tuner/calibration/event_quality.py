@@ -12,11 +12,7 @@ from .episodes import Episode
 LABELS = ("present", "not_present")
 
 
-def _cells(physical, reader, owner, start, end):
-    if not physical:
-        return []
-    first, last = max(start, physical[0].start), min(end, physical[-1].end)
-    result = []
+def _cells(physical, reader, owner, start, end, first, last):
     for cell in physical:
         low, high = max(start, cell.start), min(end, cell.end)
         cuts = [
@@ -27,10 +23,7 @@ def _cells(physical, reader, owner, start, end):
         for a, b in zip(cuts, cuts[1:], strict=False):
             if b > a:
                 state = reader(a)
-                result.append(
-                    (a, b, cell.values, state, _parent(reader, a, state, owner, first, last))
-                )
-    return result
+                yield a, b, cell.values, state, _parent(reader, a, state, owner, first, last)
 
 
 def _parent(reader, timestamp, state, owner, first, last):
@@ -43,31 +36,53 @@ def _parent(reader, timestamp, state, owner, first, last):
 
 
 def _human(cells, keys):
-    """Each human episode's presence masks and readings, and the empty-labelled readings. A
-    run of cells under one parent episode keeps that episode's entries at hand (``_Run``):
-    looking each up again by episode, for every cell and gate, was most of a room learn's
-    evidence work."""
-    keys = tuple(keys)  # A mapping of gates (the learner's thresholds) is read in its order.
-    episodes, masks, densities = {}, {}, {}
-    empty = {key: [0.0] * 101 for key in keys}
-    positions = tuple(HISTORY_KEYS.index(key) for key in keys)
-    sinks = [empty[key] for key in keys]
-    run = _Run(None, keys)
-    for low, high, values, _state, parent in cells:
-        if parent is None or not any(values[position] is not None for position in positions):
-            continue
-        if parent is not run.parent:
-            run.merge(masks)
-            run, episodes[parent] = _Run(parent, keys), None
-        run.add(values, positions, high - low, masks, densities, sinks)
-    run.merge(masks)
-    presence = {
-        key: tuple(mask for (ep, gate), mask in masks.items() if gate == key) for key in keys
-    }
-    empty = {
-        key: [seconds / SAMPLE_SECONDS for seconds in histogram] for key, histogram in empty.items()
-    }
-    return tuple(episodes), presence, empty, densities
+    human = _Human(keys)
+    for cell in cells:
+        human.add(cell)
+    return human.result()
+
+
+class _Human:
+    """Accumulate each episode in cell order, retaining only masks and histograms."""
+
+    def __init__(self, keys):
+        self.keys = tuple(keys)
+        self.episodes, self.masks, self.densities = {}, {}, {}
+        self.empty = {key: [0.0] * 101 for key in self.keys}
+        self.positions = tuple(HISTORY_KEYS.index(key) for key in self.keys)
+        self.sinks = [self.empty[key] for key in self.keys]
+        self.run = _Run(None, self.keys)
+
+    def add(self, cell):
+        low, high, values, _state, parent = cell
+        if parent is None or not any(values[position] is not None for position in self.positions):
+            return
+        if parent is not self.run.parent:
+            self.run.merge(self.masks)
+            self.run, self.episodes[parent] = _Run(parent, self.keys), None
+        self.run.add(values, self.positions, high - low, self.masks, self.densities, self.sinks)
+
+    def result(self):
+        self.run.merge(self.masks)
+        presence = {
+            key: tuple(mask for (ep, gate), mask in self.masks.items() if gate == key)
+            for key in self.keys
+        }
+        empty = {
+            key: [seconds / SAMPLE_SECONDS for seconds in histogram]
+            for key, histogram in self.empty.items()
+        }
+        return tuple(self.episodes), presence, empty, self.densities
+
+
+def _observed(cells, human, digest):
+    digest.update(b"[")
+    for cell in cells:
+        human.add(cell)
+        digest.update(repr(cell).encode())
+        digest.update(b"\0")
+        yield cell
+    digest.update(b"]")
 
 
 class _Run:
@@ -132,11 +147,11 @@ def _source_evidence(cells, runs, owner, keys):
 
     parents = dict(zip(runs, _auto_parents(runs, owner), strict=True))
     automatic, overlaps = {}, {}
-    usable = [
+    usable = (
         (a, b, parent if state in LABELS else state)
         for a, b, values, state, parent in cells
         if any(values[HISTORY_KEYS.index(key)] is not None for key in keys)
-    ]
+    )
     for low, high, human, run in _intersections(usable, runs):
         confidence = guesses.confidence(run[3])
         if not MIN_AUTO_CONFIDENCE <= confidence <= 1:
@@ -180,19 +195,19 @@ def collect(view, device_id, keys, start, end, human_reader, owner):
     reader = _independent_reader(device, human_reader)
     end = min(end, getattr(view, "_attribution_until", end))
     owner = (device_id,) if owner is None else tuple(owner)
-    physical = list(spans.events(view, device_id, start=start, end=end))
-    cells = _cells(physical, reader, owner, start, end)
+    first, last = spans.bounds(view, device_id, start, end)
+    physical = spans.events(view, device_id, start=start, end=end)
+    cells = _cells(physical, reader, owner, start, end, first, last)
     clipped = [
         (max(start, r[0]), min(end, r[1]), *r[2:])
         for r in guesses.of(view, device_id, start).runs
         if r[0] < end and r[1] > start and r[1] > r[0]
     ]
     runs = _outside_unknown(clipped, reader)
-    human, presence, empty, densities = _human(cells, keys)
-    automatic, overlaps = _source_evidence(cells, runs, owner, keys)
-    digest = sha256(
-        repr((cells, runs, keys, owner, device.get("presence_sources"))).encode()
-    ).hexdigest()
+    accumulator, digest = _Human(keys), sha256()
+    automatic, overlaps = _source_evidence(_observed(cells, accumulator, digest), runs, owner, keys)
+    human, presence, empty, densities = accumulator.result()
+    digest = _fingerprint((), runs, keys, owner, device.get("presence_sources"), digest=digest)
     return QualityContext(
         human,
         automatic,
@@ -206,6 +221,20 @@ def collect(view, device_id, keys, start, end, human_reader, owner):
         _density(densities, keys, "present"),
         _density(densities, keys, "not_present"),
     )
+
+
+def _fingerprint(cells, runs, keys, owner, sources, *, digest=None):
+    """Hash rows individually; neither their text nor its encoding spans the window."""
+    collections = (cells, runs) if digest is None else (runs,)
+    digest = sha256() if digest is None else digest
+    for collection in collections:
+        digest.update(b"[")
+        for item in collection:
+            digest.update(repr(item).encode())
+            digest.update(b"\0")
+        digest.update(b"]")
+    digest.update(repr((keys, owner, sources)).encode())
+    return digest.hexdigest()
 
 
 def _density(densities, keys, state):

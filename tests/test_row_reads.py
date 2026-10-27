@@ -106,7 +106,11 @@ def test_confidence_time_and_event_windows_read_the_rows_times(tmp_path):
     times = array("d", (START + 6 * i for i in range(50)))  # Contiguous: one event window.
     contiguous = evidence.Rows(times, [bytes(50)], {"g0_move": 0}, ends=[t + 6 for t in times])
     window = event_timing.EventWindow(contiguous, 0, 0, 0)
-    assert window.times == timing.sample_times(contiguous) == [row[0] for row in contiguous]
+    assert (
+        list(window.times)
+        == list(timing.sample_times(contiguous))
+        == [row[0] for row in contiguous]
+    )
     sampled = [(1.0, None, "present", 0.5, 4), (3.0, None, "present", 0.25, 2)]  # Weighted.
     reference = duration.WeightedTime([1.0, 2.0], [2.0, 0.5])
     assert duration._confidence_time(sampled).at(3.0) == reference.at(3.0)

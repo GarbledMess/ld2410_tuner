@@ -114,3 +114,38 @@ def test_timing_projection_uses_precise_boundaries_without_sample_uncertainty():
 def test_invalid_physical_cells_are_not_recording_coverage(intervals):
     with pytest.raises(ValueError):
         DurationGroup(Cells(intervals))
+
+
+def test_packed_event_geometry_stays_compact_and_matches_list_geometry():
+    import tracemalloc
+    from array import array
+
+    from tuner_under_test.calibration.event_timing import EventWindow
+    from tuner_under_test.rooms.evidence import Rows
+
+    count = 100000
+    rows = Rows(
+        array("d", (i / 8 for i in range(count))),
+        [bytes([20]) * count],
+        {"g0_move": 0},
+        ends=array("d", ((i + 1) / 8 for i in range(count))),
+    )
+    oracle = EventWindow(
+        Rows(list(rows.times), rows.columns, rows.layout, ends=list(rows.ends)), 2, 0.25, 0.5
+    )
+    tracemalloc.start()
+    try:
+        actual = EventWindow(rows, 2, 0.25, 0.5)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    for bits in (0, 1, 0b101101, (1 << count) - 1, 1 << (count - 1)):
+        assert actual.raw(bits) == oracle.raw(bits)
+        assert actual._lower(bits) == oracle._lower(bits)
+        assert actual.project(bits) == oracle.project(bits)
+    assert (actual.start, actual.end, actual.eligible) == (
+        oracle.start,
+        oracle.end,
+        oracle.eligible,
+    )
+    assert peak < 2_000_000

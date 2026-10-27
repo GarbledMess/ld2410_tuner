@@ -80,3 +80,105 @@ def test_fractional_delivery_cannot_drop_duration_below_support_boundary():
     context = quality_evidence.collect(source, "any-name", ["g0_move"])
     assert context.gate_empty["g0_move"][21] == 100
     assert quality.learn(context).regimes["g0_move"].basis == "empirical_empty_tail"
+
+
+def test_fingerprint_is_deterministic_and_sensitive_to_evidence():
+    source = view([block(0, 600, 20)], [{"start": 0, "end": 600, "state": "present"}])
+    first = quality_evidence.collect(source, "any-name", ["g0_move"])
+    assert (
+        first.fingerprint == quality_evidence.collect(source, "any-name", ["g0_move"]).fingerprint
+    )
+    changed = view([block(0, 600, 21)], [{"start": 0, "end": 600, "state": "present"}])
+    assert (
+        first.fingerprint != quality_evidence.collect(changed, "any-name", ["g0_move"]).fingerprint
+    )
+    assert (
+        first.fingerprint
+        != quality_evidence.collect(
+            source,
+            "any-name",
+            ["g0_move"],
+            end=300,
+        ).fingerprint
+    )
+
+
+def test_fingerprinting_peak_is_bounded_below_whole_payload_repr(monkeypatch):
+    import tracemalloc
+
+    from tuner_under_test.calibration import event_quality
+
+    cells = [(i, i + 1, (20 + i % 2,) * 18, None, None) for i in range(30000)]
+    size = len(repr((cells, (), ["g0_move"], ("any-name",), None)).encode())
+    tracemalloc.start()
+    try:
+        digest = event_quality._fingerprint(cells, (), ["g0_move"], ("any-name",), None)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(digest) == 64
+    assert size > 2_000_000
+    assert peak < 256_000
+    assert peak < size / 10
+
+
+def test_fingerprint_format_invalidates_saved_quality_policy():
+    from tuner_under_test.calibration import comparison_cache, settings
+
+    assert quality.QUALITY_VERSION == 5
+    assert settings.signature({})["quality_version"] == 5
+
+    pattern = {"thresholds": {"g0_move": 20}, "applicable": True}
+    current = {
+        "entities": {"g0_move": "number.synthetic"},
+        "keys": ["g0_move"],
+        "patterns": {"user": pattern},
+        **settings.signature({}),
+    }
+    old = {**current, "quality_version": 4}
+    device = {}
+    report = {"patterns": {"user": {"score": 90}}}
+    comparison_cache.remember(device, old, report)
+    assert comparison_cache.stored(device, current, pattern) is None
+    assert comparison_cache.missing(device, current) == {"user": pattern}
+    comparison_cache.remember(device, current, report)
+    assert comparison_cache.stored(device, current, pattern)["score"] == 90
+    assert comparison_cache.missing(device, current) == {}
+
+
+def test_quality_collection_streams_physical_cells_with_identical_context(monkeypatch):
+    import tracemalloc
+
+    from tuner_under_test.calibration import event_quality
+
+    events = [(i / 2, (20.25 + i % 2,) + (None,) * 17) for i in range(30000)]
+    source = view(
+        [(events, 15000)],
+        [{"start": 10, "end": 14990, "state": "not_present"}],
+        [(0, 15000, "present", 20, guesses.EXTERNAL)],
+    )
+    # This is the materialized implementation's complete context, including its hash.
+    expected = quality_evidence.collect(source, "any-name", ["g0_move"])
+    assert (
+        expected.fingerprint == "5b4588034b90e5440105e11c26b1117c07f1f12c8e4c7bb67bf58bbfb744ccbd"
+    )
+    original = event_quality._cells
+
+    def materialized(*args, **kwargs):
+        return list(original(*args, **kwargs))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(event_quality, "_cells", materialized)
+        assert quality_evidence.collect(source, "any-name", ["g0_move"]) == expected
+    # The worker serves immutable decoded days. Exclude the live-store decoder here.
+    store = source._days
+    decoded = {date: store.day("any-name", date) for date in store.days("any-name")}
+    monkeypatch.setattr(store, "day", lambda device, date, until=None: decoded[date])
+    tracemalloc.start()
+    try:
+        actual = quality_evidence.collect(source, "any-name", ["g0_move"])
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert actual == expected
+    assert peak < 2_000_000
