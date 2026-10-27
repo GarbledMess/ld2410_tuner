@@ -2,7 +2,7 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
-[Release notes](CHANGELOG.md) - 1.31.1 stops recorded history from silently going unsaved, warns in the panel and log if saving stalls, and saves readings still in memory at shutdown.
+[Release notes](CHANGELOG.md) - 1.32.0 simplifies Bermuda to one switch per phone and per room, stops room learning running out of memory, and lets room sources train single-radar rooms.
 
 All collapsible sections start closed. Each heading describes what is inside;
 sections you open stay open during panel refreshes. History and Recommendations
