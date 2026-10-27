@@ -1,11 +1,44 @@
 """Elapsed-time calibration scores over observed sessions, never a live detector."""
 
-from functools import cached_property, lru_cache
+from functools import cached_property, lru_cache, partial
+from weakref import proxy
 
 from .constants import MISSED_TIME_COST
 from .intervals import WeightedTime
 from .scoring import error_cost, mass
 from .timing import _sessions, hit_runs, make_window
+
+
+def _cached(method, maxsize):
+    """Cache per owner without keeping that owner alive through its bound method."""
+    return lru_cache(maxsize=maxsize)(partial(method.__func__, proxy(method.__self__)))
+
+
+def _call_cached(owner, cache, *args, **kwargs):
+    return cache(*args, **kwargs)
+
+
+def _bound_cache(owner, cache):
+    call = partial(_call_cached, owner, cache)
+    call.cache_info = cache.cache_info
+    call.cache_clear = cache.cache_clear
+    return call
+
+
+class _CachedMethod:
+    """Bind calls strongly, but keep only a weak owner inside the instance's cache."""
+
+    def __init__(self, method, maxsize):
+        self.method, self.maxsize = method, maxsize
+        self.name = "_cached_" + method.__name__
+
+    def __get__(self, owner, cls=None):
+        if owner is None:
+            return self.method
+        cache = owner.__dict__.get(self.name)
+        if cache is None:
+            cache = owner.__dict__[self.name] = _cached(self.method.__get__(owner), self.maxsize)
+        return _bound_cache(owner, cache)
 
 
 def _clip(intervals, start, end):
@@ -53,7 +86,7 @@ def _confidence_time(rows):
     confidence = WeightedTime(times, [*weights, 0.0])
     # Candidate spans reuse the same sample midpoints and timing-shifted endpoints.
     # Remember their exact prefix values rather than locating each one millions of times.
-    confidence.at = lru_cache(maxsize=4096)(confidence.at)
+    confidence.at = _cached(confidence.at, 4096)
     return confidence
 
 
@@ -125,16 +158,6 @@ class DurationGroup:
             _measurement_windows(self.windows, self.recent_start, recent)
             for recent in (False, True)
         )
-        # Distinct positive/negative pairs often share one class mask. Keep a bounded
-        # sweep's per-class summaries even when the complete-rank pair is new.
-        self.measure = lru_cache(maxsize=8192)(self._measure)
-        # Changing a global mask commonly leaves most recording sessions unchanged.
-        # One bounded cache across this group avoids unbounded per-session caches.
-        self.part = lru_cache(maxsize=8192)(self._measure_part)
-        # Automatic ranking consumes only confidence mass. Retain scalar local
-        # contributions, avoiding nine-field duration aggregation per candidate.
-        self.weighted = lru_cache(maxsize=8192)(self._weighted)
-        self.weighted_part = lru_cache(maxsize=8192)(self._weighted_part)
 
     def _spans(self, window, bits, latest):
         if not self.timed:
@@ -211,6 +234,12 @@ class DurationGroup:
         intervals = _clip(self._intervals(window, bits, latest), start, window.end)
         return sum(confidence.between(a, b) for a, b in intervals)
 
+    # Keep per-class and per-window contributions bounded across a gate sweep.
+    measure = _CachedMethod(_measure, 8192)
+    part = _CachedMethod(_measure_part, 8192)
+    weighted = _CachedMethod(_weighted, 8192)
+    weighted_part = _CachedMethod(_weighted_part, 8192)
+
 
 def _add_window(result, start, end, intervals, confidence, *, weighted=True):
     result["observed_seconds"] += end - start
@@ -234,11 +263,6 @@ class DurationReplay:
         self.absent = DurationGroup(
             absent, config, absent=True, barriers=[row[0] for row in present]
         )
-        # A full gate sweep evicts the small per-measure cache. Complete ranks depend
-        # only on these immutable replay inputs and the two hit masks; repeated seeds
-        # and repair candidates can therefore reuse them without another duration replay.
-        self.rank = lru_cache(maxsize=8192)(self.rank)
-        self.automatic_rank = lru_cache(maxsize=4096)(self.automatic_rank)
 
     def summary(self, detected, false, recent=False):
         # Reported duration fields are unweighted. Confidence only contributes to
@@ -294,3 +318,7 @@ class DurationReplay:
         miss = 1 - p[1] / p[0] if p[0] else 0.0
         false_rate = n[1] / n[0] if n[0] else 0.0
         return round(error_cost(miss, false_rate), 10), round(miss, 12), round(false_rate, 10)
+
+    # Repeated seeds reuse complete ranks without another duration replay.
+    rank = _CachedMethod(rank, 8192)
+    automatic_rank = _CachedMethod(automatic_rank, 4096)

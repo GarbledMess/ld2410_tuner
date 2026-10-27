@@ -1,6 +1,8 @@
 """Elapsed time, density invariance and review attribution regressions."""
 
 import copy
+import gc
+import weakref
 
 import pytest
 import test_tuner as harness
@@ -215,3 +217,21 @@ def test_all_fit_reports_share_the_current_time_cost(timing):
         expected = 500 * missed + 100 * false
         assert d["error_cost"] == pytest.approx(expected)
         assert d["missed_time_cost"] == 5
+
+
+def test_replay_and_confidence_are_released_without_cyclic_collection():
+    gc.disable()
+    try:
+        replay = DurationReplay(rows(range(10)), rows(range(20, 30), "not_present"))
+        replay.rank(511, 0)
+        replay.automatic_rank(511, 0)
+        references = [weakref.ref(replay), weakref.ref(replay.present), weakref.ref(replay.absent)]
+        references.extend(
+            weakref.ref(confidence)
+            for group in (replay.present, replay.absent)
+            for _, _, confidence in group.windows
+        )
+        del replay
+        assert all(reference() is None for reference in references)
+    finally:
+        gc.enable()

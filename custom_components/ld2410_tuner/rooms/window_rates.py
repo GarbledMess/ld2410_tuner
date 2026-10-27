@@ -8,6 +8,7 @@ rate is the same whichever masks came before it.
 """
 
 from bisect import bisect_right
+from weakref import proxy
 
 from ..calibration.intervals import across
 from . import replay
@@ -34,7 +35,7 @@ def suited(objective):
 
 class WindowRates:
     def __init__(self, objective, radar):
-        self.objective, self.projector = objective, radar.projector
+        self.objective, self.projector = proxy(objective), radar.projector
         self.offsets = [frame[0] for frame in self.projector.frames]
         self.ends = [
             offset + width

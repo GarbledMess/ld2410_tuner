@@ -320,7 +320,7 @@ def test_tail_audit_is_versioned_and_reports_prior_sparse_and_credible_paths():
         )
     )
     audit = model.audit()
-    assert QUALITY_VERSION == audit["quality_version"] == 4
+    assert QUALITY_VERSION == audit["quality_version"] == 5
     gate = audit["gate_support"]["g"]
     assert gate["empty_maximum"] == 90
     assert gate["empty_quantile"] == 10
@@ -459,7 +459,7 @@ def test_v3_tail_audit_exposes_normalized_regime_support_and_prior():
         )
     )
     audit = model.audit()
-    assert QUALITY_VERSION == audit["quality_version"] == 4
+    assert QUALITY_VERSION == audit["quality_version"] == 5
     assert audit["gate_support"]["g"]["likelihood_supported_bins"] > 0
     assert audit["gate_support"]["g"]["occupied_density_episodes"] == 1
     assert audit["gate_support"]["g"]["empty_density_episodes"] == 1

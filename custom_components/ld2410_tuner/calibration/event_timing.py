@@ -1,6 +1,8 @@
 """Exact interval geometry behind the bounded threshold-mask replay."""
 
+from array import array
 from bisect import bisect_left
+from itertools import islice
 from math import isfinite
 
 from .event_replay import _filtered, _held
@@ -10,7 +12,7 @@ from .timing import sample_times
 class EventWindow:
     def __init__(self, rows, hold, on_delay, off_delay):
         self.times = sample_times(rows)
-        self.ends = list(rows.ends)
+        self.ends = array("d", rows.ends) if isinstance(rows.ends, array) else list(rows.ends)
         _validate(self.times, self.ends)
         self.hold, self.on, self.off = hold, on_delay, off_delay
         self.start, self.end = self.times[0], self.ends[-1]
@@ -47,5 +49,5 @@ def _validate(times, ends):
         raise ValueError("Event replay needs one explicit endpoint per cell")
     if any(not isfinite(a) or not isfinite(b) or b <= a for a, b in zip(times, ends, strict=True)):
         raise ValueError("Event cells must have finite positive duration")
-    if any(end != start for end, start in zip(ends, times[1:], strict=False)):
+    if any(end != start for end, start in zip(ends, islice(times, 1, None), strict=False)):
         raise ValueError("One event window must have contiguous physical coverage")

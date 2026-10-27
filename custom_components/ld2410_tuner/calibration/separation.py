@@ -5,6 +5,8 @@ def _readings(rows, key):
     """``(energy, weight)`` of the rows that read gate ``key``, sorted: a row weighs the time it
     held in six-second units (its fifth field), a sampled row one sample. Rows whose readings
     are kept as bytes in one layout (``evidence.Readings``) are read at the gate's position."""
+    if hasattr(rows, "readings"):
+        return rows.readings(key)
     position = _position(rows, key)
     if position is None:
         return sorted((row[1][key], _weight(row)) for row in rows if key in row[1])

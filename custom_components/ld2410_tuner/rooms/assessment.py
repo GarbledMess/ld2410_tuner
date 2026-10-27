@@ -3,7 +3,7 @@
 from ..calibration.constants import MIN_CLASS_SAMPLES, MIN_RECALL, MISSED_TIME_COST, SAMPLE_SECONDS
 from ..calibration.scoring import error_cost, score_from_cost
 from . import adaptive, evidence, replay, roles, truth
-from .intervals import seconds
+from .intervals import intersect, seconds
 
 SCORER_VERSION = 2
 
@@ -18,6 +18,7 @@ def calculate(members, start, end, room=None, *, quality=None):
             item["thresholds"],
             start,
             end,
+            timing=item["timing"],
             automatic_reader=adaptive.CorrectedReader(quality[key]) if quality else None,
         )
         for key, item in members.items()
@@ -32,6 +33,7 @@ def calculate(members, start, end, room=None, *, quality=None):
         for key, item in members.items()
     }
     combined = replay.combined(radars)
+    combined["coverage"] = intersect(combined["coverage"], [(start, end)])
     timelines = {key: replay.lookups(item) for key, item in radars.items()}
     timelines["room"] = replay.lookups(combined)
     boundaries = _boundaries(inputs, radars, start, end, context["boundaries"])

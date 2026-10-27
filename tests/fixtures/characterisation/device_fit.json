@@ -7,7 +7,7 @@
     "not_present": 0,
     "present": 0
    },
-   "fingerprint": "bcb57d6cd22069226f4da5000875bef93cf9146bd75ed33fcb199121f6508f3f",
+   "fingerprint": "02185e77d3b0713148c536e32158b3b9a97ed6f90e368702f413965fd36000f8",
    "gate_support": {
     "g0_move": {
      "credible_ceiling": 5,
@@ -28,7 +28,7 @@
     "present": 1
    },
    "provenance": "recorded_basis_only",
-   "quality_version": 4,
+   "quality_version": 5,
    "raw_episode_mass": {
     "not_present": 0,
     "present": 0
@@ -45,7 +45,7 @@
    "reliability": {}
   },
   "provenance": "recorded_basis_only",
-  "quality_version": 4,
+  "quality_version": 5,
   "reason": "no_valid_chronological_cut",
   "selected": "corrected_positive",
   "validated": false

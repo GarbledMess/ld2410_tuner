@@ -127,6 +127,8 @@ def emit(phase, **details):
 
 def describe(request, request_bytes):
     """Report input scale, never device IDs, paths, labels, or energy values."""
+    from . import manifest
+
     operation = request.get("operation")
     allowed = {
         "learn",
@@ -143,8 +145,10 @@ def describe(request, request_bytes):
         "maintenance",
         "flush",
     }
+    if "manifest" in request:
+        request = manifest.expand(request)
     views = request.get("views", {})
-    entries = [entry for view in views.values() for entry in view.get("days", [])]
+    entries = [entry for view in views.values() for entry in _days(view)]
     files = {entry["path"]: int(entry["identity"][3]) for entry in entries if entry.get("identity")}
     return {
         "operation": operation if type(operation) is str and operation in allowed else "unknown",
@@ -154,6 +158,13 @@ def describe(request, request_bytes):
         "history_file_bytes": sum(files.values()),
         "request_bytes": request_bytes,
     }
+
+
+def _days(view):
+    from . import manifest
+
+    days = view.get("days", [])
+    return manifest.DayEntries(days).values() if isinstance(days, dict) else days
 
 
 def safely(function, *args):

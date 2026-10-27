@@ -126,3 +126,85 @@ class SeparationTests(unittest.TestCase):
         self.assertEqual(result["training"]["false_positives"], 0)
         self.assertEqual(result["estimated_training"]["false_negatives"], 0)
         self.assertTrue(result["automatic_evidence"]["used"])
+
+
+def test_room_preference_construction_has_bounded_row_overhead():
+    import tracemalloc
+    from array import array
+
+    from tuner_under_test.rooms.evidence import Rows
+    from tuner_under_test.rooms.objective import Objective
+
+    count = 30000
+    rows = Rows(
+        array("d", range(count)),
+        [bytes(20 if i % 2 else 80 for i in range(count))],
+        {"g0_move": 0},
+        ends=array("d", range(1, count + 1)),
+    )
+    objective = Objective.__new__(Objective)
+    objective.inputs = {"synthetic": {"rows": rows}}
+    objective.current = {"synthetic": {"g0_move": 42}}
+    objective.quality = None
+
+    def label(t):
+        return "not_present" if int(t) % 2 else "present", "human", 1.0
+
+    objective.truth = {
+        "own": label,
+        "parent": None,
+        "zones": [],
+        "members": {},
+        "sensor": lambda t: None,
+        "estimate": None,
+    }
+    expected = {
+        "g0_move": {
+            "preferred_threshold": 50,
+            "noise_ceiling": 20,
+            "presence_reference": 80,
+            "separated": True,
+            "human_supported": True,
+        }
+    }
+    assert objective._preferences("synthetic", label) == expected
+    tracemalloc.start()
+    try:
+        actual = objective._preferences("synthetic", label)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert actual == expected
+    assert peak < 5_000_000
+
+
+def test_compact_preferences_preserve_sorted_fractional_weights_and_support():
+    from array import array
+
+    from tuner_under_test.rooms.evidence import Rows
+    from tuner_under_test.rooms.preferences import PreferenceRows
+
+    values = bytes([0, 20, 80, 255, 80, 20, 90] * 20)
+    rows = Rows(array("d", range(len(values))), [values], {"g0_move": 0})
+    groups = {state: PreferenceRows(rows) for state in EMPTY}
+    ordinary = {state: [] for state in EMPTY}
+    for index, energy in enumerate(values):
+        state = "present" if index % 2 else "not_present"
+        weight = (0.1, 0.125, 0.3)[index % 3]
+        groups[state].add(index, weight)
+        ordinary[state].append(
+            (index, {} if energy == 255 else {"g0_move": energy}, state, 0.7, weight)
+        )
+    for allowed in (None, frozenset(), frozenset((20, 80))):
+        compact = {state: group.restricted("g0_move", allowed) for state, group in groups.items()}
+        filtered = {
+            state: [row for row in group if allowed is None or row[1].get("g0_move") in allowed]
+            for state, group in ordinary.items()
+        }
+        for key in ("g0_move", "g1_move"):
+            assert gate_preference(key, EMPTY, compact, 42) == gate_preference(
+                key, EMPTY, filtered, 42
+            )
+            assert gate_preference(key, compact, EMPTY, 42) == gate_preference(
+                key, filtered, EMPTY, 42
+            )

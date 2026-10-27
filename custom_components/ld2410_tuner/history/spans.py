@@ -152,15 +152,15 @@ def events(view, device_id, *, start=-math.inf, end=math.inf):
     return _disjoint(_stored(view, device_id, start, end)) if end > start else iter(())
 
 
-def search_events(view, device_id, indices, *, end=math.inf):
+def search_events(view, device_id, indices, *, start=-math.inf, end=math.inf):
     """Selected gate bytes with the same clipping and coverage as physical events.
 
     Quantization is chunked to bound temporary allocations and retain governor checks.
     Raw fractional readings remain unchanged for non-search callers.
     """
-    if math.isnan(end):
+    if math.isnan(start) or math.isnan(end) or end < start:
         raise ValueError("Invalid physical history window")
-    start = getattr(view, "_physical_history_start", -math.inf)
+    start = max(start, getattr(view, "_physical_history_start", -math.inf))
     end = min(end, getattr(view, "_attribution_until", math.inf))
     return _disjoint(_search_stored(view, device_id, indices, start, end))
 

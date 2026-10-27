@@ -15,6 +15,44 @@ def contexts(members, end=1200):
     }
 
 
+def test_room_fit_does_not_select_cutoff_before_requested_start():
+    from tuner_under_test.rooms import adaptive, fitting
+
+    item = member(
+        "synthetic", [70 if i % 2 == 0 else 10 for i in range(10) for _ in range(100)], []
+    )
+    room = {
+        "group_id": "zone",
+        "groups": {},
+        "room_labels": {
+            "zone": [
+                {
+                    "start": i * 600,
+                    "end": (i + 1) * 600,
+                    "state": "present" if i % 2 == 0 else "not_present",
+                    "source": "manual",
+                }
+                for i in range(10)
+            ]
+        },
+    }
+    groups, rooms = {"zone": {"synthetic": item}}, {"zone": room}
+    result = fitting.fit_set(
+        groups,
+        5000,
+        6000,
+        rooms,
+        0.5,
+        quality_contexts=adaptive.collect_contexts(groups, 5000, 6000, rooms),
+    )
+    assert result["automatic_evidence"]["selection"]["cutoff"] is None
+    episodes = adaptive.human_episodes(groups["zone"], 5000, 6000, room, "zone")
+    assert [(ep.start, ep.end, ep.state) for ep in episodes] == [
+        (5000, 5400, "present"),
+        (5400, 5997, "not_present"),
+    ]
+
+
 def test_unsupported_automatic_hit_does_not_hide_physical_false_activation():
     item = member("arbitrary", [10] * 200, labels())
     model = learn(contexts({"arbitrary": item})["arbitrary"])
@@ -411,3 +449,46 @@ def test_only_skipped_member_does_not_block_scorable_set_chronology():
     assert result["automatic_evidence"]["selection"]["validated"]
     assert result["thresholds"]["unused"] == unused["thresholds"]
     assert "skipped" in result["groups"]["skipped"]
+
+
+def test_finished_policy_replays_are_freed_before_the_next_search(monkeypatch):
+    import gc
+    import weakref
+
+    from tuner_under_test.rooms import adaptive, fitting
+    from tuner_under_test.rooms.objective import LinkedObjective
+
+    states = ["present", "not_present"] * 5
+    labelled = [
+        {"start": i * 600, "end": (i + 1) * 600, "state": state} for i, state in enumerate(states)
+    ]
+    members = {
+        "synthetic": member(
+            "synthetic",
+            [70 if state == "present" else 10 for state in states for _ in range(100)],
+            labelled,
+        )
+    }
+    references = []
+    original = LinkedObjective.__init__
+
+    def observe(self, *args, **kwargs):
+        assert all(reference() is None for reference in references)
+        original(self, *args, **kwargs)
+        references.append(weakref.ref(self))
+
+    monkeypatch.setattr(LinkedObjective, "__init__", observe)
+    gc.disable()
+    try:
+        result = fitting.fit(
+            members,
+            0,
+            6000,
+            automatic_weight=0.5,
+            quality_contexts=adaptive.collect_contexts({"x": members}, 0, 6000),
+        )
+        assert result["automatic_evidence"]["selection"]["validated"]
+        assert len(references) == 3
+        assert all(reference() is None for reference in references)
+    finally:
+        gc.enable()

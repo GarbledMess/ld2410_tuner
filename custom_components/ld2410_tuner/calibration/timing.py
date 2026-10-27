@@ -56,6 +56,8 @@ def merged(starts, ends, *, sort=False, ordered=False):
 def sample_times(rows):
     """The times of ``rows``: ``(time, ...)`` tuples, or readings kept as columns."""
     times = getattr(rows, "times", None)
+    if isinstance(times, array):
+        return array("d", times)
     return list(times) if times is not None else [row[0] for row in rows]
 
 
