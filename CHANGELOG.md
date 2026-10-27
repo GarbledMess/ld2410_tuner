@@ -1,6 +1,6 @@
 # Release notes
 
-## 1.32.0 - unreleased
+## 1.32.0 - 2026-10-27
 
 - The Bermuda section is much simpler: one **Use this phone** switch per phone or watch,
   a switch and optional range per room, and a global **Only within** range that blank room
