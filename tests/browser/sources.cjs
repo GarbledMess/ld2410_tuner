@@ -247,6 +247,39 @@ module.exports = async function testSources(page, screenshotDir) {
   assert.match(await form.innerText(), /Buffering presence/);
   assert.doesNotMatch(await form.innerText(), /radar guessing continues/);
   await page.setViewportSize({ width: 390, height: 844 });
+  // Resizing returns before ResizeObserver repaints the charts above this form.
+  // Check the rendered chart widths as well as mobile fields and pending loads.
+  await page.waitForFunction(() => {
+    const form = panel.shadowRoot.querySelector(
+      '[data-device-id="a"] .presence-sources',
+    );
+    const start = form.querySelector(
+      '[data-source-buffer="start_buffer_seconds"]',
+    );
+    const end = form.querySelector('[data-source-buffer="end_buffer_seconds"]');
+    const first = start.getBoundingClientRect();
+    const last = end.getBoundingClientRect();
+    const chartsResized = [
+      ...panel.shadowRoot.querySelectorAll("[data-chart-canvas]"),
+    ].every((canvas) => {
+      const svg = canvas.querySelector(":scope > svg");
+      if (!canvas.clientWidth || !svg) return true;
+      const minimum = canvas.hasAttribute("data-room-graph") ? 320 : 240;
+      return (
+        svg.viewBox.baseVal.width ===
+        Math.max(minimum, Math.round(canvas.clientWidth))
+      );
+    });
+    return (
+      window.innerWidth === 390 &&
+      first.width > 0 &&
+      last.top >= first.bottom &&
+      chartsResized &&
+      !panel._loading &&
+      panel._activeCharts === 0 &&
+      panel._chartQueue.length === 0
+    );
+  });
   await form.screenshot({
     path: path.join(screenshotDir, "presence-sources-mobile.png"),
   });

@@ -187,6 +187,67 @@ def test_failed_write_and_identity_race_leave_no_temporary(physical):
     assert not list(path.parent.glob("*.restmp"))
 
 
+@pytest.mark.parametrize("winerror", [5, 32, 33])
+def test_transient_windows_sharing_error_preserves_the_store(physical, winerror):
+    path, identity = physical
+    module = cache()
+    module.store(path, path.parent, identity, "rows", (0,), 7)
+    replace = os.replace
+    blocked = PermissionError("Sidecar temporarily open without delete sharing")
+    blocked.winerror = winerror
+    with patch.object(module.os, "replace") as publish:
+        # Keep the actual filesystem publication on the successful attempt.
+        def attempt(source, destination):
+            if publish.call_count < 3:
+                raise blocked
+            replace(source, destination)
+
+        publish.side_effect = attempt
+        module.store(path, path.parent, identity, "rows", (1,), 8)
+    module._files.clear()
+    assert module.load(path, identity, "rows", (0,)) == (True, 7)
+    assert module.load(path, identity, "rows", (1,)) == (True, 8)
+    assert not list(path.parent.glob("*.restmp"))
+
+
+def test_persistent_sharing_error_is_bounded_and_cleans_up(physical):
+    path, identity = physical
+    module = cache()
+    blocked = PermissionError("Sidecar still open")
+    blocked.winerror = 5
+    with patch.object(module.os, "replace", side_effect=blocked) as publish:
+        module.store(path, path.parent, identity, "rows", (), 8)
+    assert 1 < publish.call_count <= 5
+    assert not path.with_suffix(".res").exists()
+    assert not list(path.parent.glob("*.restmp"))
+
+
+def test_sharing_retry_rechecks_day_identity(physical):
+    path, identity = physical
+    module = cache()
+
+    def changed(*args):
+        path.write_bytes(b"changed day")
+        blocked = PermissionError("Sidecar temporarily open")
+        blocked.winerror = 5
+        raise blocked
+
+    with patch.object(module.os, "replace", side_effect=changed) as publish:
+        module.store(path, path.parent, identity, "rows", (), 8)
+    assert publish.call_count == 1
+    assert not path.with_suffix(".res").exists()
+    assert not list(path.parent.glob("*.restmp"))
+
+
+def test_other_permission_errors_are_not_retried(physical):
+    path, identity = physical
+    module = cache()
+    with patch.object(module.os, "replace", side_effect=PermissionError("Read-only")) as publish:
+        module.store(path, path.parent, identity, "rows", (), 8)
+    assert publish.call_count == 1
+    assert not list(path.parent.glob("*.restmp"))
+
+
 def test_shared_budget_and_invalidation(physical):
     path, _ = physical
     result = path.with_suffix(".res")

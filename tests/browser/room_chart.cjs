@@ -83,7 +83,19 @@ module.exports = async function testRoomChart(page) {
     "large rooms are fetched in batches that fit one worker result",
   );
   assert.deepEqual(large.drawn, ["a", "b", "c", "d", "e"]);
-  await graph.locator("svg").waitFor();
+  // An SVG can belong to the previous load or an intermediate room batch.
+  // Wait for the highlighted gate's rendered thresholds, not just the canvas.
+  await page.waitForFunction((gid) => {
+    const section = panel._roomGraphSection(gid);
+    const labels = section.querySelectorAll(
+      "[data-room-graph] .threshold-line.current + text",
+    );
+    return (
+      !panel._roomGraphState(gid).loading &&
+      JSON.stringify([...labels].map((label) => label.textContent)) ===
+        JSON.stringify(["Room a G3 40", "Room b G3 65"])
+    );
+  }, gid);
   for (const id of ["a", "b"])
     assert.equal(
       await graph.locator(`[data-room-signal="${id}"] .gate-line`).count(),
