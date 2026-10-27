@@ -274,7 +274,7 @@ export const panelLearning = {
       return `<section class="learning-report"><b>Joint result · ${this._esc(learning.joint.name)}</b>${this._roomOutcomeHtml(learning.joint.report.room)}<p>These outcomes cover the complete zone, not this radar alone. Use the Apply button to review and apply all members together in Rooms and zones.</p></section>`;
     const outcome = this._applyOutcome(learning, currentTiming);
     return `<section class="learning-report outcome-${outcome.level}" aria-label="Recommendation quality"><b>${outcome.label}</b>
-      ${learning.method !== "human_priority_v10" ? '<p class="notice">This saved result used an older learning model. Its recorded scores have not been recalculated. Learn again before applying it with the current model.</p>' : ""}
+      ${learning.method !== this._data?.learner_method ? '<p class="notice">This saved result used an older learning model. Its recorded scores have not been recalculated. Learn again before applying it with the current model.</p>' : ""}
       ${this._humanValidationHtml(learning)}${this._feasibilityHtml(learning)}${this._reviewEvidenceHtml(learning)}
       <details class="learning-diagnostics" data-detail="learning-diagnostics"><summary>Calculation details<span class="section-description">Evidence counts, exclusions and calculation diagnostics.</span></summary>
       ${this._outlierFilterHtml(learning)}${this._backtestHtml(learning.validation)}${this._automaticValidationHtml(learning)}${this._falsePositiveSourcesHtml(learning)}${this._inferenceHtml(learning.automatic_evidence)}${this._learningWarningHtml(learning)}</details></section>`;
@@ -305,7 +305,7 @@ export const panelLearning = {
       };
     if (!Object.keys(learning?.proposals || {}).length)
       return { level: "none", label: "No learned results", enabled: false };
-    if (learning.method !== "human_priority_v10")
+    if (learning.method !== this._data?.learner_method)
       return {
         level: "caution",
         label: "Older learning model · learn again",
@@ -328,7 +328,7 @@ export const panelLearning = {
       metrics?.present_samples > 0 && metrics?.not_present_samples > 0;
     if (
       learning.status !== "ok" ||
-      learning.method !== "human_priority_v10" ||
+      learning.method !== this._data?.learner_method ||
       this._timingNeedsReview(learning) ||
       this._timingChanged(learning, currentTiming) ||
       !measured(learning.training) ||
@@ -362,7 +362,7 @@ export const panelLearning = {
       m?.duration?.present_seconds > 0 && m?.duration?.empty_seconds > 0;
     const concerns =
       learning.status !== "ok" ||
-      learning.method !== "human_priority_v10" ||
+      learning.method !== this._data?.learner_method ||
       this._timingNeedsReview(learning) ||
       !measured(learning.training) ||
       !measured(learning.validation) ||
