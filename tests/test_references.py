@@ -462,14 +462,18 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         assert sum(b["histograms"]["g0_move"]["present"]) > 0
         assert b["histograms"] == device_labels._rebuild_histograms(self.runtime, b)
 
-    async def test_single_radar_groups_train_through_their_labels_not_room_targets(self):
+    async def test_single_radar_groups_keep_cached_labels_and_direct_room_targets(self):
         self.office()
         groups.configure(self.runtime, "area:office", "Office", "office", ["b"])
         self.record(5, 70)
         self.label(0, 40, "present")
-        assert attribution.room_targets(self.runtime, "b") is None
-        assert recording._history_view(self.runtime, "b").data["room_snapshot"] is None
-        # The room's Present label is b's own human label (lone_labels), not a room target.
+        assert attribution.room_targets(self.runtime, "b")(self.base + 12) == (
+            "present",
+            "human",
+            1.0,
+        )
+        assert recording._history_view(self.runtime, "b").data["room_snapshot"] is not None
+        # The existing manual cache and the direct room target agree without double counting.
         assert measured(self.runtime, "b")[0] == {"human": (40, 0), "automatic": (0, 0)}
 
     async def present_b(self, group="area:office"):

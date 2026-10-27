@@ -1,4 +1,4 @@
-"""Shared tracked-device assignments contribute ordinary per-radar source readings."""
+"""Shared tracked devices contribute positive-only area-room source readings."""
 
 from copy import deepcopy
 
@@ -9,11 +9,11 @@ from homeassistant.helpers import entity_registry as er
 from ..rooms import groups, room_sources
 from . import reference_training, sources
 
-NO_AREA = "Assign this radar a Home Assistant area to use Bermuda."
+DEFAULTS = {"devices": [], "max_distance": None, "rooms": {}}
 
 
 def settings(runtime):
-    return deepcopy(runtime.data.get("bermuda", {"devices": {}}))
+    return deepcopy(runtime.data.get("bermuda", DEFAULTS))
 
 
 def devices(runtime):
@@ -47,113 +47,80 @@ def _device(hass, entity_id, entry):
     }
 
 
-def radar_area(runtime, device_id):
-    entry = dr.async_get(runtime.hass).async_get(device_id)
-    return entry.area_id if entry else None
-
-
-def radars(runtime):
-    result = {}
-    for device_id in runtime.data["devices"]:
-        area = radar_area(runtime, device_id)
-        result[device_id] = {"area_id": area, "reason": None if area else NO_AREA}
-    return result
-
-
 def _object(value, keys, message):
     if not isinstance(value, dict) or set(value) != set(keys):
         raise ValueError(message)
 
 
-def validate(runtime, values):
-    _object(values, {"devices"}, "Supply Bermuda devices")
-    entries = values["devices"]
-    if not isinstance(entries, dict):
-        raise ValueError("Supply Bermuda devices as an object")
-    for entity_id, device in entries.items():
-        # Use the same entity-ID rules as legacy sources; unavailable devices remain editable.
-        sources._validate_source({"entity_id": entity_id, "kind": "bermuda", "area": "area"})
-        _validate_device(runtime, entity_id, device)
-    return deepcopy(values)
+def _range(value):
+    if value is not None:
+        sources._validate_max_distance({"max_distance": value})
 
 
-def _validate_device(runtime, entity_id, device):
-    if not isinstance(device, dict) or "radars" not in device or set(device) - {"radars", "rooms"}:
-        raise ValueError("Each Bermuda device requires radars and optional rooms")
-    known = {"radars": runtime.data["devices"], "rooms": groups.definitions(runtime)[2]}
-    for kind in ("radars", "rooms"):
-        entries = device.get(kind, {})
-        if not isinstance(entries, dict):
-            raise ValueError(f"Supply Bermuda {kind} as an object")
-        for target, config in entries.items():
-            if target not in known[kind]:
-                raise ValueError(f"Unknown {kind} target")
-            _validate_target(runtime, entity_id, kind, target, config)
-
-
-def _validate_target(runtime, entity_id, kind, target, config):
-    if (
-        not isinstance(config, dict)
-        or "max_distance" not in config
-        or set(config) - {"max_distance", "area"}
-    ):
-        raise ValueError("Each target requires max_distance and optional area")
-    if config["max_distance"] is not None:
-        sources._validate_max_distance(config)
-    area = config.get("area")
-    if area is None:
-        return
-    known = groups.definitions(runtime)[0]
-    previous = _assignments(settings(runtime), target, kind).get(entity_id, {})
-    # Only an unchanged migrated value may retain an area no longer in the registry.
-    if not isinstance(area, str) or (area not in known and area != previous.get("area")):
-        raise ValueError("Choose an existing Home Assistant area, or Own area")
-
-
-def _assignments(values, target, kind="radars"):
+def _area_rooms(runtime):
+    areas, _, defined = groups.definitions(runtime)
     return {
-        entity_id: device.get(kind, {})[target]
-        for entity_id, device in values["devices"].items()
-        if target in device.get(kind, {})
+        key: group
+        for key, group in defined.items()
+        if group["kind"] == "area"
+        and group.get("area_id") in areas
+        and key == f"area:{group.get('area_id')}"
+        and groups.recording_members(group, runtime.data["devices"])
     }
 
 
-def default_area(runtime, target, kind="radars"):
-    if kind == "radars":
-        return radar_area(runtime, target)
-    group = groups.definitions(runtime)[2].get(target, {})
-    if group.get("area_id"):
-        return group["area_id"]
-    return sorted(
-        {
-            area
-            for device_id in group.get("device_ids", [])
-            if (area := radar_area(runtime, device_id))
-        }
-    )
+def validate(runtime, values):
+    _object(values, DEFAULTS, "Supply Bermuda devices, max_distance and rooms")
+    entries = values["devices"]
+    if not isinstance(entries, list):
+        raise ValueError("Supply Bermuda devices as a list")
+    known = {item["entity_id"] for item in devices(runtime)} | set(settings(runtime)["devices"])
+    seen = set()
+    for entity_id in entries:
+        sources._validate_source({"entity_id": entity_id, "kind": "bermuda", "area": "area"})
+        if entity_id in seen or entity_id not in known:
+            raise ValueError("Choose distinct discovered or saved Bermuda devices")
+        seen.add(entity_id)
+    _range(values["max_distance"])
+    rooms = values["rooms"]
+    if not isinstance(rooms, dict):
+        raise ValueError("Supply Bermuda rooms as an object")
+    current = _area_rooms(runtime)
+    for key, config in rooms.items():
+        if key not in current:
+            raise ValueError("Choose a current area room with recording radars")
+        _object(config, {"max_distance"}, "Each room requires max_distance")
+        _range(config["max_distance"])
+    return deepcopy(values)
 
 
 def configure(runtime, values):
     validated = validate(runtime, values)
     previous = settings(runtime)
+    targets = set(previous["rooms"]) | set(validated["rooms"])
+    before = {key: _effective(runtime, key, previous) for key in targets}
     runtime.data["bermuda"] = validated
-    for device_id in runtime.data["devices"]:
-        if _assignments(previous, device_id) != _assignments(validated, device_id):
-            reference_training.reset_entities(runtime.data["devices"][device_id])
-            sources.reset_runtime(runtime, device_id)
-    for group_id in groups.definitions(runtime)[2]:
-        if _assignments(previous, group_id, "rooms") != _assignments(validated, group_id, "rooms"):
-            room_sources.assignments_changed(runtime, group_id)
+    for key in sorted(targets):
+        if before[key] != effective(runtime, key):
+            room_sources.assignments_changed(runtime, key)
     runtime._schedule_save()
     return settings(runtime)
 
 
-def effective(runtime, target, kind="radars"):
-    default = default_area(runtime, target, kind)
+def effective(runtime, group_id):
+    return _effective(runtime, group_id, settings(runtime))
+
+
+def _effective(runtime, group_id, values):
+    group = _area_rooms(runtime).get(group_id)
+    if not group or group_id not in values["rooms"]:
+        return []
+    distance = values["rooms"][group_id]["max_distance"]
+    if distance is None:
+        distance = values["max_distance"]
     return [
-        _source(entity_id, area, config)
-        for entity_id, config in _assignments(settings(runtime), target, kind).items()
-        if (area := config.get("area") or default)
+        _source(entity_id, group["area_id"], {"max_distance": distance})
+        for entity_id in sorted(values["devices"])
     ]
 
 
@@ -165,11 +132,40 @@ def _source(entity_id, area, config):
 
 
 def migrate(runtime):
-    """Upgrade even stores that completed the earlier own-area-only migration."""
-    if runtime.data.get("bermuda_targets_migrated"):
+    """Run the local-source upgrade first, then convert central targets once."""
+    if runtime.data.get("bermuda_rooms_migrated"):
         return
+    saved = deepcopy(runtime.data.get("bermuda", {"devices": {}}))
+    already_new = isinstance(saved["devices"], list)
+    central = {"devices": {}} if already_new else saved
+    if not runtime.data.get("bermuda_targets_migrated"):
+        _migrate_targets(runtime, central)
+    converted = _migrate_rooms(runtime, central)
+    if already_new:
+        # Do not revalidate saved devices against temporarily unavailable discovery.
+        converted["devices"] = saved["devices"] + [
+            key for key in converted["devices"] if key not in saved["devices"]
+        ]
+        converted["rooms"].update(saved["rooms"])
+        converted["max_distance"] = saved["max_distance"]
+    runtime.data["bermuda"] = converted
+    for group_id in converted["rooms"]:
+        room_sources.assignments_changed(runtime, group_id, recover=True)
+    runtime.data["bermuda_migrated"] = True
+    runtime.data["bermuda_targets_migrated"] = True
+    runtime._schedule_save()
+    runtime.data["bermuda_rooms_migrated"] = True
+
+
+def _legacy_default_area(runtime, target, kind):
+    if kind == "radars":
+        entry = dr.async_get(runtime.hass).async_get(target)
+        return entry.area_id if entry else None
+    return groups.definitions(runtime)[2].get(target, {}).get("area_id")
+
+
+def _migrate_targets(runtime, central):
     areas = {area.id: area.name for area in ar.async_get(runtime.hass).async_list_areas()}
-    central = settings(runtime)
     for device_id, device in runtime.data["devices"].items():
         config = sources.settings(device)
         if _move_sources(runtime, central, areas, "radars", device_id, config):
@@ -181,10 +177,47 @@ def migrate(runtime):
         if _move_sources(runtime, central, areas, "rooms", group_id, config):
             runtime.data[room_sources.STORE][group_id] = config
             room_sources.assignments_changed(runtime, group_id, recover=True)
-    runtime.data["bermuda"] = central
-    runtime.data["bermuda_migrated"] = True
-    runtime.data["bermuda_targets_migrated"] = True
-    runtime._schedule_save()
+
+
+def _legacy_targets(central):
+    for entity_id, device in sorted(central["devices"].items()):
+        for kind in ("radars", "rooms"):
+            for target, config in device.get(kind, {}).items():
+                yield entity_id, kind, target, config
+
+
+def _migrate_rooms(runtime, central):
+    result = deepcopy(DEFAULTS)
+    areas = {area.id: area.name for area in ar.async_get(runtime.hass).async_list_areas()}
+    current = _area_rooms(runtime)
+    enabled = set()
+    for entity_id, kind, target, config in _legacy_targets(central):
+        enabled.add(entity_id)
+        area = config.get("area") or _legacy_default_area(runtime, target, kind)
+        area_id = _area_id(area, areas) if area else None
+        group_id = f"area:{area_id}"
+        if group_id not in current:
+            _conflict(runtime, kind, target, _source(entity_id, area, config))
+            continue
+        _merge_range(result["rooms"], group_id, config.get("max_distance"))
+    result["devices"] = sorted(enabled)
+    return result
+
+
+def _merge_range(rooms, group_id, distance):
+    if group_id not in rooms:
+        rooms[group_id] = {"max_distance": distance}
+        return
+    previous = rooms[group_id]["max_distance"]
+    rooms[group_id]["max_distance"] = (
+        None if previous is None or distance is None else max(previous, distance)
+    )
+
+
+def _conflict(runtime, kind, target, source):
+    runtime.data.setdefault("bermuda_migration_conflicts", []).append(
+        {"target_kind": kind, "target_id": target, "source": deepcopy(source)}
+    )
 
 
 def _area_id(value, areas):
@@ -195,7 +228,7 @@ def _area_id(value, areas):
 
 
 def _move_sources(runtime, central, areas, kind, target, config):
-    default = default_area(runtime, target, kind)
+    default = _legacy_default_area(runtime, target, kind)
     remaining = []
     for source in config["sources"]:
         if source["kind"] != "bermuda":
@@ -223,10 +256,4 @@ def _assign_legacy(runtime, central, kind, target, source, config):
     chosen = device.setdefault(kind, {}).setdefault(target, config)
     # One target has one choice. Preserve displaced legacy values for recovery.
     if any(chosen.get(key) != config[key] for key in ("area", "max_distance")):
-        runtime.data.setdefault("bermuda_migration_conflicts", []).append(
-            {
-                "target_kind": kind,
-                "target_id": target,
-                "source": deepcopy(source),
-            }
-        )
+        _conflict(runtime, kind, target, source)

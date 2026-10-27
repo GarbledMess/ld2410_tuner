@@ -1,11 +1,8 @@
-"""Central Bermuda migration and websocket checks in a fresh disposable HA.
+"""Bermuda room migration and websocket checks in a fresh disposable HA.
 
-Run before adding the integration. There is no physical radar/device-registry entry:
-the synthetic stored radar and its zone therefore have no default area. Both legacy
-sources use unknown area text, which migration must retain as an explicit override.
-No Bermuda integration is installed, so discovery legitimately returns an empty list.
-HA omits a radar card with no discoverable energy entities; its migrated assignment
-is still visible in the central settings and its area status in bermuda_radars.
+The synthetic radar and zone have no area; unknown legacy area text must be
+retained for conflict recovery without activating a room. No Bermuda integration
+is installed, so discovery returns an empty list and the saved phone is unavailable.
 """
 
 import asyncio
@@ -66,14 +63,9 @@ def synthetic_store():
 
 
 def assert_migrated(snapshot):
-    assignments = snapshot["bermuda"]["devices"][ENTITY]
-    assert assignments["radars"]["probe"] == {"max_distance": 3, "area": AREA}
-    assert assignments["rooms"][GROUP] == {"max_distance": 4, "area": AREA}
+    assert snapshot["bermuda"] == {"devices": [ENTITY], "max_distance": None, "rooms": {}}
     if "probe" in snapshot["devices"]:
         assert snapshot["devices"]["probe"]["presence_sources"]["sources"] == []
-    else:
-        assert snapshot["bermuda_radars"]["probe"]["area_id"] is None
-        assert snapshot["bermuda_radars"]["probe"]["reason"]
     assert snapshot["rooms"]["groups"][GROUP]["presence_sources"]["sources"] == []
 
 
@@ -91,29 +83,31 @@ async def check_commands(socket, snapshot):
     assert reply.get("success"), reply.get("error")
     assert reply["result"] == [], "No real Bermuda registry entities exist in this lab"
     settings = deepcopy(snapshot["bermuda"])
-    settings["devices"][ENTITY]["radars"]["probe"]["max_distance"] = 2.5
-    settings["devices"][ENTITY]["rooms"][GROUP]["max_distance"] = 5
+    settings["max_distance"] = 2.5
     reply = await command(
         socket, 201, {"type": f"{DOMAIN}/configure_bermuda", "settings": settings}
     )
     assert reply.get("success"), reply.get("error")
     assert reply["result"] == settings
-    invalid = deepcopy(settings)
-    invalid["devices"][ENTITY]["rooms"][GROUP]["max_distance"] = 0
-    reply = await command(socket, 202, {"type": f"{DOMAIN}/configure_bermuda", "settings": invalid})
-    assert not reply.get("success") and reply["error"]["code"] == "invalid_request", reply
-    reply = await command(socket, 203, {"type": f"{DOMAIN}/snapshot"})
-    assert reply.get("success"), reply.get("error")
-    assert reply["result"]["bermuda"] == settings, (
-        "Rejected settings must leave valid settings intact"
-    )
-    reply = await command(socket, 204, {"type": f"{DOMAIN}/recording_days", "device_id": "probe"})
+    invalid_range = {**settings, "max_distance": 0}
+    invalid_room = {**settings, "rooms": {GROUP: {"max_distance": None}}}
+    for ident, invalid in ((202, invalid_range), (204, invalid_room)):
+        reply = await command(
+            socket, ident, {"type": f"{DOMAIN}/configure_bermuda", "settings": invalid}
+        )
+        assert not reply.get("success") and reply["error"]["code"] == "invalid_request", reply
+        reply = await command(socket, ident + 1, {"type": f"{DOMAIN}/snapshot"})
+        assert reply.get("success"), reply.get("error")
+        assert reply["result"]["bermuda"] == settings, (
+            "Rejected settings must leave valid settings intact"
+        )
+    reply = await command(socket, 206, {"type": f"{DOMAIN}/recording_days", "device_id": "probe"})
     assert reply.get("success"), reply.get("error")
     return {
-        "migration": "radar and room",
+        "migration": "radar and zone converted; unresolved areas retained for conflict recovery",
         "bermuda_devices": "ok (empty registry)",
         "configure_valid": "ok",
-        "configure_invalid": "rejected",
+        "configure_invalid": "zero range and zone room rejected atomically",
         "snapshot": "ok",
         "recording_days": reply["result"],
     }

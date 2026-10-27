@@ -2,6 +2,15 @@
 
 ## 1.32.0 - unreleased
 
+- The Bermuda section is much simpler: one **Use this phone** switch per phone or watch,
+  a switch and optional range per room, and a global **Only within** range that blank room
+  ranges use. Each switched-on phone counts for every switched-on room.
+- Bermuda only ever marks a room Present. Nobody's phone being in a room no longer means
+  the room is empty; **Mark "Not Present"** is decided by on/off sources.
+- Room presence sources (cameras, on/off entities, Bermuda) now train the radar of a room
+  or zone that has a single radar, as manual room labels already did.
+- On upgrade, existing Bermuda assignments convert automatically. A room keeps the widest
+  range it had, and assignments that match no room are kept for recovery.
 - Learning a room or zone no longer runs out of memory. On real history a seven-day fit
   of one radar needed about half the memory it did, and room learning no longer fails with
   "Invalid physical history window" when room labels start before the learning window.

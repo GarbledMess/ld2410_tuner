@@ -8,6 +8,13 @@ from homeassistant.helpers import device_registry as dr
 from . import sets
 
 
+def recording_members(group, devices):
+    """Members that record, including devices whose recording setting is absent."""
+    return [
+        key for key in group["device_ids"] if devices.get(key, {}).get("recording_enabled", True)
+    ]
+
+
 def inventory(runtime):
     devices = dr.async_get(runtime.hass)
     areas = {area.id: area.name for area in ar.async_get(runtime.hass).async_list_areas()}

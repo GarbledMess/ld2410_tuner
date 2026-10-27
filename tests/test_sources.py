@@ -39,29 +39,16 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
 
     def configure(self, entries=None, negative=False):
         entries = entries or [boolean()]
-        legacy = [entry for entry in entries if entry["kind"] == "bermuda"]
-        config = self.runtime.configure_presence_sources(
+        return self.runtime.configure_presence_sources(
             "a",
             {
-                "sources": [entry for entry in entries if entry["kind"] != "bermuda"],
+                "sources": entries,
                 "mark_not_present": negative,
                 "confidence": 90,
                 "start_buffer_seconds": 0,
                 "end_buffer_seconds": 0,
             },
         )
-        # Exercise preserved legacy reading semantics through central assignments.
-        self.runtime.data["bermuda"] = {
-            "devices": {
-                entry["entity_id"]: {
-                    "radars": {
-                        "a": {"max_distance": entry.get("max_distance"), "area": entry["area"]}
-                    }
-                }
-                for entry in legacy
-            }
-        }
-        return config
 
     def test_boolean_on_records_automatic_not_human_and_survives_a_save(self):
         self.configure()
@@ -101,21 +88,23 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
             assert sources.estimate(self.runtime, self.device)["state"] == expected
 
     def test_bermuda_matches_current_area_id_or_name_and_mixed_sources_use_or(self):
-        self.configure([boolean(), bermuda()], negative=True)
+        config = {**sources.DEFAULTS, "sources": [boolean(), bermuda()], "mark_not_present": True}
         self.entity("binary_sensor.camera_person", "off")
         self.entity(
             "sensor.phone_area", "Main Bedroom", area_id="bedroom", area_name="Main Bedroom"
         )
-        assert sources.estimate(self.runtime, self.device)["state"] == "present"
+        assert sources.read(self.hass, config)["state"] == "present"
         self.entity("sensor.phone_area", "Office", area_id="office")
-        assert sources.estimate(self.runtime, self.device)["state"] == "not_present"
+        assert sources.source_state(self.hass, bermuda()) is None
+        assert sources.read(self.hass, config)["state"] == "not_present"
         self.entity("sensor.phone_area", "unavailable", area_id="bedroom")
-        assert sources.estimate(self.runtime, self.device) is None
+        assert sources.read(self.hass, config)["state"] == "not_present"
+        config["sources"].append(boolean("binary_sensor.other"))
+        assert sources.read(self.hass, config)["state"] == "unknown"
         self.entity("binary_sensor.camera_person", "on")
-        assert sources.estimate(self.runtime, self.device)["state"] == "present"
-        self.configure([{**bermuda(), "area": "Main Bedroom"}])
+        assert sources.read(self.hass, config)["state"] == "present"
         self.entity("sensor.phone_area", "Main Bedroom")
-        assert sources.estimate(self.runtime, self.device)["state"] == "present"
+        assert sources.source_state(self.hass, {**bermuda(), "area": "Main Bedroom"}) is True
 
     async def test_manual_corrections_win_in_the_actual_learning_input(self):
         self.configure(negative=True)
@@ -143,9 +132,9 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.label_history_range("a", self.now + 5, self.now + 7, "unknown")
         assert measured() == {"human": (0, 1), "automatic": (4, 5)}  # Excluded: no evidence.
 
-    def test_bermuda_distance_readings_and_negative_evidence(self):
+    def test_bermuda_positive_only_and_boolean_absence(self):
         source = {**bermuda(), "max_distance": 3}
-        self.configure([source], negative=True)
+        config = {**sources.DEFAULTS, "sources": [source], "mark_not_present": True}
         self.registry.entities.update(
             {
                 "sensor.phone_area": types.SimpleNamespace(platform="bermuda", unique_id="phone"),
@@ -159,7 +148,7 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
             ("2.3", True, "present", 2.3),
             ("3", True, "present", 3.0),
             ("0", True, "present", 0.0),
-            ("4.1", False, "not_present", 4.1),
+            ("4.1", None, "unknown", 4.1),
             ("unknown", None, "unknown", None),
             ("unavailable", None, "unknown", None),
             ("invalid", None, "unknown", None),
@@ -167,21 +156,29 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
             ("inf", None, "unknown", None),
         ):
             self.entity("sensor.renamed_distance", value)
-            result = sources._read_sources(self.runtime, self.device)
+            result = sources.read(self.hass, config)
             assert result["state"] == label
             assert result["readings"][0]["present"] is present
             assert result["readings"][0]["distance"] == distance
-            estimate = sources.estimate(self.runtime, self.device)
-            assert (estimate["state"] if estimate else "unknown") == label
+            assert sources.source_state(self.hass, source) is present
         # Outside the target area, or with no usable area, the distance decides nothing,
         # so the reading carries none (the panel must not call it "too far").
         self.entity("sensor.renamed_distance", "4.1")
         for area in ({"state": "Office", "area_id": "office"}, {"state": "unavailable"}):
             self.entity("sensor.phone_area", area.pop("state"), **area)
-            (reading,) = sources._read_sources(self.runtime, self.device)["readings"]
+            (reading,) = sources.read(self.hass, config)["readings"]
             assert "distance" not in reading
 
-    def test_bermuda_missing_distance_is_unknown_but_area_mismatch_is_false(self):
+        config["sources"].append(boolean())
+        self.entity("binary_sensor.camera_person", "off")
+        assert sources.read(self.hass, config)["state"] == "not_present"
+        self.entity("binary_sensor.camera_person", "unavailable")
+        assert sources.read(self.hass, config)["state"] == "unknown"
+        self.entity("sensor.phone_area", "Bedroom", area_id="bedroom")
+        self.entity("sensor.renamed_distance", "3")
+        assert sources.read(self.hass, config)["state"] == "present"
+
+    def test_bermuda_missing_distance_and_area_mismatch_give_no_information(self):
         source = {**bermuda(), "max_distance": 3}
         self.entity("sensor.phone_area", "Bedroom", area_id="bedroom")
         assert sources.source_state(self.hass, source) is None
@@ -196,8 +193,8 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         )
         assert sources.source_state(self.hass, source) is None
         self.entity("sensor.phone_area", "Office", area_id="office")
-        assert sources.source_state(self.hass, source) is False
-        assert sources.source_state(self.hass, bermuda()) is False
+        assert sources.source_state(self.hass, source) is None
+        assert sources.source_state(self.hass, bermuda()) is None
         self.entity("sensor.phone_area", "unknown", area_id="bedroom")
         assert sources.source_state(self.hass, source) is None
 

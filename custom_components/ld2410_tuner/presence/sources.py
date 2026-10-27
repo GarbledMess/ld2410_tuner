@@ -139,33 +139,30 @@ def _entity_state(hass, source):
 
 
 def _reading(hass, source):
-    """In the area, a maximum distance decides: within it is present, beyond it is outside,
-    and an unusable distance is no state. The reading carries the distance only then."""
+    """Bermuda supplies only presence; retain distance diagnostics after an area match."""
     present = _entity_state(hass, source)
+    if source["kind"] == "bermuda":
+        present = True if present else None
     if not present or "max_distance" not in source:
         return {**source, "present": present}
     distance = _distance(hass, source)
-    present = distance <= source["max_distance"] if distance is not None else None
+    present = True if distance is not None and distance <= source["max_distance"] else None
     return {**source, "present": present, "distance": distance}
 
 
 def _read_sources(runtime, device):
-    from . import bermuda
-
-    config = settings(device)
-    device_id = _device_id(runtime, device)
-    config["sources"].extend(bermuda.effective(runtime, device_id))
-    return read(runtime.hass, config)
+    return read(runtime.hass, settings(device))
 
 
 def read(hass, config):
     """Read every configured source and reduce them to one present/not_present/unknown state."""
     readings = [_reading(hass, source) for source in config["sources"]]
     states = [reading["present"] for reading in readings]
+    booleans = [reading["present"] for reading in readings if reading["kind"] == "boolean"]
     label = "unknown"
     if True in states:
         label = "present"
-    elif states and all(state is False for state in states) and config["mark_not_present"]:
+    elif booleans and all(state is False for state in booleans) and config["mark_not_present"]:
         label = "not_present"
     return {
         **config,

@@ -23,9 +23,6 @@ export const panelSources = {
     return (
       !this._inAnyGroup(id) ||
       !!d.presence_sources?.sources?.length ||
-      Object.values(this._data?.bermuda?.devices || {}).some(
-        (device) => id in device.radars,
-      ) ||
       !!this._sourceDrafts?.has(id)
     );
   },

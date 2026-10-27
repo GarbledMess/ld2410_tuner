@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 import test_sources as source_harness
 import test_tuner as harness
-from test_sources import bermuda, boolean, sources
+from test_sources import boolean, sources
 
 source_labels = sys.modules["tuner_under_test.history.source_labels"]
 spans = sys.modules["tuner_under_test.history.spans"]
@@ -130,20 +130,6 @@ class BufferTests(unittest.IsolatedAsyncioTestCase):
         absent = [run for run in runs if run[2] == "not_present"]
         assert [run[0] - self.now for run in absent] == [48]
         assert absent[0][2:] == ("not_present", 18, EXTERNAL)
-
-    def test_or_handoff_between_boolean_and_bermuda_is_continuous(self):
-        self.configure()
-        # Legacy input migrates centrally; the editor now accepts only Boolean sources.
-        self.device["presence_sources"]["sources"].append(bermuda())
-        sys.modules["tuner_under_test.presence.bermuda"].migrate(self.runtime)
-        self.entity("sensor.phone_area", "Office", area_id="office")
-        for second in (0, 6, 12):
-            self.tick(second)
-        self.entity("sensor.phone_area", "Bedroom", area_id="bedroom")
-        for second in (18, 24, 30):
-            self.tick(second, "off")
-        assert self.present() == [(10, 20)]
-        assert self.runtime._source_runtime["a"]["start"] == self.now
 
     def test_summary_reports_buffering_without_mutating_or_confirming_history(self):
         self.configure()

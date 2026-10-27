@@ -227,13 +227,8 @@ def _automatic_source(labels):
 
 
 def grouped(definitions) -> set[str]:
-    """Radars that belong to at least one multi-radar group."""
-    return {
-        key
-        for item in definitions.values()
-        if len(item["device_ids"]) > 1
-        for key in item["device_ids"]
-    }
+    """Radars that belong to at least one room group."""
+    return {key for item in definitions.values() for key in item["device_ids"]}
 
 
 def _same(value):
@@ -246,6 +241,12 @@ def label_fields(device, copy=_same):
 
 
 def _inputs(runtime, device_id, definitions, copy):
+    from .groups import recording_members
+
+    definitions = {
+        key: {**item, "device_ids": recording_members(item, runtime.data["devices"])}
+        for key, item in definitions.items()
+    }
     own = [key for key, item in definitions.items() if device_id in item["device_ids"]]
     related = truth.related_to(definitions, own)
     labels = runtime.data.get("room_labels", {})
@@ -262,7 +263,7 @@ def _inputs(runtime, device_id, definitions, copy):
 
 def snapshot(runtime, device_id):
     """Copy, on the event loop, the room labels and member labels that decide this radar's
-    targets; None when the radar is in no multi-radar group (its evidence is unchanged)."""
+    targets; None when the radar is in no room group (its evidence is unchanged)."""
     from . import groups
 
     _, _, definitions = groups.definitions(runtime)
@@ -349,7 +350,7 @@ def _contexts(saved, others=None):
 
 
 def _estimate(ids, others):
-    if others is None:
+    if others is None or len(ids) == 1:
         return None
     read = truth.estimate_reader({key: {"automatic": others[key]} for key in ids if key in others})
 
@@ -482,13 +483,30 @@ def _targets(device_id, learned, own, automatic=False):
         if automatic
         else None
     )
+    contexts = _source(learned, "contexts")
     return weighted_member_target(
         device_id,
         learned["own"],
         {group: learned["truths"][group] for group in own},
         extra,
-        found={group: {device_id: learned["found"][group]} for group in own},
+        found={
+            group: {
+                device_id: _singleton_found(learned["truths"][group], contexts[group])
+                if len(contexts[group]["members"]) == 1
+                else learned["found"][group]
+            }
+            for group in own
+        },
     )
+
+
+def _singleton_found(read, context):
+    """Independent singleton truth needs no baseline to attribute its Present spans."""
+    return [
+        ((start, nextafter(end, -inf)), {"state": "yes", "confidence": 1.0, "inferred": False})
+        for start, end in pairwise(sorted(set(truth.edges(context))))
+        if _state(read(start)) == "present"
+    ]
 
 
 def _automatic_reader(context):
@@ -507,7 +525,7 @@ def auto_targets(runtime, device_id, *, reader=None):
     """Per-radar targets where room truth is human or level-4 automatic (sensor labels, then
     the room estimate over all members), as ``t -> (state, source, confidence)`` with
     source "human", "automatic" (sensor labels) or "estimate".
-    None when the radar is in no multi-radar group or no automatic evidence exists."""
+    None when the radar is in no room group or no automatic evidence exists."""
     saved = _snapshot_for(runtime, device_id)
     if saved is None:
         return None
@@ -532,7 +550,7 @@ def room_targets(runtime, device_id):
     """Per-radar targets from human room truth (spec 4.3 "Uses") as
     ``t -> (state, source, confidence)``: source "human" (room Empty, or Present the radar's
     own label attributes) or "attributed" (Present inferred from its baseline: an automatic
-    guess). None when the radar is in no multi-radar group or no human room truth can exist.
+    guess). None when the radar is in no room group or no human room truth can exist.
     The radar's own label wins first: callers consult this only where that label is absent."""
     saved = _snapshot_for(runtime, device_id)
     if saved is None or not _labelled(saved):
