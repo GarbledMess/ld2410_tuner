@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.32.1 - unreleased
+
+- Saved radar results from the current learner are no longer labelled "Older learning model
+  · learn again". The panel compared results against an outdated learner name, so no result
+  could reach "Targets met".
+
 ## 1.32.0 - 2026-10-27
 
 - The Bermuda section is much simpler: one **Use this phone** switch per phone or watch,

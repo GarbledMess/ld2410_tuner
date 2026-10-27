@@ -377,7 +377,7 @@ module.exports = async function testTiming(page, screenshotDir) {
   );
   await page.evaluate(() => {
     const l = fixture.devices.a.last_learning;
-    l.method = "human_priority_v10";
+    l.method = fixture.learner_method;
     fixture.devices.a.timing_configuration = structuredClone(
       l.timing.configuration,
     );

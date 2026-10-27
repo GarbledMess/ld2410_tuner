@@ -127,6 +127,7 @@ const { execFileSync } = require("node:child_process");
       window.fail = false;
       window.race = false;
       window.fixture = {
+        learner_method: "learner_current",
         devices: Object.fromEntries(
           ["a", "b", "c"].map((id) => [
             id,
@@ -135,7 +136,7 @@ const { execFileSync } = require("node:child_process");
               sample_counts: { g0_move: { present: 100, not_present: 100 } },
               current_thresholds: { g0_move: 20 },
               last_learning: {
-                method: "human_priority_v10",
+                method: "learner_current",
                 timing: {
                   active: true,
                   scope: "reported_presence",
