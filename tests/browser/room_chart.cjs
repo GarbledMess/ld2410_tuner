@@ -83,30 +83,33 @@ module.exports = async function testRoomChart(page) {
     "large rooms are fetched in batches that fit one worker result",
   );
   assert.deepEqual(large.drawn, ["a", "b", "c", "d", "e"]);
-  // An SVG can belong to the previous load or an intermediate room batch.
-  // Wait for the highlighted gate's rendered thresholds, not just the canvas.
-  await page.waitForFunction((gid) => {
-    const section = panel._roomGraphSection(gid);
-    const labels = section.querySelectorAll(
-      "[data-room-graph] .threshold-line.current + text",
-    );
-    return (
-      !panel._roomGraphState(gid).loading &&
-      JSON.stringify([...labels].map((label) => label.textContent)) ===
-        JSON.stringify(["Room a G3 40", "Room b G3 65"])
-    );
-  }, gid);
+  // An SVG can belong to the previous load or an intermediate room batch, and a
+  // later redraw can briefly replace it. Read the drawn gates and thresholds from
+  // one settled frame rather than re-reading after the wait.
+  const drawn = await (
+    await page.waitForFunction((gid) => {
+      const graph = panel
+        ._roomGraphSection(gid)
+        .querySelector("[data-room-graph]");
+      if (!graph || panel._roomGraphState(gid).loading) return false;
+      const thresholds = [
+        ...graph.querySelectorAll(".threshold-line.current + text"),
+      ].map((label) => label.textContent);
+      if (!thresholds.length) return false;
+      const gates = Object.fromEntries(
+        ["a", "b"].map((id) => [
+          id,
+          graph.querySelectorAll(`[data-room-signal="${id}"] .gate-line`)
+            .length,
+        ]),
+      );
+      return { thresholds, gates };
+    }, gid)
+  ).jsonValue();
   for (const id of ["a", "b"])
-    assert.equal(
-      await graph.locator(`[data-room-signal="${id}"] .gate-line`).count(),
-      8,
-      "every other gate of the radar is drawn",
-    );
-  const thresholds = await graph
-    .locator(".threshold-line.current + text")
-    .allTextContents();
+    assert.equal(drawn.gates[id], 8, "every other gate of the radar is drawn");
   assert.deepEqual(
-    thresholds,
+    drawn.thresholds,
     ["Room a G3 40", "Room b G3 65"],
     "each radar shows its own threshold for the highlighted gate",
   );
