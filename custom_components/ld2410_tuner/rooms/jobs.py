@@ -241,8 +241,9 @@ def start(runtime, group_id, hours=24):
     if group_id not in runtime._room_jobs:
         members, signature = _context(runtime, group_id)
         room = truth.view(runtime, group_id)
-        task = runtime.hass.async_create_task(
-            _run(runtime, group_id, members, deepcopy(signature), hours, room)
+        task = runtime.hass.async_create_background_task(
+            _run(runtime, group_id, members, deepcopy(signature), hours, room),
+            f"ld2410_tuner room assessment {group_id}",
         )
         runtime._room_jobs[group_id] = task
         task.add_done_callback(lambda done: finish_task(runtime._room_jobs, group_id, done))

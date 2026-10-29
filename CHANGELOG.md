@@ -2,6 +2,10 @@
 
 ## 1.32.1 - unreleased
 
+- Home Assistant no longer reports "Something is blocking Home Assistant from wrapping up
+  the start up phase" because of this integration. Seen by refreshes, the delayed save,
+  overnight learning, room assessments and label timers now run as background work that
+  start-up does not wait for.
 - Saved radar results from the current learner are no longer labelled "Older learning model
   · learn again". The panel compared results against an outdated learner name, so no result
   could reach "Targets met".

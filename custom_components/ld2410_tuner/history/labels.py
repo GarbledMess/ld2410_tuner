@@ -315,8 +315,8 @@ def _schedule_timeout(runtime, device_id: str, seconds: float) -> None:
     old_task = runtime._timeout_tasks.pop(device_id, None)
     if old_task:
         old_task.cancel()
-    runtime._timeout_tasks[device_id] = runtime.hass.async_create_task(
-        runtime._timeout_worker(device_id, seconds)
+    runtime._timeout_tasks[device_id] = runtime.hass.async_create_background_task(
+        runtime._timeout_worker(device_id, seconds), f"ld2410_tuner label timeout {device_id}"
     )
 
 

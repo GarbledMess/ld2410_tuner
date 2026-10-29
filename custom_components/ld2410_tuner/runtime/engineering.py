@@ -30,7 +30,9 @@ def start(runtime):
 def tick(runtime):
     if runtime._engineering_task and not runtime._engineering_task.done():
         return
-    runtime._engineering_task = runtime.hass.async_create_task(_check_devices(runtime))
+    runtime._engineering_task = runtime.hass.async_create_background_task(
+        _check_devices(runtime), "ld2410_tuner engineering check"
+    )
 
 
 async def stop(runtime):

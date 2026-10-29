@@ -263,7 +263,10 @@ def _refresh(runtime, definitions, group_id, current, now):
     if not _has_recording(runtime, definitions, group_id):
         _store(runtime, group_id, current, [], now)
         return
-    task = runtime.hass.async_create_task(_run(runtime, definitions, group_id, current, None, now))
+    task = runtime.hass.async_create_background_task(
+        _run(runtime, definitions, group_id, current, None, now),
+        f"ld2410_tuner seen by {group_id}",
+    )
     jobs[group_id] = task
     task.add_done_callback(lambda done: finish_task(jobs, group_id, done))
 

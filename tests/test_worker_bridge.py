@@ -113,7 +113,7 @@ def test_seen_by_defers_view_copy_until_admission(monkeypatch):
         owner = runtime()
         owner._room_attribution_jobs = {}
         owner._room_attribution_semaphore = semaphore
-        owner.hass.async_create_task = asyncio.create_task
+        owner.hass.async_create_background_task = lambda target, name: asyncio.create_task(target)
         monkeypatch.setattr(seen_by, "_view", lambda *args: pytest.fail("copied before admission"))
         monkeypatch.setattr(seen_by, "_has_recording", lambda *args: True)
         seen_by._refresh(owner, {"room": {"device_ids": ["a"]}}, "room", {}, 0)

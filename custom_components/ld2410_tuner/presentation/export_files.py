@@ -82,7 +82,9 @@ def day_files(days, device_id):
 def _expire(runtime, token):
     current = getattr(runtime, "_export_file", None)
     if current is not None and current["token"] == token:
-        runtime._export_cleanup = runtime.hass.async_create_task(discard(runtime))
+        runtime._export_cleanup = runtime.hass.async_create_background_task(
+            discard(runtime), "ld2410_tuner export cleanup"
+        )
 
 
 async def discard(runtime):

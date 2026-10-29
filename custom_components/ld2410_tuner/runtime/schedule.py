@@ -108,7 +108,9 @@ def _start_learning(runtime, config, day):
     if config["last_day"] == day:
         return
     runtime.data.setdefault("learning_schedule", {})["last_day"] = day
-    runtime._nightly_task = runtime.hass.async_create_task(_run(runtime, day))
+    runtime._nightly_task = runtime.hass.async_create_background_task(
+        _run(runtime, day), "ld2410_tuner overnight learning"
+    )
 
 
 def _refresh_references(runtime, day):
