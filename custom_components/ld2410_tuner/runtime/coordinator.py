@@ -139,7 +139,9 @@ class TunerRuntime:
         self._save_dirty = True
         if self._save_task and not self._save_task.done():
             return
-        self._save_task = self.hass.async_create_task(self._delayed_save())
+        self._save_task = self.hass.async_create_background_task(
+            self._delayed_save(), "ld2410_tuner delayed save"
+        )
 
     @priority.background
     async def _delayed_save(self) -> None:
