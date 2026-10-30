@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 import test_joint_learning as joint
 import test_references as references
 import test_tuner as harness
+from hybrid_scenarios import assert_device_contract, assert_room_contract
 from test_rooms import labels, member
 from tuner_under_test.calibration import settings
 from tuner_under_test.rooms import assessment, fitting, learning, roles
@@ -159,6 +160,7 @@ class CharacterisationTests(unittest.TestCase):
     def test_room_assessment_two_members(self):
         """Pin the full report and the additive role-field compatibility contract."""
         report = room_assessment_two_members()
+        assert_room_contract(report)
         golden("room_assessment_two_members", report)
         self.assertTrue(all(set(roles.FIELDS) <= set(d) for d in report["devices"].values()))
         expected = json.loads((FIXTURES / "room_assessment_two_members.json").read_text())
@@ -172,6 +174,7 @@ class CharacterisationTests(unittest.TestCase):
         check("joint_fit_examples")
 
     def test_device_fit(self):
+        assert_device_contract(device_fit())
         check("device_fit")
 
     def test_overnight_joint_attempt(self):
