@@ -15,6 +15,7 @@ RUNTIME_FILES = (
     "engine/hybrid/types.py",
     "engine/hybrid/domains.py",
     "engine/hybrid/digest.py",
+    "history/fit_rows.py",
     "worker/__init__.py",
     "worker/supervisor.py",
     "worker/limits.py",
