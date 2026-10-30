@@ -15,6 +15,8 @@ RUNTIME_FILES = (
     "engine/hybrid/types.py",
     "engine/hybrid/domains.py",
     "engine/hybrid/digest.py",
+    "engine/hybrid/evidence.py",
+    "engine/hybrid/training.py",
     "history/fit_rows.py",
     "history/cell_cache.py",
     "history/fit_days.py",
