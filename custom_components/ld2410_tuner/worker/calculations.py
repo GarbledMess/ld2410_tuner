@@ -4,6 +4,7 @@ import datetime
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -82,6 +83,16 @@ class ReadOnlyDays:
     def live_date(self, device_id):
         value = self.live_dates.get(device_id)
         return None if value is None else datetime.date.fromisoformat(value)
+
+    @contextmanager
+    def open_columns(self, device_id, date):
+        """Read physical columns without retaining a resident Day."""
+        entry = self.entries.get((device_id, date))
+        if entry is None or entry["path"] is None:
+            yield None
+            return
+        with history.open_columns(self._reference(entry)) as columns:
+            yield columns
 
     def identity(self, device_id, date):
         # Live inputs have already been copied to private immutable files too. A

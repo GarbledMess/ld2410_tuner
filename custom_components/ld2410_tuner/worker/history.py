@@ -139,3 +139,185 @@ def _nonblocking(path, flags):
     import os
 
     return os.open(path, flags | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
+
+
+def _read_at(stream, offset, size):
+    stream.seek(offset)
+    data = stream.read(size)
+    if len(data) != size:
+        raise HistoryRejected("Truncated physical columns")
+    return data
+
+
+@contextmanager
+def _spool_columns(stream):
+    """Inflate bounded buffers to disk; never map the complete payload."""
+    if stream.read(4) != dayfile.MAGIC:
+        raise HistoryRejected("Invalid physical stream")
+    inflater = zlib.decompressobj()
+    with tempfile.TemporaryFile() as raw:
+        while chunk := stream.read(65536):
+            while chunk:
+                data = inflater.decompress(chunk, 65536)
+                raw.write(data)
+                if inflater.unused_data:
+                    raise HistoryRejected("Trailing physical stream")
+                chunk = inflater.unconsumed_tail
+        if not inflater.eof:
+            raise HistoryRejected("Incomplete physical stream")
+        size = raw.tell()
+        header = dayfile.HEADER.unpack(_read_at(raw, 0, dayfile.HEADER.size))
+        _column_header(header, size)
+        yield raw, header
+
+
+def _column_header(header, size):
+    version, start, end, rows, runs, *flags = header
+    if version not in dayfile.VERSIONS or end < start or any(f not in (0, 1) for f in flags):
+        raise HistoryRejected("Invalid physical header")
+    expected = dayfile.HEADER.size + rows * (8 + sum(4 if f else 1 for f in flags))
+    if expected + runs * dayfile.RUN.size != size:
+        raise HistoryRejected("Invalid physical payload length")
+
+
+def _integers(stream, offset, count, first, length, planes):
+    if not planes:
+        raw = _read_at(stream, offset + first * 4, length * 4)
+    else:
+        raw = bytearray(length * 4)
+        for plane in range(4):
+            raw[plane::4] = _read_at(stream, offset + plane * count + first, length)
+    return [v[0] for v in struct.iter_unpack("<i", raw)]
+
+
+class _ColumnReader:
+    """Disk-backed timestamps support bisection and bounded row-range decoding."""
+
+    def __init__(self, raw, header, index):
+        self.raw, self.index = raw, index
+        self.version, self.start, self.end, self.count, _, *self.flags = header
+        self.offsets = []
+        offset = dayfile.HEADER.size + self.count * 8
+        for flag in self.flags:
+            self.offsets.append(offset)
+            offset += self.count * (4 if flag else 1)
+        self._index_times()
+
+    def _time_block(self, first, length, previous):
+        from itertools import accumulate
+
+        base = dayfile.HEADER.size
+        steps = _integers(self.raw, base, self.count, first, length, self.version == 3)
+        second = _integers(
+            self.raw, base + self.count * 4, self.count, first, length, self.version == 3
+        )
+        if self.version == 1:
+            return steps, second
+        if min(steps, default=0) < 0:
+            raise HistoryRejected("Invalid delta timestamps")
+        starts = list(accumulate(steps, initial=previous))[1:]
+        following = starts
+        if self.version == 3:
+            last = starts[-1]
+            if first + length < self.count:
+                last += _integers(self.raw, base, self.count, first + length, 1, True)[0]
+            following = starts[1:] + [last]
+        return starts, [a + b for a, b in zip(following, second, strict=True)]
+
+    def _index_times(self):
+        from ..engine.hybrid.constants import ROW_BLOCK_ROWS
+        from ..history import pace
+
+        previous, previous_end = 0, None
+        for first in range(0, self.count, ROW_BLOCK_ROWS):
+            length = min(ROW_BLOCK_ROWS, self.count - first)
+            starts, ends = self._time_block(first, length, previous)
+            previous_end = self._write_times(starts, ends, previous_end)
+            previous = starts[-1]
+            pace.rest()
+
+    def _write_times(self, starts, ends, previous_end):
+        for lo, hi in zip(starts, ends, strict=True):
+            if hi < lo or hi > self.end - self.start:
+                raise HistoryRejected("Invalid physical coverage")
+            if previous_end is not None and lo < previous_end:
+                raise HistoryRejected("Unordered physical coverage")
+            self.index.write(struct.pack("<dd", (self.start + lo) / 1000, (self.start + hi) / 1000))
+            previous_end = hi
+        return previous_end
+
+    def _bisect(self, value, side):
+        lo, hi = 0, self.count
+        while lo < hi:
+            mid = (lo + hi) // 2
+            pair = struct.unpack("<dd", _read_at(self.index, mid * 16, 16))
+            advance = pair[1] <= value if side == "end" else pair[0] < value
+            if advance:
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
+    def rows_in(self, lo, hi):
+        if hi <= lo:
+            return 0
+        return max(0, self._bisect(hi, "start") - self._bisect(lo, "end"))
+
+    def _column(self, channel, first, count):
+        from math import ceil, isfinite
+
+        width = 4 if self.flags[channel] else 1
+        data = _read_at(self.raw, self.offsets[channel] + first * width, count * width)
+        if width == 1:
+            return data
+        values = (v[0] for v in struct.iter_unpack("<f", data))
+        return bytes(ceil(v) if isfinite(v) and 0 <= v <= 100 else 255 for v in values)
+
+    def blocks(self, lo, hi, channels):
+        from array import array
+
+        from ..engine.hybrid.constants import ROW_BLOCK_ROWS
+        from ..engine.hybrid.types import RowBlock
+        from ..history import pace
+
+        if hi <= lo:
+            return
+        first, after = self._bisect(lo, "end"), self._bisect(hi, "start")
+        for begin in range(first, after, ROW_BLOCK_ROWS):
+            count = min(ROW_BLOCK_ROWS, after - begin)
+            pairs = list(struct.iter_unpack("<dd", _read_at(self.index, begin * 16, count * 16)))
+            times = array("d", (max(lo, a) for a, b in pairs))
+            ends = array("d", (min(hi, b) for a, b in pairs))
+            columns = tuple(
+                self._column(c, begin, count) if c in channels else bytes([255]) * count
+                for c in range(18)
+            )
+            yield RowBlock(times, ends, columns)
+            pace.rest()
+
+
+def _check_reference(stream, reference):
+    import os
+    import stat
+
+    found = os.fstat(stream.fileno())
+    if not stat.S_ISREG(found.st_mode) or _identity(found) != reference.identity:
+        raise HistoryRejected("History file identity changed")
+    if _identity(reference.path.stat()) != reference.identity:
+        raise HistoryRejected("History path was replaced")
+
+
+@contextmanager
+def open_columns(reference):
+    """Hold a captured descriptor and validate identity on entry and every exit."""
+    try:
+        with open(reference.path, "rb", opener=_nonblocking) as stream:
+            _check_reference(stream, reference)
+            with _spool_columns(stream) as (raw, header), tempfile.TemporaryFile() as index:
+                reader = _ColumnReader(raw, header, index)
+                try:
+                    yield reader
+                finally:
+                    _check_reference(stream, reference)
+    except (zlib.error, struct.error) as error:
+        raise HistoryRejected("Malformed physical history") from error
