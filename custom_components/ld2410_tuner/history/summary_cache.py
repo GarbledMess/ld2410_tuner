@@ -35,7 +35,7 @@ def _remove(path):
 def _cache_files(root):
     files = []
     for path in root.rglob("*"):
-        if path.suffix not in (".sum", ".res"):
+        if path.suffix not in (".sum", ".res", ".cell"):
             continue
         try:
             found = path.stat()
@@ -50,19 +50,24 @@ def disk_bytes(root):
     return sum(size for _, _, size in _cache_files(root))
 
 
-def prune(root, *, max_bytes=None):
+def prune(root, *, max_bytes=None, max_cell_bytes=None):
     """Remove all legacy summaries and bound result sidecars, oldest first."""
+    from ..engine.hybrid.constants import CELL_CACHE_DISK_BYTES
     from . import result_cache  # Imported here: it imports this module.
 
     worker_only()
     with _lock:
         # Writers hold this lock while a temporary exists, so these are crash leftovers.
         for temporary in root.rglob("*"):
-            if temporary.suffix in (".sum", ".sumtmp", ".restmp"):
+            if temporary.suffix in (".sum", ".sumtmp", ".restmp", ".celltmp"):
                 _remove(temporary)
         _prune_kind(
             sorted(item for item in _cache_files(root) if item[1].suffix == ".res"),
             result_cache.MAX_DISK_BYTES if max_bytes is None else max_bytes,
+        )
+        _prune_kind(
+            sorted(item for item in _cache_files(root) if item[1].suffix == ".cell"),
+            CELL_CACHE_DISK_BYTES if max_cell_bytes is None else max_cell_bytes,
         )
 
 
@@ -77,5 +82,5 @@ def _prune_kind(files, limit):
 
 def invalidate(path):
     """Remove an optional sidecar alongside an already-authorized history mutation."""
-    for suffix in (".sum", ".res"):
+    for suffix in (".sum", ".res", ".cell", ".celltmp"):
         _remove(path.with_suffix(suffix))

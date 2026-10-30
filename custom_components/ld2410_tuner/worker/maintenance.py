@@ -85,7 +85,7 @@ def _prune(store, candidate, target, root):
     json_bytes = budget.storage_bytes(candidate)
     prune = store.size() + json_bytes > limit
     if prune:
-        summary_cache.prune(root, max_bytes=0)
+        summary_cache.prune(root, max_bytes=0, max_cell_bytes=0)
         if summary_cache.disk_bytes(root) and store.size() + json_bytes > limit:
             raise budget.BudgetExceeded("Optional history indexes could not be removed")
     return json_bytes, prune

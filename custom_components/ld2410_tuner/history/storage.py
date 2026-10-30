@@ -106,7 +106,7 @@ def _prepare_save(store, candidate, now, clean, target):
     limit = ceiling if target is None else min(ceiling, target)
     json_bytes = budget.storage_bytes(candidate)  # Measured once per save: it is the costly part.
     if store.size() + json_bytes > limit:
-        summary_cache.prune(store.root, max_bytes=0)
+        summary_cache.prune(store.root, max_bytes=0, max_cell_bytes=0)
         if summary_cache.disk_bytes(store.root) and store.size() + json_bytes > limit:
             raise budget.BudgetExceeded(
                 "Optional history indexes could not be removed. Retry when their files are "
@@ -220,7 +220,7 @@ def _accept_days(runtime, prepared, changes, values):
 
 
 def _prune_indexes(root):
-    summary_cache.prune(root, max_bytes=0)
+    summary_cache.prune(root, max_bytes=0, max_cell_bytes=0)
 
 
 def _accept_worker(runtime, original, marks, values, clean, persist):
