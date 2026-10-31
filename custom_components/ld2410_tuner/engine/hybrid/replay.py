@@ -1,0 +1,320 @@
+"""Label-independent bounded replay with lossless decision folding and spilled records.
+
+Rows that detect identically for every compared vector of one radar are folded
+once (``always``/``possible`` crossings); only contested rows are decided per
+vector, and identical outcome masks share one hit list. Timing runs once per unique
+vector, and a zero-timing radar needs no state machine. Detection runs are read as
+whole regular-expression matches, so constant stretches cost one interval, never
+one step per row. Every fixed chunk's finalized coverage, raw hits, activity and
+supported activity spill to a temporary file: scoring, and any later re-score with
+other truth, never re-reads rows or re-runs timing. Chunk ends are fixed by the
+label regions alone, so separately replayed vectors stay slice-aligned.
+"""
+
+import re
+import struct
+import sys
+import tempfile
+from array import array
+from bisect import bisect_right
+from itertools import chain, repeat
+from operator import le, ne, sub
+
+from ...calibration.event_replay import _timing
+from ...const import HISTORY_KEYS
+from ...history import pace
+from .constants import CHUNK_SECONDS, MISSING, ROW_BLOCK_ROWS
+from .timing import TimingStream
+
+TABLES = tuple(bytes(1 if t < v != MISSING else 0 for v in range(256)) for t in range(101))
+_RUN = re.compile(rb"\x01+")
+_BREAK = re.compile(rb"\x01")
+_CUT = re.compile(rb"\x00")
+_STEP = struct.Struct("<ddIII")
+_COUNT = struct.Struct("<I")
+
+
+def chunks(regions):
+    """Chronological ``(lo, hi, last)`` pieces of at most ``CHUNK_SECONDS``."""
+    for lo, hi in regions:
+        at = lo
+        while at < hi:
+            end = min(hi, at + CHUNK_SECONDS)
+            yield at, end, end >= hi
+            at = end
+
+
+def support_tables(radar, model):
+    """Strict crossings that the quality model admits as positive support."""
+    if model is None:
+        return None
+    tables = {}
+    for c in radar.channels:
+        allowed = bytes(
+            1 if v <= 100 and model.supports(HISTORY_KEYS[c], v) else 0 for v in range(256)
+        )
+        tables[c] = tuple(bytes(map(min, TABLES[t], allowed)) for t in range(101))
+    return tables
+
+
+def fold_masks(columns, vectors):
+    """Exact byte-lane detection masks for every vector, folding constant rows.
+
+    A row above every compared threshold on some channel always detects; one at
+    or below every minimum never does. Only the remaining contested rows are
+    decided per vector, and only on channels whose thresholds differ.
+    """
+    cache = {}
+    always = possible = 0
+    varying = []
+    for c, column in columns.items():
+        values = {vector[c] for vector in vectors}
+        for t in values:
+            cache[c, t] = int.from_bytes(column.translate(TABLES[t]), "little")
+        always |= cache[c, max(values)]
+        possible |= cache[c, min(values)]
+        if len(values) > 1:
+            varying.append(c)
+    contested = possible & ~always
+    masks = []
+    for vector in vectors:
+        mask = always
+        for c in varying:
+            mask |= cache[c, vector[c]] & contested
+        masks.append(mask)
+    rows = len(next(iter(columns.values()), b""))
+    return masks, {"rows": rows, "contested": contested.bit_count(), "always": always.bit_count()}
+
+
+def _supported_masks(columns, vectors, tables):
+    cache = {}
+    masks = []
+    for vector in vectors:
+        mask = 0
+        for c, column in columns.items():
+            key = c, vector[c]
+            if key not in cache:
+                cache[key] = int.from_bytes(column.translate(tables[c][vector[c]]), "little")
+            mask |= cache[key]
+        masks.append(mask)
+    return masks
+
+
+def segments(times, ends):
+    """Coverage segments and the row indexes where a physical gap starts one."""
+    if not times:
+        return [], []
+    gaps = [m.start() + 1 for m in _BREAK.finditer(bytes(map(ne, times[1:], ends[:-1])))]
+    result, first = [], 0
+    for gap in gaps:
+        result.append((times[first], ends[gap - 1]))
+        first = gap
+    result.append((times[first], ends[-1]))
+    return result, gaps
+
+
+def hits(mask, times, ends, gaps):
+    """Detected runs as intervals, split at physical gaps."""
+    if not mask:
+        return []
+    out = []
+    for run in _RUN.finditer(mask.to_bytes(len(times), "little")):
+        first, stop = run.span()
+        k = bisect_right(gaps, first)
+        while k < len(gaps) and gaps[k] < stop:
+            out.append((times[first], ends[gaps[k] - 1]))
+            first = gaps[k]
+            k += 1
+        out.append((times[first], ends[stop - 1]))
+    return out
+
+
+def _joinable(close, segment, previous):
+    return 1 if close and segment == previous else 0
+
+
+def premerge(hits, segments, hold):
+    """Join hits the hold would merge anyway: same coverage segment, gap <= hold."""
+    if len(hits) < 2 or hold <= 0:
+        return hits
+    xs = [h[0] for h in hits]
+    ys = [h[1] for h in hits]
+    starts = [a for a, _ in segments]
+    later = map(bisect_right, repeat(starts), xs[1:])
+    earlier = map(bisect_right, repeat(starts), ys[:-1])
+    close = map(le, map(sub, xs[1:], ys[:-1]), repeat(hold))
+    join = bytes(map(_joinable, close, later, earlier))
+    out, first = [], 0
+    for cut in _CUT.finditer(join):
+        k = cut.start()
+        out.append((xs[first], ys[k]))
+        first = k + 1
+    out.append((xs[first], ys[-1]))
+    return out
+
+
+def _extend(intervals, new):
+    """Append ordered intervals, merging only an exact touch at the seam."""
+    if new and intervals and intervals[-1][1] == new[0][0]:
+        intervals[-1] = intervals[-1][0], new[0][1]
+        intervals.extend(new[1:])
+    else:
+        intervals.extend(new)
+
+
+class _Radar:
+    """Unique vectors of one radar and their timing states."""
+
+    def __init__(self, radar, keys, tables):
+        self.channels = tuple(sorted(radar.channels))
+        self.keys = keys
+        self.vectors = [dict(zip(self.channels, key, strict=True)) for key in keys]
+        self.tables = tables
+        self.hold, on, off = _timing(radar.timing)
+        self.timed = bool(self.hold or on or off)
+        self.physical = [TimingStream(radar.timing) for _ in keys] if self.timed else None
+        self.support = [TimingStream(radar.timing) for _ in keys] if self.timed and tables else None
+
+    def start(self):
+        self.coverage = []
+        self.raw = [[] for _ in self.keys]
+        self.positive = [[] for _ in self.keys] if self.tables else self.raw
+
+    def block(self, times, ends, columns):
+        spans, gaps = segments(times, ends)
+        _extend(self.coverage, spans)
+        masks, _ = fold_masks(columns, self.vectors)
+        self._feed(masks, times, ends, gaps, spans, self.raw, self.physical)
+        if self.tables:
+            masks = _supported_masks(columns, self.vectors, self.tables)
+            self._feed(masks, times, ends, gaps, spans, self.positive, self.support)
+
+    def _feed(self, masks, times, ends, gaps, spans, outputs, streams):
+        found = {}
+        for i, mask in enumerate(masks):
+            if mask not in found:
+                detected = hits(mask, times, ends, gaps)
+                found[mask] = detected, premerge(detected, spans, self.hold)
+            detected, merged = found[mask]
+            _extend(outputs[i], detected)
+            if streams is not None:
+                streams[i].feed(spans, merged)
+
+    def finish(self, hi, last):
+        """Drain every state to the fixed chunk end; activity is final before it."""
+        active = [_drain(s, hi, last) for s in self.physical] if self.timed else self.raw
+        supported = active
+        if self.support is not None:
+            supported = [_drain(s, hi, last) for s in self.support]
+        elif self.tables:
+            supported = self.positive
+        return self.coverage, self.raw, active, supported
+
+
+def _drain(stream, hi, last):
+    if last:
+        stream.close()
+    stream.advance(hi)
+    return stream.drain(hi)[1]
+
+
+def _native(values):
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values
+
+
+class Records:
+    """One run's chronological chunk records, spilled to a temporary file.
+
+    Each step stores a pool of distinct interval lists, then per radar its
+    coverage and per stream its raw, active and supported list indexes.
+    """
+
+    def __init__(self, directory, rids, streams):
+        self.rids, self.streams = tuple(rids), tuple(streams)
+        self.file = tempfile.TemporaryFile(dir=directory, prefix="hybrid-replay-")
+        self.steps = 0
+
+    def write(self, lo, hi, coverage, outputs):
+        pool, lists = {}, []
+
+        def index(intervals):
+            key = tuple(intervals)
+            if key not in pool:
+                pool[key] = len(lists)
+                lists.append(intervals)
+            return pool[key]
+
+        rid_index = array("I", (index(coverage[rid]) for rid in self.rids))
+        stream_index = array("I", (index(v) for triple in outputs for v in triple))
+        self.file.write(_STEP.pack(lo, hi, len(lists), len(rid_index), len(stream_index)))
+        for intervals in lists:
+            self.file.write(_COUNT.pack(len(intervals)))
+            self.file.write(_native(array("d", chain.from_iterable(intervals))).tobytes())
+        self.file.write(_native(rid_index).tobytes() + _native(stream_index).tobytes())
+        self.steps += 1
+
+    def rewind(self):
+        self.file.flush()
+        self.file.seek(0)
+
+    def read(self):
+        lo, hi, count, rids, streams = _STEP.unpack(self.file.read(_STEP.size))
+        lists = [self._list() for _ in range(count)]
+        rid_index = _native(array("I", self.file.read(4 * rids)))
+        stream_index = _native(array("I", self.file.read(4 * streams)))
+        coverage = {rid: lists[i] for rid, i in zip(self.rids, rid_index, strict=True)}
+        outputs = {}
+        for k, key in enumerate(self.streams):
+            at = 3 * k
+            outputs[key] = tuple(lists[i] for i in stream_index[at : at + 3])
+        return lo, hi, coverage, outputs
+
+    def _list(self):
+        n = _COUNT.unpack(self.file.read(_COUNT.size))[0]
+        values = _native(array("d", self.file.read(16 * n)))
+        return list(zip(values[0::2], values[1::2], strict=True))
+
+    @property
+    def spilled_bytes(self):
+        return self.file.tell() if not self.file.closed else 0
+
+    def close(self):
+        self.file.close()
+
+
+def replay(problem, providers, regions, wanted, models, directory):
+    """Replay the ``wanted`` ``{rid: [vector keys]}`` and return spilled records."""
+    radars = {
+        rid: _Radar(problem.radars[rid], keys, models.get(rid))
+        for rid, keys in sorted(wanted.items())
+    }
+    streams = [(rid, key) for rid, state in radars.items() for key in state.keys]
+    records = Records(directory, radars, streams)
+    operations = 0
+    try:
+        for lo, hi, last in chunks(regions):
+            pace.rest()
+            operations += _chunk(providers, radars, records, lo, hi, last)
+    except BaseException:
+        records.close()
+        raise
+    records.operations = operations
+    return records
+
+
+def _chunk(providers, radars, records, lo, hi, last):
+    coverage, outputs, operations = {}, [], 0
+    for rid, state in radars.items():
+        times, ends, columns = providers[rid].window(lo, hi)
+        state.start()
+        for at in range(0, len(times), ROW_BLOCK_ROWS):
+            stop = at + ROW_BLOCK_ROWS
+            state.block(times[at:stop], ends[at:stop], {c: v[at:stop] for c, v in columns.items()})
+        operations += len(times) * len(state.keys)
+        cov, raw, active, supported = state.finish(hi, last)
+        coverage[rid] = cov
+        outputs.extend(zip(raw, active, supported, strict=True))
+    records.write(lo, hi, coverage, outputs)
+    return operations

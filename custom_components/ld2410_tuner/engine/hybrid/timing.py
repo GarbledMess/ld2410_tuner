@@ -94,6 +94,18 @@ class TimingStream:
     def finish(self) -> None:
         self.close()
 
+    def advance(self, until: float) -> None:
+        """Declare every input before ``until`` fed, so draining may reach it.
+
+        A segment ending earlier cannot continue: the next row starts at or
+        after ``until`` and therefore after a physical gap.
+        """
+        if until < self._processed:
+            raise ValueError("Timing input cannot move backwards")
+        if self.high is not None and self.high < until:
+            self.close()
+        self._processed = until
+
     def frontier(self) -> float:
         """All timing before the last processed endpoint is now decidable."""
         return self._processed

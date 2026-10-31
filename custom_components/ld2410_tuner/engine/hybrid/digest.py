@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from math import ceil, floor, isfinite
 
 from .constants import CELL_SECONDS, CHANNELS, MISSING
+from .physical_index import PhysicalBuilder
 
 _PAIR = struct.Struct("<dd")
 
@@ -80,6 +81,7 @@ class DayDigest:
     cov: bytes
     partial: Mapping
     index: object = None
+    physical: object = None
 
     def segments(self):
         """Yield merged coverage without retaining all partial pieces."""
@@ -111,6 +113,7 @@ class _Folder:
         self.partial = PartialCoverage()
         self.selected = selected
         self.pending = None
+        self.physical = PhysicalBuilder(selected, start, end)
 
     def coverage(self, lo, hi):
         if self.pending is not None and lo == self.pending[1]:
@@ -143,6 +146,7 @@ class _Folder:
 
 
 def _fold_block(folder, block, start, end):
+    folder.physical.add(block)
     for i, (lo, hi) in enumerate(zip(block.times, block.ends, strict=True)):
         lo, hi = max(start, lo), min(end, hi)
         if hi <= lo:
@@ -170,6 +174,7 @@ def fold_day(blocks, start, end, channels):
             tuple(bytes(c) for c in folder.columns),
             bytes(folder.cov),
             folder.partial,
+            physical=folder.physical.finish(),
         )
     except BaseException:
         folder.partial.close()
