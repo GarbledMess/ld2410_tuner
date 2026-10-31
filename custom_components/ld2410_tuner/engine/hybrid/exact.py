@@ -16,7 +16,7 @@ from .domains import attenuated_threshold
 from .evidence import _labels
 from .physical_index import physical_rows
 from .replay import replay, support_tables
-from .scoring import SliceScorer, _union
+from .scoring import ScoreStore, SliceScorer, _union
 from .types import TruthSpan
 
 LABELLED = ("present", "not_present")
@@ -166,23 +166,25 @@ class _Scoring:
     def run(self, jobs):
         problem = self.evaluator.problem
         scorers, plan = {}, []
-        for pattern, variant in jobs:
-            keys = []
-            for z, zone in enumerate(self.variants[variant]):
-                members = tuple((m, self.evaluator.key(pattern, m)) for m in zone.members)
-                key = variant, z, members
-                if key not in scorers:
-                    scorers[key] = SliceScorer(
-                        zone, problem.policy, (problem.start, problem.end), self.evaluator.directory
-                    )
-                keys.append(key)
-            plan.append(keys)
-        try:
-            self._feed(scorers)
-            results = {key: scorer.result() for key, scorer in scorers.items()}
-        finally:
-            for scorer in scorers.values():
-                scorer.close()
+        with ScoreStore(self.evaluator.directory) as store:
+            for pattern, variant in jobs:
+                keys = []
+                for z, zone in enumerate(self.variants[variant]):
+                    members = tuple((m, self.evaluator.key(pattern, m)) for m in zone.members)
+                    key = variant, z, members
+                    if key not in scorers:
+                        window = problem.start, problem.end
+                        scorers[key] = SliceScorer(
+                            zone, problem.policy, window, self.evaluator.directory, store=store
+                        )
+                    keys.append(key)
+                plan.append(keys)
+            try:
+                self._feed(scorers)
+                results = {key: scorer.result() for key, scorer in scorers.items()}
+            finally:
+                for scorer in scorers.values():
+                    scorer.close()
         return [self._combine(keys, results) for keys in plan]
 
     def _feed(self, scorers):

@@ -13,7 +13,7 @@ from bisect import bisect_right
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from . import selection
+from . import anomaly, selection
 from .constants import ROBUST_SEARCH_MIN_WEIGHT, ROBUST_SHORTLIST, ROBUST_SWEEPS
 from .domains import normalize_pattern
 from .evaluate import Evaluators, evaluate_patterns, plan_scores, score_regions
@@ -109,7 +109,7 @@ def search_candidates(state):
     return patterns
 
 
-def score(state, patterns, *, zones=None):
+def score(state, patterns, *, zones=None, keep=1):
     """Common-fidelity base and quiet scores; returns (indexes, base, quiet)."""
     problem = state.problem
 
@@ -124,6 +124,7 @@ def score(state, patterns, *, zones=None):
         rank=rank,
         evaluators=state.evaluators,
         zones=zones,
+        keep=keep,
     )
     base = [{k: v for k, v in s.items() if k != "quiet"} for s in scores]
     return [s["pattern_index"] for s in scores], base, [s["quiet"] for s in scores]
@@ -207,8 +208,80 @@ def result(state, pick, info, missing, extra=None):
     return FitResult(thresholds, state.scores[0], after, diagnostics)
 
 
-def fit(problem):
-    """Fit one shared threshold vector per radar for every zone of ``problem``."""
+def _dedupe(patterns):
+    seen, out = set(), []
+    for pattern in patterns:
+        key = tuple((rid, tuple(sorted(v.items()))) for rid, v in sorted(pattern.items()))
+        if key not in seen:
+            seen.add(key)
+            out.append(pattern)
+    return out
+
+
+def _rescore_patterns(state, masked, found, first):
+    """Fit 1's start, choice and candidates plus closed-form masked gap centres."""
+    quiet = max(selection.weights(masked).values(), default=0) > ROBUST_SEARCH_MIN_WEIGHT
+    seeds, stats = anomaly.masked_seeds(
+        masked, state.training, found.masks, state.start, quiet=quiet
+    )
+    return _dedupe([state.start, first, *state.patterns, *seeds]), stats
+
+
+def _masked_fit(state, found, first):
+    """Re-score fit 1's shortlist with suspects masked (no search, same fidelity)."""
+    masked = anomaly.masked_problem(state.problem, found.masks)
+    patterns, stats = _rescore_patterns(state, masked, found, first)
+    work = anomaly.operations(state.problem, state.plan, len(patterns))
+    if not anomaly.within_budget(work):
+        return None, work, None, None
+    second = replace(state, problem=masked, patterns=patterns, quiet_search=state.quiet_search)
+    indexes, second.scores, second.quiet = score(second, patterns, zones=masked.zones, keep=2)
+    second.compared = [patterns[i] for i in indexes]
+    pick, info = selection.choose(masked, second.compared, second.scores, second.quiet, stats)
+    return second, work, pick, info
+
+
+def _gain(second, pick, first):
+    costs = selection.selection_costs(second.problem, second.scores, second.quiet)
+    at = second.compared.index(first) if first in second.compared else 0
+    return costs[at][0] - costs[pick][0]
+
+
+def audited(state, first, pick):
+    """Fit 1 unless masking audited suspects improves selection beyond the band."""
+    found = anomaly.audit(state.problem, state.training)
+    if not found.accepted:
+        first.diagnostics["anomaly"] = anomaly.report(found, "clean")
+        return first
+    second, work, choice, info = _masked_fit(state, found, first.thresholds)
+    if second is None:
+        status = "kept: not tested (operation budget)"
+        first.diagnostics["anomaly"] = anomaly.report(found, status, work=work)
+        return first
+    totals = _totals(second.scores[0])
+    gain = _gain(second, choice, first.thresholds)
+    margin = anomaly.masked_margin(second.scores[0])
+    measured = {"gain": round(gain, 6), "margin": round(margin, 6), "work": work}
+    if totals["occupied_seconds"] and totals["empty_seconds"] and gain > margin:
+        summary = {
+            "status": first.diagnostics["status"],
+            "thresholds": first.thresholds,
+            "base_cost": first.diagnostics["base_cost"],
+            "selection_cost": first.diagnostics["selection_cost"],
+        }
+        extra = {"anomaly": anomaly.report(found, "discarded", **measured), "first_fit": summary}
+        return result(second, choice, info, [], extra)
+    first.diagnostics["anomaly"] = anomaly.report(found, "kept: no influence", **measured)
+    return first
+
+
+def fit(problem, *, audit=True):
+    """Fit one shared threshold vector per radar for every zone of ``problem``.
+
+    With ``audit`` (the production default) suspect label stretches are masked
+    and fit 1's candidates re-scored; the masked choice replaces fit 1 only when
+    its selection gain on the retained labels exceeds their evidence band.
+    """
     problem = prepared(problem)
     with tempfile.TemporaryDirectory(prefix="hybrid-fit-") as directory:
         directory = Path(directory)
@@ -217,7 +290,10 @@ def fit(problem):
             state = FitState(problem, training, directory, normalize_pattern(problem.radars))
             try:
                 pick, info, missing = first_fit(state)
-                return result(state, pick, info, missing)
+                first = result(state, pick, info, missing)
+                if missing or not audit:
+                    return first
+                return audited(state, first, pick)
             finally:
                 if state.evaluators is not None:
                     state.evaluators.close()

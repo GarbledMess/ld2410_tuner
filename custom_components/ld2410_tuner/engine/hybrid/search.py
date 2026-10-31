@@ -2,10 +2,11 @@
 
 from bisect import bisect_right
 from collections import OrderedDict
+from math import ceil
 
 from ...history import pace
 from .candidates import candidate_values, channel_statistics, preferred
-from .constants import MASK_CACHE_BYTES, SHORTLIST, SWEEPS
+from .constants import CELL_SECONDS, MASK_CACHE_BYTES, SHORTLIST, SWEEPS
 from .domains import normalize_pattern
 from .search_data import collect_training
 from .search_scores import conditional_costs, coordinate_costs
@@ -116,42 +117,18 @@ class _Search:
         rows = self.training._database.execute(
             "SELECT DISTINCT vector FROM search_vectors WHERE zone=?", (zone.group_id,)
         )
+        joined, width = bytearray(), None
         for (vector,) in rows:
-            for item, at in positions:
-                if vector[at] <= 100:
-                    result[item].add(vector[at])
+            width = len(vector)
+            joined += vector
+            if len(joined) >= HISTOGRAM_BYTES:
+                _observed(joined, width, positions, result)
+                joined = bytearray()
+        if joined:
+            _observed(joined, width, positions, result)
 
     def _statistics(self):
-        from .search_data import _primary_bins
-
-        bins = {
-            item: {state: {} for state in ("present", "not_present")}
-            for rid, r in self.problem.radars.items()
-            for item in ((rid, c) for c in r.channels)
-        }
-        for zone in self.problem.zones:
-            members = tuple(sorted(zone.members))
-            positions = [
-                (item, members.index(item[0]) * 18 + item[1]) for item in bins if item[0] in members
-            ]
-            self._zone_histograms(zone, positions, bins)
-        result = {}
-        for item, states in bins.items():
-            hp, he = (_primary_bins(states[state]) for state in ("present", "not_present"))
-            result[item] = channel_statistics(
-                _attenuated_histogram(hp) if self.attenuate else hp, he
-            )
-        return result
-
-    def _zone_histograms(self, zone, positions, bins):
-        rows = self.training._database.execute(
-            "SELECT state,source,vector,n FROM search_groups WHERE zone=?", (zone.group_id,)
-        )
-        for state, source, vector, count in rows:
-            for item, at in positions:
-                if vector[at] <= 100:
-                    hist = bins[item][state].setdefault(source, [0.0] * 101)
-                    hist[vector[at]] += count * 6
+        return statistics(self.problem, self.training, attenuate=self.attenuate)
 
     def _coordinates(self):
         # Data-defined order avoids using radar names as an optimization policy.
@@ -281,13 +258,7 @@ class _Search:
         return _unique([self.repair(pat) for pat in (*base, *variants)], self.coordinates)
 
     def repair(self, pattern):
-        result = _copy(pattern)
-        for rid, c in self.coordinates:
-            stat = self.stats[rid, c]
-            current, value = self.start[rid][c], result[rid][c]
-            if stat["gap"] is None and not _changes_crossing(stat, current, value):
-                result[rid][c] = current
-        return result
+        return repair(pattern, self.stats, self.start)
 
     def _variants(self, pattern):
         combined = _copy(pattern)
@@ -302,6 +273,113 @@ class _Search:
                 changed.append(variant)
                 combined[rid][c] = value
         return [*changed[:8], combined] if changed else []
+
+
+def statistics(problem, store, *, attenuate=False, masks=None):
+    """Per-coordinate class histograms and gap statistics of the pure training cells.
+
+    ``masks`` (``{zone: intervals}``) drops audited cells, so a masked re-score sees
+    exactly the training evidence a masked collection would, without re-collecting.
+    """
+    return channel_views(class_bins(problem, store, masks), attenuate)
+
+
+def class_bins(problem, store, masks=None):
+    """Per coordinate and class, per-source duration histograms (one pass)."""
+    bins = {
+        item: {state: {} for state in ("present", "not_present")}
+        for rid, r in problem.radars.items()
+        for item in ((rid, c) for c in r.channels)
+    }
+    for zone in problem.zones:
+        members = tuple(sorted(zone.members))
+        positions = [
+            (item, members.index(item[0]) * 18 + item[1]) for item in bins if item[0] in members
+        ]
+        mask = None if masks is None else masks.get(zone.group_id, ())
+        _zone_histograms(_zone_rows(store, zone, mask), positions, bins)
+    return bins
+
+
+def channel_views(bins, attenuate=False):
+    """Gap statistics from ``class_bins``; attenuation transforms only occupied mass."""
+    from .search_data import _primary_bins
+
+    result = {}
+    for item, states in bins.items():
+        hp, he = (_primary_bins(states[state]) for state in ("present", "not_present"))
+        result[item] = channel_statistics(_attenuated_histogram(hp) if attenuate else hp, he)
+    return result
+
+
+def _zone_rows(store, zone, mask):
+    if mask is None:
+        yield from store._database.execute(
+            "SELECT state,source,vector,n FROM search_groups WHERE zone=?", (zone.group_id,)
+        )
+        return
+    rows = store._database.execute(
+        "SELECT state,source,vector,t,n FROM search_pure WHERE zone=?", (zone.group_id,)
+    )
+    for state, source, vector, t, n in rows:
+        kept = n - masked_cells(t, n, mask)
+        if kept:
+            yield state, source, vector, kept
+
+
+def masked_cells(t, n, mask):
+    """Cells of the pure run ``[t, t + 6n)`` whose start lies inside ``mask``."""
+    total = 0
+    for a, b in mask:
+        lo = max(0, ceil((a - t) / CELL_SECONDS))
+        hi = min(n, ceil((b - t) / CELL_SECONDS))
+        total += max(0, hi - lo)
+    return total
+
+
+HISTOGRAM_BYTES = 8 * 1024**2
+
+
+def _zone_histograms(rows, positions, bins):
+    """Strided byte columns per (state, source, multiplicity), counted in C.
+
+    Bins hold integer-valued seconds, so the result does not depend on order.
+    Joined vectors are flushed every ``HISTOGRAM_BYTES``.
+    """
+    groups, size = {}, 0
+    for state, source, vector, count in rows:
+        groups.setdefault((state, source, count, len(vector)), bytearray()).extend(vector)
+        size += len(vector)
+        if size >= HISTOGRAM_BYTES:
+            _count_groups(groups, positions, bins)
+            groups, size = {}, 0
+    _count_groups(groups, positions, bins)
+
+
+def _observed(joined, width, positions, result):
+    """Add each position's observed energies (missing excluded), read in C."""
+    for item, at in positions:
+        result[item].update(v for v in set(joined[at::width]) if v <= 100)
+
+
+def _count_groups(groups, positions, bins):
+    for (state, source, count, width), joined in groups.items():
+        for item, at in positions:
+            column = bytes(joined[at::width])
+            for value in sorted(set(column)):
+                if value <= 100:
+                    hist = bins[item][state].setdefault(source, [0.0] * 101)
+                    hist[value] += column.count(value) * count * CELL_SECONDS
+
+
+def repair(pattern, stats, start):
+    """Keep the start on coordinates whose move crosses no training energy and no gap."""
+    result = _copy(pattern)
+    for (rid, c), stat in stats.items():
+        current, value = start[rid][c], result[rid][c]
+        if stat["gap"] is None and not _changes_crossing(stat, current, value):
+            result[rid][c] = current
+    return result
 
 
 def _attenuated_histogram(hist):

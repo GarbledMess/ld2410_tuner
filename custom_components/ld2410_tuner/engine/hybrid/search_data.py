@@ -15,6 +15,7 @@ def _schema(store):
         "_packed_block",
         "_cost_coefficients",
         "_decision_vectors",
+        "_column_blocks",
     ):
         if hasattr(store, name):
             delattr(store, name)
