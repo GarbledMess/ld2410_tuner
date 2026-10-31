@@ -209,3 +209,9 @@ def observed_energies(problem, store, rid, channel):
             )
             energies.update(row[0][at] for row in rows if row[0][at] <= 100)
     return tuple(sorted(energies))
+
+
+def pure_cells(store):
+    """Pure labelled training cells per state, summed over zones and sources."""
+    rows = store._database.execute("SELECT state, sum(n) FROM search_groups GROUP BY state")
+    return dict(rows)

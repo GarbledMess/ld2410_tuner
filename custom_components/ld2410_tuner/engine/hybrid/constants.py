@@ -33,3 +33,9 @@ ROBUST_SEARCH_MIN_WEIGHT = 0.05
 CELL_CACHE_VERSION = 3
 CELL_CACHE_MEMORY_BYTES = 2 * 1024**2
 CELL_CACHE_DISK_BYTES = 256 * 1024**2
+# Evidence horizons settled 2026-10-31 (exp2 hybrid_fast): automatic evidence counts
+# only for the last 28 days before the fit end (held-out accuracy unchanged on every
+# fold); human labels count newest first up to 400 labelled hours, keeping the label
+# that crosses the cap whole. Real users rarely reach it; it bounds a label-heavy year.
+AUTOMATIC_HORIZON_DAYS = 28
+HUMAN_EVIDENCE_HOURS = 400

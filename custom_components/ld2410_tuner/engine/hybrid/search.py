@@ -10,7 +10,14 @@ from .domains import normalize_pattern
 from .search_data import collect_training
 from .search_scores import conditional_costs, coordinate_costs
 
-__all__ = ["collect_training", "conditional_histograms", "coordinate_costs", "search"]
+__all__ = [
+    "collect_training",
+    "conditional_histograms",
+    "coordinate_costs",
+    "quiet_candidates",
+    "run_search",
+    "search",
+]
 
 
 def conditional_histograms(channels, covered, weights):
@@ -320,8 +327,36 @@ def _unique(patterns, coordinates):
     return result
 
 
-def search(problem, training, *, attenuate=False, sweeps=SWEEPS, shortlist=SHORTLIST):
+def run_search(problem, training, *, attenuate=False, sweeps=SWEEPS, shortlist=SHORTLIST):
+    """The search engine (statistics, pool, repair) and its start-first finalists."""
     engine = _Search(problem, training, attenuate)
     seeds = engine.seeds()
     finals = [engine.run(seed, sweeps) for seed in seeds]
-    return engine.finalists((*seeds[1:], *finals), shortlist)
+    return engine, engine.finalists((*seeds[1:], *finals), shortlist)
+
+
+def search(problem, training, *, attenuate=False, sweeps=SWEEPS, shortlist=SHORTLIST):
+    return run_search(problem, training, attenuate=attenuate, sweeps=sweeps, shortlist=shortlist)[1]
+
+
+def best_pooled(engine):
+    """The best untimed pattern seen by a search (deterministic tie order)."""
+    if not engine.pool:
+        return None
+    return min(engine.pool.values(), key=lambda item: (item[0], _key(item[1], engine.coordinates)))[
+        1
+    ]
+
+
+def quiet_candidates(problem, training, engine, *, sweeps, shortlist):
+    """One attenuated sweep from the best pattern plus its best pooled variants."""
+    top = best_pooled(engine)
+    if top is None:
+        return []
+    quiet = _Search(problem, training, attenuate=True)
+    found = quiet.run(top, sweeps)
+    ranked = sorted(
+        quiet.pool.values(), key=lambda item: (item[0], _key(item[1], quiet.coordinates))
+    )
+    variants = [found, *(pattern for _, pattern in ranked[:shortlist])]
+    return _unique([engine.repair(pattern) for pattern in variants], engine.coordinates)

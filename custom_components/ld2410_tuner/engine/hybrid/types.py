@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Protocol
 
+from .constants import AUTOMATIC_HORIZON_DAYS, HUMAN_EVIDENCE_HOURS
+
 if TYPE_CHECKING:
     from .digest import DayDigest
 
@@ -53,7 +55,8 @@ class EvidencePolicy:
     automatic_weight: float
     reference: bool
     quality: dict
-    automatic_horizon_days: float | None = 28.0
+    automatic_horizon_days: float | None = AUTOMATIC_HORIZON_DAYS
+    human_evidence_hours: float | None = HUMAN_EVIDENCE_HOURS
 
 
 @dataclass(frozen=True, slots=True)

@@ -29,6 +29,8 @@ RUNTIME_FILES = (
     "engine/hybrid/search_masks.py",
     "engine/hybrid/search_timing.py",
     "engine/hybrid/search.py",
+    "engine/hybrid/selection.py",
+    "engine/hybrid/engine.py",
     "engine/hybrid/timing.py",
     "engine/hybrid/scoring.py",
     "engine/hybrid/adapters.py",
