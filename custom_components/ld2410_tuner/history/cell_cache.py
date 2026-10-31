@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ..engine.hybrid.constants import CELL_CACHE_DISK_BYTES, CELL_CACHE_VERSION, CELL_SECONDS
 from ..engine.hybrid.digest import DayDigest, PartialCoverage, _pieces
+from ..engine.hybrid.index import EnergyIndex, read_index, write_index
 from . import summary_cache
 
 _MAGIC = b"LD24CELL1"
@@ -89,8 +90,9 @@ def _load(stream, size, identity, channels):
     cov = _read(stream, n)
     if any(v > 2 for v in cov):
         raise ValueError("Invalid cell coverage")
+    index = read_index(stream, n)
     partial = _partial(stream, size - 4, cov, k0)
-    return DayDigest(CELL_SECONDS, k0, n, columns, cov, partial)
+    return DayDigest(CELL_SECONDS, k0, n, columns, cov, partial, index)
 
 
 def _read_at(stream, offset, size):
@@ -130,6 +132,7 @@ def _write(stream, identity, channels, digest):
     for column in digest.channels:
         stream.write(column)
     stream.write(digest.cov)
+    write_index(stream, digest.index or EnergyIndex.build(digest.channels))
     for cell in digest.partial:
         for lo, hi in _pieces(digest.partial, cell):
             stream.write(_PIECE.pack(cell, lo, hi))

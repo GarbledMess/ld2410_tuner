@@ -79,6 +79,7 @@ class DayDigest:
     channels: tuple[bytes, ...]
     cov: bytes
     partial: Mapping
+    index: object = None
 
     def segments(self):
         """Yield merged coverage without retaining all partial pieces."""
