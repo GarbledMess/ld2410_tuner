@@ -112,3 +112,48 @@ def zone_segments(digests, members):
     for member in members[1:]:
         intervals = _intersect(intervals, digests[member].segments())
     return intervals
+
+
+def _human_kept(truth, seconds):
+    """Indexes of the newest human labels whose earlier total is below the cap."""
+    labelled = [
+        (span.end, span.start, i)
+        for i, span in enumerate(truth)
+        if span.source == "human" and span.state in ("present", "not_present")
+    ]
+    kept, total = set(), 0.0
+    for end, start, i in sorted(labelled, reverse=True):
+        if total >= seconds:
+            break
+        kept.add(i)
+        total += max(0.0, end - start)
+    return kept
+
+
+def _automatic(span, cutoff):
+    if span.end <= cutoff:
+        return None
+    return span if span.start >= cutoff else replace(span, start=cutoff)
+
+
+def evidence_horizon(truth, end, policy):
+    """Apply the evidence horizons before source precedence and Unknown overlay.
+
+    Automatic spans (including their Unknowns) are clipped to the last
+    ``automatic_horizon_days`` before ``end``; a crossing span keeps its recent
+    part. Human labels count newest first up to ``human_evidence_hours``, keeping
+    the crossing label whole; human Unknowns are always kept. Order is preserved.
+    """
+    truth = tuple(truth)
+    days, hours = policy.automatic_horizon_days, policy.human_evidence_hours
+    cutoff = -float("inf") if days is None else end - days * 86400
+    kept = None if hours is None else _human_kept(truth, hours * 3600)
+    result = []
+    for i, span in enumerate(truth):
+        if span.source != "human":
+            span = _automatic(span, cutoff)
+        elif kept is not None and i not in kept and span.state in ("present", "not_present"):
+            span = None
+        if span is not None:
+            result.append(span)
+    return tuple(result)
