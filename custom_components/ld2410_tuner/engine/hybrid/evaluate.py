@@ -66,7 +66,9 @@ class CellRows:
             lo = digest.k0 * digest.resolution
             return lo, lo + digest.n * digest.resolution, cell_rows(digest, self.channels)
         finally:
-            digest.partial.close()
+            close = getattr(digest.partial, "close", None)
+            if close is not None:
+                close()
 
     def _advance(self, lo, hi):
         """Load days until one reaches ``hi``; days known to end by ``lo`` stay unread."""
@@ -184,12 +186,12 @@ def _base_cost(score):
 
 
 def evaluate_patterns(
-    problem, patterns, plan, *, quiet=False, rank=None, evaluators=None, zones=None
+    problem, patterns, plan, *, quiet=False, rank=None, evaluators=None, zones=None, keep=1
 ):
     """Scores of the patterns compared at ``plan`` fidelity, start first.
 
-    A ``cells_then_exact`` plan returns only the exactly scored subset; each
-    score names its ``pattern_index``. ``rank`` orders cell pre-ranks (default
+    A ``cells_then_exact`` plan returns only the exactly scored subset (always
+    including the first ``keep`` patterns); each score names its ``pattern_index``. ``rank`` orders cell pre-ranks (default
     base cost); ``evaluators`` lets a caller re-score the same records later.
     """
     patterns = list(patterns)
@@ -199,8 +201,8 @@ def evaluate_patterns(
         indexes = list(range(len(patterns)))
         if plan.mode == "cells_then_exact":
             cells = evaluators.get("cells").scores(patterns, quiet=quiet, zones=zones)
-            order = sorted(indexes[1:], key=lambda i: ((rank or _base_cost)(cells[i]), i))
-            indexes = indexes[:1] + order[: plan.finalist_limit - 1]
+            order = sorted(indexes[keep:], key=lambda i: ((rank or _base_cost)(cells[i]), i))
+            indexes = indexes[:keep] + order[: max(0, plan.finalist_limit - keep)]
         mode = "cells" if plan.mode == "cells" else "exact"
         chosen = [patterns[i] for i in indexes]
         scores = evaluators.get(mode).scores(chosen, quiet=quiet, zones=zones)

@@ -39,3 +39,30 @@ CELL_CACHE_DISK_BYTES = 256 * 1024**2
 # that crosses the cap whole. Real users rarely reach it; it bounds a label-heavy year.
 AUTOMATIC_HORIZON_DAYS = 28
 HUMAN_EVIDENCE_HOURS = 400
+
+# Label anomaly audit (2026-10-30 dev loop, exp2 hybrid_robust; tuned on the same data,
+# so optimistic). Sixty-second windows inside training labels; trimmed references;
+# suspects are sub-stretches only and capped per class and per human time.
+WINDOW_SECONDS = 60
+EMPTY_LIKE_Q = 0.90
+EMPTY_LIKE_MAX = 0.5
+OCCUPIED_LIKE_Q = 0.99
+OCCUPIED_LIKE_MIN = 0.75
+ITERATIONS = 3
+MIN_FLAGGED_SHARE = 0.75
+EDGE_WINDOWS = 2
+MIN_WINDOWS = {
+    ("present", "human"): 2,
+    ("present", "entity"): 1,
+    ("not_present", "human"): 3,
+    ("not_present", "entity"): 2,
+}
+CAP_CLASS = 0.8
+CAP_HUMAN = 0.25
+ANOMALY_ROWS = 50
+# Replaces the prototype's 60 CPU-s refit guard: the masked re-score may spend at most
+# this many row-pattern operations (rows x re-scored patterns x two passes), so a slow
+# machine reaches the same decision as a fast one.
+REFIT_OPERATIONS = 2 * EXACT_BUDGET
+# Resident joined training cells per audit pass; wider rooms are audited in member groups.
+AUDIT_BUFFER_BYTES = 16 * 1024**2

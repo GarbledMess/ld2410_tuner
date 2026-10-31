@@ -9,6 +9,7 @@ from ...history import pace
 from .constants import CELL_SECONDS
 from .decision import Decision
 from .scoring import cost_from_statistics
+from .search_columns import column_block
 from .search_data import episode_groups
 
 
@@ -73,16 +74,29 @@ def coordinate_costs(
         if packed is not None:
             costs = [v + packed[t] for t, v in zip(order, costs, strict=True)]
             continue
-        decision = Decision(problem, store, zone, pattern, rid, channel, attenuate)
         statistics = [{} for _ in order]
-        for key, rows in episode_groups(store, zone.group_id, folded=folded):
-            pace.rest()
-            sufficient = _episode(decision, rows, order)
+        episodes = _episode_statistics(
+            problem, store, zone, (pattern, rid, channel), order, folded, attenuate
+        )
+        for key, *sufficient in episodes:
             _settle(statistics, key, *sufficient)
         policy = zone_policy(problem, zone)
         for i, stats in enumerate(statistics):
             costs[i] += linear_cost(store, zone.group_id, stats, policy)
     return {t: round(cost, 9) for t, cost in zip(order, costs, strict=True)}
+
+
+def _episode_statistics(problem, store, zone, coordinate, order, folded, attenuate):
+    """Per parent episode sufficient statistics: columnar when the zone fits."""
+    pattern, rid, channel = coordinate
+    columns = column_block(problem, store, zone, attenuate) if folded else None
+    if columns is not None:
+        yield from columns.episodes(pattern, rid, channel, order)
+        return
+    decision = Decision(problem, store, zone, pattern, rid, channel, attenuate)
+    for key, rows in episode_groups(store, zone.group_id, folded=folded):
+        pace.rest()
+        yield (key, *_episode(decision, rows, order))
 
 
 def zone_policy(problem, zone):
@@ -102,6 +116,11 @@ def conditional_costs(problem, store, pattern, rid, channel, domain, *, attenuat
         )
         if packed is not None:
             result = {t: result[t] + packed[t] for t in domain}
+            continue
+        columns = column_block(problem, store, zone, attenuate)
+        if columns is not None:
+            lanes = columns.lanes(pattern, rid, channel)
+            _tail_costs(result, lanes, zone_policy(problem, zone), store, zone.group_id)
             continue
         lanes = {}
         decision = Decision(problem, store, zone, pattern, rid, channel, attenuate)

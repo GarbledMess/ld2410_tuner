@@ -9,14 +9,16 @@ Quiet-presence regularization belongs to training selection, never this cost.
 
 import sqlite3
 import tempfile
-from bisect import bisect_left
-from itertools import groupby
+from bisect import bisect_left, bisect_right
+from dataclasses import replace
+from itertools import accumulate, groupby
 from pathlib import Path
 
 from ...calibration.scoring import automatic_share, episode_share, score_from_cost
 from ...history import pace
 from .constants import MISSED_WEIGHT
 from .evidence import _intersect, _labels
+from .types import TruthSpan
 
 STATES = ("present", "not_present")
 
@@ -41,6 +43,40 @@ def _clip(intervals, lo, hi):
     return list(_intersect(intervals, [(lo, hi)])) if hi > lo else []
 
 
+class _Overlap:
+    """Sorted disjoint intervals with a prefix integral: O(log n) clip and overlap."""
+
+    __slots__ = ("ends", "items", "mass", "starts")
+
+    def __init__(self, intervals):
+        self.items = intervals
+        self.starts = [a for a, _ in intervals]
+        self.ends = [b for _, b in intervals]
+        self.mass = list(accumulate((b - a for a, b in intervals), initial=0.0))
+
+    def _range(self, lo, hi):
+        return bisect_right(self.ends, lo), bisect_left(self.starts, hi)
+
+    def clip(self, lo, hi):
+        i, j = self._range(lo, hi)
+        if j <= i or hi <= lo:
+            return []
+        part = self.items[i:j]
+        part[0] = max(lo, part[0][0]), part[0][1]
+        part[-1] = part[-1][0], min(hi, part[-1][1])
+        return part
+
+    def seconds(self, lo, hi):
+        i, j = self._range(lo, hi)
+        if j <= i or hi <= lo:
+            return 0.0
+        total = self.mass[j] - self.mass[i]
+        return total - max(0.0, lo - self.starts[i]) - max(0.0, self.ends[j - 1] - hi)
+
+    def within(self, observed):
+        return sum(self.seconds(a, b) for a, b in observed)
+
+
 def _room(values, members, lo, hi):
     return _clip(_union(piece for member in members for piece in values.get(member, ())), lo, hi)
 
@@ -54,6 +90,8 @@ def _coverage(values, members, lo, hi):
 
 def _exclusive(values, members):
     """One sweep over activity edges, rather than a union per other-member set."""
+    if len(members) == 1:
+        return {members[0]: list(values.get(members[0], ()))}
     events = _activity_events(values, members)
     result = {member: [] for member in members}
     active = set()
@@ -135,6 +173,22 @@ def cost_from_statistics(statistics, policy):
     }
 
 
+def masked(zone, intervals):
+    """Audited time becomes unobserved: an explicit Unknown outranks every label.
+
+    Labels keep their episode identity around a masked stretch, and nothing is
+    flipped to the other class or handed to a lower-precedence source.
+    """
+    intervals = _union(intervals)
+    if not intervals:
+        return zone
+    extra = tuple(
+        TruthSpan(a, b, "unknown", "human", 1.0, f"audit-mask-{i}", ())
+        for i, (a, b) in enumerate(intervals)
+    )
+    return replace(zone, truth=zone.truth + extra)
+
+
 class _LongestMiss:
     def __init__(self):
         self.end = None
@@ -148,12 +202,47 @@ class _LongestMiss:
     def observe(self, observed, active):
         for lo, hi in observed:
             at = lo
-            for a, b in _clip(active, lo, hi):
+            for a, b in active.clip(lo, hi):
                 if a > at:
                     self.add(at, a)
                 at = b
             if at < hi:
                 self.add(at, hi)
+
+
+class ScoreStore:
+    """One bounded-cache disk index of parent episode totals, shared by scorers.
+
+    Each scorer owns an integer id, so a scoring pass opens one database instead
+    of one per (pattern, zone); rows of a scorer keep their insertion order.
+    """
+
+    def __init__(self, directory: Path):
+        self._directory = tempfile.TemporaryDirectory(dir=directory, prefix="hybrid-score-")
+        self.db = sqlite3.connect(Path(self._directory.name) / "episodes.sqlite")
+        self.db.execute("PRAGMA cache_size=-256")
+        self.db.execute("PRAGMA journal_mode=OFF")
+        self.db.execute("""CREATE TABLE episodes (
+            scorer INTEGER, state TEXT, source TEXT, parent TEXT, observed REAL,
+            weighted REAL, seen REAL, triggers INTEGER,
+            PRIMARY KEY(scorer,state,source,parent))""")
+        self._next = 0
+
+    def allocate(self):
+        self._next += 1
+        return self._next
+
+    def close(self):
+        if self.db is not None:
+            self.db.close()
+            self.db = None
+            self._directory.cleanup()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
 
 
 class SliceScorer:
@@ -165,7 +254,8 @@ class SliceScorer:
     Use as a context manager (or close in finally) for cancellation/errors.
     """
 
-    def __init__(self, zone, policy, window, directory: Path):
+    def __init__(self, zone, policy, window, directory: Path, mask=(), store=None):
+        zone = masked(zone, mask)
         self.zone, self.policy, self.window = zone, policy, window
         self._labels = iter(_labels(zone.truth))
         self._labelled = 0.0
@@ -179,13 +269,10 @@ class SliceScorer:
         self._exclusive = dict.fromkeys(zone.members, 0.0)
         self._covered = 0.0
         self._result = None
-        self._directory = tempfile.TemporaryDirectory(dir=directory, prefix="hybrid-score-")
-        self._db = sqlite3.connect(Path(self._directory.name) / "episodes.sqlite")
-        self._db.execute("PRAGMA cache_size=-256")
-        self._db.execute("PRAGMA journal_mode=OFF")
-        self._db.execute("""CREATE TABLE episodes (
-            state TEXT, source TEXT, parent TEXT, observed REAL, weighted REAL,
-            seen REAL, triggers INTEGER, PRIMARY KEY(state,source,parent))""")
+        self._owned = store is None
+        self._store = ScoreStore(directory) if store is None else store
+        self._db = self._store.db
+        self._id = self._store.allocate()
 
     def consume(self, lo, hi, coverage, raw, active, supported):
         if self._db is None:
@@ -203,18 +290,19 @@ class SliceScorer:
         shared = _coverage(coverage, self.zone.members, a, b)
         self._covered += _seconds(shared)
         signals = (
-            physical,
-            _room(raw, self.zone.members, lo, hi),
-            _room(supported, self.zone.members, lo, hi),
+            _Overlap(physical),
+            _Overlap(_room(raw, self.zone.members, lo, hi)),
+            _Overlap(_room(supported, self.zone.members, lo, hi)),
         )
-        self._consume_labels(a, b, shared, signals, starts, _exclusive(active, self.zone.members))
+        members = {m: _Overlap(v) for m, v in _exclusive(active, self.zone.members).items()}
+        self._consume_labels(a, b, _Overlap(shared), signals, starts, members)
 
     def _consume_labels(self, lo, hi, coverage, signals, starts, members):
         while self._label is not None and self._label[1] <= lo:
             self._label = self._next_label()
         while self._label is not None and self._label[0] < hi:
             a, b, span = self._label
-            observed = _clip(coverage, max(a, lo), min(b, hi))
+            observed = coverage.clip(max(a, lo), min(b, hi))
             self._observe(span, observed, signals, starts, members)
             if b > hi:
                 break
@@ -227,12 +315,12 @@ class SliceScorer:
         physical, raw, supported = signals
         state = span.state
         source = "human" if span.source == "human" else "automatic"
-        seen = _seconds(_intersect(observed, physical))
+        seen = physical.within(observed)
         positive = supported if source == "automatic" and state == "present" else physical
-        scored = _seconds(_intersect(observed, positive))
+        scored = positive.within(observed)
         self._totals[state] += mass
         self._seen[state] += seen
-        self._raw[state] += _seconds(_intersect(observed, raw))
+        self._raw[state] += raw.within(observed)
         error = mass - scored if state == "present" else scored
         stats = self._stats.setdefault(state + "/" + source, [0.0] * 4)
         stats[0] += mass * span.confidence
@@ -245,11 +333,20 @@ class SliceScorer:
 
     def _episode(self, span, source, mass, seen, triggers):
         self._db.execute(
-            """INSERT INTO episodes VALUES (?,?,?,?,?,?,?)
-            ON CONFLICT(state,source,parent) DO UPDATE SET
+            """INSERT INTO episodes VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(scorer,state,source,parent) DO UPDATE SET
             observed=observed+excluded.observed, weighted=weighted+excluded.weighted,
             seen=seen+excluded.seen, triggers=triggers+excluded.triggers""",
-            (span.state, source, span.episode_id, mass, mass * span.confidence, seen, triggers),
+            (
+                self._id,
+                span.state,
+                source,
+                span.episode_id,
+                mass,
+                mass * span.confidence,
+                seen,
+                triggers,
+            ),
         )
 
     def _next_label(self):
@@ -261,7 +358,7 @@ class SliceScorer:
 
     def _attribute(self, observed, exclusive):
         for member, pieces in exclusive.items():
-            self._exclusive[member] += _seconds(_intersect(observed, pieces))
+            self._exclusive[member] += pieces.within(observed)
 
     def _settle(self):
         counts = {
@@ -275,7 +372,9 @@ class SliceScorer:
             "false_triggers": 0,
         }
         rows = self._db.execute(
-            "SELECT state,source,observed,weighted,seen,triggers FROM episodes ORDER BY rowid"
+            """SELECT state,source,observed,weighted,seen,triggers FROM episodes
+            WHERE scorer=? ORDER BY rowid""",
+            (self._id,),
         )
         for state, source, mass, weighted, seen, triggers in rows:
             pace.rest()
@@ -333,9 +432,9 @@ class SliceScorer:
 
     def close(self):
         if self._db is not None:
-            self._db.close()
             self._db = None
-            self._directory.cleanup()
+            if self._owned:
+                self._store.close()
 
     def __enter__(self):
         return self

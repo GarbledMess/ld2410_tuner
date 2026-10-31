@@ -31,6 +31,8 @@ RUNTIME_FILES = (
     "engine/hybrid/search.py",
     "engine/hybrid/selection.py",
     "engine/hybrid/engine.py",
+    "engine/hybrid/anomaly.py",
+    "engine/hybrid/search_columns.py",
     "engine/hybrid/timing.py",
     "engine/hybrid/scoring.py",
     "engine/hybrid/adapters.py",
