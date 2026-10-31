@@ -130,3 +130,19 @@ def test_frontier_never_advances_over_unprocessed_empty_time():
     assert stream.frontier() == 20
     stream.finish()
     assert stream.frontier() == 20
+
+
+def test_advance_declares_fed_time_and_closes_only_an_earlier_segment():
+    timing = {"timeout": 5, "on_delay": 0, "off_delay": 0}
+    stream = TimingStream(timing)
+    stream.feed([(0, 10)], [(2, 3)])
+    stream.advance(10)  # the segment may still continue at 10
+    assert stream.drain(10) == ([(0, 10)], [(2, 8)])
+    stream.feed([(10, 12)], [(11, 12)])
+    stream.advance(30)  # nothing fed after 12: the segment ended at a gap
+    assert stream.frontier() == 30
+    assert stream.drain(30) == ([(10, 12)], [(11, 12)])
+    stream.feed([(40, 41)], [(40, 41)])
+    assert stream.drain(41)[1] == [(40, 41)]  # the gap reset the hold chain
+    with pytest.raises(ValueError, match="backwards"):
+        stream.advance(35)

@@ -36,6 +36,9 @@ class _WindowRows:
     def rows_in(self, lo, hi):
         return self.source.rows_in(max(lo, self.start), min(hi, self.end))
 
+    def window(self, lo, hi):
+        return self.source.window(max(lo, self.start), min(hi, self.end))
+
 
 class _Days:
     def __init__(self, views, start=-inf, end=inf):
@@ -51,6 +54,9 @@ class _Days:
                 getattr(view, "_attribution_until", inf),
             ),
         )
+
+    def bounds(self, date):
+        return daystore.bounds(date)
 
     def dates(self, device_id):
         low, high = self._bounds(device_id)

@@ -10,11 +10,13 @@ from pathlib import Path
 from ..engine.hybrid.constants import CELL_CACHE_DISK_BYTES, CELL_CACHE_VERSION, CELL_SECONDS
 from ..engine.hybrid.digest import DayDigest, PartialCoverage, _pieces
 from ..engine.hybrid.index import EnergyIndex, read_index, write_index
+from ..engine.hybrid.physical_index import PhysicalRows
 from . import summary_cache
 
 _MAGIC = b"LD24CELL1"
 _HEADER = struct.Struct("<9sBqIII")
 _PIECE = struct.Struct("<Idd")
+_SIZE = struct.Struct("<I")
 
 
 def _identity(path, identity):
@@ -91,8 +93,17 @@ def _load(stream, size, identity, channels):
     if any(v > 2 for v in cov):
         raise ValueError("Invalid cell coverage")
     index = read_index(stream, n)
+    physical = _physical(stream, size - 4, channels)
     partial = _partial(stream, size - 4, cov, k0)
-    return DayDigest(CELL_SECONDS, k0, n, columns, cov, partial, index)
+    return DayDigest(CELL_SECONDS, k0, n, columns, cov, partial, index, physical)
+
+
+def _physical(stream, finish, channels):
+    """Physical rows stay compressed until exact replay or a row budget reads them."""
+    length = _SIZE.unpack(_read(stream, _SIZE.size))[0]
+    if stream.tell() + length > finish:
+        raise ValueError("Invalid physical rows size")
+    return PhysicalRows.decode(channels, _read(stream, length))
 
 
 def _read_at(stream, offset, size):
@@ -133,6 +144,11 @@ def _write(stream, identity, channels, digest):
         stream.write(column)
     stream.write(digest.cov)
     write_index(stream, digest.index or EnergyIndex.build(digest.channels))
+    if digest.physical is None:
+        raise ValueError("Digest has no physical rows")
+    physical = digest.physical.encode()
+    stream.write(_SIZE.pack(len(physical)))
+    stream.write(physical)
     for cell in digest.partial:
         for lo, hi in _pieces(digest.partial, cell):
             stream.write(_PIECE.pack(cell, lo, hi))
