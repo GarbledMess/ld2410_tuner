@@ -19,6 +19,8 @@ RUNTIME_FILES = (
     "engine/hybrid/training.py",
     "engine/hybrid/timing.py",
     "engine/hybrid/scoring.py",
+    "engine/hybrid/adapters.py",
+    "engine/hybrid/quality.py",
     "history/fit_rows.py",
     "history/cell_cache.py",
     "history/fit_days.py",

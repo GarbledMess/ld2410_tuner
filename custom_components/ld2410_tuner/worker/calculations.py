@@ -106,6 +106,22 @@ class ReadOnlyDays:
             raise history.HistoryRejected("History changed before derived result acquisition")
         return entry["path"], expected, tuple(tuple(span) for span in entry["late"])
 
+    def guess_runs(self, device_id, date, until=None):
+        """Captured guesses and visible confirmations, without resident energy columns."""
+        entry = self.entries.get((device_id, date))
+        if entry is None:
+            return []
+        start, end = daystore.bounds(date)
+        stop = end if until is None else min(end, until)
+        day = dayfile.DayBuilder(start, end).day()
+        if entry["path"] is not None:
+            day.guesses.extend(history.guess_runs(self._reference(entry)))
+        visible = [
+            dayfile.GuessSpan(*span) for span in entry["late"] if until is None or span[0] <= until
+        ]
+        day = dayfile.splice(day, visible)
+        return [(a, min(b, stop), *rest) for a, b, *rest in day.guesses if a < stop and b > a]
+
     def result_identity(self, device_id, date):
         """Identify only unchanged finished sources eligible for disk results."""
         entry = self.entries.get((device_id, date))

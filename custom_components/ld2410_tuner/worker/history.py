@@ -307,6 +307,34 @@ def _check_reference(stream, reference):
         raise HistoryRejected("History path was replaced")
 
 
+def guess_runs(reference):
+    """Decode captured guess records in bounded blocks without indexing readings."""
+    try:
+        with open(reference.path, "rb", opener=_nonblocking) as stream:
+            _check_reference(stream, reference)
+            try:
+                with _spool_columns(stream) as (raw, header):
+                    yield from _guess_records(raw, header)
+            finally:
+                _check_reference(stream, reference)
+    except (zlib.error, struct.error, IndexError) as error:
+        raise HistoryRejected("Malformed guess history") from error
+
+
+def _guess_records(raw, header):
+    from ..engine.hybrid.constants import ROW_BLOCK_ROWS
+    from ..history import pace
+
+    _, start, _, rows, count, *flags = header
+    offset = dayfile.HEADER.size + rows * (8 + sum(4 if f else 1 for f in flags))
+    for first in range(0, count, ROW_BLOCK_ROWS):
+        length = min(ROW_BLOCK_ROWS, count - first)
+        data = _read_at(raw, offset + first * dayfile.RUN.size, length * dayfile.RUN.size)
+        for lo, hi, state, level, basis in dayfile.RUN.iter_unpack(data):
+            yield (start + lo) / 1000, (start + hi) / 1000, dayfile.STATES[state], level, basis
+        pace.rest()
+
+
 @contextmanager
 def open_columns(reference):
     """Hold a captured descriptor and validate identity on entry and every exit."""
