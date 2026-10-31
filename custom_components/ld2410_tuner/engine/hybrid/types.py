@@ -53,6 +53,7 @@ class EvidencePolicy:
     automatic_weight: float
     reference: bool
     quality: dict
+    automatic_horizon_days: float | None = 28.0
 
 
 @dataclass(frozen=True, slots=True)

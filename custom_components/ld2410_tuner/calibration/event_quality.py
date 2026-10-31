@@ -12,6 +12,13 @@ from .episodes import Episode
 LABELS = ("present", "not_present")
 
 
+def collect_streamed(view, device_id, keys, start, end, human_reader, owner):
+    """Prepare hybrid quality without changing the legacy collector's callers."""
+    from ..engine.hybrid.quality import collect_quality
+
+    return collect_quality(view, device_id, keys, start, end, human_reader, owner)
+
+
 def _cells(physical, reader, owner, start, end, first, last):
     for cell in physical:
         low, high = max(start, cell.start), min(end, cell.end)
