@@ -599,3 +599,50 @@ def test_days_only_problem_uses_common_cell_fidelity():
     assert plan.mode == "cells"
     got = evaluate_patterns(p, [{"a": {0: 40}}, {"a": {0: 100}}], plan)
     assert {s["scoring_mode"] for s in got} == {"cells"}
+
+
+@pytest.mark.parametrize("mode", ("exact", "cells"))
+def test_linked_zones_score_with_their_own_support_policy(mode):
+    """Each zone's independent-support provenance reaches finalist scoring."""
+    from array import array
+
+    from tuner_under_test.engine.hybrid.digest import fold_day
+    from tuner_under_test.engine.hybrid.evaluate import CellEvaluator
+    from tuner_under_test.engine.hybrid.exact import Evaluator
+    from tuner_under_test.engine.hybrid.physical_index import physical_rows
+    from tuner_under_test.engine.hybrid.types import RowBlock, TruthSpan
+
+    row_block = RowBlock(
+        array("d", [0, 600, 660, 900]),
+        array("d", [600, 660, 900, 2400]),
+        (bytes([80, 0, 90, 0]),) + (bytes([255]) * 4,) * 17,
+    )
+
+    class OneDay:
+        def dates(self, rid):
+            return [0]
+
+        def digest(self, rid, date, channels):
+            return fold_day([row_block], 0, 2400, (0,))
+
+    spans = (
+        TruthSpan(0, 600, "present", "human", 1, "p", ()),
+        TruthSpan(600, 900, "present", "automatic", 1, "ap", ()),
+        TruthSpan(900, 2400, "not_present", "human", 1, "e", ()),
+    )
+    first = ZoneSpec("z1", ("r",), spans)
+    support = {"human_episodes": {"present": 1}, "automatic_episode_mass": {"present": 0}}
+    p = FitProblem(
+        {"r": RadarSpec("r", (0,), {0: tuple(range(101))}, {0: 95}, {})},
+        (first, replace(first, group_id="z2")),
+        0,
+        2400,
+        OneDay(),
+        {"r": physical_rows([row_block], 0, 2400, (0,))},
+        EvidencePolicy(1, False, {"zones": {"z1": support, "z2": support}}),
+    )
+    kind = Evaluator if mode == "exact" else CellEvaluator
+    with kind(p, ((0, 2400),)) as evaluator:
+        score = evaluator.scores([{"r": {0: 40}}])[0]
+    assert score["zones"]["z1"]["cost"] == 0
+    assert score["zones"]["z2"]["cost"] == 0
