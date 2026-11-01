@@ -17,6 +17,7 @@ from .evidence import _labels
 from .physical_index import physical_rows
 from .replay import replay, support_tables
 from .scoring import ScoreStore, SliceScorer, _union
+from .search_scores import zone_policy
 from .types import TruthSpan
 
 LABELLED = ("present", "not_present")
@@ -174,8 +175,9 @@ class _Scoring:
                     key = variant, z, members
                     if key not in scorers:
                         window = problem.start, problem.end
+                        policy = zone_policy(problem, zone)
                         scorers[key] = SliceScorer(
-                            zone, problem.policy, window, self.evaluator.directory, store=store
+                            zone, policy, window, self.evaluator.directory, store=store
                         )
                     keys.append(key)
                 plan.append(keys)
