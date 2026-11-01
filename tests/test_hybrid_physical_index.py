@@ -90,7 +90,7 @@ def test_physical_index_warm_cache_roundtrip_is_lazy(tmp_path):
 def test_cell_sidecar_version_includes_physical_rows(tmp_path):
     fit, _, path = fitting(tmp_path)
     fit.digest("synthetic", DAY, (0,))
-    assert CELL_CACHE_VERSION == 3
+    assert CELL_CACHE_VERSION == 4
     assert path.with_suffix(".cell").read_bytes()[9] == CELL_CACHE_VERSION
 
 
@@ -118,3 +118,85 @@ def test_live_rows_are_folded_once_per_source(tmp_path):
         rows.window(0, 3600)
         rows.window(3600, 86400)
     assert reads.call_count == 1
+
+
+def _dense_blocks(rows, size=97):
+    """Never-coalescing rows: every selected channel alternates on every row."""
+    from tuner_under_test.engine.hybrid.types import RowBlock
+
+    for at in range(0, rows, size):
+        stop = min(rows, at + size)
+        column = bytes((i % 2) * 40 for i in range(at, stop))
+        yield RowBlock(
+            array("d", (i / 10 for i in range(at, stop))),
+            array("d", ((i + 1) / 10 for i in range(at, stop))),
+            (column,) * 18,
+        )
+
+
+def test_building_a_dense_day_keeps_at_most_one_block_of_rows_resident(monkeypatch):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    monkeypatch.setattr(physical_index, "PHYSICAL_BLOCK_ROWS", 64)
+    builder = physical_index.PhysicalBuilder(tuple(range(18)), 0, 86400)
+    pending = []
+    for part in _dense_blocks(2000):
+        builder.add(part)
+        pending.append(len(builder.times))
+    rows = builder.finish()
+    assert max(pending) <= 64
+    assert rows.count == 2000 and len(rows._blocks()) == -(-2000 // 64)
+    times, ends, columns = rows.window(0, 1e9)
+    assert list(times) == [i / 10 for i in range(2000)]
+    assert columns[3] == bytes((i % 2) * 40 for i in range(2000))
+    assert rows.rows_in(10, 20.05) == len(rows.window(10, 20.05)[0]) == 101
+
+
+def test_blocked_rows_equal_one_block_for_windows_and_counts(monkeypatch):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    rng = random.Random(15)
+    rows, t = [], 100.0
+    for _ in range(700):
+        end = t + rng.randrange(1, 9) / 4
+        rows.append((t, end, vector(rng.choice([40, 41]))))
+        t = end + rng.choice([0, 0, 0.25])
+    whole = physical_rows([block(rows)], 0, 1e6, (0,))
+    monkeypatch.setattr(physical_index, "PHYSICAL_BLOCK_ROWS", 7)
+    blocked = physical_rows([block(rows[i : i + 50]) for i in range(0, 700, 50)], 0, 1e6, (0,))
+    again = PhysicalRows.decode((0,), blocked.encode())
+    assert len(blocked._blocks()) > 20
+    for _ in range(200):
+        lo = rng.uniform(90, t + 10)
+        hi = lo + rng.choice([0, 0.1, 3, 40, 500])
+        for other in (blocked, again):
+            assert other.window(lo, hi) == whole.window(lo, hi)
+            assert other.rows_in(lo, hi) == whole.rows_in(lo, hi)
+    assert again.geometry() == whole.geometry()
+
+
+def test_reading_a_section_spools_it_and_decodes_only_overlapping_blocks(monkeypatch):
+    import io
+
+    from tuner_under_test.engine.hybrid import physical_index
+
+    monkeypatch.setattr(physical_index, "PHYSICAL_BLOCK_ROWS", 64)
+    monkeypatch.setattr(physical_index, "SPOOL_BYTES", 512)
+    monkeypatch.setattr(physical_index, "COPY_BYTES", 100)
+    source = physical_rows(_dense_blocks(2000), 0, 86400, tuple(range(18)))
+    stream = io.BytesIO(b"x" + source.encode() + b"tail")
+    stream.read(1)
+    rows = PhysicalRows.read(stream, source.encoded_size(), tuple(range(18)))
+    assert stream.read() == b"tail"
+    assert rows._spool._rolled
+    decoded = []
+    original = physical_index._decode_block
+
+    def counted(*args):
+        decoded.append(args[1])
+        return original(*args)
+
+    monkeypatch.setattr(physical_index, "_decode_block", counted)
+    rows.window(64.05, 70)
+    assert len(decoded) == 1
+    assert rows.rows_in(0, 1e9) == 2000 and len(decoded) == 1

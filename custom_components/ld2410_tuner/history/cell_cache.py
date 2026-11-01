@@ -103,7 +103,7 @@ def _physical(stream, finish, channels):
     length = _SIZE.unpack(_read(stream, _SIZE.size))[0]
     if stream.tell() + length > finish:
         raise ValueError("Invalid physical rows size")
-    return PhysicalRows.decode(channels, _read(stream, length))
+    return PhysicalRows.read(stream, length, channels)
 
 
 def _read_at(stream, offset, size):
@@ -146,9 +146,8 @@ def _write(stream, identity, channels, digest):
     write_index(stream, digest.index or EnergyIndex.build(digest.channels))
     if digest.physical is None:
         raise ValueError("Digest has no physical rows")
-    physical = digest.physical.encode()
-    stream.write(_SIZE.pack(len(physical)))
-    stream.write(physical)
+    stream.write(_SIZE.pack(digest.physical.encoded_size()))
+    digest.physical.write(stream)
     for cell in digest.partial:
         for lo, hi in _pieces(digest.partial, cell):
             stream.write(_PIECE.pack(cell, lo, hi))
