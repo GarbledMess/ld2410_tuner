@@ -151,7 +151,9 @@ def test_spilled_timed_shards_equal_compacted_halos(tmp_path, monkeypatch):
         collect_training(p, store)
         expected = search_timing.timed_coordinate_costs(p, store, pattern, "a", 0, (20, 60, 90))
         monkeypatch.setattr(search_timing, "SHARD_CELLS", 7)
+        monkeypatch.setattr(search_timing, "PROJECTED_CELLS", 0)
         store._timing_geometry = search_timing.Geometry(p, store, budget=0)
+        assert len(store._timing_geometry.blocks) > 1
         assert store._timing_geometry.used == 0
         assert store._timing_geometry.locations
         assert (
@@ -199,9 +201,10 @@ def test_search_supported_positive_does_not_hide_false_activation(tmp_path):
     assert costs(tmp_path, p)[20] == 1200
 
 
+@pytest.mark.parametrize("resident", (True, False))
 @pytest.mark.parametrize("supported", (False, True))
 def test_streamed_parent_counters_spill_without_sql_and_preserve_confidence(
-    tmp_path, monkeypatch, supported
+    tmp_path, monkeypatch, supported, resident
 ):
     from tuner_under_test.engine.hybrid import search_timing
 
@@ -231,9 +234,13 @@ def test_streamed_parent_counters_spill_without_sql_and_preserve_confidence(
         collect_training(p, store)
         expected = search_timing.timed_coordinate_costs(p, store, pattern, "a", 0, (20, 60, 90))
         monkeypatch.setattr(search_timing, "SHARD_CELLS", 7)
+        monkeypatch.setattr(search_timing, "PROJECTED_CELLS", 0)
+        if not resident:
+            monkeypatch.setattr(search_timing, "RESIDENT_PARENTS", 0)
         geometry = search_timing.Geometry(p, store, budget=0)
         store._timing_geometry = geometry
         assert geometry.parent_counts == {"z": 60, "other": 30}
+        assert (geometry.parent_rows["z"] is not None) == resident
         statements = []
         store._database.set_trace_callback(statements.append)
         assert (
@@ -286,3 +293,97 @@ def test_oversize_timed_caches_return_results_without_retaining_them(tmp_path, m
         assert not geometry.scores
         assert not geometry.coordinate_scores
         assert not geometry.masks
+
+
+class SplitDays:
+    """The synthetic rows cut into several day digests, some days missing."""
+
+    def __init__(self, rows, cells, missing=()):
+        self.rows, self.cells, self.missing = rows, cells, set(missing)
+
+    def dates(self, rid):
+        return iter(range(-(-len(self.rows[rid]) // self.cells)))
+
+    def digest(self, rid, date, channels):
+        from test_hybrid_digest import block
+        from tuner_under_test.engine.hybrid.digest import fold_day
+
+        rows = self.rows[rid][date * self.cells : (date + 1) * self.cells]
+        if date in self.missing or not rows:
+            return None
+        return fold_day([block(rows)], rows[0][0], rows[-1][1], channels)
+
+
+def _long_problem(seed):
+    import random
+
+    rng = random.Random(seed)
+    vectors = {rid: [(rng.randrange(101), rng.randrange(101)) for _ in range(400)] for rid in "ab"}
+    spans = (
+        truth(30, 210),
+        truth(600, 750, "not_present", source="entity", confidence=0.6, episode="e1"),
+        truth(1200, 1290, episode="p2"),
+        truth(1800, 1950, "not_present", episode="e2"),
+        truth(2280, 2394, source="entity", confidence=0.8, episode="p3"),
+    )
+    p = problem(vectors, spans=spans, timing={"timeout": 19, "off_delay": 7})
+    p.days.rows["b"] = [row for i, row in enumerate(p.days.rows["b"]) if i % 37 != 5]
+    return replace(p, days=SplitDays(p.days.rows, 60, missing=(3,)))
+
+
+@pytest.mark.parametrize("seed", (5, 6, 7))
+def test_projected_geometry_spans_many_physical_blocks_with_identical_costs(
+    tmp_path, monkeypatch, seed
+):
+    """One projected block replaces fixed physical blocks without changing a cost."""
+    from tuner_under_test.engine.hybrid import search_timing
+
+    p = _long_problem(seed)
+    patterns = ({rid: {0: 60, 1: 85} for rid in "ab"}, {"a": {0: 30, 1: 95}, "b": {0: 75, 1: 10}})
+    monkeypatch.setattr(search_timing, "SHARD_CELLS", 60)
+    results = []
+    for limit in (search_timing.PROJECTED_CELLS, 0):
+        monkeypatch.setattr(search_timing, "PROJECTED_CELLS", limit)
+        with TrainingStore(tmp_path) as store:
+            collect_training(p, store)
+            geometry = search_timing.Geometry(p, store, budget=0)
+            store._timing_geometry = geometry
+            assert (len(geometry.blocks) == 1) == bool(limit)
+            assert (geometry.projection is not None) == bool(limit)
+            results.append(
+                [
+                    search_timing.timed_coordinate_costs(
+                        p, store, pattern, rid, c, (0, 20, 45, 60, 90, 100), attenuate=attenuate
+                    )
+                    for pattern in patterns
+                    for rid in "ab"
+                    for c in (0, 1)
+                    for attenuate in (False, True)
+                ]
+            )
+    assert results[0] == results[1]
+
+
+def test_spilled_geometry_reads_only_the_masked_channel(tmp_path, monkeypatch):
+    """A cold channel mask reads one raw column, never every channel of the radar."""
+    from pathlib import Path
+
+    from tuner_under_test.engine.hybrid import search_timing
+
+    p = _long_problem(5)
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        geometry = search_timing.Geometry(p, store, budget=0)
+        reads = []
+        original = Path.read_bytes
+
+        def read_bytes(path):
+            data = original(path)
+            reads.append(len(data))
+            return data
+
+        monkeypatch.setattr(Path, "read_bytes", read_bytes)
+        geometry.channel_mask(p.zones[0], "a", 1, 40, 0, False)
+        column = geometry.get(("a", geometry.blocks[0][0], 1))
+        assert isinstance(column, bytes) and len(column) == geometry.projected_size
+        assert reads and sum(reads) < 2 * len(column) + 4096

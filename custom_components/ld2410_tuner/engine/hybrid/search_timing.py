@@ -4,6 +4,7 @@
 import pickle  # nosec B403
 import struct
 import tempfile
+from array import array
 from bisect import bisect_right
 from collections import OrderedDict
 from math import ceil
@@ -18,6 +19,11 @@ _TABLES = tuple(bytes(49 if t < v <= 100 else 48 for v in range(256)) for t in r
 _COVER = bytes(49 if value == 1 else 48 for value in range(256))
 _ATT = bytes(3 * v // 5 if v <= 100 else 255 for v in range(256))
 _SEEN = struct.Struct("<dd")
+# One projected block (label runs plus timing reach) replaces fixed physical blocks
+# while it has at most this many cells; its columns spill per channel, raw.
+PROJECTED_CELLS = 2**21
+# Streamed parent counters and denominators stay resident up to this many parents.
+RESIDENT_PARENTS = 2**16
 
 
 def pack_mask(column, threshold):
@@ -87,6 +93,47 @@ def _columns(problem, rid, lo, size, channels):
     ) if coverage else 0
 
 
+def _projected_columns(problem, rid, lo, channels, projection, size):
+    """Projected byte columns and coverage, copied one radar-day at a time."""
+    columns = {c: bytearray([255]) * size for c in channels}
+    coverage = bytearray(size)
+    offsets = [offset for offset, _bits, _position in projection]
+    base = int(lo // CELL_SECONDS)
+    for day in problem.days.dates(rid):
+        digest = problem.days.digest(rid, day, channels)
+        if digest is None:
+            continue
+        try:
+            _copy_day(digest, columns, coverage, projection, offsets, base)
+        finally:
+            close = getattr(digest.partial, "close", None)
+            if close is not None:
+                close()
+    return {c: bytes(col) for c, col in columns.items()}, int(
+        coverage[::-1].translate(_COVER), 2
+    ) if coverage else 0
+
+
+def _copy_day(digest, columns, coverage, projection, offsets, base):
+    first, last = digest.k0 - base, digest.k0 - base + digest.n
+    at = max(0, bisect_right(offsets, first) - 1)
+    for run in projection[at:]:
+        if run[0] >= last:
+            break
+        _copy_run(digest, columns, coverage, run, first, last)
+
+
+def _copy_run(digest, columns, coverage, run, first, last):
+    offset, bits, position = run
+    a, b = max(offset, first), min(offset + bits.bit_length(), last)
+    if b <= a:
+        return
+    source, target = a - first, position + a - offset
+    coverage[target : target + b - a] = digest.cov[source : source + b - a]
+    for c, column in columns.items():
+        column[target : target + b - a] = digest.channels[c][source : source + b - a]
+
+
 def _advance(raw, coverage, hold, carry, size):
     missing = ((1 << size) - 1) ^ coverage
     prefix = (missing & -missing).bit_length() - 1 if missing else size
@@ -152,7 +199,7 @@ class Geometry:
     def __init__(self, problem, store, budget=16 * 1024**2):
         self.problem, self.store = problem, store
         self.budget = budget
-        self.resident, self.locations = {}, {}
+        self.resident, self.locations, self.sizes = {}, {}, {}
         self.used = 0
         self.masks = OrderedDict()
         self.mask_bytes = 0
@@ -167,20 +214,10 @@ class Geometry:
         self.score_bytes = 0
         self.parent_counts = {}
         self.parent_files = {}
+        self.parent_rows = {}
         start = int(problem.start // CELL_SECONDS) * CELL_SECONDS
         stop = ceil(problem.end / CELL_SECONDS) * CELL_SECONDS
-        width = sum(len(r.channels) + 1 for r in problem.radars.values())
-        self.size = max(SHARD_CELLS, min((stop - start) // CELL_SECONDS, budget // max(1, width)))
-        episodes = store._database.execute(
-            "SELECT count(DISTINCT parent) FROM search_pure"
-        ).fetchone()[0]
-        if episodes > SHARD_CELLS:
-            self.size = SHARD_CELLS
-        self.blocks = tuple(
-            (lo, min(self.size, (stop - lo) // CELL_SECONDS))
-            for lo in range(start, stop, self.size * CELL_SECONDS)
-        )
-        self._projection(start)
+        self._layout(start, stop)
         self._compile_columns()
         self._energies()
         if len(self.blocks) > 1:
@@ -229,50 +266,73 @@ class Geometry:
             "SELECT pid,state,source,seconds,weighted FROM timing_parents WHERE zone=? ORDER BY pid",
             (zone.group_id,),
         )
-        count = 0
+        count, resident = 0, []
         with path.open("wb") as output:
             for row in rows:
                 pickle.dump(row, output, protocol=5)
                 count += 1
+                if resident is not None:
+                    resident.append(row)
+                    resident = resident if count <= RESIDENT_PARENTS else None
         self.parent_files[zone.group_id] = path
         self.parent_counts[zone.group_id] = count
+        self.parent_rows[zone.group_id] = resident
 
-    def _projection(self, start):
+    def _layout(self, start, stop):
+        """One projected block when it is small enough, else fixed physical blocks."""
+        total = (stop - start) // CELL_SECONDS
+        projection, projected = self._projection(start, total)
+        if projected <= PROJECTED_CELLS:
+            self.size = total
+            self.blocks = ((start, total),)
+            self.projection, self.projected_size = projection, projected
+            return
+        width = sum(len(r.channels) + 1 for r in self.problem.radars.values())
+        self.size = max(SHARD_CELLS, min(total, self.budget // max(1, width)))
+        episodes = self.store._database.execute(
+            "SELECT count(DISTINCT parent) FROM search_pure"
+        ).fetchone()[0]
+        if episodes > SHARD_CELLS:
+            self.size = SHARD_CELLS
+        self.blocks = tuple(
+            (lo, min(self.size, (stop - lo) // CELL_SECONDS))
+            for lo in range(start, stop, self.size * CELL_SECONDS)
+        )
         self.projection = None
-        if len(self.blocks) == 1:
-            bits = 0
-            hold = max(
-                (
-                    ceil(sum(_timing(r.timing)[i] for i in (0, 2)) / CELL_SECONDS)
-                    for r in self.problem.radars.values()
-                ),
-                default=0,
-            )
-            for a, n in self.store._database.execute("SELECT t,n FROM search_pure"):
-                at = int((a - start) // CELL_SECONDS)
-                bits |= _range(max(0, at - hold), min(self.blocks[0][1], at + n))
-            self.projection, self.projected_size = _runs(bits, 1)
+
+    def _projection(self, start, total):
+        """Label runs, each extended back by the longest timing reach, as cell runs."""
+        bits = 0
+        hold = max(
+            (
+                ceil(sum(_timing(r.timing)[i] for i in (0, 2)) / CELL_SECONDS)
+                for r in self.problem.radars.values()
+            ),
+            default=0,
+        )
+        for a, n in self.store._database.execute("SELECT t,n FROM search_pure"):
+            at = int((a - start) // CELL_SECONDS)
+            bits |= _range(max(0, at - hold), min(total, at + n))
+        return _runs(bits, 1)
 
     def _compile_columns(self):
         for lo, size in self.blocks:
             for rid, radar in self.problem.radars.items():
-                columns, coverage = _columns(self.problem, rid, lo, size, radar.channels)
-                if self.projection is not None:
-                    columns = {
-                        c: b"".join(
-                            col[a : a + bits.bit_length()] + b"\xff"
-                            for a, bits, _ in self.projection
-                        )
-                        for c, col in columns.items()
-                    }
-                    coverage = _project(coverage, self.projection)
-                self.save((rid, lo), (columns, coverage))
+                if self.projection is None:
+                    columns, coverage = _columns(self.problem, rid, lo, size, radar.channels)
+                else:
+                    columns, coverage = _projected_columns(
+                        self.problem, rid, lo, radar.channels, self.projection, self.projected_size
+                    )
+                for channel, column in columns.items():
+                    self.save((rid, lo, channel), column)
+                self.save((rid, lo, "coverage"), coverage)
 
     def _energies(self):
         for lo, _size in self.blocks:
-            for rid in self.problem.radars:
-                columns, _coverage = self.get((rid, lo))
-                for channel, col in columns.items():
+            for rid, radar in self.problem.radars.items():
+                for channel in radar.channels:
+                    col = self.get((rid, lo, channel))
                     self.canonical.setdefault((rid, channel), set()).update(col)
         self.maximum = {
             key: max((v for v in values if v <= 100), default=-1)
@@ -284,23 +344,29 @@ class Geometry:
         }
 
     def save(self, key, value):
-        data = pickle.dumps(value, protocol=5)
+        """Keep ``value`` resident within the budget; spill bytes raw, others pickled."""
+        raw = isinstance(value, bytes)
+        data = value if raw else pickle.dumps(value, protocol=5)
         if key in self.resident:
-            self.used -= len(pickle.dumps(self.resident.pop(key), protocol=5))
+            self.used -= self.sizes.pop(key)
+            del self.resident[key]
         if self.used + len(data) <= self.budget:
             self.resident[key] = value
+            self.sizes[key] = len(data)
             self.used += len(data)
-        else:
-            path = self.locations.get(key)
-            if path is None:
-                path = Path(self.store._directory.name) / f"geometry-{len(self.locations)}"
-            path.write_bytes(data)
-            self.locations[key] = path
+            return
+        path = self.locations.get(key, (None, raw))[0]
+        if path is None:
+            path = Path(self.store._directory.name) / f"geometry-{len(self.locations)}"
+        path.write_bytes(data)
+        self.locations[key] = path, raw
 
     def get(self, key):
         if key in self.resident:
             return self.resident[key]
-        return pickle.loads(self.locations[key].read_bytes())  # nosec B301
+        path, raw = self.locations[key]
+        data = path.read_bytes()
+        return data if raw else pickle.loads(data)  # nosec B301
 
     def labels(self, zone, lo, size):
         groups = {}
@@ -388,10 +454,11 @@ class Geometry:
             radar = self.problem.radars[member]
             hold, _on, off = _timing(radar.timing)
             for lo, size in self.blocks:
-                columns, coverage = self.get((member, lo))
+                column = self.get((member, lo, channel))
+                coverage = self.get((member, lo, "coverage"))
                 present, _labels, ranges = self.get((zone.group_id, lo, "labels"))
                 raw = self.raw(
-                    {channel: columns[channel]},
+                    {channel: column},
                     {channel: threshold},
                     present,
                     model,
@@ -574,7 +641,41 @@ def _mask_cost(problem, geometry, store, zone, masks):
 
 
 def _stream_mask_cost(problem, geometry, store, zone, masks):
-    from .search_scores import _settle, linear_cost, zone_policy
+    from .search_scores import linear_cost, zone_policy
+
+    rows = geometry.parent_rows.get(zone.group_id)
+    if rows is None:
+        statistics = _spilled_statistics(geometry, store, zone, masks)
+    else:
+        statistics = _resident_statistics(geometry, zone, masks, rows)
+    return linear_cost(store, zone.group_id, statistics, zone_policy(problem, zone))
+
+
+def _resident_statistics(geometry, zone, masks, rows):
+    """The disk counters' sums, in the same order, held in one resident array."""
+    from .search_scores import _settle
+
+    statistics = [{}]
+    counters = array("d", bytes(len(rows) * _SEEN.size))
+    _add_seen(geometry, zone, masks, counters)
+    for pid, state, source, seconds, weighted in rows:
+        seen, weighted_seen = counters[2 * pid], counters[2 * pid + 1]
+        _settle(statistics, (state, source, pid), seconds, weighted, (seen,), (weighted_seen,))
+    return statistics[0]
+
+
+def _add_seen(geometry, zone, masks, counters):
+    for block, (lo, _size) in enumerate(geometry.blocks):
+        _, labels, _ranges = geometry.get((zone.group_id, lo, "labels"))
+        for (state, source, pid, confidence), offset, bits in labels:
+            signal = int(len(masks) > 1 and state == "present" and source != "human")
+            seen = ((masks[signal][block] >> offset) & bits).bit_count() * CELL_SECONDS
+            counters[2 * pid] += seen
+            counters[2 * pid + 1] += seen * confidence
+
+
+def _spilled_statistics(geometry, store, zone, masks):
+    from .search_scores import _settle
 
     statistics = [{}]
     with tempfile.TemporaryFile(dir=store._directory.name) as counters:
@@ -588,7 +689,7 @@ def _stream_mask_cost(problem, geometry, store, zone, masks):
                 _settle(
                     statistics, (state, source, pid), seconds, weighted, (seen,), (weighted_seen,)
                 )
-    return linear_cost(store, zone.group_id, statistics[0], zone_policy(problem, zone))
+    return statistics[0]
 
 
 def _count_seen(geometry, zone, masks, counters):
