@@ -118,3 +118,15 @@ def test_live_rows_are_folded_once_per_source(tmp_path):
         rows.window(0, 3600)
         rows.window(3600, 86400)
     assert reads.call_count == 1
+
+
+def test_block_wholly_continuing_previous_row_adds_no_row():
+    # Regression: a block whose every row continued the previous block's row appended
+    # an extra end, shifting every later row's end and losing covered time.
+    blocks = [block([(6 * i, 6 * (i + 1), vector(40))]) for i in range(3)]
+    blocks.append(block([(18, 24, vector(70))]))
+    physical = physical_rows(blocks, 0, 24, (0,))
+    times, ends, columns = physical.window(0, 24)
+    assert list(times) == [0, 18]
+    assert list(ends) == [18, 24]
+    assert columns == {0: bytes([40, 70])}

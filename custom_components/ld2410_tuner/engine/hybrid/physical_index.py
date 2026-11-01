@@ -183,7 +183,7 @@ class PhysicalBuilder:
         starts = list(compress(range(len(new)), new))
         if not new[0]:
             self.ends[-1] = ends[starts[0] - 1] if starts else ends[-1]
-        stops = [*starts[1:], len(times)]
+        stops = [*starts[1:], len(times)] if starts else []
         self.times.extend(times[i] for i in starts)
         self.ends.extend(ends[i - 1] for i in stops)
         for c, column in zip(self.channels, selected, strict=True):
