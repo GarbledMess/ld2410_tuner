@@ -6,11 +6,17 @@ representation choice: no cell, episode or multiplicity is sampled.
 
 from bisect import bisect_right
 from collections import OrderedDict
-from itertools import groupby
+from itertools import groupby, repeat
+from operator import and_, mul
 
-from .constants import CELL_SECONDS, MASK_CACHE_BYTES, SHARD_CELLS
+from .constants import CELL_SECONDS
 from .decision import Decision
 
+# A packed block holds deduplicated groups: one byte per member channel and one
+# position bit per group, so its size follows distinct groups, not cells.
+PACKED_ROWS = 2**16
+PACKED_BYTES = 16 * 1024**2
+PACKED_CACHE_BYTES = 32 * 1024**2
 _TABLES = tuple(bytes(49 if t < v <= 100 else 48 for v in range(256)) for t in range(101))
 
 
@@ -37,7 +43,7 @@ class GroupBlock:
         )
         self.masks, self.scores = OrderedDict(), OrderedDict()
         self.used = sum(map(len, self.columns)) + sum(128 + 64 * len(ep[3]) for ep in self.episodes)
-        self.limit = max(0, 8 * MASK_CACHE_BYTES - self.used)
+        self.limit = max(0, PACKED_CACHE_BYTES - self.used)
         self.cache_bytes = 0
         self.policy = problem.policy
         self.unions = {}
@@ -65,7 +71,7 @@ class GroupBlock:
     def base(self, pattern, rid, channel):
         result = 0
         for offset, member in enumerate(self.members):
-            signature = tuple(pattern[member].get(c, 100) for c in range(18))
+            signature = tuple(map(pattern[member].get, range(18), repeat(100)))
             if member not in self.unions or self.unions[member][0] != signature:
                 self.unions[member] = self._unions(offset, signature)
             _, prefix, suffix = self.unions[member]
@@ -93,8 +99,8 @@ class GroupBlock:
                 linear_cost(store, zone, stats, policy),
                 self._time_lanes(coefficients),
             )
-        base, lanes = self.time_formula
-        return base + sum(value * (mask & bits).bit_count() for value, bits in lanes)
+        base, (values, bits) = self.time_formula
+        return base + sum(map(mul, values, map(int.bit_count, map(and_, repeat(mask), bits))))
 
     def _time_lanes(self, coefficients):
         lanes = {}
@@ -104,7 +110,7 @@ class GroupBlock:
             for count, confidence, bits in strata:
                 value = factor * count * confidence * CELL_SECONDS
                 lanes[value] = lanes.get(value, 0) | bits
-        return tuple(lanes.items())
+        return tuple(lanes), tuple(lanes.values())
 
     def statistics(self, mask, episodes):
         result = {}
@@ -149,13 +155,13 @@ def packed_block(problem, store, zone, attenuate):
         return store._packed_block
     cursor = store._database.execute(
         "SELECT state,source,parent,confidence,vector,n FROM search_groups WHERE zone=? ORDER BY state,source,parent,confidence,vector LIMIT ?",
-        (zone.group_id, SHARD_CELLS + 1),
+        (zone.group_id, PACKED_ROWS + 1),
     )
     rows = cursor.fetchall()
     cursor.close()
     estimate = len(rows) * (18 * len(zone.members) + 256)
     block = None
-    if rows and len(rows) <= SHARD_CELLS and estimate <= 2 * MASK_CACHE_BYTES:
+    if rows and len(rows) <= PACKED_ROWS and estimate <= PACKED_BYTES:
         block = GroupBlock(problem, store, zone, rows, attenuate)
     store._packed_key, store._packed_block = key, block
     return block
