@@ -286,3 +286,47 @@ def test_packed_parent_exactly_half_is_not_mostly_missed(tmp_path, confidence):
         collect_training(p, store)
         args = p, store, {"a": {0: 90}}, "a", 0, (40,)
         assert coordinate_costs(*args) == coordinate_costs(*args, folded=False) == {40: 250}
+
+
+def test_vector_runs_equal_grouped_cells():
+    from itertools import groupby
+
+    from tuner_under_test.engine.hybrid.search_data import vector_runs
+
+    rng = random.Random(77)
+    for n in (0, 1, 2, 9, 300):
+        for alphabet in ((0, 1), (0, 1, 2, 255), tuple(range(256))):
+            columns = [bytes(rng.choice(alphabet) for _ in range(n)) for _ in range(3)]
+            expected, at = [], 0
+            for _, group in groupby(zip(*columns, strict=True)):
+                count = sum(1 for _ in group)
+                expected.append((at, at + count))
+                at += count
+            assert vector_runs(columns, n) == expected
+    with pytest.raises(ValueError):
+        vector_runs([b"ab", b"a"], 2)
+
+
+def test_saved_day_rows_equal_grouped_covered_cells(tmp_path):
+    from itertools import groupby
+
+    from tuner_under_test.engine.hybrid.search_data import _save_day
+
+    rng = random.Random(78)
+    rows = [(i * 6, i * 6 + 6, [rng.choice((3, 4, 255))] * 2 + [255] * 16) for i in range(200)]
+    rows = [row for i, row in enumerate(rows) if i % 23 != 4]
+    digest = fold_day([block(rows)], 0, 1200, (0, 1))
+    expected, offset = [], 0
+    for vector, group in groupby(zip(digest.cov, *digest.channels, strict=True)):
+        count = sum(1 for _ in group)
+        if vector[0] == 1:
+            lo = (digest.k0 + offset) * 6
+            expected.append(("r", lo, lo + count * 6, bytes(vector[1:])))
+        offset += count
+    with TrainingStore(tmp_path) as store:
+        from tuner_under_test.engine.hybrid.search_data import _schema
+
+        db = _schema(store)
+        _save_day(db, "r", digest, 7)
+        got = db.execute("SELECT radar,t,stop,vector FROM search_raw ORDER BY rowid").fetchall()
+    assert got == expected and len(expected) > 20

@@ -29,7 +29,9 @@ unobserved for fitter and judge, never flipped, and labels keep their episodes.
 
 from collections import Counter
 from dataclasses import dataclass, field, replace
+from itertools import compress, repeat
 from math import ceil
+from operator import ge, itemgetter, le, mul, sub
 
 from .candidates import preferred, quantile
 from .constants import (
@@ -134,13 +136,15 @@ class _ZoneCells:
 
     def _scan(self, group):
         """Assign pure runs to labels; with ``group``, also buffer its vectors."""
+        # Groups are consecutive slices of the sorted members, so one slice per run.
         positions = [self.members.index(m) for m in group or ()]
+        lo = positions[0] * CHANNELS if positions else 0
+        hi = (positions[-1] + 1) * CHANNELS if positions else 0
         buffers = [bytearray(), bytearray()]
         spans, sides, previous = [], [0, 0], None
         for side, label, vector, t, n in self._runs():
             if positions:
-                part = b"".join(vector[p * CHANNELS : (p + 1) * CHANNELS] for p in positions)
-                buffers[side] += part * n
+                buffers[side] += vector[lo:hi] * n
             if previous == (label, t):
                 spans[-1][3] += n
             else:
@@ -194,6 +198,26 @@ def _bounds(bp, be):
     }
 
 
+def _above_counts(above, windows):
+    """Cells above the level per window, counted by C calls over the window list."""
+    return map(above.count, repeat(1), map(itemgetter(1), windows), map(itemgetter(2), windows))
+
+
+def _limits(share, windows):
+    return map(
+        mul, repeat(share), map(sub, map(itemgetter(2), windows), map(itemgetter(1), windows))
+    )
+
+
+def _empty_step(active, r, values):
+    """Keep present windows with at most ``EMPTY_LIKE_MAX`` of cells above the bound."""
+    if not active or r is None:
+        return active
+    above = values.translate(TABLES[min(100, r["empty_bound"])])
+    keep = map(le, _above_counts(above, active), _limits(EMPTY_LIKE_MAX, active))
+    return list(compress(active, keep))
+
+
 def empty_like(windows, ref, column):
     """Present windows with at most ``EMPTY_LIKE_MAX`` of cells above the empty bound
     on EVERY selected channel of EVERY member radar; rejected windows stay rejected."""
@@ -201,35 +225,44 @@ def empty_like(windows, ref, column):
     for key, r in ref.items():
         if not active:
             break
-        if r is None:
-            continue
-        above = column(key, 0).translate(TABLES[min(100, r["empty_bound"])])
-        active = [w for w in active if above.count(1, w[1], w[2]) <= EMPTY_LIKE_MAX * (w[2] - w[1])]
+        if r is not None:
+            active = _empty_step(active, r, column(key, 0))
     return active
 
 
-def _occupied_channel(windows, r, above_for, source_of, flagged):
-    for kind in ("human", "entity"):
-        selected = [w for w in windows if source_of[w] == kind]
+def _by_kind(windows, source_of):
+    """Unflagged empty windows per label kind, each list in window order."""
+    return {kind: [w for w in windows if source_of[w] == kind] for kind in ("human", "entity")}
+
+
+def _occupied_step(active, r, values, flagged):
+    """Flag ``active`` (per kind) windows with sustained presence-level energy here.
+
+    Flagged windows leave their kind's list; returns whether any window remains.
+    """
+    if r is None or r["p50"] <= r["empty_high"]:
+        return any(active.values())
+    for kind, selected in active.items():
         if not selected:
             continue
-        above = above_for(min(100, max(r["empty_high"], r[PRESENT_LEVEL[kind]])))
-        for w in selected:
-            if above.count(1, w[1], w[2]) >= OCCUPIED_LIKE_MIN * (w[2] - w[1]):
-                flagged.add(w)
+        level = min(100, max(r["empty_high"], r[PRESENT_LEVEL[kind]]))
+        above = values.translate(TABLES[level])
+        hit = map(ge, _above_counts(above, selected), _limits(OCCUPIED_LIKE_MIN, selected))
+        found = set(compress(selected, hit))
+        if found:
+            flagged |= found
+            active[kind] = [w for w in selected if w not in found]
+    return any(active.values())
 
 
 def occupied_like(windows, ref, column, source_of):
     """Empty windows with sustained presence-level energy on SOME qualifying channel."""
-    flagged, active = set(), list(windows)
+    flagged, active = set(), _by_kind(windows, source_of)
     for key, r in ref.items():
-        if not active:
+        if not any(active.values()):
             break
-        if r is None or r["p50"] <= r["empty_high"]:
-            continue
-        values = column(key, 1)
-        _occupied_channel(active, r, lambda t, v=values: v.translate(TABLES[t]), source_of, flagged)
-        active = [w for w in active if w not in flagged]
+        if r is not None and r["p50"] > r["empty_high"]:
+            _occupied_step(active, r, column(key, 1), flagged)
     return [w for w in windows if w in flagged]
 
 
@@ -248,39 +281,32 @@ class _Audit:
         }
 
     def run(self):
-        full = {
-            key: tuple(_histogram(self.cells.column(key, side)) for side in (0, 1))
-            for key in self.keys
-        }
         present = [w for wins in self.windows.values() for w in wins if w[0] == 0]
         empty = [w for wins in self.windows.values() for w in wins if w[0] == 1]
-        flagged = set()
+        full, flagged = {}, set()
         for _ in range(ITERATIONS):
-            ref = self._reference(full, flagged)
-            new = set(empty_like(present, ref, self.cells.column))
-            new |= set(occupied_like(empty, ref, self.cells.column, self.source_of))
+            new = self._iteration(full, flagged, present, empty)
             if new == flagged:
                 break
             flagged = new
         return self._stretches(flagged)
 
-    def _dropped(self, key, flagged):
-        counts = (Counter(), Counter())
-        columns = [self.cells.column(key, side) for side in (0, 1)]
-        for side, lo, hi, _, _ in flagged:
-            counts[side].update(columns[side][lo:hi])
-        return counts
+    def _iteration(self, full, flagged, present, empty):
+        """One reference round; each key's columns are read once, member group by group.
 
-    def _reference(self, full, flagged):
-        ref = {}
-        for key, (hp, he) in full.items():
-            drop = self._dropped(key, flagged) if flagged else ({}, {})
-            sides = []
-            for side, bins in ((0, hp), (1, he)):
-                kept = [m - drop[side].get(v, 0) for v, m in enumerate(bins)]
-                sides.append(kept if sum(kept) else list(bins))
-            ref[key] = _bounds(*sides)
-        return ref
+        Every key's reference depends only on its own columns, and the empty-like
+        (every key) and occupied-like (some key) tests are order-free filters, so
+        one pass equals separate reference, empty and occupied passes.
+        """
+        active, remaining, hit = list(present), _by_kind(empty, self.source_of), set()
+        for key in self.keys:
+            columns = tuple(self.cells.column(key, side) for side in (0, 1))
+            if key not in full:
+                full[key] = tuple(_histogram(column) for column in columns)
+            r = _reference(full[key], columns, flagged)
+            active = _empty_step(active, r, columns[0])
+            _occupied_step(remaining, r, columns[1], hit)
+        return set(active) | hit
 
     def _stretches(self, flagged):
         out = []
@@ -309,6 +335,23 @@ class _Audit:
             "flagged_windows": flagged,
             "reason": REASON[span.state],
         }
+
+
+def _dropped(columns, flagged):
+    counts = (Counter(), Counter())
+    for side, lo, hi, _, _ in flagged:
+        counts[side].update(columns[side][lo:hi])
+    return counts
+
+
+def _reference(full, columns, flagged):
+    """Trimmed bounds of one key without the flagged windows' cells."""
+    drop = _dropped(columns, flagged) if flagged else ({}, {})
+    sides = []
+    for side, bins in enumerate(full):
+        kept = [m - drop[side].get(v, 0) for v, m in enumerate(bins)]
+        sides.append(kept if sum(kept) else list(bins))
+    return _bounds(*sides)
 
 
 def _blocks(windows):

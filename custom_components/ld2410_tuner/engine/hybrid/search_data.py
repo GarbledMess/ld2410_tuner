@@ -1,5 +1,6 @@
 """Disk-backed, lossless pure-cell joins and per-episode vector multiplicities."""
 
+import re
 from itertools import groupby
 
 from ...history import pace
@@ -7,8 +8,11 @@ from .constants import CELL_SECONDS, SHARD_CELLS
 from .digest import cell_ceil, cell_floor
 from .evidence import _labels
 
+_CHANGED = re.compile(rb"[^\x00]")
+
 
 def _schema(store):
+    _close_geometry(store)
     for name in (
         "_timing_geometry",
         "_packed_key",
@@ -36,6 +40,12 @@ def _schema(store):
     return db
 
 
+def _close_geometry(store):
+    geometry = getattr(store, "_timing_geometry", None)
+    if geometry is not None:
+        geometry.close()
+
+
 def _fold_radar(problem, db, rid, shard_cells):
     radar = problem.radars[rid]
     for day in problem.days.dates(rid):
@@ -52,18 +62,33 @@ def _fold_radar(problem, db, rid, shard_cells):
 
 
 def _save_day(db, rid, digest, shard_cells):
+    """Insert each run of identical covered (coverage, channels) cells as one row."""
+    width = len(digest.channels)
+    rows = bytearray(len(digest.cov) * width)
+    for c, column in enumerate(digest.channels):
+        rows[c::width] = column
     pending = []
-    offset = 0
-    for vector, group in groupby(zip(digest.cov, *digest.channels, strict=True)):
-        count = sum(1 for _ in group)
-        if vector[0] == 1:
-            lo = (digest.k0 + offset) * digest.resolution
-            hi = lo + count * digest.resolution
-            pending.append((rid, lo, hi, bytes(vector[1:])))
-        offset += count
+    for start, stop in vector_runs((digest.cov, *digest.channels), len(digest.cov)):
+        if digest.cov[start] == 1:
+            lo = (digest.k0 + start) * digest.resolution
+            hi = lo + (stop - start) * digest.resolution
+            pending.append((rid, lo, hi, bytes(rows[start * width : (start + 1) * width])))
         if len(pending) >= shard_cells:
             _flush_raw(db, pending)
     _flush_raw(db, pending)
+
+
+def vector_runs(columns, n):
+    """``(start, stop)`` runs of identical cross-column vectors, found in C."""
+    change = 0
+    for column in columns:
+        if len(column) != n:
+            raise ValueError("Digest columns differ in length")
+        value = int.from_bytes(column, "little")
+        change |= value ^ (value >> 8)
+    flags = change.to_bytes(max(n, (change.bit_length() + 7) // 8), "little")[: max(0, n - 1)]
+    cuts = [m.start() + 1 for m in _CHANGED.finditer(flags)]
+    return list(zip([0, *cuts], [*cuts, n], strict=True)) if n else []
 
 
 def _flush_raw(db, pending):

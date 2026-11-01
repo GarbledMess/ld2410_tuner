@@ -284,7 +284,9 @@ def test_oversize_timed_caches_return_results_without_retaining_them(tmp_path, m
         expected = search_timing.timed_coordinate_costs(p, store, {"a": {0: 90}}, "a", 0, (20, 90))
         geometry = search_timing.Geometry(p, store)
         store._timing_geometry = geometry
-        monkeypatch.setattr(search_timing, "_mask_bytes", lambda masks: 9 * 1024**2)
+        monkeypatch.setattr(
+            search_timing, "_mask_bytes", lambda masks: search_timing.MASK_BYTES + 1
+        )
         assert (
             search_timing.timed_coordinate_costs(p, store, {"a": {0: 90}}, "a", 0, (20, 90))
             == expected
@@ -364,26 +366,48 @@ def test_projected_geometry_spans_many_physical_blocks_with_identical_costs(
     assert results[0] == results[1]
 
 
-def test_spilled_geometry_reads_only_the_masked_channel(tmp_path, monkeypatch):
+def test_spilled_geometry_reads_only_the_masked_channel(tmp_path):
     """A cold channel mask reads one raw column, never every channel of the radar."""
-    from pathlib import Path
-
     from tuner_under_test.engine.hybrid import search_timing
+
+    class Counted:
+        def __init__(self, file):
+            self.file, self.reads = file, []
+
+        def __getattr__(self, name):
+            return getattr(self.file, name)
+
+        def read(self, size):
+            data = self.file.read(size)
+            self.reads.append(len(data))
+            return data
 
     p = _long_problem(5)
     with TrainingStore(tmp_path) as store:
         collect_training(p, store)
         geometry = search_timing.Geometry(p, store, budget=0)
-        reads = []
-        original = Path.read_bytes
-
-        def read_bytes(path):
-            data = original(path)
-            reads.append(len(data))
-            return data
-
-        monkeypatch.setattr(Path, "read_bytes", read_bytes)
+        store._timing_geometry = geometry
+        counted = geometry.spill = Counted(geometry.spill)
         geometry.channel_mask(p.zones[0], "a", 1, 40, 0, False)
+        reads = list(counted.reads)
         column = geometry.get(("a", geometry.blocks[0][0], 1))
         assert isinstance(column, bytes) and len(column) == geometry.projected_size
         assert reads and sum(reads) < 2 * len(column) + 4096
+
+
+def test_projection_by_bit_string_slicing_equals_shifted_runs():
+    import random
+
+    from tuner_under_test.engine.hybrid.search_timing import _project, _project_shifts, _runs
+
+    rng = random.Random(4417)
+    for _ in range(400):
+        size = rng.choice((1, 9, 64, 300, 2000))
+        selected = rng.getrandbits(size) & rng.getrandbits(size)
+        ranges, _ = _runs(selected, rng.choice((0, 1, 3)))
+        mask = rng.getrandbits(size) >> rng.randrange(size) << rng.randrange(size)
+        assert _project(mask, ranges) == _project_shifts(mask, ranges)
+    # Non-run masks or overlapping positions keep the general path.
+    odd = ((0, 0b101, 0), (5, 0b11, 1))
+    assert _project(0b1111111, odd) == _project_shifts(0b1111111, odd)
+    assert _project(0, odd) == 0 and _project(5, ()) == 0
