@@ -78,6 +78,11 @@ def drawn(chart):
         **_window(chart),
         "series": {key: {"points": _points(s["points"])} for key, s in chart["series"].items()},
         "labels": chart["labels"],
+        **(
+            {"presence_evidence": chart["presence_evidence"]}
+            if "presence_evidence" in chart
+            else {}
+        ),
     }
 
 
@@ -135,7 +140,11 @@ def _validate_chart(value):
 def _validate_chart_shape(value, budget):
     fields = {"start", "end", "bucket_seconds", "series", "labels"}
     summary_fields = {"start", "end", "bucket_seconds", "points"}
-    if type(value) is not dict or set(value) not in (fields, summary_fields):
+    if type(value) is not dict or set(value) not in (
+        fields,
+        fields | {"presence_evidence"},
+        summary_fields,
+    ):
         raise ValueError("Invalid chart fields")
     budget.keys(value)
     # Root, field names and their values; child containers are already counted.
@@ -161,6 +170,19 @@ def _validate_full_chart(value, budget):
         _validate_series(item, budget)
     for label in _bounded_list(value["labels"], 8192):
         _validate_label(label, budget)
+
+    if "presence_evidence" in value:
+        _validate_presence_evidence(value["presence_evidence"], budget)
+
+
+def _validate_presence_evidence(evidence, budget):
+    if type(evidence) is not dict or set(evidence) != {"manual", "entity", "guessed"}:
+        raise ValueError("Invalid presence evidence")
+    budget.keys(evidence)
+    budget.add(7, 19)
+    for labels in evidence.values():
+        for label in _bounded_list(labels, 100_000):
+            _validate_label(label, budget)
 
 
 def _validate_gates(series):

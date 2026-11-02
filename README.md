@@ -99,6 +99,14 @@ Each group header in the tree holds that group's controls and a **How rooms and
 zones work** help.
 
 You can label a room or zone Present, Empty or Unknown directly on its timeline.
+Radar and room status charts show time-aligned **Human (manual)**, **Entity / sensor**
+and **Guessed (automatic)** evidence lanes. Buttons below the chart show or hide
+these kinds and remember your choice in this browser. Solid, dashed and dotted
+strokes mean Present, Not present and Unknown; gaps mean no recorded evidence.
+Room charts show guesses separately for each radar, before combining room truth.
+These rows include low-confidence guesses; they do not indicate which automatic
+evidence qualifies for learning. Older automatic records without provenance appear
+as guessed. The lanes reuse the chart response; toggling never refetches history.
 These manual room labels are a separate record from each radar's own labels.
 In a room or zone with exactly one radar, manual room labels and sensor labels
 from room presence sources both train that radar. Manual labels keep their human

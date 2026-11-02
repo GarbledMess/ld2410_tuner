@@ -287,17 +287,19 @@ export const panelChart = {
     const anyPoints = Object.values(cs.data.series || {}).some(
       (series) => series.points?.length,
     );
-    if (!anyPoints) {
-      el.innerHTML = `<div class="muted">No recorded history in this window.</div>`;
-      return;
-    }
     try {
       el.innerHTML = this._buildChartSvg(
         d,
         cs,
         Math.max(240, Math.round(el.clientWidth) || 760),
       );
+      if (!anyPoints)
+        el.insertAdjacentHTML(
+          "afterbegin",
+          '<div class="muted">No recorded history in this window.</div>',
+        );
       this._wireChartSelection(id, el, d, cs);
+      this._wirePresenceLanes(el);
       const review = el.querySelector('[data-action="review-results"]');
       if (review)
         review.onclick = () =>

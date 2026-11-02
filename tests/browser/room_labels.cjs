@@ -223,10 +223,12 @@ async function testTimelineLabelsARange(page) {
   );
   assert.equal(
     await desk
-      .locator(".room-sensor-labels .history-segment.sensor.not_present")
+      .locator(
+        '[data-presence-lane="entity"] [data-presence-state="not_present"]',
+      )
       .count(),
     1,
-    "sensor labels are shown on their own read-only bar",
+    "sensor labels are shown on their own read-only lane",
   );
   const bar = desk.locator(".history-range");
   await bar.scrollIntoViewIfNeeded();
