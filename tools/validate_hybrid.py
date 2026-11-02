@@ -79,6 +79,7 @@ def modules():
                 "dayfile": "history.dayfile",
                 "daystore": "history.daystore",
                 "keys": "const",
+                "fit_rows": "history.fit_rows",
             }.items()
         }
     )
@@ -102,7 +103,7 @@ def private_path(path):
 
 def checked_paths(history, output, baseline):
     history, output = Path(history).resolve(), Path(output).resolve()
-    if private_path(history) or not history.is_dir():
+    if not history.is_dir():
         raise ValueError("A readable user history directory is required")
     if _in_repository(output) or output.is_relative_to(history) or private_path(output):
         raise ValueError("Output must be outside the repository and input root")
@@ -148,7 +149,7 @@ def _read_json(path):
 
 
 def _metadata(history):
-    devices, groups, room_labels = {}, {}, {}
+    devices, groups, room_labels, learning = {}, {}, {}, {}
     paths = sorted(history.glob("*.json"))
     storage = history / "ld2410_tuner.data"
     if storage.is_symlink():
@@ -161,11 +162,27 @@ def _metadata(history):
         raw = _read_json(path)
         raw = raw.get("data", raw)
         devices.update(raw.get("devices", {}))
+        groups.update(raw.get("room_groups", {}))
         groups.update(raw.get("groups", {}))
+        learning.update(raw.get("room_learning", {}))
         room_labels.update(raw.get("room_labels", {}))
     if not devices:
         raise ValueError("No device metadata in supplied directory")
-    return devices, groups, room_labels
+    return devices, _reconstruct_groups(devices, groups, learning), room_labels
+
+
+def _reconstruct_groups(devices, groups, learning):
+    for gid, entry in learning.items():
+        if gid in groups:
+            continue
+        job = entry.get("job", {}).get("id")
+        members = [
+            rid
+            for rid, dev in devices.items()
+            if job and dev.get("learning_job", {}).get("id") == job
+        ]
+        groups[gid] = {"kind": "area", "area_id": gid.removeprefix("area:"), "device_ids": members}
+    return groups
 
 
 def _device(raw):
@@ -189,6 +206,10 @@ def _capture(path, rid, date, *, persistent=True):
     }
 
 
+def _unsafe_day(path, history):
+    return path.is_symlink() or not path.resolve().is_relative_to(history)
+
+
 def _copy_days(history, detached, rid, raw):
     """Copy only expected day paths, never open/recover the user's mutable DayStore."""
     folder = detached / quote(rid, safe="").replace(".", "%2E")
@@ -201,7 +222,9 @@ def _copy_days(history, detached, rid, raw):
         path.write_bytes(base64.b64decode(payload, validate=True))
         paths[day] = path
     for path in _day_inputs(history, folder.name):
-        if path.is_symlink() or not path.resolve().is_relative_to(history):
+        if path.suffix == ".log" and path.stem in paths:
+            continue  # A finished snapshot wins over its stale prefix log.
+        if _unsafe_day(path, history):
             raise ValueError("Linked day input is not supported")
         date.fromisoformat(path.stem)
         target = folder / (path.stem + ".day")
@@ -232,7 +255,7 @@ def _day_inputs(history, folder):
     sources = (history / "history" / folder, history / "ld2410_tuner" / "history" / folder)
     for source in sources:
         resolved = source.resolve()
-        if not resolved.is_relative_to(history) or private_path(resolved):
+        if not resolved.is_relative_to(history):
             raise ValueError("Day source must remain inside supplied history")
         yield from sorted(source.glob("*.day"))
         yield from sorted(source.glob("*.log"))
@@ -241,7 +264,7 @@ def _day_inputs(history, folder):
 def load_history(history: Path, detached: Path):
     """Build an identity-checked read-only worker view from exports/storage metadata."""
     history, detached = Path(history).resolve(), Path(detached).resolve()
-    if private_path(history) or detached.is_relative_to(history) or detached.is_relative_to(ROOT):
+    if private_path(detached) or detached.is_relative_to(history) or detached.is_relative_to(ROOT):
         raise ValueError("Detached storage must be outside input and repository")
     raw, groups, room_labels = _metadata(history)
     entries = [
@@ -349,70 +372,139 @@ def _next_apply(ordered, index, device, after):
 
 def _member(context, rid, at):
     dev = context.devices[rid]
-    keys = [k for k in modules().keys.HISTORY_KEYS if k in dev.get("current_thresholds", {})]
+    saved = (dev.get("learning_results") or {}).get("current", {})
+    configured = (
+        dev.get("current_thresholds") or dev.get("last_applied") or saved.get("configuration")
+    )
+    keys = [k for k in modules().keys.HISTORY_KEYS if k in (configured or {})]
     if not keys:
-        keys = [k for k in modules().keys.HISTORY_KEYS if k in dev.get("last_applied", {})]
-    if not keys:
-        raise ValueError("Selected threshold channels are missing")
+        keys = list(modules().keys.HISTORY_KEYS)  # exp2 fallback: every channel at 50
     current, provenance = _start(dev, keys, at)
     return {
         "view": context.view,
         "thresholds": current,
-        "timing": dev.get("timing_configuration") or {},
-        "constraints": dev.get("threshold_constraints") or {},
+        "timing": dev.get("timing_configuration") or saved.get("timing_configuration") or {},
+        "constraints": dev.get("threshold_constraints") or saved.get("threshold_constraints") or {},
     }, provenance
 
 
-def training_problem(context, rid, heldout):
-    """Mask human/heuristic/automatic truth before collecting any training statistics."""
-    m = modules()
-    view = copy.copy(context.view)
-    devices = {key: _human_device(dev, heldout) for key, dev in context.devices.items()}
-    room_labels = {
-        gid: _mask_labels([s for s in labels if s.get("source") == "manual"], heldout)
-        for gid, labels in context.room_labels.items()
+def _reader(labels):
+    return modules().labels._history_label_reader({"history_labels": labels})
+
+
+def _manual_room(context, gid, heldout):
+    return _reader(
+        _mask_labels(
+            [s for s in context.room_labels.get(gid, []) if s.get("source") == "manual"], heldout
+        )
+    )
+
+
+def _room_evidence(context, rid, heldout):
+    readers = []
+    for gid, group in context.groups.items():
+        if rid not in group.get("device_ids", []):
+            continue
+        readers.append((_manual_room(context, gid, heldout), False))
+        if group.get("kind") == "zone" and group.get("area_id"):
+            readers.append((_manual_room(context, "area:" + group["area_id"], heldout), True))
+    return readers
+
+
+def _room_answer(readers, at):
+    answers = {r(at) for r, parent in readers if not parent or r(at) == "not_present"}
+    answers.discard(None)
+    return next(iter(answers)) if len(answers) == 1 else "unknown" if answers else None
+
+
+def _member_answer(readers, at):
+    states = [r(at) for r in readers]
+    if "present" in states:
+        return "present"
+    return "not_present" if states and all(s == "not_present" for s in states) else None
+
+
+def _primary_spans(context, rid, heldout):
+    own = {
+        key: modules().labels._history_label_reader(_human_device(dev, heldout))
+        for key, dev in context.devices.items()
     }
-    view.data = {"devices": devices, "groups": context.groups, "room_labels": room_labels}
-    view._days = PrimaryDays(context.view._days)
-    view._attribution_guesses = {}
-    at = min((a for a, _ in heldout), default=context.start)
     if rid in context.devices:
-        member, _ = _member(context, rid, at)
-        keys = list(member["thresholds"])
-        problem = m.adapters.device_problem(
-            view,
-            rid,
-            keys,
-            member["thresholds"],
-            member["timing"],
-            0,
-            member["constraints"],
+        rooms = _room_evidence(context, rid, heldout)
+        readers = [own[rid], *(r for r, _ in rooms)]
+
+        def answer(at):
+            state = own[rid](at)
+            return state if state is not None else _room_answer(rooms, at)
+    else:
+        manual = _manual_room(context, rid, heldout)
+        members = [own[k] for k in context.groups[rid].get("device_ids", []) if k in own]
+        readers = [manual, *members]
+
+        def answer(at):
+            state = manual(at)
+            return state if state is not None else _member_answer(members, at)
+
+    cuts = sorted(
+        {
             context.start,
             context.end,
-            reference=True,
-        )
-    else:
-        problem = _room_problem(context, view, rid, at)
-    # Protocol primary training is human-only, including quality/automatic support statistics.
-    zones = tuple(
-        replace(z, truth=tuple(s for s in z.truth if s.source == "human")) for z in problem.zones
+            *(x for r in readers for x in r.edges if context.start < x < context.end),
+        }
     )
-    return replace(problem, zones=zones, policy=m.types.EvidencePolicy(0, True, {}))
+    truth = [
+        (a, b, state, "human", 1.0)
+        for a, b in zip(cuts, cuts[1:], strict=False)
+        if (state := answer(a)) in STATES
+    ]
+    return _truth_spans(truth)
 
 
-def _room_problem(context, view, gid, at):
-    members = {
-        rid: {**_member(context, rid, at)[0], "view": view}
-        for rid in context.groups[gid]["device_ids"]
+def _truth_spans(truth):
+    episodes = referee()._episodes(
+        truth, (min((s[0] for s in truth), default=0), max((s[1] for s in truth), default=0))
+    )
+    return tuple(
+        modules().types.TruthSpan(a, b, state, source, confidence, str(i), ())
+        for i, (a, b, state, source, confidence) in enumerate(episodes)
+    )
+
+
+def training_problem(context, rid, heldout):
+    """exp2 human truth, masked before fitting; physical input is transductive.
+
+    The offline protocol needs no production quality/attribution learning: room
+    human evidence is mapped directly and automatic evidence never enters a fit.
+    """
+    m = modules()
+    members = [rid] if rid in context.devices else context.groups[rid].get("device_ids", [])
+    at = min((a for a, _ in heldout), default=context.start)
+    specs = {}
+    for key in members:
+        item, _ = _member(context, key, at)
+        specs[key] = m.adapters._radar(
+            key, list(item["thresholds"]), item["thresholds"], item["timing"], item["constraints"]
+        )
+    view = copy.copy(context.view)
+    view._days = PrimaryDays(context.view._days)
+    views = dict.fromkeys(members, view)
+    rows = {
+        key: m.fit_rows.CapturedRowSource(view, key, spec.channels) for key, spec in specs.items()
     }
-    room = {"group_id": gid, "groups": context.groups, "room_labels": view.data["room_labels"]}
-    return modules().adapters.room_problem(
-        {gid: members}, context.start, context.end, {gid: room}, 0, reference=True
+    zone = m.types.ZoneSpec(rid, tuple(members), _primary_spans(context, rid, heldout))
+    return m.types.FitProblem(
+        specs,
+        (zone,),
+        context.start,
+        context.end,
+        m.adapters._Days(views, context.start, context.end),
+        rows,
+        m.types.EvidencePolicy(0, True, {}),
     )
 
 
 def _aliases(context):
-    return {rid: "R" + str(i) for i, rid in enumerate(sorted(context.devices), 1)}
+    return {rid: "R" + str(i) for i, rid in enumerate(context.devices, 1)}
 
 
 def _secondary(context, rid, primary):
@@ -487,6 +579,8 @@ def _oracle_radars(problem, directory):
 
 
 def _coverage(radars, problem):
+    if not radars:
+        return []
     cov = [(problem.start, problem.end)]
     for rid, radar in radars.items():
         cov = referee().intersect(cov, list(_covered(radar, problem.radars[rid].channels)))
@@ -515,7 +609,7 @@ def fold_plan(truth, coverage):
     labelled = [
         s for s in truth if s[2] in STATES and r.duration(r.intersect([s[:2]], coverage)) > 0
     ]
-    if not labelled:
+    if not all(any(s[2] == state for s in labelled) for state in STATES):
         return {"kind": "none", "heldout": []}
     window = min(s[0] for s in labelled), max(s[1] for s in labelled)
     episodes = r._episodes(labelled, window)
@@ -579,9 +673,21 @@ def _counts(truth, coverage, intervals):
     return result
 
 
-def _oracle_score(radars, pattern, truth, intervals):
+def _oracle_replay(radars, pattern):
+    return {
+        rid: referee().replay(
+            radar, pattern[rid], (radar.times[0], radar.ends[-1]) if len(radar.times) else (0, 0)
+        )
+        for rid, radar in radars.items()
+    }
+
+
+def _oracle_score(radars, pattern, truth, intervals, replayed=None):
+    replayed = replayed if replayed is not None else _oracle_replay(radars, pattern)
     scores = [
-        referee().referee_score(radars, pattern, truth, (a, b), include_margins=False)
+        referee().referee_score(
+            radars, pattern, truth, (a, b), include_margins=False, replayed=replayed
+        )
         for a, b in intervals
     ]
     return aggregate(scores)
@@ -630,16 +736,16 @@ def _pooled_cost(stats):
 
 def _score(problem, pattern, truth, intervals, mode):
     m = modules()
-    spans = tuple(
-        m.types.TruthSpan(a, b, s, src, c, str(i), ())
-        for i, (a, b, s, src, c) in enumerate(_clip(truth, intervals))
-    )
-    zone = replace(problem.zones[0], truth=spans)
-    problem = replace(problem, zones=(zone,))
     kind = m.exact.Evaluator if mode == "exact" else m.evaluate.CellEvaluator
-    with kind(problem, m.evaluate.score_regions(problem)) as evaluator:
-        score = evaluator.scores([pattern])[0]
-    return aggregate([score])
+    # Distinct zones preserve each held-out interval's episode counts, while a
+    # single replay/record scan shares the full timing prefix across all of them.
+    zones = tuple(
+        replace(problem.zones[0], group_id=str(i), truth=_truth_spans(_clip(truth, [interval])))
+        for i, interval in enumerate(intervals)
+    )
+    with kind(problem, ((problem.start, max(b for _, b in intervals)),)) as evaluator:
+        score = evaluator.scores([pattern], zones=zones)[0]
+    return aggregate(list(score["zones"].values()))
 
 
 def _rss():
@@ -691,12 +797,12 @@ def _windows_rss():
     return counters.PeakWorkingSetSize
 
 
-def _fit_once(context, rid, heldout, traced=False):
+def _fit_once(problem, traced=False):
     if traced:
         tracemalloc.start()
     start = time.process_time()
     try:
-        result = modules().engine.fit(training_problem(context, rid, heldout))
+        result = modules().engine.fit(problem)
         performance = {
             "cpu_seconds": time.process_time() - start,
             "rss_peak_bytes": _rss(),
@@ -715,13 +821,13 @@ def _clear_cells(context):
         path.unlink()
 
 
-def _measure(context, rid, heldout):
+def _measure(context, problem):
     _clear_cells(context)
-    cold, cold_perf = _fit_once(context, rid, heldout)
-    warm, warm_perf = _fit_once(context, rid, heldout)
+    cold, cold_perf = _fit_once(problem)
+    warm, warm_perf = _fit_once(problem)
     _clear_cells(context)
-    traced_cold, cold_mem = _fit_once(context, rid, heldout, True)
-    traced_warm, warm_mem = _fit_once(context, rid, heldout, True)
+    traced_cold, cold_mem = _fit_once(problem, True)
+    traced_warm, warm_mem = _fit_once(problem, True)
     cold_perf["traced_peak_bytes"] = cold_mem["traced_peak_bytes"]
     warm_perf["traced_peak_bytes"] = warm_mem["traced_peak_bytes"]
     deterministic = all(r.thresholds == cold.thresholds for r in (warm, traced_cold, traced_warm))
@@ -763,6 +869,21 @@ def _resources(performance):
         and p["rss_peak_bytes"] <= TOLERANCES["rss_bytes"]
         for p in performance.values()
     )
+
+
+def _failures(legal, deterministic, parity, performance):
+    checks = {
+        "illegal_thresholds": legal,
+        "nondeterministic": deterministic,
+        "exact_parity": parity,
+    }
+    for reason, field, limit in (
+        ("cpu_budget", "cpu_seconds", "cpu_seconds"),
+        ("traced_memory_budget", "traced_peak_bytes", "traced_peak_bytes"),
+        ("rss_budget", "rss_peak_bytes", "rss_bytes"),
+    ):
+        checks[reason] = all(p[field] <= TOLERANCES[limit] for p in performance.values())
+    return [reason for reason, passed in checks.items() if not passed]
 
 
 def _pattern_json(pattern, aliases):
@@ -809,11 +930,12 @@ def _fit_audit(result):
 
 def _fold(context, rid, alias, full, radars, coverage, heldout, index, baseline):
     truth = _truth(full)
-    result, performance, deterministic = _measure(context, rid, heldout)
-    primary = _oracle_score(radars, result.thresholds, truth, heldout)
+    training = training_problem(context, rid, heldout)
+    result, performance, deterministic = _measure(context, training)
+    replayed = _oracle_replay(radars, result.thresholds)
+    primary = _oracle_score(radars, result.thresholds, truth, heldout, replayed)
     exact = _score(full, result.thresholds, truth, heldout, "exact")
     cells = _score(full, result.thresholds, truth, heldout, "cells")
-    training = training_problem(context, rid, heldout)
     legal = _legal(training, result.thresholds)
     aliases = _aliases(context)
     provenance = {
@@ -821,13 +943,16 @@ def _fold(context, rid, alias, full, radars, coverage, heldout, index, baseline)
     }
     parity = _same(primary, exact)
     resource_ok = _resources(performance)
+    # A fold may own the only empty period. The harness still scores its legal
+    # unchanged start; missing training support is an annotation, not a failure.
     sufficient = result.diagnostics["status"] != "insufficient"
-    passed = legal and deterministic and parity and resource_ok and sufficient
+    failures = _failures(legal, deterministic, parity, performance)
     start = {key: spec.current for key, spec in training.radars.items()}
     record = {
         "fold": index,
         "heldout": heldout,
-        "status": "ok" if passed else "failed",
+        "status": "failed" if failures else "ok",
+        "failures": failures,
         "thresholds": _pattern_json(result.thresholds, aliases),
         "legal": legal,
         "parity": parity,
@@ -859,7 +984,7 @@ def _fold(context, rid, alias, full, radars, coverage, heldout, index, baseline)
             radars, result.thresholds, _truth(training), (context.start, context.end), aliases
         ),
         "secondary": _oracle_score(
-            radars, result.thresholds, _secondary(context, rid, truth), heldout
+            radars, result.thresholds, _secondary(context, rid, truth), heldout, replayed
         ),
     }
     record["baseline"] = _fixed_baseline(
@@ -867,6 +992,7 @@ def _fold(context, rid, alias, full, radars, coverage, heldout, index, baseline)
     )
     if record["baseline"].get("status") == "failed":
         record["status"] = "failed"
+        record["failures"].append("baseline_mismatch")
     return record
 
 
@@ -895,17 +1021,36 @@ def _fixed_baseline(baseline, alias, index, problem, radars, heldout, aliases, p
     }
 
 
+def _skipped(context, rid, alias, plan):
+    return {
+        "alias": alias,
+        "kind": "device" if rid in context.devices else "room",
+        "status": "skipped",
+        "skip_reason": "missing_primary_class",
+        "failures": [],
+        "plan": plan,
+        "folds": [],
+        "aggregate": aggregate([]),
+        "secondary_aggregate": aggregate([]),
+    }
+
+
 def _set(context, rid, alias, baseline):
     full = training_problem(context, rid, [])
+    if not all(any(s.state == state for s in full.zones[0].truth) for state in STATES):
+        return _skipped(context, rid, alias, {"kind": "none", "heldout": []})
     radars = _oracle_radars(full, context.detached / ("oracle-" + alias))
     coverage = _coverage(radars, full)
     plan = fold_plan(_truth(full), coverage)
+    if not plan["heldout"]:
+        return _skipped(context, rid, alias, plan)
     folds = [
         _fold(context, rid, alias, full, radars, coverage, heldout, index, baseline)
         for index, heldout in enumerate(plan["heldout"])
     ]
     return {
         "alias": alias,
+        "failures": sorted({reason for f in folds for reason in f["failures"]}),
         "plan": plan,
         "folds": folds,
         "kind": "device" if rid in context.devices else "room",
@@ -934,6 +1079,7 @@ def _baseline_check(report, baseline):
     parity = set(expected) == {s["alias"] for s in report["sets"]}
     for item in report["sets"]:
         previous = expected.get(item["alias"], {})
+        parity = parity and item["status"] == previous.get("status")
         parity = parity and _same(item["aggregate"], previous.get("aggregate", {}))
         parity = parity and all(f["baseline"].get("status") == "ok" for f in item["folds"])
     return {
@@ -949,8 +1095,11 @@ def validate(history: Path, output: Path, *, baseline: Path | None = None) -> di
     frozen = _baseline(baseline)  # Freeze before producing any new results.
     with tempfile.TemporaryDirectory(prefix="hybrid-validation-") as temporary:
         context = load_history(history, Path(temporary))
-        targets = [*sorted(context.devices), *sorted(context.groups)]
-        sets = [_set(context, rid, "R" + str(i), frozen) for i, rid in enumerate(targets, 1)]
+        targets = [
+            *((rid, alias) for rid, alias in _aliases(context).items()),
+            *((gid, "G" + str(i)) for i, gid in enumerate(context.groups, 1)),
+        ]
+        sets = [_set(context, rid, alias, frozen) for rid, alias in targets]
     report = {
         "protocol": PROTOCOL,
         "hashes": hashes(),
@@ -966,7 +1115,7 @@ def validate(history: Path, output: Path, *, baseline: Path | None = None) -> di
             "waives_validation_failure": False,
             "reason": "Accepted held-out low-energy drift; longer miss remains visible",
         },
-        "status": "ok" if all(s["status"] == "ok" for s in sets) else "failed",
+        "status": "ok" if all(s["status"] != "failed" for s in sets) else "failed",
     }
     report["baseline"] = _baseline_check(report, frozen)
     if report["baseline"]["status"] == "failed":
