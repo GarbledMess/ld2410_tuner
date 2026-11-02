@@ -463,7 +463,15 @@ def test_chart_transport_carries_only_what_the_panel_draws():
 
     full = _dense_chart()
     restored = display.unpack_chart(display.pack_chart(full))
-    assert set(restored) == {"start", "end", "bucket_seconds", "series", "labels"}
+    assert set(restored) == {
+        "start",
+        "end",
+        "bucket_seconds",
+        "series",
+        "labels",
+        "presence_evidence",
+    }
+    assert restored["presence_evidence"] == full["presence_evidence"]
     assert restored["labels"] == full["labels"]
     for key, series in full["series"].items():
         assert set(restored["series"][key]) == {"points"}
@@ -495,3 +503,16 @@ def test_chart_transport_rejects_fields_the_panel_does_not_draw():
             display.unpack_chart(
                 {"chart_zlib": base64.b64encode(zlib.compress(raw)).decode("ascii")}
             )
+
+
+def test_presence_evidence_survives_worker_transport():
+    full = _dense_chart()
+    full["presence_evidence"] = {
+        "manual": [],
+        "entity": [],
+        "guessed": [{"start": 0, "end": 1, "state": "present"}],
+    }
+    assert (
+        display.unpack_chart(display.pack_chart(full))["presence_evidence"]
+        == full["presence_evidence"]
+    )

@@ -807,6 +807,7 @@ const { execFileSync } = require("node:child_process");
       panel._pollTimer = null;
       await panel._loadPromise;
     });
+    await require("./browser/source_lanes.cjs")(page);
     await testStableRendering(page, screenshotDir);
     await testTiming(page, screenshotDir);
     await testTimingSettings(page, screenshotDir);

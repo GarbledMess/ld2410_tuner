@@ -1,5 +1,12 @@
 # Release notes
 
+## Unreleased
+
+- Radar and room status charts now show labelled Human, Entity / sensor and Guessed
+  evidence lanes. Each kind can be hidden with a remembered viewer preference. Room
+  guesses stay separate per radar. Rendering clips and merges periods and batches
+  SVG paths by state; toggling uses the loaded data without another request.
+
 ## 1.32.0 - 2026-10-27
 
 - The Bermuda section is much simpler: one **Use this phone** switch per phone or watch,

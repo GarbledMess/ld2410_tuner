@@ -346,6 +346,7 @@ export const panelRoomGraph = {
       canvas.innerHTML = this._roomGraphSvg(gid, state.data, width);
       canvas.dataset.paintKey = paintKey;
     }
+    this._wirePresenceLanes(canvas);
     const plotRatio = canvas.clientWidth / width;
     for (const element of section.querySelectorAll(
       ".history-timeline-editor > .history-range, .history-timeline-editor > .history-axis",
@@ -421,19 +422,6 @@ export const panelRoomGraph = {
         return `<g data-room-signal="${this._esc(item.id)}" style="stroke-dasharray:${item.dash}"><title>${this._esc(item.name)}</title>${others}${activeBandSvg}${activeLineSvg}${this._roomThresholdSvg(item, index, thresholds[index], gate, width, y)}</g>`;
       })
       .join("");
-    const labels = this._roomsData().groups[gid]?.labels || [];
-    const bands = labels
-      .filter(
-        (label) =>
-          label.source === "manual" &&
-          label.end > bounds.start &&
-          label.start < bounds.end,
-      )
-      .map(
-        (label) =>
-          `<rect class="room-label-band ${this._esc(label.state)}" x="${x(Math.max(bounds.start, label.start))}" y="${CHART_MARGIN.top}" width="${x(Math.min(bounds.end, label.end)) - x(Math.max(bounds.start, label.start))}" height="${CHART_PLOT_H}"/>`,
-      )
-      .join("");
     const empty =
       this._roomGraphState(gid).loading ||
       this._roomGraphState(gid).error ||
@@ -442,7 +430,7 @@ export const panelRoomGraph = {
       )
         ? ""
         : `<text x="${width / 2}" y="${CHART_H / 2}" text-anchor="middle" class="axis-label">No recorded signals in this period</text>`;
-    return `<svg viewBox="0 0 ${width} ${CHART_H}" role="img" aria-label="Room signal history"><rect class="plot-bg" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}"/>${bands}${grid}${ticks}${lines}${empty}<rect data-room-graph-selection class="selection-rect" y="${CHART_MARGIN.top}" height="${CHART_PLOT_H}" hidden/><rect data-room-plot-hit class="selection-hit" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}"/></svg>`;
+    return `<svg viewBox="0 0 ${width} ${CHART_H + 32 * (2 + Math.max(1, series.length))}" role="img" aria-label="Room signal history"><rect class="plot-bg" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}"/>${grid}${ticks}${lines}${empty}<rect data-room-graph-selection class="selection-rect" y="${CHART_MARGIN.top}" height="${CHART_PLOT_H}" hidden/><rect data-room-plot-hit class="selection-hit" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}"/>${this._presenceLanesSvg(this._roomPresenceEvidence(gid, data), bounds, width)}</svg>${this._presenceLegendHtml()}<p class="muted">Guessed rows show each radar's automatic evidence, before combining members into room truth.</p>`;
   },
 
   _roomThresholds(gid, series) {

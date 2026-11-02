@@ -121,7 +121,19 @@ def spliced(chart, tail, resume):
         if kept and points:
             points[0] = {**points[0], "break_before": points[0]["start"] > kept[-1]["end"]}
         series[key] = {"points": kept + points}
-    return {**tail, "series": series}
+    result = {**tail, "series": series}
+    if "presence_evidence" in tail:
+        result["presence_evidence"] = dict(tail["presence_evidence"])
+        for kind in ("entity", "guessed"):
+            kept = [
+                dict(label, end=min(label["end"], resume["from"]))
+                for label in chart.get("presence_evidence", {}).get(kind, [])
+                if label["start"] < resume["from"]
+            ]
+            result["presence_evidence"][kind] = _merged_evidence(
+                kept + tail["presence_evidence"][kind]
+            )
+    return result
 
 
 def _check_resume(resume, indices, start, end, bucket_span, max_points, summary):
@@ -399,6 +411,34 @@ def _chart_labels(device, start, end):
     return labels
 
 
+def _presence_evidence(runtime, device_id, start, end):
+    """Recorded provenance, without applying training precedence or confidence gates."""
+    from ..history import guesses
+
+    result = {
+        "manual": _chart_labels(runtime.data["devices"][device_id], start, end),
+        "entity": [],
+        "guessed": [],
+    }
+    for left, right, state, _level, basis in guesses.recorded(runtime, device_id, start):
+        left, right = max(start, left), min(end, right)
+        if right <= left:
+            continue
+        kind = "entity" if basis == guesses.EXTERNAL else "guessed"
+        result[kind].append({"start": left, "end": right, "state": state})
+    return {kind: _merged_evidence(labels) for kind, labels in result.items()}
+
+
+def _merged_evidence(labels):
+    merged = []
+    for label in sorted(labels, key=lambda label: label["start"]):
+        if merged and merged[-1]["state"] == label["state"] and label["start"] <= merged[-1]["end"]:
+            merged[-1]["end"] = max(merged[-1]["end"], label["end"])
+        else:
+            merged.append(dict(label))
+    return merged
+
+
 def _native_chart(runtime, device_id, indices, window, max_points, summary=False, resume=None):
     start, end, bucket_span = window
     kept = resume["points"] if resume else {}
@@ -426,6 +466,7 @@ def _native_chart(runtime, device_id, indices, window, max_points, summary=False
         "bucket_seconds": bucket_span,
         "series": {key: value.finish() for key, value in series.items()},
         "labels": _chart_labels(runtime.data["devices"][device_id], start, end),
+        "presence_evidence": _presence_evidence(runtime, device_id, start, end),
         "basis": "physical_span_duration",
         "modes": sorted(modes),
     }
