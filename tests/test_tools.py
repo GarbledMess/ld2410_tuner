@@ -294,6 +294,11 @@ class TransportTests(unittest.TestCase):
 
 class CharacterisationUpdaterTests(unittest.TestCase):
     def test_generate_writes_every_reviewed_case_and_main_reports_them(self):
+        import test_characterisation as suite
+
+        historical = {
+            name: (updater.FIXTURES / f"{name}.json").read_bytes() for name in suite.CASES
+        }
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "nested"
             names = updater.generate(target)
@@ -302,8 +307,13 @@ class CharacterisationUpdaterTests(unittest.TestCase):
             for name in names:
                 fresh = (target / f"{name}.json").read_bytes()
                 self.assertNotIn(b"\r", fresh)
-                committed = (updater.FIXTURES / f"{name}.json").read_bytes()
-                self.assertEqual(fresh, committed)
+                builder, drop = suite.CASES[name]
+                self.assertEqual(fresh, suite.canonical(builder(), drop).encode())
+                # Historical engine reports remain compatibility fixtures. A
+                # current-model export to another directory must not rewrite them.
+                self.assertEqual((updater.FIXTURES / f"{name}.json").read_bytes(), historical[name])
+                if name == "reference_profile":
+                    self.assertEqual(fresh, historical[name])
         with (
             patch.object(updater, "generate", return_value=["one"]),
             contextlib.redirect_stdout(io.StringIO()) as out,

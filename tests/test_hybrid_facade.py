@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 import test_tuner  # noqa: F401
 from hybrid_scenarios import assert_device_contract, assert_room_contract
+from tuner_under_test.calibration.constants import ROOM_METHOD
 from tuner_under_test.engine.hybrid import engine, facade, search
 from tuner_under_test.history import dayfile
 from tuner_under_test.worker import history
@@ -300,7 +301,7 @@ def test_room_reports_keep_the_assessment_contract(tmp_path):
     fitted = facade.room_fit(members, 0, 720)
     assert_room_contract(fitted["before"])
     assert_room_contract(fitted["after"])
-    assert fitted["method"] == facade.ROOM_METHOD
+    assert fitted["method"] == ROOM_METHOD == "joint_room_v2"
 
 
 def test_seen_by_counts_missed_attributed_presence(tmp_path):
@@ -311,3 +312,132 @@ def test_seen_by_counts_missed_attributed_presence(tmp_path):
     assert radar["missed_seen_seconds"] == pytest.approx(360)
     assert radar["missed_seen_automatic_seconds"] == 0
     assert radar["occupied_seconds"] == 360
+
+
+def anomalous_trace():
+    """Presence at 80, then a 90-energy stretch labelled empty that the audit discards."""
+    values = [80] * 100 + [0] * 10 + [90] * 40 + [0] * 250  # [0,600) [600,660) [660,900) ...
+    labels = [
+        {"start": 0, "end": 600, "state": "present"},
+        {"start": 600, "end": 960, "state": "not_present"},
+        {"start": 966, "end": 2400, "state": "not_present"},
+    ]
+    return values, labels
+
+
+def test_discarded_anomaly_time_is_unobserved_in_the_report(tmp_path, fits):
+    values, labels = anomalous_trace()
+    report = facade.fit(worker_view(tmp_path, "r", values, labels), "r", [KEY], {KEY: 95})
+    problem, result = fits[-1]
+    anomaly = report["anomaly"]
+    assert anomaly["status"] == "discarded"
+    training = report["training"]
+    # The judge sees exactly what the fitter saw: the discarded stretch is not empty time.
+    assert training["duration"]["empty_seconds"] == result.after["empty_seconds"] < 1794
+    assert training["duration"]["error_cost"] == result.after["cost"] == report["base_cost"]
+    assert training["empty_periods_failed"] == result.after["empty_periods_failed"] == 0
+
+
+def test_room_discarded_anomaly_time_is_unobserved_in_the_report(tmp_path, fits):
+    values, labels = anomalous_trace()
+    groups = {"zone": {"r": member(tmp_path, "r", values, threshold=95)}}
+    report = facade.fit_set(groups, 0, 2400, {"zone": room("zone", labels)})
+    _problem, result = fits[-1]
+    assert report["anomaly"]["status"] == "discarded"
+    after = report["after"]["room"]
+    assert report["cost_after"] == after["error_cost"] == result.after["cost"]
+    assert after["empty_periods_failed"] == result.after["empty_periods_failed"]
+
+
+def test_room_report_judges_with_the_policy_its_backtest_selected(tmp_path, fits, monkeypatch):
+    import test_rooms
+
+    # Human presence at 80, an automatic present estimate at 30, human empty at 35:
+    # the reference policy ignores the estimate on the human-supported class.
+    values = [80] * 100 + [30] * 50 + [35] * 250
+    labels = [
+        {"start": 0, "end": 600, "state": "present"},
+        {"start": 900, "end": 2400, "state": "not_present"},
+    ]
+    item = test_rooms.member("r", [], [])
+    rows = [
+        (i * 6, [v] + [255] * 17 + ([1, 90] if 100 <= i < 150 else [0, 0]))
+        for i, v in enumerate(values)
+    ]
+    test_rooms.set_records(item["view"], "r", rows)
+    item["thresholds"] = {KEY: 95}
+    groups, rooms = {"zone": {"r": item}}, {"zone": room("zone", labels)}
+
+    def reference(problem, *_args):
+        return "reference", facade._room_audit(problem.policy.quality["models"])
+
+    monkeypatch.setattr(facade, "_room_policy", reference)
+    contexts = adaptive_contexts(groups, rooms)
+    report = facade.fit_set(groups, 0, 2400, rooms, 1.0, quality_contexts=contexts)
+    final, result = fits[-1]
+    assert final.policy.reference is True
+    assert report["groups"]["zone"]["cost_after"] == result.after["cost"]
+    assert report["cost_after"] == report["after"]["room"]["error_cost"] == result.after["cost"]
+
+
+def adaptive_contexts(groups, rooms):
+    from tuner_under_test.rooms import adaptive
+
+    return adaptive.collect_contexts(groups, 0, 2400, rooms)
+
+
+def test_adaptive_policy_choice_uses_the_full_held_out_cost():
+    from tuner_under_test.engine.hybrid import held
+
+    # Ten 10-second occupied episodes and one 100-second empty period with 10 s false-active.
+    # Reference misses 4 s of each; corrected misses 9.75 s of four: less missed time, but
+    # four mostly-missed episodes and a 195-point worse common cost.
+    counts = dict.fromkeys(held.COUNTS, 0) | {"occupied_episodes": 10, "empty_periods": 1}
+    reference = {
+        "present_seconds": 100,
+        "empty_seconds": 100,
+        "missed_seconds": 40,
+        "false_seconds": 10,
+        "missed_episodes": 0,
+        "cost": 310,
+        **counts,
+        "empty_periods_failed": 1,
+    }
+    positive = {**reference, "missed_seconds": 39, "cost": 505, "mostly_missed_episodes": 4}
+    reports_ = {"reference": {"score": reference}, "corrected_positive": {"score": positive}}
+    choice = held.decide(reports_, [[10], [10]])
+    assert (choice.policy, choice.validated) == ("reference", True)
+    assert choice.reason == "held_presence_regression"
+
+
+def test_device_status_uses_human_primary_classes():
+    import test_tuner as harness
+
+    human = [(0, {KEY: 14}, "present"), (6, {KEY: 10}, "not_present")]
+    automatic = [(-120 + i * 6, {KEY: 10}, "present", 0.9) for i in range(20)]
+    report = harness.fit(human, [KEY], current={KEY: 12}, automatic=automatic)
+    assert report["training"]["sensitivity"] == 1
+    assert report["status"] == "ok"
+
+
+def test_room_recall_uses_the_reported_primary_source():
+    import test_rooms
+
+    labels = [
+        {"start": 0, "end": 600, "state": "present"},
+        {"start": 1200, "end": 1800, "state": "not_present"},
+    ]
+    item = test_rooms.member("r", [], [])
+    records = [
+        (i * 6, [80 if i < 100 else 10] + [255] * 17 + ([1, 90] if 100 <= i < 200 else [0, 0]))
+        for i in range(300)
+    ]
+    test_rooms.set_records(item["view"], "r", records)
+    report = facade.measure({"r": item}, {"r": {KEY: 20}}, 0, 1800, room("zone", labels))
+    measured = report["room"]
+    assert measured["sources"]["present"] == "human"
+    assert measured["outcomes"]["automatic"]["present"]["seconds"] > 0
+    assert measured["presence_recall"] == 1
+    assert measured["target_met"] is True
+    fitted = facade.room_fit({"r": item}, 0, 1800, room("zone", labels))
+    assert fitted["status"] == "ok"

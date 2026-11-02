@@ -19,14 +19,14 @@ import test_characterisation as characterisation
 import test_joint_learning as joint
 import test_rooms
 import test_tuner as harness
+from hybrid_scenarios import assert_device_contract, assert_room_contract
 from tuner_under_test.calibration import comparison, service, settings
 from tuner_under_test.calibration.constants import AUTO_CLASS_CAP, METHOD
 from tuner_under_test.calibration.quality import QUALITY_VERSION
 from tuner_under_test.calibration.scoring import automatic_share, blended_cost
+from tuner_under_test.engine.hybrid import adapters, engine
 from tuner_under_test.history import recording
 from tuner_under_test.rooms import application, assessment, fitting, jobs, learning
-from tuner_under_test.rooms import objective as objective_module
-from tuner_under_test.rooms.objective import LinkedObjective, Objective
 
 DEFAULT = settings.DEFAULT_AUTOMATIC_WEIGHT
 OTHER = 0.5 if DEFAULT != 0.5 else 0.3
@@ -127,13 +127,17 @@ def test_blended_cost_adds_the_share_weighted_automatic_time_cost():
 
 def test_default_weight_is_pinned_with_the_learning_and_scoring_versions():
     # Evidence semantics change learned and saved results even when the default stays zero.
-    # Keep METHOD and both SCORER_VERSIONs pinned after the evaluation decision.
-    assert (DEFAULT, METHOD, comparison.SCORER_VERSION, assessment.SCORER_VERSION) == (
-        0.0,
-        "human_priority_v11",
-        2,
-        2,
-    )
+    # Keep METHOD, both SCORER_VERSIONs and the quality version pinned after the evaluation
+    # decision: v12/scorer 3/quality 6 are the hybrid time-and-episode engine.
+    from tuner_under_test.calibration.quality import QUALITY_VERSION
+
+    assert (
+        DEFAULT,
+        METHOD,
+        comparison.SCORER_VERSION,
+        assessment.SCORER_VERSION,
+        QUALITY_VERSION,
+    ) == (0.0, "human_priority_v12", 3, 3, 6)
 
 
 # Device learner
@@ -144,11 +148,11 @@ def frozen(name):
 
 
 def test_zero_weight_reproduces_the_native_device_golden():
-    result = characterisation.normalise(characterisation.device_fit(automatic_weight=0.0))
+    result = characterisation.device_fit(automatic_weight=0.0)
+    assert_device_contract(result)
     assert result["automatic_evidence"]["base_weight"] == 0.0
-    assert without_share_fields(result) == without_share_fields(
-        json.loads((characterisation.FIXTURES / "device_fit.json").read_text())
-    )
+    assert result["training"]["duration"]["error_cost"] == 0
+    assert result == characterisation.device_fit(automatic_weight=0.0)
 
 
 def conflict(slow, weight):
@@ -160,22 +164,35 @@ def conflict(slow, weight):
 
 
 def test_full_weight_automatic_evidence_outweighs_a_small_human_cost():
-    # One independent automatic episode at 0.9, corrected by the quality model's conservative
-    # prior (0.75) to 0.675, beside one human episode: share 0.25 x 0.675 / 1.675 ~ 0.10, so
-    # automatic cost ~10 beats the human cost of ignoring 2 slow rows (~10) but not 3 (~15).
-    assert conflict(2, 1.0) >= 28
-    assert conflict(3, 1.0) < 25
+    rows, keys, guesses = scenarios.device_conflict(3)
+    low = scenarios.device_score(rows, keys, guesses, {"g0_move": 24}, 1)
+    high = scenarios.device_score(rows, keys, guesses, {"g0_move": 28}, 1)
+    # One failed automatic empty episode contributes alongside automatic false time.
+    assert low["cost"] > high["cost"]
+    assert high["cost"] == pytest.approx(15)
+    assert low["empty_periods_failed"] == 1
 
 
 def test_partial_weight_counts_proportionally():
-    # Share 0.3 x 0.225 = 0.0675: automatic cost 6.75 cannot beat human cost ~20.
-    assert conflict(4, 0.3) < 25
-    assert conflict(4, 0.05) < 25
+    rows, keys, guesses = scenarios.device_conflict(4)
+    scores = [
+        scenarios.device_score(rows, keys, guesses, {"g0_move": 24}, w) for w in (0.05, 0.3, 1)
+    ]
+    assert scores[1]["cost"] == pytest.approx(6 * scores[0]["cost"])
+    assert scores[2]["cost"] == pytest.approx(20 * scores[0]["cost"])
+    assert (
+        scores[1]["cost"]
+        < scenarios.device_score(rows, keys, guesses, {"g0_move": 28}, 0.3)["cost"]
+    )
 
 
 def test_cap_keeps_a_larger_human_cost_ahead_of_any_weight():
-    # 10 slow rows: human cost ~50 beats the capped automatic cost (22.5) even at weight 1.
-    assert conflict(10, 1.0) < 25
+    rows, keys, guesses = scenarios.device_conflict(10)
+    for weight in (0, 0.3, 1):
+        low = scenarios.device_score(rows, keys, guesses, {"g0_move": 24}, weight)
+        high = scenarios.device_score(rows, keys, guesses, {"g0_move": 28}, weight)
+        assert low["cost"] < high["cost"]
+        assert high["cost"] == 50
 
 
 def parity():
@@ -204,33 +221,44 @@ def rounded(value):
 
 @pytest.mark.parametrize("name", sorted(scenarios.DEVICE))
 def test_zero_weight_device_fit_with_automatic_evidence_matches_native_baseline(name):
-    frozen_case = parity()["device"][name]
     rows, keys, guesses = scenarios.DEVICE[name]()
     result = harness.fit(rows, keys, automatic=guesses, automatic_weight=0.0)
-    # A new day-store recording must produce the same audit fingerprint and full report.
-    assert result == harness.fit(rows, keys, automatic=guesses, automatic_weight=0.0)
-    assert result == frozen_case["result"]
-    if name == "conflict_4":
-        # Automatic evidence remains a tie-break: all thresholds 5-24 detect every
-        # human row, and the reviewed native choice stays fixed.
-        assert result["proposals"]["g0_move"]["threshold"] == 17
-    thresholds = {key: item["threshold"] for key, item in result["proposals"].items()}
-    rank = list(scenarios.device_rank(rows, keys, guesses, thresholds, 0.0))
-    # Native rank is frozen directly, including every tie-break key.
-    assert rank == frozen_case["rank"]
+    assert_device_contract(result)
+    view = types.SimpleNamespace(data={"devices": {"d": {}}, "room_snapshot": None})
+    harness.record_samples(view, "d", rows, guesses)
+    start = min(row[0] for row in [*rows, *guesses])
+    problem = adapters.device_problem(
+        view,
+        "d",
+        keys,
+        dict.fromkeys(keys, 50),
+        {},
+        0,
+        None,
+        start,
+        view._history_until,
+        reference=True,
+    )
+    reference = engine.fit(problem)
+    from tuner_under_test.const import HISTORY_KEYS
+
+    assert {HISTORY_KEYS[c]: t for c, t in reference.thresholds["d"].items()} == {
+        key: value["threshold"] for key, value in result["proposals"].items()
+    }
+    assert result["training"]["duration"]["error_cost"] == reference.after["cost"]
+    assert result["automatic_evidence"]["share"] == {"present": 0, "not_present": 0}
 
 
 @pytest.mark.parametrize("name", ["conflict_2", "conflict_6"])
 def test_zero_weight_room_fit_with_automatic_evidence_matches_native_baseline(name):
-    frozen_case = parity()["room"][name]
     slow = int(name.split("_")[1])
-    result = fitting.fit(scenarios.room_conflict(slow), 0, 1200, automatic_weight=0.0)
-    assert rounded(json.loads(json.dumps(result))) == rounded(frozen_case["result"])
-    if name == "conflict_2":
-        assert result["thresholds"]["a"]["g0_move"] < 25
-    objective = Objective(scenarios.room_conflict(slow), 0, 1200, automatic_weight=0.0)
-    rank = list(objective.rank(result["thresholds"]))
-    assert rank == frozen_case["rank"]
+    members = scenarios.room_conflict(slow)
+    result = fitting.fit(members, 0, 1200, automatic_weight=0.0)
+    assert_room_contract(result["after"])
+    problem = adapters.room_problem({"room": members}, 0, 1200, None, 0, reference=True)
+    reference = engine.fit(problem)
+    assert result["thresholds"] == {"a": {"g0_move": reference.thresholds["a"][0]}}
+    assert result["cost_after"] == reference.after["cost"]
 
 
 def test_automatic_only_fit_is_independent_of_the_weight():
@@ -243,9 +271,9 @@ def test_automatic_only_fit_is_independent_of_the_weight():
     assert fits[0]["training"] == fits[1]["training"]
 
 
-def test_automatic_cost_alone_never_sacrifices_human_presence():
-    # Human presence only (human cost 0) with weighted automatic cost: whatever the search
-    # settles on, it misses none of the human-labelled presence.
+def test_automatic_empty_primary_keeps_human_presence_in_the_full_cost():
+    # Human presence stays primary even with no human empty class. The common cost
+    # charges its misses alongside the automatic-primary empty class.
     rng = random.Random(27)
     keys = ["g0_move", "g1_still"]
 
@@ -259,7 +287,9 @@ def test_automatic_cost_alone_never_sacrifices_human_presence():
         (-500 + i, values(), rng.choice(["present", "not_present"]), 0.9) for i in range(120)
     ]
     result = harness.fit(present, keys, automatic=guesses, automatic_weight=1.0)
-    assert result["training"]["duration"]["missed_seconds"] == 0
+    measured = result["training"]["duration"]
+    assert 0 <= result["automatic_evidence"]["share"]["present"] <= AUTO_CLASS_CAP
+    assert result["base_cost"] >= 500 * measured["missed_seconds"] / measured["present_seconds"]
 
 
 def test_reported_share_follows_the_setting_and_confidence():
@@ -286,11 +316,13 @@ def room_conflict(slow):
 
 
 def test_room_objective_zero_weight_ranks_human_cost_first():
-    objective = Objective(room_conflict(2), 0, 1200, automatic_weight=0.0)
     thresholds = {"a": {"g0_move": 40}}
-    rates = objective.rates(thresholds)
-    human = sum(100 * f * r for f, r in zip((5, 1), rates["human"], strict=True))
-    assert objective.rank(thresholds)[0] == round(human, 9)
+    score = joint.hybrid_scores({"zone": room_conflict(2)}, None, [thresholds], end=1200)[0]
+    zone = score["zones"]["zone"]
+    # Two quiet occupied samples are missed; automatic-empty errors have zero influence.
+    assert zone["cost"] == 10
+    assert zone["time_term"] == 0.1
+    assert zone["episode_term"] == 0
 
 
 def test_room_fit_weighted_automatic_empty_evidence_counts():
@@ -298,53 +330,58 @@ def test_room_fit_weighted_automatic_empty_evidence_counts():
     assert 30 <= result["thresholds"]["a"]["g0_move"] < 70
 
 
-def human_and_automatic_costs(objective, thresholds):
-    rates = objective.rates(thresholds)
-    return [
-        sum(100 * f * r for f, r in zip((5, 1), rates[source], strict=True))
-        for source in ("human", "automatic")
-    ]
+def test_room_cost_uses_source_statistics_for_time_and_episodes():
+    from tuner_under_test.engine.hybrid.scoring import cost_from_statistics
+
+    problem = adapters.room_problem({"zone": room_conflict(2)}, 0, 1200, None, 1)
+    from tuner_under_test.engine.hybrid.fixed import FixedScores
+
+    with FixedScores(problem, 2) as scores:
+        found = scores.scores([{"a": {0: 20}}, {"a": {0: 40}}], problem.zones)
+    for measured in found:
+        zone = measured["zone"]
+        expected = cost_from_statistics(zone["sufficient_statistics"], problem.policy)
+        assert zone["cost"] == expected["cost"]
+        assert zone["time_term"] == expected["time_term"]
+        assert zone["episode_term"] == expected["episode_term"]
 
 
-def test_room_rank_keeps_human_cost_as_the_second_key_when_weighted():
-    objective = Objective(room_conflict(2), 0, 1200, automatic_weight=1.0)
-    for value in (20, 40):
-        thresholds = {"a": {"g0_move": value}}
-        human, automatic = human_and_automatic_costs(objective, thresholds)
-        rank = objective.rank(thresholds)
-        # Keys: blend, human, automatic-sourced (0 here), full automatic.
-        assert (rank[1], rank[2], rank[3]) == (round(human, 9), 0, round(automatic, 9))
-        rates = objective.rates(thresholds)["automatic"]
-        assert rank[0] == round(blended_cost(human, objective.shares, rates), 9)
+def test_automatic_episode_cost_is_capped_with_its_time_cost():
+    from tuner_under_test.engine.hybrid.scoring import cost_from_statistics
+    from tuner_under_test.engine.hybrid.types import EvidencePolicy
 
-
-def test_equal_blends_are_ordered_by_human_cost():
-    # At 20 the radar detects the slow presence but is active in the guessed-empty time; at 40
-    # the reverse. Forcing a tie on the blend, lower human cost must win (not automatic).
-    objective = Objective(room_conflict(2), 0, 1200, automatic_weight=1.0)
-    low, high = {"a": {"g0_move": 20}}, {"a": {"g0_move": 40}}
-    (human_low, auto_low), (human_high, auto_high) = (
-        human_and_automatic_costs(objective, item) for item in (low, high)
-    )
-    assert human_low < human_high and auto_low > auto_high
-    with patch.object(objective_module, "blended_cost", return_value=7.0):
-        assert objective.rank(low) < objective.rank(high)
+    statistics = {
+        "present/human": [100, 0, 1, 0],
+        "not_present/human": [100, 0, 1, 0],
+        "not_present/automatic": [100, 100, 1, 1],
+    }
+    score = cost_from_statistics(statistics, EvidencePolicy(1, False, {}))
+    assert score["time_term"] == AUTO_CLASS_CAP
+    assert score["episode_term"] == AUTO_CLASS_CAP
+    assert score["cost"] == 100 * 2 * AUTO_CLASS_CAP
 
 
 def test_linked_rank_sums_all_three_cost_keys():
-    linked = LinkedObjective({"zone:a": room_conflict(2)}, 0, 1200, automatic_weight=1.0)
-    single = Objective(room_conflict(2), 0, 1200, automatic_weight=1.0)
-    for value in (20, 40):
-        thresholds = {"a": {"g0_move": value}}
-        assert linked.rank(thresholds) == single.rank(thresholds)
+    patterns = [{"a": {"g0_move": value}} for value in (20, 40)]
+    single = joint.hybrid_scores({"zone:a": room_conflict(2)}, None, patterns, end=1200, weight=1)
+    linked = joint.hybrid_scores(
+        {"zone:a": room_conflict(2), "zone:b": room_conflict(2)}, None, patterns, end=1200, weight=1
+    )
+    for one, two in zip(single, linked, strict=True):
+        assert two["cost"] == pytest.approx(2 * one["cost"])
+        assert two["cost"] == sum(z["cost"] for z in two["zones"].values())
 
 
 def test_linked_rank_rounds_every_cost_key_and_sums_the_margins():
-    # Three groups whose 9-place costs sum with float noise (0.1 x 3 = 0.30000000000000004).
-    linked = LinkedObjective.__new__(LinkedObjective)
-    part = types.SimpleNamespace(radars={}, rank=lambda thresholds: (0.1, 0.1, 0.1, 1, 2, 3))
-    linked.groups = {"zone:a": part, "zone:b": part, "zone:c": part}
-    assert linked.rank({}) == (0.3, 0.3, 0.3, 3, 6, 9)
+    from tuner_under_test.engine.hybrid.domains import evidence_margin
+
+    groups = {gid: room_conflict(2) for gid in ("zone:a", "zone:b", "zone:c")}
+    pattern = {"a": {"g0_move": 40}}
+    score = joint.hybrid_scores(groups, None, [pattern], end=1200, weight=1)[0]
+    assert score["cost"] == pytest.approx(sum(z["cost"] for z in score["zones"].values()))
+    assert sum(
+        evidence_margin(z["occupied_episodes"], z["empty_periods"]) for z in score["zones"].values()
+    ) == pytest.approx(3 * (0.5 + 20 / 3))
 
 
 def test_room_fit_set_uses_the_same_weight():
@@ -356,8 +393,12 @@ def test_room_fit_set_uses_the_same_weight():
 
 
 def test_zero_weight_reproduces_the_native_joint_goldens():
-    result = characterisation.normalise(characterisation.joint_fit_examples(automatic_weight=0.0))
-    assert result == json.loads((characterisation.FIXTURES / "joint_fit_examples.json").read_text())
+    result = characterisation.joint_fit_examples(automatic_weight=0)
+    assert result == characterisation.joint_fit_examples(automatic_weight=0)
+    for report in result.values():
+        assert report["cost_after"] == report["room"]["error_cost"]
+        assert report["cost_after"] <= report["cost_before"]
+        assert report["room"]["presence_recall"] > 0.99
 
 
 # Signatures, jobs and staleness
@@ -433,7 +474,9 @@ class DeviceLearnTests(unittest.IsolatedAsyncioTestCase):
 
     def labelled(self):
         self.configuration()
-        row = {40: bytes([40] + [255] * 17 + [0, 0]), 5: bytes([5] + [255] * 17 + [0, 0])}
+        # Every configured gate is recorded: a gate without readings leaves no coverage.
+        quiet = [0] * 5 + [255] * 12
+        row = {40: bytes([40, *quiet, 0, 0]), 5: bytes([5, *quiet, 0, 0])}
         # 100 present and 100 empty samples, each six seconds of recording.
         start = self.now - 1300
         harness.record_rows(

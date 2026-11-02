@@ -4,8 +4,8 @@ import test_rooms  # noqa: F401
 from test_rooms import labels, member, set_records
 from tuner_under_test.calibration.quality import learn
 from tuner_under_test.calibration.quality_evidence import collect
-from tuner_under_test.rooms import evidence
-from tuner_under_test.rooms.objective import LinkedObjective, Objective
+from tuner_under_test.engine.hybrid import adapters, fixed, replay
+from tuner_under_test.rooms import adaptive
 
 
 def contexts(members, end=1200):
@@ -46,30 +46,41 @@ def test_room_fit_does_not_select_cutoff_before_requested_start():
         quality_contexts=adaptive.collect_contexts(groups, 5000, 6000, rooms),
     )
     assert result["automatic_evidence"]["selection"]["cutoff"] is None
-    episodes = adaptive.human_episodes(groups["zone"], 5000, 6000, room, "zone")
+    from tuner_under_test.engine.hybrid import adapters, fixed
+
+    # The chronological cut is drawn from the explicit episodes inside the requested window.
+    zone = adapters.room_problem(groups, 5000, 6000, rooms, 0.5).zones[0]
+    episodes = sorted(fixed.episodes(zone, "zone"), key=lambda ep: ep.start)
     assert [(ep.start, ep.end, ep.state) for ep in episodes] == [
         (5000, 5400, "present"),
-        (5400, 5997, "not_present"),
+        (5400, 6000, "not_present"),
     ]
 
 
 def test_unsupported_automatic_hit_does_not_hide_physical_false_activation():
     item = member("arbitrary", [10] * 200, labels())
     model = learn(contexts({"arbitrary": item})["arbitrary"])
-    objective = Objective({"arbitrary": item}, 0, 1200, quality={"arbitrary": model})
-    radar = objective.radars["arbitrary"]
-    assert radar.bits({"g0_move": 0}) != 0
-    assert radar.automatic_bits({"g0_move": 0}) == 0
-    assert objective.rates({"arbitrary": {"g0_move": 0}})["human"][1] == 1
+    problem = adapters.room_problem({"zone": {"arbitrary": item}}, 0, 1200, {}, 0.5)
+    tables = replay.support_tables(problem.radars["arbitrary"], model)
+    assert replay.TABLES[0][10] == 1
+    assert tables[0][0][10] == 0
+    with fixed.FixedScores(problem, 1) as scores:
+        found = scores.scores([{"arbitrary": {0: 0}}], problem.zones)[0]["zone"]
+    assert found["false_active_seconds"] == found["empty_seconds"]
 
 
 def test_linked_groups_share_unique_corrected_radar():
+    from unittest.mock import patch
+
     item = member("renamed", [70] * 100 + [10] * 100, labels())
-    quality = contexts({"renamed": item})
-    objective = LinkedObjective(
-        {"left": {"renamed": item}, "right": {"renamed": item}}, 0, 1200, quality=quality
-    )
-    assert objective.groups["left"].radars["renamed"] is objective.groups["right"].radars["renamed"]
+    with patch.object(adapters, "CapturedRowSource", wraps=adapters.CapturedRowSource) as rows:
+        problem = adapters.room_problem(
+            {"left": {"renamed": item}, "right": {"renamed": item}}, 0, 1200, {}, 0.5
+        )
+    assert rows.call_count == 1
+    assert set(problem.rows) == set(problem.radars) == {"renamed"}
+    assert all(zone.members == ("renamed",) for zone in problem.zones)
+    assert all(len(block.times) <= 4096 for block in problem.rows["renamed"].blocks(0, 1200))
 
 
 def test_automatic_only_corrected_room_learns_nontrivial_threshold():
@@ -114,14 +125,14 @@ def test_other_member_still_covers_union_when_weak_gate_has_no_positive_support(
         "weak": member("weak", [10] * 200, labels()),
         "strong": member("strong", [70] * 100 + [10] * 100, labels()),
     }
-    objective = Objective(members, 0, 1200, quality=contexts(members))
-    thresholds = {"weak": {"g0_move": 20}, "strong": {"g0_move": 20}}
-    # Original duration replay includes the sample-boundary uncertainty.
-    assert (
-        objective.rates(thresholds)["human"]
-        == Objective(members, 0, 1200).rates(thresholds)["human"]
-    )
-    assert objective.rates(thresholds)["human"][0] < 0.01
+    problem = adapters.room_problem({"zone": members}, 0, 1200, {}, 0.5)
+    pattern = {key: {0: 20} for key in members}
+    with fixed.FixedScores(problem, 1) as scores:
+        found = scores.scores([pattern], problem.zones)[0]["zone"]
+    assert found["occupied_recall"] == 1
+    assert found["false_active_seconds"] == 0
+    assert found["exclusive_seconds"]["strong"] == found["occupied_seconds"]
+    assert found["exclusive_seconds"]["weak"] == 0
 
 
 def test_room_unknown_stops_prior_fallback():
@@ -171,29 +182,25 @@ def test_automatic_only_results_are_numerically_invariant_to_arbitrary_renames()
 
 
 def test_corrected_automatic_bound_is_valid_for_physical_and_supported_masks():
-    item = member(
-        "bounded",
-        [],
-        [
-            {"start": 0, "end": 600, "state": "present"},
-            {"start": 600, "end": 1200, "state": "not_present"},
-        ],
-    )
+    item = member("bounded", [], labels())
     values = [70] * 100 + [10] * 100 + [10, 70] * 100
     set_records(
         item["view"],
         "bounded",
         [(i * 6, [value] + [255] * 17 + [1, 100]) for i, value in enumerate(values)],
     )
-    members = {"bounded": item}
-    objective = Objective(members, 0, 2400, automatic_weight=0.5, quality=contexts(members, 2400))
-    low, high = {"bounded": {"g0_move": 0}}, {"bounded": {"g0_move": 80}}
-    bound = objective.bound(low, high)
-    for threshold in range(81):
-        rates = objective.rates({"bounded": {"g0_move": threshold}})
-        assert all(-1e-12 <= rate <= 1 + 1e-12 for pair in rates.values() for rate in pair)
-        costs = objective.cost(rates)
-        assert all(floor <= value + 1e-9 for floor, value in zip(bound, costs, strict=True))
+    problem = adapters.room_problem({"zone": {"bounded": item}}, 0, 2400, {}, 0.5)
+    automatic = fixed.source(problem.zones[0], "automatic")
+    patterns = [{"bounded": {0: threshold}} for threshold in range(81)]
+    with fixed.FixedScores(problem, len(patterns)) as scores:
+        found = scores.scores(patterns, [problem.zones[0], automatic])
+    for measured in found:
+        for metrics in measured.values():
+            assert 0 <= (metrics["occupied_recall"] or 0) <= 1
+            assert 0 <= metrics["false_active_seconds"] <= metrics["empty_seconds"]
+            for total, error, episodes, failed in metrics["sufficient_statistics"].values():
+                assert 0 <= error <= total
+                assert 0 <= failed <= episodes
 
 
 def test_chronological_selection_uses_two_candidates_then_final_refit():
@@ -209,7 +216,9 @@ def test_chronological_selection_uses_two_candidates_then_final_refit():
         "any", [70 if state == "present" else 10 for state in states for _ in range(100)], labelled
     )
     members = {"any": item}
-    with patch.object(fitting, "search", wraps=fitting.search) as search:
+    from tuner_under_test.engine.hybrid import engine
+
+    with patch.object(engine, "fit", wraps=engine.fit) as search:
         result = fitting.fit(
             members,
             0,
@@ -245,9 +254,12 @@ def test_independent_sensor_without_recorded_owner_keeps_prior_and_no_manual_tri
         },
     }
     quality = collect_contexts({"sensor-zone": {"unique": item}}, 0, 1200, {"sensor-zone": room})
-    objective = Objective({"unique": item}, 0, 1200, room, quality=quality)
+    problem = adapters.room_problem(
+        {"sensor-zone": {"unique": item}}, 0, 1200, {"sensor-zone": room}, 0.5
+    )
     assert quality["unique"].episodes == ()
-    assert objective.truth["sensor"](100) == ("present", "automatic", 0.9 * 0.75)
+    span = next(s for s in problem.zones[0].truth if s.start <= 100 < s.end)
+    assert (span.state, span.source, span.confidence) == ("present", "automatic", 0.9 * 0.75)
 
 
 def test_moved_held_room_labels_do_not_change_earlier_quality_or_thresholds():
@@ -295,39 +307,27 @@ def test_moved_held_room_labels_do_not_change_earlier_quality_or_thresholds():
 
 
 def test_supported_automatic_masks_match_independent_scalar_gate_rule():
-    item = member(
-        "independent",
-        [],
-        [
-            {"start": 0, "end": 600, "state": "present"},
-            {"start": 600, "end": 1200, "state": "not_present"},
-        ],
-    )
+    item = member("independent", [], labels())
     values = [70] * 100 + [10] * 200
     set_records(
         item["view"],
         "independent",
         [(i * 6, [value] + [255] * 17 + [1, 100]) for i, value in enumerate(values)],
     )
-    members = {"independent": item}
-    objective = Objective(members, 0, 1800, quality=contexts(members, 1800), automatic_weight=0.5)
-    radar = objective.radars["independent"]
-    # Each recorded row is a span of one reading (the 70s, then the 10s).
-    found = evidence.read(item["view"], "independent", ["g0_move"], 0, 1800)["rows"]
-    energies = [row[1]["g0_move"] for row in found]
-    assert sorted(set(energies)) == [10, 70]
+    problem = adapters.room_problem({"zone": {"independent": item}}, 0, 1800, {}, 0.5)
+    model = problem.policy.quality["models"]["independent"]
+    tables = replay.support_tables(problem.radars["independent"], model)
     for threshold in range(101):
-        # One occupied episode observed 70; empty observed 10. The quiet bin
-        # lacks two occupied episodes; 70 is above the empty ceiling.
-        expected = sum(
-            1 << i for i, energy in enumerate(energies) if energy > threshold and energy > 10
-        )
-        assert radar.automatic_bits({"g0_move": threshold}) == expected
-        physical = sum(1 << i for i, energy in enumerate(energies) if energy > threshold)
-        assert radar.bits({"g0_move": threshold}) == physical
-    thresholds = {"independent": {"g0_move": 0}}
-    assert objective.rates(thresholds)["automatic"][0] == 1
-    assert objective.rates(thresholds)["human"][1] == 1
+        for energy in (10, 70, 255):
+            assert bool(tables[0][threshold][energy]) == (
+                energy != 255 and energy > threshold and energy > 10
+            )
+            assert bool(replay.TABLES[threshold][energy]) == (energy != 255 and energy > threshold)
+    human, automatic = (fixed.source(problem.zones[0], source) for source in ("human", "automatic"))
+    with fixed.FixedScores(problem, 1) as scores:
+        found = scores.scores([{"independent": {0: 0}}], [human, automatic])[0]
+    assert found[automatic.group_id]["sufficient_statistics"]["present/automatic"][1] > 0
+    assert found[human.group_id]["false_active_seconds"] == found[human.group_id]["empty_seconds"]
 
 
 def test_room_manual_episode_has_one_share_even_with_two_member_contexts():
@@ -345,9 +345,17 @@ def test_room_manual_episode_has_one_share_even_with_two_member_contexts():
         },
     }
     quality = collect_contexts({"shared": members}, 0, 1200, {"shared": room})
-    objective = Objective(members, 0, 1200, room, quality=quality)
-    assert objective._support("present") == (1, 0)
-    assert objective._support("not_present") == (1, 0)
+    problem = adapters.room_problem(
+        {"shared": members},
+        0,
+        1200,
+        {"shared": room},
+        0.5,
+        quality_contexts=adaptive.models(quality),
+    )
+    support = problem.policy.quality["zones"]["shared"]
+    assert support["human_episodes"] == {"present": 1, "not_present": 1}
+    assert support["automatic_episode_mass"] == {"present": 0, "not_present": 0}
 
 
 def test_production_worker_passes_quality_once_per_unique_member():
@@ -447,16 +455,14 @@ def test_only_skipped_member_does_not_block_scorable_set_chronology():
         quality_contexts=adaptive.collect_contexts(groups, 0, 6000),
     )
     assert result["automatic_evidence"]["selection"]["validated"]
+    assert "unused" not in result["automatic_evidence"]["quality"]
     assert result["thresholds"]["unused"] == unused["thresholds"]
     assert "skipped" in result["groups"]["skipped"]
 
 
 def test_finished_policy_replays_are_freed_before_the_next_search(monkeypatch):
-    import gc
-    import weakref
-
-    from tuner_under_test.rooms import adaptive, fitting
-    from tuner_under_test.rooms.objective import LinkedObjective
+    from tuner_under_test.engine.hybrid import engine
+    from tuner_under_test.rooms import fitting
 
     states = ["present", "not_present"] * 5
     labelled = [
@@ -469,26 +475,69 @@ def test_finished_policy_replays_are_freed_before_the_next_search(monkeypatch):
             labelled,
         )
     }
-    references = []
-    original = LinkedObjective.__init__
+    files, searches = [], []
+    original_records, original_fit = replay.Records.__init__, engine.fit
 
-    def observe(self, *args, **kwargs):
-        assert all(reference() is None for reference in references)
-        original(self, *args, **kwargs)
-        references.append(weakref.ref(self))
+    def observe_records(self, *args, **kwargs):
+        original_records(self, *args, **kwargs)
+        files.append(self.file)
 
-    monkeypatch.setattr(LinkedObjective, "__init__", observe)
-    gc.disable()
-    try:
-        result = fitting.fit(
-            members,
-            0,
-            6000,
-            automatic_weight=0.5,
-            quality_contexts=adaptive.collect_contexts({"x": members}, 0, 6000),
-        )
-        assert result["automatic_evidence"]["selection"]["validated"]
-        assert len(references) == 3
-        assert all(reference() is None for reference in references)
-    finally:
-        gc.enable()
+    def observe_fit(*args, **kwargs):
+        assert all(file.closed for file in files)
+        searches.append(True)
+        return original_fit(*args, **kwargs)
+
+    monkeypatch.setattr(replay.Records, "__init__", observe_records)
+    monkeypatch.setattr(engine, "fit", observe_fit)
+    result = fitting.fit(
+        members,
+        0,
+        6000,
+        automatic_weight=0.5,
+        quality_contexts=adaptive.collect_contexts({"x": members}, 0, 6000),
+    )
+    assert result["automatic_evidence"]["selection"]["validated"]
+    assert len(searches) == 3
+    assert files and all(file.closed for file in files)
+
+
+def test_linked_measurement_uses_each_zones_independent_support(monkeypatch):
+    from dataclasses import replace
+
+    from tuner_under_test.engine.hybrid import evaluate
+
+    item = member(
+        "shared",
+        [],
+        [
+            {"start": 0, "end": 600, "state": "present"},
+            {"start": 1200, "end": 1800, "state": "not_present"},
+        ],
+    )
+    set_records(
+        item["view"],
+        "shared",
+        [
+            (
+                i * 6,
+                [70 if i < 100 else 10 if i < 200 else 0] + [255] * 17 + [1 if i < 200 else 2, 100],
+            )
+            for i in range(300)
+        ],
+    )
+    problem = adapters.room_problem(
+        {"left": {"shared": item}, "right": {"shared": item}}, 0, 1800, {}, 1
+    )
+    support = {
+        "human_episodes": {"present": 1, "not_present": 1},
+        "automatic_episode_mass": {"present": 0, "not_present": 0},
+    }
+    quality = {**problem.policy.quality, "zones": dict.fromkeys(("left", "right"), support)}
+    problem = replace(problem, policy=replace(problem.policy, quality=quality))
+    zones = [*problem.zones, fixed.variant(problem.zones[0], "report", lambda *_: True)]
+    for budget, expected_mode in ((30_000_000, "exact"), (0, "cells")):
+        monkeypatch.setattr(evaluate, "EXACT_BUDGET", budget)
+        with fixed.FixedScores(problem, 1) as scores:
+            assert scores.mode == expected_mode
+            measured = scores.scores([{"shared": {0: 20}}], zones)[0]
+        assert {metrics["cost"] for metrics in measured.values()} == {0}

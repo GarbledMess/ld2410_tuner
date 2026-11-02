@@ -84,7 +84,10 @@ def test_restricted_maximum_reports_unavoidable_error_without_illegal_quiet_seed
     assert result["status"] == "unsafe"
 
 
-@pytest.mark.parametrize("maximum,expected", [(100, 70), (50, 50)])
+# With a maximum of 50 every legal value detects all presence and all empty time, so the
+# legal values tie on cost; the quiet-presence prior (energies attenuated to 3/5: presence 48)
+# then prefers a legal value below 48 over the start of 50.
+@pytest.mark.parametrize("maximum,expected", [(100, {70}), (50, {0, 10, 20, 30, 40})])
 def test_room_search_uses_the_same_legal_domain_including_quiet_seed(maximum, expected):
     from test_rooms import labels, member
     from tuner_under_test.rooms import fitting
@@ -93,7 +96,7 @@ def test_room_search_uses_the_same_legal_domain_including_quiet_seed(maximum, ex
     item["thresholds"]["g0_move"] = 77
     item["constraints"] = {"g0_move": {"min": 0, "max": maximum, "step": 10}}
     result = fitting.fit({"any-radar-name": item}, 0, 1200)
-    assert result["thresholds"]["any-radar-name"]["g0_move"] == expected
+    assert result["thresholds"]["any-radar-name"]["g0_move"] in expected
     assert result["after"]["room"]["false_positive_percent"] == (0 if maximum == 100 else 100)
 
 

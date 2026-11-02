@@ -121,7 +121,7 @@ export const panelSavedResults = {
       uncertain:
         "Completed, but timing between recordings or very short sessions remains uncertain. Select Autolearnt to review the uncertainty; presence accuracy is not confirmed.",
       insufficient:
-        "Completed, but there are too few usable examples. Record both occupied and empty periods, then learn again.",
+        "Completed, but one class has no observed labelled time. Record both occupied and empty periods, then learn again.",
       interrupted:
         "Learning stopped when the integration restarted. Learn again, or wait for the next scheduled run.",
       error: this._nightlyErrorText(run.error),

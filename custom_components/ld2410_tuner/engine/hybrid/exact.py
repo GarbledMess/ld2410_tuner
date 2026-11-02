@@ -28,8 +28,17 @@ def regions(truth, warmup=WARMUP_SECONDS):
 
 
 def bounded(problem, intervals):
-    """Clip regions to the problem's immutable physical bounds."""
-    clipped = ((max(problem.start, a), min(problem.end, b)) for a, b in intervals)
+    """Clip replay to captured physical bounds, retaining available timing warm-up.
+
+    Production row sources expose their captured start, which can precede the
+    scored window. SliceScorer still uses problem.start, so warm-up establishes
+    timing without adding observations or labels to the requested assessment.
+    """
+    start = min(
+        [problem.start, *(getattr(s, "start", problem.start) for s in problem.rows.values())]
+    )
+    start = max(start, problem.start - WARMUP_SECONDS)
+    clipped = ((max(start, a), min(problem.end, b)) for a, b in intervals)
     return tuple(_union((a, b) for a, b in clipped if b > a))
 
 

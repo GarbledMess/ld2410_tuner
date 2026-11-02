@@ -15,6 +15,36 @@ def _policy(context):
     return {key: context[key] for key in POLICY_FIELDS if key in context}
 
 
+def scorable_patterns(context):
+    """Complete integer patterns that participate in the common replay plan."""
+    return {
+        slot: pattern
+        for slot, pattern in context.get("patterns", {}).items()
+        if _scorable(context, pattern) and all(int(v) == v for v in pattern["thresholds"].values())
+    }
+
+
+def fidelity(context):
+    """Common plan size, including cached patterns and coalescing identical slots."""
+    patterns = scorable_patterns(context).values()
+    count = len({tuple(sorted(p["thresholds"].items())) for p in patterns})
+    return {
+        **comparison.fidelity(),
+        "pattern_count": max(1, count, context.get("fidelity_pattern_count", 0)),
+    }
+
+
+def preserve_plan(device, context):
+    """A temporarily unreadable live threshold does not shrink the saved plan."""
+    if not _scorable(context, context["patterns"]["live"]):
+        counts = [
+            item.get("fidelity", {}).get("pattern_count", 1)
+            for item in device.get(FIELD, {}).values()
+            if isinstance(item, dict)
+        ]
+        context["fidelity_pattern_count"] = max(counts, default=1)
+
+
 def pattern_key(context, pattern):
     # Slot names and learning IDs are not signal behavior. Reuse identical settings.
     values = {
@@ -22,7 +52,12 @@ def pattern_key(context, pattern):
         for key, value in pattern["thresholds"].items()
     }
     payload = json.dumps(
-        {"entities": context["entities"], "thresholds": values, "learner_policy": _policy(context)},
+        {
+            "entities": context["entities"],
+            "thresholds": values,
+            "learner_policy": _policy(context),
+            "fidelity": fidelity(context),
+        },
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
@@ -37,12 +72,14 @@ def stored(device, context, pattern, key=None):
         return None
     if record.get("learner_policy") != _policy(context):
         return None
+    if record.get("fidelity") != fidelity(context):
+        return None
     return record
 
 
 def missing(device, context, retry_unscored=False, *, keys=None):
     wanted, seen = {}, set()
-    for slot, pattern in context["patterns"].items():
+    for slot, pattern in context.get("patterns", {}).items():
         if not _scorable(context, pattern):
             continue
         key = pattern_key(context, pattern) if keys is None else keys[slot]
@@ -57,12 +94,12 @@ def missing(device, context, retry_unscored=False, *, keys=None):
 def report(device, context):
     keys = {
         slot: pattern_key(context, pattern)
-        for slot, pattern in context["patterns"].items()
+        for slot, pattern in context.get("patterns", {}).items()
         if _scorable(context, pattern)
     }
     patterns = {
         slot: _item(device, context, pattern, keys.get(slot))
-        for slot, pattern in context["patterns"].items()
+        for slot, pattern in context.get("patterns", {}).items()
     }
     dates = {
         item["evaluated_at"] for item in patterns.values() if item.get("evaluated_at") is not None
@@ -127,6 +164,7 @@ def remember(device, context, calculated):
                     **metadata,
                     "scorer_version": comparison.SCORER_VERSION,
                     "learner_policy": _policy(context),
+                    "fidelity": fidelity(context),
                     **_policy(context),
                 }
             )

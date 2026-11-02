@@ -128,6 +128,7 @@ const { execFileSync } = require("node:child_process");
       window.race = false;
       window.fixture = {
         learner_method: "learner_current",
+        room_learner_method: "room_current",
         devices: Object.fromEntries(
           ["a", "b", "c"].map((id) => [
             id,

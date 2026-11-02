@@ -355,23 +355,10 @@ def _room(operation, views, parameters):
         return fitting.fit_set(
             members, start, end, rooms, parameters["weight"], quality_contexts=contexts
         )
+    from ..engine.hybrid import facade
+
+    # The same fixed-pattern bundle as ``rooms.application.compare`` on the event loop side.
     return {
-        key: _compare(items, parameters["thresholds"], start, end, rooms[key])
+        key: facade.compare_room(items, parameters["thresholds"], start, end, rooms[key])
         for key, items in members.items()
-    }
-
-
-def _compare(members, thresholds, start, end, room):
-    from ..rooms import adaptive, fitting
-    from ..rooms.objective import Objective
-
-    quality = adaptive.models(
-        adaptive.collect_contexts({"room": members}, start, end, {"room": room} if room else {})
-    )
-    objective = Objective(members, start, end, room, quality=quality)
-    current = fitting.measure(members, objective.current, start, end, room, quality=quality)
-    candidate = fitting.measure(members, thresholds, start, end, room, quality=quality)
-    return {
-        "live": {**current["room"], "error_cost": objective.costs(objective.current)[0]},
-        "candidate": {**candidate["room"], "error_cost": objective.costs(thresholds)[0]},
     }

@@ -47,7 +47,8 @@ def earlier_view(view, cutoff):
             for key, labels in view.data.get("room_labels", {}).items()
         },
     }
-    result.data["room_snapshot"] = _clip_snapshot(view.data.get("room_snapshot"), devices, cutoff)
+    if "room_snapshot" in view.data:  # A worker view; the runtime derives it from its data.
+        result.data["room_snapshot"] = _clip_snapshot(view.data["room_snapshot"], devices, cutoff)
     result._attribution_guesses = {}
     result._attribution_until = cutoff  # History is read only before the cutoff.
     return result

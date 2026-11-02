@@ -25,7 +25,12 @@ class FeasibilityTests(unittest.TestCase):
         result = harness.fit(rows, ["g0_move"])
         self.assertEqual(result["status"], "unsafe")
         self.assertEqual(result["feasibility"]["status"], "not_assessed")
-        self.assertEqual(result["proposals"]["g0_move"]["exclusive_presence_samples"], 100)
+        # Identical occupied/empty energy cannot improve without violating the
+        # empty-episode mirror guard. Exclusive support follows the kept pattern.
+        proposal = result["proposals"]["g0_move"]
+        self.assertEqual(proposal["threshold"], 50)
+        self.assertEqual(proposal["exclusive_presence_samples"], 0)
+        self.assertEqual(result["training"]["missed_presence_episodes"], 1)
 
     def test_fit_reports_undetectable_presence_against_the_targets(self):
         # Zero energy never exceeds a threshold: every occupied observation is missed.

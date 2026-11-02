@@ -168,7 +168,7 @@ export const panelRoomLearning = {
       ${this._jointResultHtml(id, group, rooms.members)}
       ${this._jointApplicationHtml(state.application)}
       ${this._automaticApplyHtml(state.automatic_apply)}
-      <p class="muted">Each radar keeps its own timeout and delays. All valid readings in shared coverage are used, including noise spikes. Human evidence has priority; confidence-weighted estimates fill missing evidence and break ties. Automatic Apply requires every member to permit this learning source, and a lower joint time penalty on fresh shared recordings. Only thresholds are written.</p></section>`;
+      <p class="muted">Each radar keeps its own timeout and delays. All valid readings in shared coverage are used, including noise spikes. Human evidence has priority; confidence-weighted estimates fill missing evidence and break ties. Automatic Apply requires every member to permit this learning source, and a lower joint time-and-period cost on fresh shared recordings. Only thresholds are written.</p></section>`;
   },
 
   _jointLearnButtonHtml(group, rooms, busy) {
@@ -198,7 +198,7 @@ export const panelRoomLearning = {
     const slot = this._setSlot(id, state);
     const result = state.slots?.[slot];
     if (!result) return "";
-    return `${this._slotSelectHtml(slot, state.slots)}<p>Stored zone score: ${this._scoreText(result.before?.room)} → ${this._scoreText(result.after?.room)}. Same recordings and timing; training replay, not an independent accuracy test.</p>
+    return `${this._slotSelectHtml(slot, state.slots)}${this._olderRoomModelHtml(result)}<p>Stored zone score: ${this._scoreText(result.before?.room)} → ${this._scoreText(result.after?.room)}. Same recordings and timing; training replay, not an independent accuracy test.</p>
       ${this._roomOutcomeHtml(result.after.room)}${this._jointThresholdsHtml(result, members)}
       ${this._applyButtonHtml(state, result, group.device_ids.length)}`;
   },
@@ -265,10 +265,17 @@ export const panelRoomLearning = {
           `<li>${this._esc(this._groupName(key))}: ${this._esc(this._zoneChangeText(result.groups?.[key]))}</li>`,
       )
       .join("");
-    return `${this._slotSelectHtml(slot, state.slots)}<ul class="linked-zones">${zones}</ul>
-      <p>Total error cost: ${this._costText(result.cost_before)} → ${this._costText(result.cost_after)} (lower is better). Same recordings and timing; training replay, not an independent accuracy test.</p>
+    return `${this._slotSelectHtml(slot, state.slots)}${this._olderRoomModelHtml(result)}<ul class="linked-zones">${zones}</ul>
+      <p>Total error cost: ${this._costText(result.cost_before)} → ${this._costText(result.cost_after)} (lower is better; missed and false-active time plus mostly missed and failed periods). Same recordings and timing; training replay, not an independent accuracy test.</p>
       ${this._jointThresholdsHtml(result, this._roomsData().members)}
       ${this._applyButtonHtml(state, result, set.device_ids.length)}`;
+  },
+
+  // Joint results from another room learner stay visible but cannot be applied.
+  _olderRoomModelHtml(result) {
+    return result.method !== this._data?.room_learner_method
+      ? '<p class="notice">This joint result used an older learning model. Its recorded scores have not been recalculated, and Apply refuses it: learn the zone again.</p>'
+      : "";
   },
 
   _costText(value) {

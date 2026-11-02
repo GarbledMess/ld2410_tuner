@@ -407,11 +407,10 @@ def test_remembered_rechecks_identity_after_disk_load(physical):
         assert loaded.call_count == 1
 
 
-def test_worker_learn_twice_reuses_chunks(tmp_path):
+def test_worker_learn_twice_reuses_finished_day_cells(tmp_path):
     from types import SimpleNamespace
 
-    from tuner_under_test.calibration import event_fitting, evidence_plan
-    from tuner_under_test.history import day_results, dayfile, daystore
+    from tuner_under_test.history import day_results, dayfile, daystore, fit_days
     from tuner_under_test.worker import calculations, capture
 
     store = daystore.DayStore(tmp_path / "history")
@@ -426,7 +425,7 @@ def test_worker_learn_twice_reuses_chunks(tmp_path):
         {"start": 600, "end": 1200, "state": "not_present"},
     ]
     source = SimpleNamespace(
-        data={"devices": {"radar": {"history_labels": labels}}}, _days=store, _history_until=1200
+        data={"devices": {"radar": {"history_labels": labels}}}, _days=store, _history_until=86400
     )
     from concurrent.futures import ThreadPoolExecutor
 
@@ -439,17 +438,14 @@ def test_worker_learn_twice_reuses_chunks(tmp_path):
         timing={"timeout": 0},
         constraints={"g0_move": {"min": 20, "max": 20, "step": 1}},
     )
-    with (
-        patch.object(event_fitting, "LEARNING_ROWS", 50),
-        patch.object(calculations.time, "time", return_value=1200.0),
-    ):
+    with patch.object(calculations.time, "time", return_value=86400.0):
         day_results.clear()
-        with patch.object(evidence_plan, "_day_chunks", wraps=evidence_plan._day_chunks) as chunks:
+        with patch.object(fit_days, "fold_day", wraps=fit_days.fold_day) as folded:
             first = calculations.execute(request)
-            assert chunks.call_count > 0
-        assert list(store.root.rglob("*.res"))
+            assert folded.call_count > 0
+        assert list(store.root.rglob("*.cell"))
         day_results.clear()
-        with patch.object(evidence_plan, "_day_chunks", side_effect=AssertionError("recomputed")):
+        with patch.object(fit_days, "fold_day", side_effect=AssertionError("recomputed")):
             second = calculations.execute(request)
     assert second == first
 

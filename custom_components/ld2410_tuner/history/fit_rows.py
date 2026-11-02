@@ -1,9 +1,11 @@
 """Bounded reads of captured immutable worker inputs, outside the resident Day cache."""
 
 from array import array
-from math import inf
+from bisect import bisect_left, bisect_right
+from contextlib import nullcontext
+from math import ceil, inf, isfinite
 
-from . import daystore
+from . import daystore, pace
 
 
 class CapturedRowSource:
@@ -28,9 +30,17 @@ class CapturedRowSource:
             if start < hi and end > lo:
                 yield date, max(start, lo), min(end, hi)
 
+    def _columns(self, date):
+        days = self.view._days
+        if hasattr(days, "open_columns"):
+            return days.open_columns(self.device_id, date)
+        # The integration's own store (service fallback, tests): its resident day.
+        until = getattr(self.view, "_history_until", None)
+        return nullcontext(ResidentColumns(days.day(self.device_id, date, until=until)))
+
     def blocks(self, lo, hi):
         for date, start, end in self._windows(lo, hi):
-            with self.view._days.open_columns(self.device_id, date) as columns:
+            with self._columns(date) as columns:
                 if columns is not None:
                     yield from columns.blocks(start, end, self.channels)
 
@@ -55,3 +65,38 @@ class CapturedRowSource:
             for c, column in values.items():
                 columns[c] += column
         return times, ends, {c: bytes(v) for c, v in columns.items()}
+
+
+def _byte_column(column, first, after):
+    if isinstance(column, (bytes, bytearray)):
+        return bytes(column[first:after])
+    return bytes(ceil(v) if isfinite(v) and 0 <= v <= 100 else 255 for v in column[first:after])
+
+
+class ResidentColumns:
+    """``blocks`` over an already resident Day, matching the worker's captured reader."""
+
+    def __init__(self, day):
+        self.day = day
+
+    def blocks(self, lo, hi, channels):
+        from ..engine.hybrid.constants import ROW_BLOCK_ROWS
+        from ..engine.hybrid.types import RowBlock
+
+        day = self.day
+        if day is None or hi <= lo:
+            return
+        first, after = bisect_right(day.ends, lo), bisect_left(day.times, hi)
+        missing = len(day.columns)
+        for begin in range(first, after, ROW_BLOCK_ROWS):
+            stop = min(after, begin + ROW_BLOCK_ROWS)
+            times = array("d", (max(lo, t) for t in day.times[begin:stop]))
+            ends = array("d", (min(hi, e) for e in day.ends[begin:stop]))
+            columns = tuple(
+                _byte_column(day.columns[c], begin, stop)
+                if c in channels and c < missing
+                else bytes([255]) * (stop - begin)
+                for c in range(18)
+            )
+            yield RowBlock(times, ends, columns)
+            pace.rest()

@@ -74,7 +74,7 @@ def test_chronological_candidates_use_original_held_duration():
     audit = result["adaptive_policy"]
     assert audit["selected"] == "reference"
     assert audit["validated"]
-    assert audit["reason"] == "held_duration_tie"
+    assert audit["reason"] == "held_cost_tie"
     assert audit["candidates"]["reference"]["score"]["present_seconds"] == 360
     assert audit["candidates"]["corrected_positive"]["score"]["empty_seconds"] == 360
 
@@ -84,9 +84,9 @@ def test_policies_that_configure_the_same_search_search_once():
     history is searched and measured once for both, with the same audit."""
     from unittest.mock import patch
 
-    from tuner_under_test.calibration import event_fitting
+    from tuner_under_test.engine.hybrid import engine
 
-    with patch.object(event_fitting, "_search", wraps=event_fitting._search) as search:
+    with patch.object(engine, "fit", wraps=engine.fit) as search:
         result = fit(_human_scene(), ["g0_move"], automatic_weight=0)
     audit = result["adaptive_policy"]
     assert audit["candidates"]["reference"] == audit["candidates"]["corrected_positive"]

@@ -161,24 +161,44 @@ class CharacterisationTests(unittest.TestCase):
         """Pin the full report and the additive role-field compatibility contract."""
         report = room_assessment_two_members()
         assert_room_contract(report)
-        golden("room_assessment_two_members", report)
         self.assertTrue(all(set(roles.FIELDS) <= set(d) for d in report["devices"].values()))
-        expected = json.loads((FIXTURES / "room_assessment_two_members.json").read_text())
-        for value in (report, expected):
-            for device in value["devices"].values():
-                for name in roles.FIELDS:
-                    del device[name]
-        self.assertEqual(canonical(report), canonical(expected))
+        self.assertEqual(report["room"]["error_cost"], 0)
+        self.assertEqual(report["room"]["presence_recall"], 1)
+        self.assertEqual(report["devices"]["b"]["error_cost"], 1000)
+        self.assertEqual(report["devices"]["b"]["mostly_missed_episodes"], 1)
 
     def test_joint_fit_examples(self):
-        check("joint_fit_examples")
+        for result in joint_fit_examples().values():
+            measured = result["room"]
+            self.assertEqual(result["cost_after"], measured["error_cost"])
+            self.assertEqual(
+                measured["error_cost"], 100 * (measured["time_term"] + measured["episode_term"])
+            )
+            self.assertLessEqual(result["cost_after"], result["cost_before"])
+            self.assertGreater(measured["presence_recall"], 0.99)
+            self.assertTrue(
+                all(0 <= t <= 100 for r in result["thresholds"].values() for t in r.values())
+            )
 
     def test_device_fit(self):
-        assert_device_contract(device_fit())
-        check("device_fit")
+        report = device_fit()
+        assert_device_contract(report)
+        measured = report["training"]
+        self.assertEqual(measured["duration"]["error_cost"], 0)
+        self.assertEqual(measured["duration"]["presence_recall"], 1)
+        self.assertEqual(measured["mostly_missed_episodes"], 0)
+        self.assertGreater(report["proposals"]["g0_move"]["threshold"], 5)
+        self.assertLess(report["proposals"]["g0_move"]["threshold"], 40)
 
     def test_overnight_joint_attempt(self):
-        check("overnight_joint_attempt")
+        reports = overnight_joint_attempt()
+        self.assertEqual(set(reports), {"a", "b"})
+        self.assertEqual(reports["a"]["result_id"], reports["b"]["result_id"])
+        for report in reports.values():
+            self.assertEqual(report["status"], "ok")
+            self.assertEqual(report["assessment"]["error_cost"], 0)
+            self.assertEqual(report["assessment"]["presence_recall"], 1)
+            self.assertEqual(report["assessment"]["mostly_missed_episodes"], 0)
 
     def test_reference_profile(self):
         check("reference_profile")

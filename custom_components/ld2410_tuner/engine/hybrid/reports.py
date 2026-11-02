@@ -11,7 +11,7 @@ Missing aggregates are errors, never fabricated reports of zero error.
 from copy import deepcopy
 from dataclasses import replace
 
-from ...calibration.constants import MIN_RECALL
+from ...calibration.constants import METHOD, MIN_RECALL, ROOM_METHOD, ROOM_SCORER_VERSION
 from ...const import HISTORY_KEYS
 from .diagnostics import diagnostics
 from .types import FitProblem, FitResult
@@ -54,7 +54,7 @@ def measurement(metrics, mode):
     """Preserve seconds, six-second sample equivalents and negative FPR score."""
     p, e = metrics["occupied_seconds"], metrics["empty_seconds"]
     recall = metrics["occupied_recall"]
-    missed = p * (1 - recall) if recall is not None else 0
+    missed = metrics.get("missed_seconds", p * (1 - recall) if recall is not None else 0)
     false = metrics["false_active_seconds"]
     percent = 100 * false / e if e else None
     longest = metrics["longest_miss_seconds"]
@@ -107,7 +107,23 @@ def _mode(result):
     return mode
 
 
-def _status(metrics):
+def _primary(metrics, bundle):
+    """Quality goals use human truth per class, with automatic-only fallback."""
+    present = bundle["human"] if bundle["human"]["occupied_seconds"] else bundle["automatic"]
+    empty = bundle["human"] if bundle["human"]["empty_seconds"] else bundle["automatic"]
+    return {
+        **metrics,
+        **{
+            key: present[key]
+            for key in ("occupied_seconds", "occupied_recall", "completely_missed_episodes")
+        },
+        **{key: empty[key] for key in ("empty_seconds", "false_active_seconds")},
+    }
+
+
+def _status(metrics, bundle=None):
+    if bundle is not None:
+        metrics = _primary(metrics, bundle)
     if not metrics["occupied_seconds"] or not metrics["empty_seconds"]:
         return "insufficient"
     if metrics["completely_missed_episodes"] or metrics["occupied_recall"] < MIN_RECALL:
@@ -139,7 +155,7 @@ def _role(observed, threshold):
     return "suppressed" if threshold == 100 else "detection"
 
 
-def _gate_proposal(key, channel, threshold, diag, status, basis, auto):
+def _gate_proposal(key, channel, threshold, diag, status, basis, auto, message):
     hist = diag["histograms"][channel]
     present, empty = (_gate_hist(hist, s) for s in STATES)
     p, e = sum(present), sum(empty)
@@ -152,7 +168,7 @@ def _gate_proposal(key, channel, threshold, diag, status, basis, auto):
         "status": status,
         "evidence_basis": basis,
         "auto_used": auto,
-        "message": "Review observed training performance and quiet presence.",
+        "message": message,
         "role": _role(p + e, threshold),
         "separation": {
             "preferred_threshold": (ceiling + floor) // 2 if separated else threshold,
@@ -228,12 +244,13 @@ def device_report(problem: FitProblem, result: FitResult, policy: dict) -> dict:
     diag = deepcopy(collected["radars"][device_id])
     _exclusive_gates(diag, result.thresholds[device_id])
     training, estimated = (measurement(bundle[s], mode) for s in ("human", "automatic"))
-    status, automatic = _status(result.after), deepcopy(_required(bundle, "automatic_evidence"))
+    status = _status(result.after, bundle)
+    automatic = deepcopy(_required(bundle, "automatic_evidence"))
     basis = "mixed" if automatic["used"] else "human"
     if not training["present_samples"] and not training["not_present_samples"]:
         basis = "automatic"
     report = {
-        "method": "human_priority_v12",
+        "method": METHOD,
         "status": status,
         "counts": {
             s: training["present_samples" if s == "present" else "not_present_samples"]
@@ -270,11 +287,13 @@ def device_report(problem: FitProblem, result: FitResult, policy: dict) -> dict:
     report["review"]["influence"] = deepcopy(_required(bundle, "influence"))
     report.update(_selection(result))
     _validation(report, bundle, mode, policy)
+    failures = _target_warnings(report)
+    report["warnings"].extend(failures)
     _anomaly(report, result.diagnostics.get("anomaly"))
     if status != "insufficient":
         report["proposals"] = {
             HISTORY_KEYS[c]: _gate_proposal(
-                HISTORY_KEYS[c], c, t, diag, status, basis, automatic["used"]
+                HISTORY_KEYS[c], c, t, diag, status, basis, automatic["used"], "; ".join(failures)
             )
             for c, t in result.thresholds[device_id].items()
         }
@@ -309,6 +328,35 @@ def _warnings(mode):
     return warnings
 
 
+def _presence_failures(measured):
+    duration = measured["duration"]
+    recall = duration["presence_recall"]
+    failures = []
+    if recall is not None and recall < MIN_RECALL - 1e-12:
+        failures.append(f"Estimated presence-time recall {recall:.3%}; target {MIN_RECALL:.1%}")
+    if duration["missed_presence_episodes"]:
+        failures.append(
+            f"{duration['missed_presence_episodes']} occupied periods have no detection"
+        )
+    return failures
+
+
+def _target_warnings(report):
+    failures = _presence_failures(report["training"])
+    failures.extend(
+        "Recent human labels: " + failure
+        for failure in _presence_failures(report["recent_training"])
+    )
+    if (report["training"]["duration"]["false_positive_percent"] or 0) >= 100 - 1e-9:
+        failures.append("This candidate is active throughout the observed empty-room time")
+    if report["validation"] and _presence_failures(report["validation"]):
+        failures.append(
+            "Earlier-data backtest missed its targets; the final recommendation was refit using "
+            "all retained observations. Test it in new sessions."
+        )
+    return failures
+
+
 def _anomaly(report, audit):
     if audit is not None:
         report["anomaly"] = deepcopy(audit)
@@ -337,6 +385,7 @@ def _outcome(metrics, source, state):
 
 
 def _assessment(metrics, bundle, mode):
+    primary = _primary(metrics, bundle)
     outcomes = {
         src: {s: _outcome(bundle[src], src, s) for s in STATES} for src in ("human", "automatic")
     }
@@ -344,8 +393,8 @@ def _assessment(metrics, bundle, mode):
         s: next((src for src in ("human", "automatic") if outcomes[src][s]["seconds"]), None)
         for s in STATES
     }
-    recall = metrics["occupied_recall"]
-    empty = metrics["empty_seconds"]
+    recall = primary["occupied_recall"]
+    empty = primary["empty_seconds"]
     return dict(
         outcomes=outcomes,
         sources=sources,
@@ -353,9 +402,10 @@ def _assessment(metrics, bundle, mode):
         error_cost=metrics["cost"],
         reason=None if metrics["cost"] is not None else "No observed labelled time in one class.",
         presence_recall=recall,
-        false_positive_percent=100 * metrics["false_active_seconds"] / empty if empty else None,
+        false_positive_percent=100 * primary["false_active_seconds"] / empty if empty else None,
         target_met=recall is not None and recall >= MIN_RECALL,
-        basis="six_second_cells" if mode == "cells" else "physical_interval_time",
+        basis="human" if set(sources.values()) == {"human"} else "estimated",
+        scoring_mode=mode,
         missed_time_cost=5,
         **{key: metrics[key] for key in EXTRA},
     )
@@ -387,7 +437,7 @@ def _room_view(problem, metrics, bundle, mode):
             "empty_seconds": member_metrics["empty_seconds"],
         }
     return {
-        "scorer_version": 3,
+        "scorer_version": ROOM_SCORER_VERSION,
         "start": problem.start,
         "end": problem.end,
         "room": _assessment(metrics, bundle, mode),
@@ -427,7 +477,7 @@ def room_report(
     if not scored:
         raise ValueError("No scorable zone")
     report = dict(
-        method="human_priority_v12",
+        method=ROOM_METHOD,
         thresholds={
             k: {HISTORY_KEYS[c]: v for c, v in t.items()} for k, t in result.thresholds.items()
         },
@@ -465,8 +515,8 @@ def _room_status(problem, result, skipped):
     if skipped:
         return "uncertain"
     if len(problem.zones) == 1:
-        return _status(result.after)
-    statuses = {_status(m) for m in result.after["zones"].values()}
+        return _status(result.after, _bundle(result, problem.zones[0].group_id))
+    statuses = {_status(m, _bundle(result, gid)) for gid, m in result.after["zones"].items()}
     return next(s for s in ("insufficient", "unsafe", "tradeoff", "ok") if s in statuses)
 
 

@@ -17,6 +17,9 @@ module.exports = async function testComparison(page, screenshotDir) {
       not_present_samples: 100,
       false_negatives: 2,
       false_positives: 3,
+      presence_episodes: 3,
+      mostly_missed_episodes: 1,
+      empty_periods_failed: 2,
     };
     window.comparisonReport = {
       state: "ready",
@@ -40,6 +43,7 @@ module.exports = async function testComparison(page, screenshotDir) {
               false_positive_percent: 0.25,
               target_met: false,
               human: metric,
+              scoring_mode: slot === "automatic" ? "cells" : "exact",
             },
           ],
         ),
@@ -117,6 +121,23 @@ module.exports = async function testComparison(page, screenshotDir) {
   assert.match(
     await card.locator(".pattern-comparison").innerText(),
     /not a probability or a guarantee/,
+  );
+  assert.match(
+    await card.locator(".pattern-comparison").innerText(),
+    /missed occupied time.*false-active empty time.*Whole periods count too.*occupied periods mostly missed.*empty periods that fail.*unrounded cost/s,
+    "the score explanation names its time and episode terms",
+  );
+  assert.match(
+    await card.locator('[data-pattern="live"]').innerText(),
+    /Occupied periods mostly missed: 1 of 3 · Empty periods failed: 2/,
+  );
+  assert.match(
+    await card.locator('[data-pattern="automatic"] details').textContent(),
+    /six-second cell maxima/,
+  );
+  assert.doesNotMatch(
+    await card.locator('[data-pattern="live"] details').textContent(),
+    /six-second cell maxima/,
   );
   await page.setViewportSize({ width: 390, height: 844 });
   for (const slot of ["live", "user", "previous", "current", "automatic"])

@@ -21,6 +21,7 @@ from .evidence import _intersect, _labels
 from .types import TruthSpan
 
 STATES = ("present", "not_present")
+GUARD_FIELDS = ("mostly_missed_episodes", "empty_periods_mostly_false_active")
 
 
 def _union(intervals):
@@ -173,6 +174,30 @@ def cost_from_statistics(statistics, policy):
     }
 
 
+def _participates(statistics, policy, state, source):
+    """Only evidence with nonzero episode influence participates in fit guards."""
+    human = statistics.get(state + "/human", [0, 0, 0, 0])
+    if source == "human" or not human[0]:
+        return True
+    auto = statistics.get(state + "/automatic", [0, 0, 0, 0])
+    weight = 0 if policy.reference else policy.automatic_weight
+    support = policy.quality
+    hs = support.get("human_episodes", {}).get(state, human[2])
+    au = support.get("automatic_episode_mass", {}).get(state, auto[2])
+    share = episode_share(weight, hs, au) if support else automatic_share(weight, human[2], auto[2])
+    return share > 0
+
+
+def _guard_counts(statistics, policy, counts):
+    """Observed integer counts of participating sources, separate from raw diagnostics."""
+    included = [
+        values
+        for (state, source), values in counts.items()
+        if _participates(statistics, policy, state, source)
+    ]
+    return {key: sum(values[key] for values in included) for key in GUARD_FIELDS}
+
+
 def masked(zone, intervals):
     """Audited time becomes unobserved: an explicit Unknown outranks every label.
 
@@ -256,6 +281,11 @@ class SliceScorer:
 
     def __init__(self, zone, policy, window, directory: Path, mask=(), store=None):
         zone = masked(zone, mask)
+        # Fixed report variants retain their base zone before the NUL tag.
+        # Linked source support belongs to that zone, never the full set.
+        support = policy.quality.get("zones", {}).get(zone.group_id.split("\x00", 1)[0])
+        if support is not None:
+            policy = replace(policy, quality={**policy.quality, **support})
         self.zone, self.policy, self.window = zone, policy, window
         self._labels = iter(_labels(zone.truth))
         self._labelled = 0.0
@@ -371,6 +401,7 @@ class SliceScorer:
             "empty_periods_failed": 0,
             "false_triggers": 0,
         }
+        by_source = {}
         rows = self._db.execute(
             """SELECT state,source,observed,weighted,seen,triggers FROM episodes
             WHERE scorer=? ORDER BY rowid""",
@@ -384,6 +415,9 @@ class SliceScorer:
             stats[2] += confidence
             stats[3] += confidence * bad
             self._count(counts, state, mass, seen, triggers, bad)
+            own = by_source.setdefault((state, source), dict.fromkeys(counts, 0))
+            self._count(own, state, mass, seen, triggers, bad)
+        counts["guard_counts"] = _guard_counts(self._stats, self.policy, by_source)
         return counts
 
     @staticmethod
@@ -405,6 +439,7 @@ class SliceScorer:
             "occupied_seconds": occupied,
             "empty_seconds": self._totals["not_present"],
             "occupied_recall": seen["present"] / occupied if occupied else None,
+            "missed_seconds": occupied - seen["present"],
             "false_active_seconds": seen["not_present"],
         }
 

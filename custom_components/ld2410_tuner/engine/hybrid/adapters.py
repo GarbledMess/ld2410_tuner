@@ -5,6 +5,7 @@ from math import inf, isfinite
 
 from ...calibration.adaptive import earlier_view
 from ...calibration.constants import MIN_AUTO_CONFIDENCE
+from ...calibration.quality import QualityModel
 from ...calibration.thresholds import allowed
 from ...const import HISTORY_KEYS
 from ...history import daystore, guesses
@@ -159,18 +160,41 @@ def _policy(models, weight, reference, zones=()):
     if not isfinite(weight) or not 0 <= weight <= 1:
         raise ValueError("Automatic weight must be between zero and one")
     quality = {"models": models, "audits": {key: model.audit() for key, model in models.items()}}
-    quality["zones"] = {zone.group_id: _support(models, zone.members) for zone in zones}
+    quality["zones"] = {zone.group_id: _support(models, zone) for zone in zones}
     if len(zones) == 1:
         quality.update(quality["zones"][zones[0].group_id])
     return EvidencePolicy(weight, reference, quality)
 
 
-def _support(models, members):
-    counts = {state: adaptive.episode_support(models, members, state) for state in evidence.LABELS}
+def _support(models, zone):
+    counts = {
+        state: adaptive.episode_support(models, zone.members, state) for state in evidence.LABELS
+    }
     return {
-        "human_episodes": {state: pair[0] for state, pair in counts.items()},
+        # A room annotation copied into each member's quality context is still
+        # one independent human episode of the zone, regardless of member count.
+        "human_episodes": {
+            state: len(
+                {s.episode_id for s in zone.truth if s.source == "human" and s.state == state}
+            )
+            for state in evidence.LABELS
+        },
         "automatic_episode_mass": {state: pair[1] for state, pair in counts.items()},
     }
+
+
+class _Uncorrected(QualityModel):
+    """``quality_context=False``: recorded confidence as given, no positive-support filter."""
+
+    def reliability(self, basis, state):
+        return 1.0
+
+    def supports(self, key, energy):
+        return energy is not None and 0 <= energy <= 100
+
+
+def _uncorrected(model):
+    return _Uncorrected(model.context, model.posteriors, model.regimes)
 
 
 def device_problem(
@@ -191,10 +215,11 @@ def device_problem(
     view = _snapshot(view, end)
     end = min(end, view._history_until, view._attribution_until)
     radar = _radar(device_id, keys, current, timing, constraints)
-    context = _context_window(quality_context, start, end) or collect_quality(
+    raw = quality_context is False
+    context = _context_window(None if raw else quality_context, start, end) or collect_quality(
         view, device_id, keys, start, end, _independent(view, device_id), None
     )
-    model = learn_quality(context)
+    model = _uncorrected(learn_quality(context)) if raw else learn_quality(context)
     initial = EvidencePolicy(weight, reference, {})
     auto_start = (
         start
@@ -237,7 +262,7 @@ def _room_models(groups, members, rooms, start, end, contexts):
                 start,
                 end,
                 adaptive.independent_reader(
-                    [rooms[gid] for gid, found in groups.items() if key in found and gid in rooms]
+                    [rooms[gid] for gid, found in groups.items() if key in found and rooms.get(gid)]
                 ),
                 None,
             )
@@ -273,13 +298,6 @@ def _room_zone(group, found, rooms, inputs, start, end):
 def room_problem(groups, start, end, rooms, weight, *, quality_contexts=None, reference=False):
     """One source per unique member; each zone retains its own ordered truth."""
     members, rooms = _members(groups, end), rooms or {}
-    end = min(
-        [end]
-        + [
-            min(item["view"]._history_until, item["view"]._attribution_until)
-            for item in members.values()
-        ]
-    )
     models = _room_models(groups, members, rooms, start, end, quality_contexts)
     inputs = {
         key: evidence.label_inputs(item["view"], key, adaptive.CorrectedReader(models[key]))

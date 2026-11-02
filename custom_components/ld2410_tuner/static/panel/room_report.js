@@ -110,6 +110,10 @@ export const panelRoomReport = {
     const target = result.target_met
       ? "99.9% occupied-time target met in replay."
       : "99.9% occupied-time target not met in replay.";
-    return `Estimated occupied time detected: ${(100 * result.presence_recall).toFixed(3)}%. False-active empty time: ${Number(result.false_positive_percent).toFixed(3)}%. ${target}`;
+    const periods =
+      result.mostly_missed_episodes == null
+        ? ""
+        : ` Occupied periods mostly missed: ${result.mostly_missed_episodes}. Empty periods failed: ${result.empty_periods_failed}.`;
+    return `Estimated occupied time detected: ${(100 * result.presence_recall).toFixed(3)}%. False-active empty time: ${Number(result.false_positive_percent).toFixed(3)}%.${periods} ${target}`;
   },
 };

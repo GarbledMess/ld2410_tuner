@@ -1,13 +1,17 @@
-"""Joint gate search; weak radars need not detect what another member already covers."""
+"""Joint room learning, run by the hybrid engine (``engine.hybrid.facade``).
+
+``measure``, ``fit`` and ``fit_set`` keep their signatures and report shapes; weak radars
+need not detect what another member already covers. ``search`` and its gate helpers are
+the superseded row-objective search: no production path calls them, and they are removed
+with the legacy objective."""
 
 from copy import deepcopy
 
+from ..calibration.constants import ROOM_METHOD
 from ..calibration.settings import DEFAULT_AUTOMATIC_WEIGHT
 from ..history import pace
-from . import assessment
-from .objective import LinkedObjective, Objective
 
-METHOD = "joint_room_v1"
+METHOD = ROOM_METHOD
 
 
 def _options(objective, device_id, key):
@@ -162,8 +166,10 @@ def search(objective):
 
 
 def measure(members, thresholds, start, end, room=None, *, quality=None):
-    candidates = {key: {**item, "thresholds": thresholds[key]} for key, item in members.items()}
-    return assessment.calculate(candidates, start, end, room, quality=quality)
+    """One fixed pattern assessed on ``room`` truth by the hybrid evaluator (no refit)."""
+    from ..engine.hybrid import facade
+
+    return facade.measure(members, thresholds, start, end, room, quality=quality)
 
 
 def fit(
@@ -175,91 +181,12 @@ def fit(
     *,
     quality_contexts=None,
 ):
-    if quality_contexts is not None:
-        result = fit_set(
-            {"room": members},
-            start,
-            end,
-            {"room": room} if room else {},
-            automatic_weight,
-            quality_contexts=quality_contexts,
-        )
-        result.pop("groups")
-        return result
-    objective = Objective(members, start, end, room, automatic_weight=automatic_weight)
-    before = measure(members, objective.current, start, end, room)
-    if before["room"]["score"] is None:
-        raise ValueError(before["room"]["reason"])
-    thresholds = search(objective)
-    after = measure(members, thresholds, start, end, room)
-    return {
-        "method": METHOD,
-        "thresholds": thresholds,
-        "before": before,
-        "after": after,
-        "cost_before": objective.costs(objective.current)[0],
-        "cost_after": objective.costs(thresholds)[0],
-        "status": "uncertain" if after["room"]["target_met"] else "unsafe",
-        "validation_scope": "training_replay_not_independent_validation",
-    }
+    """One zone's joint fit: exactly ``fit_set`` of that zone, without ``groups``."""
+    from ..engine.hybrid import facade
 
-
-def _current(members):
-    return {key: dict(item["thresholds"]) for key, item in members.items()}
-
-
-def _scorable(groups, start, end, rooms, quality=None):
-    """Before-reports of the groups that can be scored, and the reasons the rest cannot.
-    Raises the first group's reason (as ``fit`` would) when no group can be scored."""
-    before, skipped = {}, {}
-    for gid in sorted(groups):
-        report = measure(
-            groups[gid], _current(groups[gid]), start, end, rooms.get(gid), quality=quality
-        )
-        if report["room"]["score"] is None:
-            skipped[gid] = report["room"]["reason"]
-        else:
-            before[gid] = report
-    if not before:
-        raise ValueError(next(iter(skipped.values())))
-    return before, skipped
-
-
-def _top_level(groups, reports, radars):
-    """One group: its own report, identical to ``fit``. Several: no room truth spans the
-    set, so ``room`` is None and ``devices`` holds each radar's measure in every scored
-    group, ``{radar: {group_id: device report}}``."""
-    if len(groups) == 1:
-        return next(iter(reports.values()))
-    return {
-        "room": None,
-        "devices": {
-            radar: {
-                gid: item["devices"][radar]
-                for gid, item in reports.items()
-                if radar in item["devices"]
-            }
-            for radar in radars
-        },
-    }
-
-
-def _group_results(groups, before, after, skipped, objective, thresholds):
-    costs = {
-        gid: (item.costs(part)[0], item.costs(thresholds)[0])
-        for gid, item, part in objective.parts(objective.current)
-    }
-    return {
-        gid: {"skipped": skipped[gid]}
-        if gid in skipped
-        else {
-            "before": before[gid],
-            "after": after[gid],
-            "cost_before": costs[gid][0],
-            "cost_after": costs[gid][1],
-        }
-        for gid in sorted(groups)
-    }
+    return facade.room_fit(
+        members, start, end, room, automatic_weight, quality_contexts=quality_contexts
+    )
 
 
 def fit_set(
@@ -271,75 +198,20 @@ def fit_set(
     *,
     quality_contexts=None,
 ):
-    """Fit a learning set together: ``fit_set(groups, start, end, rooms=None, automatic_weight)``.
+    """Fit a learning set together with the hybrid engine.
 
     ``groups`` is ``{group_id: members}``; ``rooms`` is ``{group_id: truth.view snapshot}``
-    (missing: no room labels). Each group is scored on its own room truth; groups that
-    cannot be scored are skipped (``groups[gid] == {"skipped": reason}``) and the set is
-    fitted on the rest. A radar serving only skipped groups keeps its current threshold
-    and is not searched. Raises only when no group can be scored.
+    (missing: no room labels). Each zone is scored on its own room truth; zones without
+    observed labelled time in both classes are skipped (``groups[gid] == {"skipped":
+    reason}``) and the set is fitted on the rest. A radar serving only skipped zones keeps
+    its current threshold and is not searched. Raises only when no zone can be scored.
 
-    Returns ``fit``'s keys plus ``groups``. ``cost_before``/``cost_after`` are sums over the
-    scored groups (what the search minimises); ``status`` is "uncertain" only when every
-    scored group meets its target. A one-group set is identical to ``fit``. For several
-    groups the top-level ``before``/``after`` have ``room`` None and per-radar measures
-    only: callers must use ``groups`` for per-zone results."""
-    if not groups:
-        raise ValueError("No zones to learn")
-    rooms = rooms or {}
-    if quality_contexts is not None:
-        from .adaptive import models
+    Returns ``fit``'s keys plus ``groups``. ``cost_before``/``cost_after`` are sums of the
+    scored zones' common time-and-episode costs. A one-zone set is identical to ``fit``.
+    For several zones the top-level ``before``/``after`` have ``room`` None and per-radar
+    measures only: callers must use ``groups`` for per-zone results."""
+    from ..engine.hybrid import facade
 
-        quality_contexts = models(quality_contexts)
-    before, skipped = _scorable(groups, start, end, rooms, quality_contexts)
-    policy, audit = _policy(groups, before, start, end, rooms, automatic_weight, quality_contexts)
-    objective = LinkedObjective(
-        {gid: groups[gid] for gid in before},
-        start,
-        end,
-        rooms,
-        automatic_weight,
-        quality=quality_contexts,
-        reference=policy == "reference",
-    )
-    thresholds = search(objective)
-    for gid in skipped:
-        for key, value in _current(groups[gid]).items():
-            thresholds.setdefault(key, value)
-    after = {
-        gid: measure(groups[gid], thresholds, start, end, rooms.get(gid), quality=quality_contexts)
-        for gid in before
-    }
-    result = {
-        "method": METHOD,
-        "thresholds": thresholds,
-        "before": _top_level(groups, before, objective.current),
-        "after": _top_level(groups, after, objective.current),
-        "cost_before": objective.costs(objective.current)[0],
-        "cost_after": objective.costs(thresholds)[0],
-        "status": "uncertain"
-        if all(item["room"]["target_met"] for item in after.values())
-        else "unsafe",
-        "validation_scope": "training_replay_not_independent_validation",
-        "groups": _group_results(groups, before, after, skipped, objective, thresholds),
-    }
-    if audit is not None:
-        result["automatic_evidence"] = audit
-        result["validation_scope"] = (
-            "later_explicit_episodes"
-            if audit["selection"]["validated"]
-            else "estimated_without_independent_validation"
-        )
-    return result
-
-
-def _policy(groups, before, start, end, rooms, weight, contexts):
-    if contexts is None:
-        return None, None
-    from .adaptive import choose_policy
-
-    scorable = {gid: groups[gid] for gid in before}
-    active = {key for found in scorable.values() for key in found}
-    return choose_policy(
-        scorable, start, end, rooms, weight, {key: contexts[key] for key in active}
+    return facade.fit_set(
+        groups, start, end, rooms, automatic_weight, quality_contexts=quality_contexts
     )

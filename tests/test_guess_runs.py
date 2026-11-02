@@ -656,20 +656,20 @@ class LearningEvidenceTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_the_newest_samples_of_each_class_are_kept_when_over_the_cap(self):
-        from tuner_under_test.calibration import event_fitting
+        from codex_history import diagnostic_samples
 
-        samples = [self.sample(self.now - 6 * (400 - i), 1) for i in range(400)]
+        samples = [self.sample(self.now - 6 * (6000 - i), 1) for i in range(6000)]
         target = self.history(samples)
-        with patch.object(event_fitting, "MAX_CLASS_SAMPLES", 50):
-            groups = event_fitting._sample_groups(target, False)
+        groups = diagnostic_samples(target, False)
         expected = [
             step * 6
             for step in range(
-                (ceil((samples[-1][0] + 3) / 6) - 1) - 49, (ceil((samples[-1][0] + 3) / 6) - 1) + 1
+                (ceil((samples[-1][0] + 3) / 6) - 1) - 4999,
+                (ceil((samples[-1][0] + 3) / 6) - 1) + 1,
             )
         ]
-        self.assertEqual([row[0] for row in groups["present"]], expected)
-        self.assertEqual(groups["not_present"], [])
+        self.assertEqual([row["time"] for row in groups["present"]], expected)
+        self.assertEqual(len(groups["not_present"]), 0)
 
     def test_a_change_of_label_ends_a_stretch(self):
         samples = [
@@ -682,7 +682,7 @@ class LearningEvidenceTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_human_samples_keep_their_count_cap_and_all_their_age(self):
-        from tuner_under_test.calibration.event_fitting import _sample_groups
+        from codex_history import diagnostic_samples
 
         old = self.now - 10 * 86400
         samples = [self.sample(old + 6 * i, 0) for i in range(5200)]
@@ -692,13 +692,13 @@ class LearningEvidenceTests(unittest.IsolatedAsyncioTestCase):
             {"start": self.now - 6 * 5200 - 1, "end": self.now + 1, "state": "not_present"},
         ]
         target = self.history(samples, labels)
-        groups = _sample_groups(target, True)
+        groups = diagnostic_samples(target, True)
         self.assertEqual(
             {state: len(rows) for state, rows in groups.items()},
             {"present": 5000, "not_present": 5000},
         )
         self.assertTrue(all(row[4] == "human" for row in target.regions))
-        self.assertLess(groups["present"][-1][0], self.now - 9 * 86400)
+        self.assertLess(groups["present"][-1]["time"], self.now - 9 * 86400)
 
     def test_a_radar_with_no_history_has_no_evidence(self):
         self.assertEqual(objective(self.runtime, end=self.now).regions, [])

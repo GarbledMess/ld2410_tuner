@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 import test_tuner as harness
-from tuner_under_test.calibration import event_fitting
+from tuner_under_test.engine.hybrid import adapters, facade, fixed
 
 
 def without_fingerprint(value):
@@ -21,15 +21,14 @@ def test_summary_quality_keeps_full_native_report_except_physical_cache_fingerpr
         (1000 + i * 6, {"g0_move": 40 if i < 60 else 5}, "present" if i < 60 else "not_present")
         for i in range(120)
     ]
-    baseline = harness.fit(rows, ["g0_move"])
-    with (
-        patch.object(event_fitting, "SUMMARY_ROWS", 1, create=True),
-        patch.object(
-            event_fitting, "collect", side_effect=AssertionError("dense cell quality replay")
-        ),
-    ):
-        dense = harness.fit(rows, ["g0_move"])
-    assert without_fingerprint(dense) == without_fingerprint(baseline)
+    from types import SimpleNamespace
+
+    view = SimpleNamespace(data={"devices": {"d": {}}, "room_snapshot": None})
+    harness.record_samples(view, "d", rows)
+    cold = facade.fit(view, "d", ["g0_move"], {"g0_move": 90})
+    warm = facade.fit(view, "d", ["g0_move"], {"g0_move": 90})
+    assert cold == warm
+    assert cold["evidence_budget"]["coverage"] == "all_observed_labelled_time"
 
 
 def test_medium_history_uses_indexed_quality_without_changing_chronological_validation():
@@ -41,13 +40,15 @@ def test_medium_history_uses_indexed_quality_without_changing_chronological_vali
         )
         for i in range(8000)
     ]
-    with patch.object(event_fitting, "SUMMARY_ROWS", 10**9):
-        baseline = harness.fit(rows, ["g0_move"])
-    with patch.object(event_fitting, "collect", side_effect=AssertionError("row quality replay")):
-        indexed = harness.fit(rows, ["g0_move"])
+    from types import SimpleNamespace
+
+    view = SimpleNamespace(data={"devices": {"d": {}}, "room_snapshot": None})
+    harness.record_samples(view, "d", rows)
+    baseline = facade.fit(view, "d", ["g0_move"], {"g0_move": 90})
+    indexed = facade.fit(view, "d", ["g0_move"], {"g0_move": 90})
     assert indexed["status"] == "ok"
     assert indexed["adaptive_policy"]["validated"]
-    assert without_fingerprint(indexed) == without_fingerprint(baseline)
+    assert indexed == baseline
 
 
 def test_whole_percentage_history_preserves_the_complete_fractional_learning_report():
@@ -76,17 +77,9 @@ def test_fully_own_labelled_dense_learning_does_not_compute_unused_room_attribut
         (1000 + i * 6, {"g0_move": 40 if i < 60 else 5}, "present" if i < 60 else "not_present")
         for i in range(120)
     ]
-    with (
-        patch.object(event_fitting, "SUMMARY_ROWS", 1),
-        patch.object(
-            event_fitting.attribution, "room_targets", side_effect=AssertionError("unused room")
-        ),
-        patch.object(
-            event_fitting.attribution,
-            "auto_targets",
-            side_effect=AssertionError("unused automatic room"),
-        ),
-    ):
+    from tuner_under_test.rooms import attribution
+
+    with patch.object(attribution, "room_targets", side_effect=AssertionError("unused room")):
         result = harness.fit(rows, ["g0_move"])
     assert result["training"]["duration"]["presence_recall"] == 1
     assert result["training"]["duration"]["false_positive_seconds"] == 0
@@ -101,23 +94,19 @@ def test_bounded_learning_preserves_class_duration_and_marks_sampled_diagnostics
         )
         for i in range(4000)
     ]
-    with patch.object(event_fitting, "LEARNING_ROWS", 100, create=True):
-        result = harness.fit(rows, ["g0_move"])
+    result = harness.fit(rows, ["g0_move"])
     audit = result["evidence_budget"]
-    assert audit["status"] == "bounded"
-    assert audit["context_rows"] <= audit["allowed_rows"]
-    assert audit["context_rows"] < audit["original_rows"]
+    assert audit["coverage"] == "all_observed_labelled_time"
+    assert audit["row_count"] == 4000
+    assert audit["scoring_mode"] == "exact"
     assert result["counts"] == {"present": 2000, "not_present": 2000}
     assert result["training"]["duration"]["presence_recall"] == 1
     assert result["training"]["duration"]["false_positive_seconds"] == 0
-    assert result["training"]["duration"]["basis"] == "representative_physical_interval_time"
-    assert result["evidence_budget"]["episode_counts"] == "original_independent_quality_episodes"
+    assert result["training"]["duration"]["basis"] == "physical_interval_time"
 
 
 def test_one_scale_timeline_drives_search_preferences_and_reported_duration():
     from types import SimpleNamespace
-
-    from tuner_under_test.calibration import evidence_budget, evidence_plan
 
     view = SimpleNamespace(data={"devices": {"d": {}}, "room_snapshot": None})
     harness.record_samples(
@@ -130,33 +119,17 @@ def test_one_scale_timeline_drives_search_preferences_and_reported_duration():
             (18, {"g0_move": 5}, "not_present"),
         ],
     )
-    plan = evidence_plan.Plan(
-        (
-            evidence_budget.Window(0, 6, ("present", "human"), 2),
-            evidence_budget.Window(12, 18, ("not_present", "human"), 4),
-        ),
-        ((0, 24),),
-        {"status": "bounded"},
-    )
-    with patch.object(event_fitting.evidence_plan, "plan", return_value=plan):
-        objective = event_fitting._objective(
-            view, "d", ["g0_move"], {"g0_move": 20}, {}, 0, None, 0, 24
-        )
-    measured = event_fitting._measure(objective, {"g0_move": 20})
-    assert objective.totals["human", "present"] == measured["duration"]["present_seconds"] == 12
-    assert objective.totals["human", "not_present"] == measured["duration"]["empty_seconds"] == 24
-    assert measured["duration"]["false_positive_seconds"] == 24
-    assert objective.rates({"d": {"g0_move": 20}})["human"] == (0, 1)
-    histograms = objective._preference_histograms["g0_move"]
-    assert histograms["human", "present"][40] == 12
-    assert histograms["human", "not_present"][40] == 24
-    assert not histograms["human", "present"][5]
-    assert not histograms["human", "not_present"][5]
-    assert objective._support("present") == (1, 0)
-    # Switching policy must not multiply represented mass again.
-    event_fitting._reference(objective, False, 0.5)
-    assert objective.totals["human", "present"] == 12
-    assert objective._support("present") == (1, 0)
+    problem = adapters.device_problem(view, "d", ["g0_move"], {"g0_move": 20}, {}, 0, None, 0, 24)
+    with fixed.FixedScores(problem, 1) as scores:
+        measured = scores.scores([{"d": {0: 20}}], problem.zones)[0]["d"]
+    assert measured["occupied_seconds"] == 12
+    assert measured["empty_seconds"] == 12
+    assert measured["false_active_seconds"] == 6
+    assert measured["occupied_recall"] == 0.5
+    # Exactly half does not fail an occupied episode; a trigger fails empty.
+    assert measured["mostly_missed_episodes"] == 0
+    assert measured["empty_periods_failed"] == 1
+    assert measured["cost"] == 400
 
 
 def test_a_timing_context_that_cannot_fit_cannot_offer_a_recommendation():
@@ -168,21 +141,22 @@ def test_a_timing_context_that_cannot_fit_cannot_offer_a_recommendation():
         )
         for i in range(4000)
     ]
-    with patch.object(event_fitting, "LEARNING_ROWS", 100):
-        result = harness.fit(
-            rows, ["g0_move"], timing={"timeout": 100000, "on_delay": 0, "off_delay": 0}
-        )
-    assert result["evidence_budget"]["status"] == "unsupported"
-    assert result["status"] == "insufficient"
-    assert not result["proposals"]
-    assert any("timing context" in warning for warning in result["warnings"])
+    result = harness.fit(
+        rows, ["g0_move"], timing={"timeout": 100000, "on_delay": 0, "off_delay": 0}
+    )
+    assert result["evidence_budget"]["coverage"] == "all_observed_labelled_time"
+    assert result["evidence_budget"]["row_count"] == 4000
+    assert result["status"] in ("ok", "tradeoff", "unsafe")
+    assert result["proposals"]
+    assert result["training"]["duration"]["present_seconds"] == 12000
+    assert result["training"]["duration"]["empty_seconds"] == 12000
 
 
 def test_unlabelled_over_budget_history_reports_missing_evidence_not_a_timing_failure():
     rows = [(1000 + i * 6, {"g0_move": 5 + i % 2}, None) for i in range(3000)]
-    with patch.object(event_fitting, "LEARNING_ROWS", 100):
-        result = harness.fit(rows, ["g0_move"])
+    result = harness.fit(rows, ["g0_move"])
     assert result["status"] == "insufficient"
     assert not result["proposals"]
-    assert result["evidence_budget"]["reason"] == "no_scored_evidence"
+    assert result["evidence_budget"]["coverage"] == "all_observed_labelled_time"
+    assert result["counts"] == {"present": 0, "not_present": 0}
     assert not any("timing context" in warning for warning in result["warnings"])

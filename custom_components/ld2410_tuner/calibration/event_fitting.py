@@ -1,4 +1,10 @@
-"""Device learning on complete physical traces before intersecting target labels."""
+"""Device learner entry points, run by the hybrid engine (``engine.hybrid.facade``).
+
+``fit``, ``assess`` and ``compare`` keep their signatures for the worker, service and
+comparison callers and delegate to the facade: every fit, report score, held-out policy
+score and comparison uses its common time-and-episode cost. The row objective and search
+helpers below are the superseded weighted-time learner; no production path calls them,
+and they are removed with the legacy objective."""
 
 from bisect import bisect_left, bisect_right
 from copy import copy
@@ -466,151 +472,20 @@ def _objective(
 
 
 def assess(view, device_id, thresholds, timing=None, *, quality_context=None, start=-inf, end=inf):
-    """One fixed pattern ``thresholds`` measured on the radar's labelled history (never
-    refitted); quality-corrected unless ``quality_context`` is False."""
-    start, end = _bounds(view, device_id, start, end)
-    objective = _objective(
-        view,
-        device_id,
-        list(thresholds),
-        dict(thresholds),
-        timing or {},
-        1,
-        None,
-        start,
-        end,
-        quality_context=quality_context,
-        prepare_preferences=False,
+    """One fixed pattern on the radar's labelled history, scored by the hybrid evaluator
+    (never refitted); quality-corrected unless ``quality_context`` is False."""
+    from ..engine.hybrid import facade
+
+    return facade.assess(
+        view, device_id, thresholds, timing, quality_context=quality_context, start=start, end=end
     )
-    return _assess_objective(objective, thresholds, quality_context is not False)
-
-
-def _assess_objective(objective, thresholds, corrected):
-    thresholds = {key: int(value) for key, value in thresholds.items()}
-    rates = objective.rates({objective.device_id: thresholds})["automatic"]
-    return {
-        "human": _measure(objective, thresholds),
-        "automatic": _measure(objective, thresholds, "automatic", effective=False),
-        "automatic_rank": (error_cost(*rates), *rates),
-        "quality": objective.quality[objective.device_id].audit() if corrected else None,
-        "automatic_evidence": _automatic_evidence(
-            objective, _measure(objective, thresholds, "automatic", effective=False), 1
-        ),
-    }
 
 
 def compare(view, device_id, context):
-    from .comparison import SCORE_MODEL, best_slots
+    """Saved and live patterns scored together on one hybrid fidelity plan (no learning)."""
+    from ..engine.hybrid import facade
 
-    start, end = _bounds(view, device_id, -inf, inf)
-    objective = _objective(
-        view,
-        device_id,
-        context["keys"],
-        dict.fromkeys(context["keys"], 100),
-        context["timing"],
-        1,
-        None,
-        start,
-        end,
-        quality_context=None if context.get("quality_version") else False,
-        prepare_preferences=False,
-    )
-    corrected = bool(context.get("quality_version"))
-    patterns = {
-        name: _compare_pattern(pattern, objective, context["keys"], corrected)
-        for name, pattern in context["patterns"].items()
-    }
-    counts, incomplete = _region_counts(objective.regions, context["keys"])
-    attribution.release([view])
-    result = {
-        "model": SCORE_MODEL,
-        "patterns": patterns,
-        "best_slots": best_slots(patterns),
-        "counts": counts,
-        "timing": context["timing"],
-        "incomplete_samples": incomplete,
-        "outliers": {"method": "native_intervals_retained", "excluded": False},
-        "missed_time_cost": MISSED_TIME_COST,
-    }
-    if corrected:
-        result["quality"] = objective.quality[device_id].audit()
-    return result
-
-
-def _region_counts(regions, keys):
-    """Keep each sum's region order while collecting metadata in one pass."""
-    counts = {source: {state: [] for state in evidence.LABELS} for source in ("human", "automatic")}
-    incomplete = []
-    for low, high, readings, label, source, _ in regions:
-        amount = (high - low) / SAMPLE_SECONDS
-        if source in counts and label in counts[source]:
-            counts[source][label].append(amount)
-        if any(key not in readings for key in keys):
-            incomplete.append(amount)
-    return {
-        source: {state: sum(values) for state, values in states.items()}
-        for source, states in counts.items()
-    }, sum(incomplete)
-
-
-def _compare_pattern(pattern, objective, keys, corrected):
-    from .comparison import _source, complete_thresholds
-    from .scoring import score_from_cost
-
-    if pattern is None:
-        return {"score": None, "reason": "No saved result", "applicable": False}
-    values = pattern["thresholds"]
-    valid = complete_thresholds(values, keys) and all(
-        int(value) == value for value in values.values()
-    )
-    result = {
-        "result_id": pattern.get("id"),
-        "applicable": pattern["applicable"] and valid,
-        "thresholds_complete": valid,
-        "score": None,
-    }
-    if not valid:
-        return {
-            **result,
-            "reason": "A complete integer threshold set for the active gates is unavailable",
-        }
-    measured = _assess_objective(objective, values, corrected)
-    human, automatic = measured["human"], measured["automatic"]
-    sources = {state: _source(state, human, automatic) for state in evidence.LABELS}
-    result.update(human=human, automatic=automatic, sources=sources)
-    if None in sources.values():
-        return {**result, "reason": "Need 300 observed seconds of each state"}
-    _, auto_miss, auto_false = measured["automatic_rank"]
-    miss = (
-        1 - human["duration"]["presence_recall_lower"]
-        if sources["present"] == "human"
-        else auto_miss
-    )
-    false = (
-        human["duration"]["false_positive_percent"] / 100
-        if sources["not_present"] == "human"
-        else auto_false
-    )
-    cost = error_cost(miss, false)
-    duration = human["duration"]
-    return {
-        **result,
-        "score": score_from_cost(cost),
-        "error_cost": cost,
-        "automatic_error_cost": measured["automatic_rank"][0],
-        "ranking": [
-            round(cost, 10),
-            duration["missed_presence_episodes"],
-            duration["missed_seconds"],
-            duration["false_positive_seconds"],
-            *measured["automatic_rank"],
-        ],
-        "presence_recall": 1 - miss,
-        "false_positive_percent": 100 * false,
-        "target_met": 1 - miss >= MIN_RECALL - 1e-12,
-        "basis": "human" if set(sources.values()) == {"human"} else "estimated",
-    }
+    return facade.compare(view, device_id, context)
 
 
 def _bounds(view, device_id, start, end):
@@ -633,15 +508,20 @@ def fit(
     start=-inf,
     end=inf,
 ):
-    start, end = _bounds(view, device_id, start, end)
-    current = {key: (current or {}).get(key, DEFAULT_THRESHOLD) for key in keys}
-    objective = _objective(
-        view, device_id, keys, current, timing or {}, automatic_weight, constraints, start, end
+    """Learn one radar's thresholds with the hybrid engine (``engine.hybrid.facade``)."""
+    from ..engine.hybrid import facade
+
+    return facade.fit(
+        view,
+        device_id,
+        keys,
+        current,
+        timing,
+        automatic_weight,
+        constraints=constraints,
+        start=start,
+        end=end,
     )
-    policy = _selection(objective, view, keys, current, timing or {}, automatic_weight, constraints)
-    _reference(objective, policy["selected"] == "reference", automatic_weight)
-    thresholds = _search(objective)
-    return _result(objective, thresholds, keys, timing or {}, policy, automatic_weight)
 
 
 def _reference(objective, reference, weight):

@@ -13,7 +13,7 @@ from homeassistant.helpers import entity_registry as er
 from .. import entity_index
 from ..calibration import automatic, comparison_jobs, timing_config
 from ..calibration import settings as learning_settings
-from ..calibration.constants import METHOD
+from ..calibration.constants import METHOD, ROOM_METHOD
 from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
 from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
@@ -113,6 +113,7 @@ def snapshot(runtime) -> dict[str, Any]:
         "devices": {},
         # Saved results from any other learner are older and must be learned again.
         "learner_method": METHOD,
+        "room_learner_method": ROOM_METHOD,
         "learning_schedule": {**settings(runtime), **learning_settings.summary(runtime.data)},
         "timing_settings": timing_config.settings(runtime),
         "bermuda": bermuda.settings(runtime),

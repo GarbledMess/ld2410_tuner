@@ -10,8 +10,11 @@ import pytest
 import test_rooms as harness
 from test_rooms import labels, member, set_records
 from tuner_under_test.calibration.separation import gate_preference
-from tuner_under_test.rooms import application, fitting, groups, learning, objective
-from tuner_under_test.rooms.objective import LinkedObjective, Objective
+from tuner_under_test.engine.hybrid import adapters, search
+from tuner_under_test.engine.hybrid.exact import Evaluator
+from tuner_under_test.engine.hybrid.training import TrainingStore
+from tuner_under_test.rooms import application, fitting, groups, learning
+from tuner_under_test.rooms.objective import Objective
 
 
 def example(a, b, current=20):
@@ -49,16 +52,25 @@ def test_complementary_handoffs_and_noisy_member():
     assert result["cost_after"] < result["cost_before"]
 
 
+def hybrid_scores(groups, rooms, patterns, end=1680, weight=0, reference=False):
+    problem = adapters.room_problem(groups, 0, end, rooms, weight, reference=reference)
+    converted = [{rid: {0: gates["g0_move"]} for rid, gates in pat.items()} for pat in patterns]
+    with Evaluator(problem, ((0, end),)) as evaluator:
+        return evaluator.scores(converted)
+
+
 def test_search_cost_matches_report_with_different_timing_and_offsets():
     data = example([70] * 100 + [10] * 100, [50] * 100 + [5] * 100)
     data["a"]["timing"] = {"timeout": 1, "on_delay": 0.5, "off_delay": 1}
     data["b"]["timing"] = {"timeout": 8, "on_delay": 2, "off_delay": 3}
-    objective = Objective(data, 0, 1200)
     for value in (0, 10, 30, 55, 75, 100):
         thresholds = {"a": {"g0_move": value}, "b": {"g0_move": 55 - value if value < 55 else 20}}
         report = fitting.measure(data, thresholds, 0, 1200)["room"]
-        expected = 500 * (1 - report["presence_recall"]) + report["false_positive_percent"]
-        assert abs(objective.costs(thresholds)[0] - expected) < 1e-8
+        score = hybrid_scores({"zone": data}, None, [thresholds], end=1200)[0]
+        assert score["cost"] == pytest.approx(report["error_cost"])
+        assert report["error_cost"] == pytest.approx(
+            100 * (report["time_term"] + report["episode_term"])
+        )
 
 
 def test_automatic_presence_cannot_overrule_human_empty_labels():
@@ -239,91 +251,89 @@ def linked(*specs):
 DESK, SOFA, BED = ("zone:desk", "x", 360), ("zone:sofa", "y", 720), ("zone:bed", "z", 1080)
 
 
-def own_preferred(groups, rooms, gid):
-    return Objective(groups[gid], 0, END, rooms[gid]).preferred["s"]["g0_move"]
+def seed_preferences(groups, rooms, directory):
+    problem = adapters.room_problem(groups, 0, END, rooms, 0)
+    with TrainingStore(directory) as training:
+        search.collect_training(problem, training)
+        return search._Search(problem, training).seeds()[1]
 
 
-def test_shared_radar_preference_is_the_lower_median_of_group_preferences():
+def test_shared_radar_preference_is_the_lower_median_of_group_preferences(tmp_path):
     groups, rooms = linked(DESK, SOFA, BED)
-    own = {gid: own_preferred(groups, rooms, gid) for gid in groups}
-    assert len(set(own.values())) == 3  # each zone attributes s differently
-    three = LinkedObjective(groups, 0, END, rooms)
-    assert three.preferred["s"]["g0_move"] == sorted(own.values())[1]
-    # Groups are visited in sorted id order (bed, desk, sofa), whatever the input order.
-    assert list(three.groups) == ["zone:bed", "zone:desk", "zone:sofa"]
-    assert list(three.current) == list(three.radars) == ["z", "s", "x", "y"]
+    own = {
+        gid: seed_preferences({gid: members}, {gid: rooms[gid]}, tmp_path)["s"][0]
+        for gid, members in groups.items()
+    }
+    assert len(set(own.values())) == 3
+    three = seed_preferences(groups, rooms, tmp_path)
+    assert three["s"][0] == sorted(own.values())[1]
     pair, pair_rooms = linked(DESK, SOFA)
-    two = LinkedObjective(pair, 0, END, pair_rooms)
-    # Even count: the lower of the two middle values, never their mean.
-    assert two.preferred["s"]["g0_move"] == min(own["zone:desk"], own["zone:sofa"])
-    alone = Objective(pair["zone:desk"], 0, END, pair_rooms["zone:desk"])
-    assert two.preferred["x"] == alone.preferred["x"]
-    assert set(two.radars) == set(two.current) == {"x", "s", "y"}
+    two = seed_preferences(pair, pair_rooms, tmp_path)
+    assert two["s"][0] == min(own["zone:desk"], own["zone:sofa"])
+    assert (
+        two["x"]
+        == seed_preferences(
+            {"zone:desk": pair["zone:desk"]}, {"zone:desk": pair_rooms["zone:desk"]}, tmp_path
+        )["x"]
+    )
 
 
 def test_shared_radar_evidence_is_read_once_per_linked_objective():
-    """Linked groups read and replay a shared radar's bounded evidence once. Its attribution
-    is the learner's, over full history; a job computes that once per radar
-    (``test_rooms``: ``test_a_job_attributes_each_radar_once``)."""
     groups, rooms = linked(DESK, SOFA, BED)
-    with patch.object(objective.evidence, "read", wraps=objective.evidence.read) as spy:
-        LinkedObjective(groups, 0, END, rooms)
-    assert [call.args[1] for call in spy.call_args_list].count("s") == 1
+    problem = adapters.room_problem(groups, 0, END, rooms, 0)
+    assert set(problem.rows) == {"s", "x", "y", "z"}
+    assert len({id(source) for source in problem.rows.values()}) == 4
+    assert all("s" in z.members for z in problem.zones)
+    for rid, source in problem.rows.items():
+        assert source.source.device_id == rid
+        assert all(len(block.times) <= 4096 for block in source.blocks(0, END))
 
 
 def test_linked_rank_sums_group_ranks_and_rounds_away_summation_noise():
     groups, rooms = linked(DESK, SOFA, BED)
-    objective = LinkedObjective(groups, 0, END, rooms)
-    # Thresholds whose three group costs (9 places each) do not sum exactly in floats.
     thresholds = {key: {"g0_move": 7} for key in ("x", "y", "z", "s")}
-    parts = [item.rank(part) for _, item, part in objective.parts(thresholds)]
-    sums = [sum(values) for values in zip(*parts, strict=True)]
-    assert sums[0] != round(sums[0], 9)  # three 9-place costs whose float sum is not
-    # Keys: blended, human (P2b tie-break), automatic-sourced, automatic cost, then margins.
-    costs = tuple(round(value, 9) for value in sums[:4])
-    assert objective.rank(thresholds) == (*costs, *sums[4:])
-    # A shared radar's change counts once per group containing it: x, y, z once, s three times.
-    assert objective.rank(thresholds)[5] == 6
+    score = hybrid_scores(groups, rooms, [thresholds])[0]
+    reverse = hybrid_scores(dict(reversed(groups.items())), rooms, [thresholds])[0]
+    assert score == reverse
+    assert score["cost"] == pytest.approx(sum(z["cost"] for z in score["zones"].values()))
+    assert set(score["zones"]) == set(groups)
 
 
 def test_linked_cost_is_sum_of_group_costs():
     groups, rooms = linked(DESK, SOFA)
-    objective = LinkedObjective(groups, 0, END, rooms)
-    alone = {gid: Objective(groups[gid], 0, END, rooms[gid]) for gid in groups}
-    for shared in (0, 11, 27, 42, 100):
-        thresholds = {"x": {"g0_move": 5}, "y": {"g0_move": 50}, "s": {"g0_move": shared}}
-        parts = [
-            item.costs({key: thresholds[key] for key in item.radars}) for item in alone.values()
-        ]
-        expected = tuple(sum(values) for values in zip(*parts, strict=True))
-        assert objective.costs(thresholds) == pytest.approx(expected, abs=1e-12)
-        assert len(objective.costs(thresholds)) == 2
+    patterns = [
+        {"x": {"g0_move": 5}, "y": {"g0_move": 50}, "s": {"g0_move": t}}
+        for t in (0, 11, 27, 42, 100)
+    ]
+    for score in hybrid_scores(groups, rooms, patterns):
+        assert score["cost"] == pytest.approx(sum(z["cost"] for z in score["zones"].values()))
     result = fitting.fit_set(groups, 0, END, rooms)
     for key in ("cost_before", "cost_after"):
-        total = sum(item[key] for item in result["groups"].values())
-        assert result[key] == pytest.approx(total, abs=1e-12)
+        assert result[key] == pytest.approx(sum(item[key] for item in result["groups"].values()))
     assert result["cost_after"] <= result["cost_before"]
 
 
 def test_shared_radar_gets_single_value():
     groups, rooms = linked(DESK, SOFA, BED)
     result = fitting.fit_set(groups, 0, END, rooms)
-    assert list(result["thresholds"]) == ["z", "s", "x", "y"]  # bed, desk, sofa: sorted ids
-    assert list(result["groups"]) == ["zone:bed", "zone:desk", "zone:sofa"]
+    assert set(result["thresholds"]) == {"z", "s", "x", "y"}
+    assert set(result["groups"]) == {"zone:bed", "zone:desk", "zone:sofa"}
     for gid, members in groups.items():
         report = result["groups"][gid]
         expected = fitting.measure(members, result["thresholds"], 0, END, rooms[gid])
         assert report["after"] == expected
-        alone = Objective(members, 0, END, rooms[gid])
-        assert report["cost_after"] == alone.costs(result["thresholds"])[0]
-        assert report["cost_before"] == alone.costs(alone.current)[0]
+        current = {rid: item["thresholds"] for rid, item in members.items()}
+        assert report["cost_after"] == expected["room"]["error_cost"]
+        assert (
+            report["cost_before"]
+            == fitting.measure(members, current, 0, END, rooms[gid])["room"]["error_cost"]
+        )
     assert isinstance(result["thresholds"]["s"]["g0_move"], int)
 
 
 def test_shared_radar_value_minimises_the_summed_cost_not_one_zone():
     groups, rooms = linked(DESK, SOFA)
     result = fitting.fit_set(groups, 0, END, rooms)
-    objective = LinkedObjective(groups, 0, END, rooms)
     # Fitted alone, the zones disagree about s; linked, s takes one value that is no worse
     # for the pair than either zone's own choice, and desk alone would have chosen otherwise.
     alone = {gid: fitting.fit(groups[gid], 0, END, rooms[gid]) for gid in groups}
@@ -333,7 +343,7 @@ def test_shared_radar_value_minimises_the_summed_cost_not_one_zone():
     assert shared != alone["zone:desk"]["thresholds"]["s"]["g0_move"]
     for choice in choices:
         candidate = {**result["thresholds"], "s": {"g0_move": choice}}
-        assert result["cost_after"] <= objective.costs(candidate)[0]
+        assert result["cost_after"] <= hybrid_scores(groups, rooms, [candidate])[0]["cost"]
     assert result["cost_after"] < result["cost_before"]
 
 
@@ -356,9 +366,19 @@ def test_linked_fit_ignores_group_order_and_reports_no_union_room():
                 for radar in ("x", "s", "y")
             },
         }
-    assert list(forward["after"]["devices"]["s"]) == ["zone:desk", "zone:sofa"]
+    assert set(forward["after"]["devices"]["s"]) == {"zone:desk", "zone:sofa"}
     met = all(item["after"]["room"]["target_met"] for item in forward["groups"].values())
-    assert forward["status"] == ("uncertain" if met else "unsafe")
+    # Status describes remaining false activity, not whether cost rose from start.
+    false = any(
+        sum(
+            source["not_present"]["active_seconds"]
+            for source in item["after"]["room"]["outcomes"].values()
+        )
+        > 6
+        for item in forward["groups"].values()
+    )
+    expected = "tradeoff" if false else "ok"
+    assert forward["status"] == (expected if met else "unsafe")
 
 
 def without_labels(groups, rooms, gid, companion):
@@ -388,10 +408,11 @@ def test_unscorable_zone_is_skipped_and_the_set_fits_on_the_rest():
         desk["cost_before"],
         desk["cost_after"],
     )
-    assert result["status"] == desk["status"]
+    assert result["status"] == "uncertain"  # A skipped zone prevents a whole-set quality claim.
     assert result["after"]["room"] is None
     assert result["after"]["devices"] == {
-        radar: {"zone:desk": desk["after"]["devices"][radar]} for radar in ("x", "s")
+        **{radar: {"zone:desk": desk["after"]["devices"][radar]} for radar in ("x", "s")},
+        "y": {},  # Configured radar retained; no fabricated report for its skipped zone.
     }
 
 

@@ -130,11 +130,14 @@ def test_isolated_human_presence_still_overrides_long_confident_guesses():
     automatic = rows(range(100, 200), energy=30, confidence=0.99)
     automatic += rows(range(300, 400), "not_present", energy=25, confidence=0.99)
     result = harness.fit(human, ["g0_still"], automatic=automatic)
-    # The guesses at 30 lack support against empty readings at 25 (gate support), so no
-    # recommendation is made that could raise the gate over the human point at 20.
-    assert result["status"] != "ok"
-    for proposal in result["proposals"].values():
-        assert proposal["threshold"] < 20
+    # The automatic-only empty class remains primary even at zero influence.
+    # Detecting the human point would activate an entire empty episode; the
+    # pinned mirror guard keeps the start and explicitly reports the human miss.
+    assert result["status"] == "unsafe"
+    assert result["proposals"]["g0_still"]["threshold"] == 50
+    assert result["training"]["missed_presence_episodes"] == 1
+    assert result["training"]["duration"]["present_seconds"] > 0
+    assert result["estimated_training"]["empty_periods_mostly_false_active"] == 0
 
 
 @pytest.mark.parametrize("rank_method", ["rank", "automatic_rank"])
@@ -201,7 +204,7 @@ def test_all_fit_reports_share_the_current_time_cost(timing):
     result = harness.fit(
         human, ["g0_still"], current={"g0_still": 10}, automatic=automatic, timing=timing
     )
-    assert result["targets"]["scoring"] == "weighted_post_timing_error"
+    assert result["targets"]["scoring"] == "weighted_post_timing_time_and_episode_error"
     for name in (
         "training",
         "recent_training",
@@ -214,8 +217,17 @@ def test_all_fit_reports_share_the_current_time_cost(timing):
         # where humans support both classes) adds nothing for it.
         missed = d["missed_seconds_upper"] / d["present_seconds"] if d["present_seconds"] else 0
         false = d["false_positive_seconds"] / d["empty_seconds"] if d["empty_seconds"] else 0
-        expected = 500 * missed + 100 * false
-        assert d["error_cost"] == pytest.approx(expected)
+        measured = result[name]
+        occupied = measured["presence_episodes"]
+        # This fixture has one empty episode per occupied episode for each source.
+        empty_periods = occupied
+        mostly = measured["mostly_missed_episodes"] / occupied if occupied else 0
+        failed = measured["empty_periods_failed"] / empty_periods if empty_periods else 0
+        expected = 100 * (5 * missed + false + 5 * mostly + failed)
+        if d["present_seconds"] and d["empty_seconds"]:
+            assert d["error_cost"] == pytest.approx(expected)
+        else:
+            assert d["error_cost"] is None  # One missing class is unscorable, never perfect.
         assert d["missed_time_cost"] == 5
 
 

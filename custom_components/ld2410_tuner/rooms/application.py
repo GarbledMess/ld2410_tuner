@@ -9,8 +9,7 @@ from ..calibration import automatic as policy
 from ..calibration import device_io, results
 from ..calibration import thresholds as threshold_domain
 from ..calibration.scoring import improves
-from . import adaptive, fitting, groups, jobs, truth
-from .objective import Objective
+from . import fitting, groups, jobs, truth
 
 WORSE = "A zone would get worse"
 # Costs are sums of floats; differences below this are integration noise, not change.
@@ -135,17 +134,11 @@ async def apply(runtime, set_id, result_id, source="user", automatic_source=None
 
 
 def compare(members, thresholds, start, end, room=None):
-    """Live and candidate room results for one zone on the same recordings."""
-    quality = adaptive.models(
-        adaptive.collect_contexts({"room": members}, start, end, {"room": room} if room else {})
-    )
-    objective = Objective(members, start, end, room, quality=quality)
-    current = fitting.measure(members, objective.current, start, end, room, quality=quality)
-    candidate = fitting.measure(members, thresholds, start, end, room, quality=quality)
-    return {
-        "live": {**current["room"], "error_cost": objective.costs(objective.current)[0]},
-        "candidate": {**candidate["room"], "error_cost": objective.costs(thresholds)[0]},
-    }
+    """Live and candidate room results for one zone on the same recordings, scored together
+    by the hybrid evaluator: ``error_cost`` is the unrounded common time-and-episode cost."""
+    from ..engine.hybrid import facade
+
+    return facade.compare_room(members, thresholds, start, end, room)
 
 
 async def automatic(runtime, learned, report, source):
@@ -248,5 +241,5 @@ def _improvement(zones):
     patterns = next(iter(zones.values())) if len(zones) == 1 else _total(zones)
     if not improves(patterns["live"], patterns["candidate"]):
         raise ValueError(
-            "Joint recommendation does not reduce the weighted missed-time and false-active penalty"
+            "Joint recommendation does not reduce the weighted time and episode penalty"
         )

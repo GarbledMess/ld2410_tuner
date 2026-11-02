@@ -77,7 +77,9 @@ def test_full_native_fit_is_invariant_to_duplicate_delivery_density():
     second = fit(dense, "any-name", ["g0_move"], {"g0_move": 80})
     assert first["proposals"] == second["proposals"]
     assert first["training"] == second["training"]
-    assert first["proposals"]["g0_move"]["threshold"] == 25
+    # Quiet attenuation moves the interior gap below the raw-data midpoint.
+    assert 10 < first["proposals"]["g0_move"]["threshold"] < 40
+    assert first["base_cost"] == 0
 
 
 def test_native_automatic_only_keeps_raw_admitted_confidence():
@@ -239,8 +241,17 @@ def test_native_search_cost_really_trades_elapsed_presence_against_false_time():
         ],
     )
     result = fit(source, "any-name", ["g0_move"], {"g0_move": 80})
-    assert result["proposals"]["g0_move"]["threshold"] < 5
-    assert result["training"]["duration"]["missed_seconds"] == 0
+    from tuner_under_test.calibration.event_fitting import assess
+
+    # Detecting quiet presence would make the entire empty episode active. The
+    # pinned mirror guard forbids adding that failure even though base cost falls.
+    current = assess(source, "any-name", {"g0_move": 80})["human"]
+    detects_quiet = assess(source, "any-name", {"g0_move": 0})["human"]
+    assert detects_quiet["duration"]["error_cost"] < result["base_cost"]
+    assert detects_quiet["empty_periods_mostly_false_active"] == 1
+    assert result["training"]["empty_periods_mostly_false_active"] == 0
+    assert result["base_cost"] < current["duration"]["error_cost"]
+    assert result["training"]["duration"]["missed_seconds"] == pytest.approx(500)
 
 
 def test_independent_room_empty_and_attributed_present_keep_device_precedence():
@@ -325,8 +336,10 @@ def test_native_support_is_duration_and_raw_float_boundary_is_exact():
         ["g0_move"],
         {"g0_move": 80},
     )
-    assert tiny["status"] == "insufficient"
-    assert tiny["proposals"] == {}
+    assert tiny["status"] != "insufficient"
+    assert tiny["proposals"]
+    assert tiny["training"]["duration"]["present_seconds"] == 1
+    assert tiny["training"]["duration"]["empty_seconds"] == 1
 
 
 def test_native_saved_result_keeps_duration_and_validation_adapter_contract():

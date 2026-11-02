@@ -7,7 +7,7 @@ from types import MappingProxyType
 
 from .constants import ATTRIBUTION_MARGIN, ATTRIBUTION_TAIL_QUANTILE
 
-QUALITY_VERSION = 5
+QUALITY_VERSION = 6  # 6: collected from streamed hybrid evidence, one day at a time.
 QUALITY_MIN_EMPTY_OBSERVATIONS = 100
 DENSITY_PRIOR = 0.01
 MINIMUM_LIKELIHOOD_RATIO = 2

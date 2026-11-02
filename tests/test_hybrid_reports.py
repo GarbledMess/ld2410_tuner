@@ -492,3 +492,21 @@ def test_room_report_keeps_policy_audit_separate_from_anomaly_audit():
     assert value["automatic_evidence"] == policy_audit
     assert value["anomaly"] == anomaly
     assert value["validation_scope"] == "estimated_without_independent_validation"
+
+
+@pytest.mark.parametrize("mode", ["exact", "cells"])
+@pytest.mark.parametrize("human_states", [(), ("present",), ("present", "not_present")])
+def test_room_assessment_preserves_evidence_basis_separately_from_fidelity(mode, human_states):
+    from tuner_under_test.engine.hybrid import reports
+
+    found = metrics()
+    human, automatic = empty_metrics(), metrics()
+    for state in human_states:
+        key = "occupied_seconds" if state == "present" else "empty_seconds"
+        human[key] = found[key]
+        automatic[key] = 0
+    assessment = reports._assessment(found, {"human": human, "automatic": automatic}, mode)
+    assert assessment["basis"] == (
+        "human" if set(human_states) == {"present", "not_present"} else "estimated"
+    )
+    assert assessment["scoring_mode"] == mode

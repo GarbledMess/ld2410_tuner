@@ -3,18 +3,42 @@
 import math
 
 from ..history import pace
-from .constants import MIN_CLASS_SAMPLES
 
-SCORE_MODEL = "weighted_time_v1"
+SCORE_MODEL = "hybrid_time_episode_v1"
 # Increment whenever scoring, evidence selection, outlier or timing semantics change.
-SCORER_VERSION = 2
+SCORER_VERSION = 3
+# The hybrid constants that decide a fixed-pattern score's fidelity (exact rows or six-second
+# cells) and its row budget. A stored score is reused only under the same values.
+FIDELITY = (
+    "CELL_SECONDS",
+    "WARMUP_SECONDS",
+    "CHUNK_SECONDS",
+    "ROW_BLOCK_ROWS",
+    "EXACT_BUDGET",
+    "MIN_EXACT",
+    "MISSED_WEIGHT",
+    "TOLERANCE",
+    "AUTOMATIC_HORIZON_DAYS",
+    "HUMAN_EVIDENCE_HOURS",
+)
+
+
+def fidelity():
+    """The scorer identity a stored comparison score must match, read when asked."""
+    from ..engine.hybrid import constants
+
+    return {
+        "model": SCORE_MODEL,
+        "scorer_version": SCORER_VERSION,
+        **{name.lower(): getattr(constants, name) for name in FIDELITY},
+    }
 
 
 @pace.background
 def calculate(view, device_id, context):
-    from .event_fitting import compare
+    from ..engine.hybrid import facade
 
-    return compare(view, device_id, context)
+    return facade.compare(view, device_id, context)
 
 
 def best_slots(patterns):
@@ -28,23 +52,9 @@ def best_slots(patterns):
 
 
 def _rank(item):
-    # A deliberate safety gate, independent of the automatic evidence weight setting:
-    # automatic evidence only breaks ties here, so Automatic Apply needs a human-label gain.
+    # The facade ranks the shared source-aware time-and-episode cost first;
+    # episode counts and source diagnostics resolve ties consistently with Apply.
     return tuple(item["ranking"])
-
-
-def _source(label, human, automatic):
-    samples, seconds = (
-        ("present_samples", "present_seconds")
-        if label == "present"
-        else ("not_present_samples", "empty_seconds")
-    )
-    if human[samples] + automatic[samples] < MIN_CLASS_SAMPLES:
-        return None
-    for name, measured in (("human", human), ("automatic", automatic)):
-        if measured["duration"][seconds] > 0:
-            return name
-    return None
 
 
 def complete_thresholds(values, keys):

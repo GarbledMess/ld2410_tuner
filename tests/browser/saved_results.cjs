@@ -364,6 +364,94 @@ module.exports = async function testSavedResults(page, screenshotDir) {
     ),
     true,
   );
+  // Older-model results stay viewable, unchanged, with a notice; current hybrid
+  // results show raw and timed panels with time and period terms and no notice.
+  await page.evaluate(() => {
+    const results = fixture.devices.a.learning_results;
+    const duration = (missed, falseActive) => ({
+      present_seconds: 600,
+      empty_seconds: 1200,
+      missed_seconds: missed,
+      missed_seconds_upper: missed,
+      false_positive_seconds: falseActive,
+      false_positive_percent: (100 * falseActive) / 1200,
+      false_positive_score: (-100 * falseActive) / 1200,
+      presence_recall: 1 - missed / 600,
+      presence_recall_lower: 1 - missed / 600,
+      presence_episodes: 4,
+      missed_presence_episodes: 0,
+      false_trigger_events: 1,
+      unscored_presence_samples: 0,
+      unscored_empty_samples: 0,
+      basis: "physical_interval_time",
+      missed_time_cost: 5,
+      longest_missed_seconds: missed,
+      longest_missed_seconds_upper: missed,
+      error_cost: 27.5,
+    });
+    const measured = (missed, falseActive) => ({
+      duration: duration(missed, falseActive),
+      present_samples: 100,
+      not_present_samples: 200,
+      sensitivity: 1 - missed / 600,
+      false_positive_rate: falseActive / 1200,
+      false_negatives: missed / 6,
+      false_positives: falseActive / 6,
+      presence_episodes: 4,
+      missed_presence_episodes: 0,
+      longest_missed_run_samples: missed / 6,
+      false_trigger_bursts: 1,
+      false_trigger_bursts_per_hour: 3,
+      observed_absent_seconds: 1200,
+      mostly_missed_episodes: 1,
+      empty_periods_failed: 2,
+      empty_periods_with_false_trigger: 1,
+      empty_periods_mostly_false_active: 1,
+      false_triggers: 1,
+    });
+    Object.assign(results.user, {
+      status: "tradeoff",
+      training: measured(3, 12),
+      raw_training: measured(1, 7),
+      validation: measured(0, 0),
+    });
+    results.previous.method = "human_priority_v11";
+    window.olderResult = structuredClone(results.previous);
+    return panel._load();
+  });
+  const details = card.locator('.subsection[data-section="details"]');
+  const older = /This saved result used an older learning model/;
+  await picker.selectOption("previous");
+  assert.match(await details.innerText(), older, "older model is marked");
+  assert.match(await details.innerText(), /Older learning model · learn again/);
+  assert.deepEqual(
+    await page.evaluate(() => fixture.devices.a.learning_results.previous),
+    await page.evaluate(() => window.olderResult),
+    "viewing an older result leaves its saved report unchanged",
+  );
+  await picker.selectOption("user");
+  const shown = await details.textContent();
+  assert.doesNotMatch(shown, older, "the current model is not marked older");
+  assert.match(shown, /time term and a period term/);
+  assert.match(
+    shown,
+    /Occupied periods mostly missed \(under half detected\): 1 of 4/,
+  );
+  assert.match(shown, /Empty periods failed .*: 2/);
+  assert.match(shown, /Before hold and filters: 0.2 missed \/ 100 presence/);
+  assert.match(shown, /1.2 crossings \/ 200 empty observations/);
+  assert.match(shown, /label changes do not/);
+  assert.doesNotMatch(shown, /NaN|undefined|null/);
+  await page.evaluate(() => {
+    const user = fixture.devices.a.learning_results.user;
+    user.training.duration.basis = "six_second_cells";
+    return panel._load();
+  });
+  assert.match(
+    await details.textContent(),
+    /six-second cell maxima because exact replay/,
+    "a cell-scored fallback says so",
+  );
   await page.setViewportSize({ width: 1400, height: 1000 });
   await page.evaluate(() => {
     fixture.devices.a = window.beforeSavedResults;

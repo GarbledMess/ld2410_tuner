@@ -59,6 +59,21 @@ def finalists(tmp_path, p, shard_cells=4096):
         return search(p, store)
 
 
+def test_finalists_preserve_crossings_supported_only_by_automatic_evidence(tmp_path):
+    spans = [
+        truth(0, 600, episode="human-present"),
+        truth(600, 1200, source="automatic", episode="automatic-present"),
+        truth(1200, 1800, "not_present", episode="human-empty"),
+    ]
+    p = problem({"r": [(30, 5)] * 100 + [(5, 12)] * 100 + [(5, 5)] * 100}, spans)
+    radar = replace(p.radars["r"], current={0: 20, 1: 13})
+    p = replace(p, radars={"r": radar}, policy=EvidencePolicy(0.3, False, {}))
+    candidates = finalists(tmp_path, p)
+    # Channel 1 is constant on human truth, but it detects an independently
+    # supported automatic location. Repair must retain that physical crossing.
+    assert any(5 <= candidate["r"][1] < 12 for candidate in candidates)
+
+
 def test_conditional_histograms_equal_scalar_or():
     rng = random.Random(81)
     cols = tuple(bytes(rng.randrange(101) for _ in range(71)) for _ in range(3))

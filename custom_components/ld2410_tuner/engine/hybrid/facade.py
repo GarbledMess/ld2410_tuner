@@ -11,7 +11,7 @@ Fixed-pattern surfaces (assess, compare, measure, compare_room) never refit.
 from dataclasses import replace
 from math import inf
 
-from ...calibration.comparison import best_slots, complete_thresholds
+from ...calibration.comparison import SCORE_MODEL, best_slots, complete_thresholds
 from ...calibration.constants import MIN_RECALL
 from ...calibration.episodes import chronological_split
 from ...calibration.quality import QUALITY_VERSION
@@ -20,15 +20,13 @@ from ...calibration.settings import DEFAULT_AUTOMATIC_WEIGHT
 from ...calibration.settings import KEY as WEIGHT_KEY
 from ...const import HISTORY_KEYS
 from ...history import spans
-from ...rooms import adaptive, roles
+from ...rooms import adaptive, attribution, roles
 from . import adapters, engine, fixed, held, reports, room_bundles
 from .diagnostics import diagnostics
 from .scoring import masked
 from .types import FitResult
 
 DEFAULT_THRESHOLD = 50  # A gate's starting point when its current threshold is unknown.
-ROOM_METHOD = "joint_room_v2"
-SCORE_MODEL = "hybrid_time_episode_v1"
 NO_CLASS = "No observed labelled time in one class."
 INFLUENCE = 6
 STATES = fixed.STATES
@@ -204,13 +202,31 @@ def _device_bundle(scores, problem, pattern, audit):
     measured["raw"] = scores.scores([pattern], [human], raw=True)[0][human.group_id]
     bundle = {name: measured[name] for name in ("human", "automatic", "recent", "raw")}
     bundle["automatic_evidence"] = _automatic_evidence(problem, measured)
+    if problem.policy.reference:
+        suppressed = {s for s in STATES if measured["human"][SECONDS[s]]}
+        effective = fixed.variant(
+            zones["automatic"], "effective", lambda _a, _b, span: span.state not in suppressed
+        )
+        bundle["automatic"] = scores.scores([pattern], [effective])[0][effective.group_id]
     bundle["influence"] = _influence(periods, without, found, measured["human"])
     bundle.update(_validation(scores, problem, human, audit))
     return bundle, measured["all"]
 
 
+def _judged(problem, result):
+    """``problem`` as the engine finally judged it: discarded anomaly time unobserved."""
+    found = (result.diagnostics.get("anomaly") or {}).get("discarded_intervals") or {}
+    if not found:
+        return problem
+    zones = tuple(
+        masked(zone, [tuple(span) for span in found.get(zone.group_id, ())])
+        for zone in problem.zones
+    )
+    return replace(problem, zones=zones)
+
+
 def _device_report(problem, result, audit):
-    problem = engine.with_horizon(problem)
+    problem = _judged(engine.with_horizon(problem), result)
     pattern = result.thresholds
     with fixed.FixedScores(problem, 3) as scores:
         bundle, after = _device_bundle(scores, problem, pattern, audit)
@@ -268,8 +284,9 @@ def _measured(view, device_id, keys, thresholds, timing, weight, start, end, con
         None,
         start,
         end,
-        quality_context=None if context is False else context,
+        quality_context=context,
     )
+    attribution.release([view])
     return engine.with_horizon(problem)
 
 
@@ -278,10 +295,15 @@ def _source_scores(scores, problem, patterns):
     return [_by_name(found, zones) for found in scores.scores(patterns, zones.values())]
 
 
+def _error_fraction(metrics, state, source):
+    """Confidence-weighted class error already accumulated by the evaluator."""
+    total, error, *_ = metrics["sufficient_statistics"].get(f"{state}/{source}", [0, 0])
+    return error / total if total else 0.0
+
+
 def _rank(automatic):
-    recall, empty = automatic["occupied_recall"], automatic["empty_seconds"]
-    missed = 1 - recall if recall is not None else 0.0
-    false = automatic["false_active_seconds"] / empty if empty else 0.0
+    missed = _error_fraction(automatic, "present", "automatic")
+    false = _error_fraction(automatic, "not_present", "automatic")
     return automatic["partial_cost"], missed, false
 
 
@@ -326,7 +348,7 @@ def _sources(measured):
 
 
 def _scored(measured, mode):
-    whole, empty = measured["all"], measured["all"]["empty_seconds"]
+    whole = measured["all"]
     sources = _sources(measured)
     result = {
         "human": reports.measurement(measured["human"], mode),
@@ -337,7 +359,7 @@ def _scored(measured, mode):
     }
     if None in sources.values() or whole["cost"] is None:
         return {**result, "reason": NO_CLASS}
-    recall = whole["occupied_recall"]
+    recall = 1 - _error_fraction(whole, "present", sources["present"])
     return {
         **result,
         "score": score_from_cost(whole["cost"]),
@@ -352,7 +374,8 @@ def _scored(measured, mode):
             *_rank(measured["automatic"]),
         ],
         "presence_recall": recall,
-        "false_positive_percent": 100 * whole["false_active_seconds"] / empty,
+        "false_positive_percent": 100
+        * _error_fraction(whole, "not_present", sources["not_present"]),
         "target_met": recall >= MIN_RECALL - 1e-12,
     }
 
@@ -384,8 +407,18 @@ def compare(view, device_id, context):
     keys = list(context["keys"])
     start, end = _bounds(view, device_id, -inf, inf)
     weight = context.get(WEIGHT_KEY, DEFAULT_AUTOMATIC_WEIGHT)
+    # Without a quality version the comparison uses recorded confidence, as before.
+    corrected = None if context.get("quality_version") else False
     problem = _measured(
-        view, device_id, keys, dict.fromkeys(keys, 100), context["timing"], weight, start, end
+        view,
+        device_id,
+        keys,
+        dict.fromkeys(keys, 100),
+        context["timing"],
+        weight,
+        start,
+        end,
+        corrected,
     )
     valid = {
         name: pattern
@@ -393,7 +426,9 @@ def compare(view, device_id, context):
         if pattern is not None and _valid(pattern, keys)
     }
     patterns = [_pattern(problem, {device_id: p["thresholds"]}) for p in valid.values()]
-    with fixed.FixedScores(problem, len(patterns)) as scores:
+    count = len({tuple(sorted(p["thresholds"].items())) for p in valid.values()})
+    count = max(count, context.get("fidelity_pattern_count", count))
+    with fixed.FixedScores(problem, count) as scores:
         measured = _source_scores(scores, problem, patterns or [_current(problem)])
     found = dict(zip(valid, measured, strict=False))
     compared = {
@@ -468,6 +503,13 @@ def _subset(problem, gids):
     zones = tuple(z for z in problem.zones if z.group_id in gids)
     rids = {m for z in zones for m in z.members}
     quality = dict(problem.policy.quality)
+    for field in ("models", "audits"):
+        quality[field] = {
+            key: value for key, value in quality.get(field, {}).items() if key in rids
+        }
+    quality["zones"] = {
+        key: value for key, value in quality.get("zones", {}).items() if key in gids
+    }
     if len(zones) == 1:
         quality.update(quality.get("zones", {}).get(zones[0].group_id, {}))
     return replace(
@@ -616,22 +658,24 @@ def fit_set(
     rooms = rooms or {}
     problem = _room_problem(groups, start, end, rooms, automatic_weight, quality_contexts)
     room = _Room(groups, rooms, problem)
+    with fixed.FixedScores(room.problem, 1) as scores:
+        skipped = room.skipped(room.bundles(scores, room.problem.zones, _current(room.problem)))
+    scorable = _subset(problem, set(room.seen) - set(skipped))
+    audit = None
+    policy = "corrected_positive"
+    if quality_contexts is not None:
+        kept = {gid: groups[gid] for gid in groups if gid not in skipped}
+        policy, audit = _room_policy(scorable, kept, rooms, automatic_weight)
+    reference = held.reference_flag(policy, automatic_weight)
+    result = engine.fit(held.with_reference(scorable, reference))
+    # Judge before and after with the selected evidence policy and the fit's masks.
+    room.problem = _judged(held.with_reference(room.problem, reference), result)
     with fixed.FixedScores(room.problem, 2) as scores:
         before = room.bundles(scores, room.problem.zones, _current(room.problem))
-        skipped = room.skipped(before)
-        scorable = _subset(problem, set(before) - set(skipped))
-        audit = None
-        policy = "corrected_positive"
-        if quality_contexts is not None:
-            kept = {gid: groups[gid] for gid in groups if gid not in skipped}
-            policy, audit = _room_policy(scorable, kept, rooms, automatic_weight)
-        final = held.with_reference(scorable, held.reference_flag(policy, automatic_weight))
-        result = engine.fit(final)
         fitted = _fitted(room, scores, result, skipped, before)
     if audit is not None:
         fitted.diagnostics["automatic_evidence"] = audit
     report = reports.room_report(room.problem, fitted, skipped, result.diagnostics.get("anomaly"))
-    report["method"] = ROOM_METHOD
     if len(groups) > 1:
         for which in ("before", "after"):
             report[which] = _top_level(groups, report["groups"], which)

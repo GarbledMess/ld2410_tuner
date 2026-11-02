@@ -76,8 +76,10 @@ def _context(runtime, device_id, *, state_get=None):
         **learner_policy,
         "threshold_constraints": constraints,
     }
+    comparison_cache.preserve_plan(device, context)
     signature = {
         "scorer_version": comparison.SCORER_VERSION,
+        "fidelity": comparison_cache.fidelity(context),
         "entities": entities,
         "patterns": patterns,
         "timing": timing_signature(timing),
@@ -123,9 +125,7 @@ async def _run(runtime, device_id, context, signature, wanted):
     async with runtime._comparison_semaphore:
         started = time.time()
         try:
-            report = await bridge.device(
-                runtime, "comparison", device_id, {"context": {**context, "patterns": wanted}}
-            )
+            report = await _calculate(runtime, device_id, context, wanted)
             report.update(state="ready", evaluated_at=started)
         except asyncio.CancelledError:
             raise
@@ -148,3 +148,23 @@ async def _run(runtime, device_id, context, signature, wanted):
         runtime._comparison_cache.pop(device_id, None)
         runtime._schedule_save()
         return comparison_cache.report(device, context)
+
+
+async def _calculate(runtime, device_id, context, wanted):
+    """Score missing patterns under the full plan; refresh all on a mode transition."""
+    count = comparison_cache.fidelity(context)["pattern_count"]
+
+    async def calculate(patterns):
+        parameters = {**context, "patterns": patterns, "fidelity_pattern_count": count}
+        return await bridge.device(runtime, "comparison", device_id, {"context": parameters})
+
+    report = await calculate(wanted)
+    mode = report.get("scoring_mode")
+    device = runtime.data["devices"][device_id]
+    cached = [
+        comparison_cache.stored(device, context, p)
+        for p in comparison_cache.scorable_patterns(context).values()
+    ]
+    if mode and any(item and item.get("scoring_mode") != mode for item in cached):
+        report = await calculate(comparison_cache.scorable_patterns(context))
+    return report

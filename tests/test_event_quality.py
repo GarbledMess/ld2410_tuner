@@ -125,8 +125,8 @@ def test_fingerprinting_peak_is_bounded_below_whole_payload_repr(monkeypatch):
 def test_fingerprint_format_invalidates_saved_quality_policy():
     from tuner_under_test.calibration import comparison_cache, settings
 
-    assert quality.QUALITY_VERSION == 5
-    assert settings.signature({})["quality_version"] == 5
+    assert quality.QUALITY_VERSION == 6
+    assert settings.signature({})["quality_version"] == 6
 
     pattern = {"thresholds": {"g0_move": 20}, "applicable": True}
     current = {
@@ -135,7 +135,7 @@ def test_fingerprint_format_invalidates_saved_quality_policy():
         "patterns": {"user": pattern},
         **settings.signature({}),
     }
-    old = {**current, "quality_version": 4}
+    old = {**current, "quality_version": 5}
     device = {}
     report = {"patterns": {"user": {"score": 90}}}
     comparison_cache.remember(device, old, report)
