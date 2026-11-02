@@ -26,6 +26,12 @@
   retries after failures. Routine saves no longer start a worker or copy any history.
 - The Bermuda section now names rooms it can't use and why: recording is off for the
   room's radar, or no radar is assigned to that Home Assistant area.
+## Unreleased
+
+- Radar and room status charts now show labelled Human, Entity / sensor and Guessed
+  evidence lanes. Each kind can be hidden with a remembered viewer preference. Room
+  guesses stay separate per radar. Rendering clips and merges periods and batches
+  SVG paths by state; toggling uses the loaded data without another request.
 
 ## 1.32.0 - 2026-10-27
 

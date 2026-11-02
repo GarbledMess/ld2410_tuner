@@ -25,7 +25,6 @@ export const panelRoomTimeline = {
       label.end > bounds.start && label.start < bounds.end;
     const labels = (group.labels || []).filter(inDay);
     const manual = labels.filter((label) => label.source === "manual");
-    const sensor = labels.filter((label) => label.source !== "manual");
     const rows = [...manual]
       .sort((a, b) => a.start - b.start)
       .map((label) => this._roomPeriodHtml(label))
@@ -48,7 +47,6 @@ export const panelRoomTimeline = {
       ${this._roomGraphHtml(gid)}
       <div class="history-timeline-editor">${this._historyRangeHtml(this._historySegmentsHtml(manual, bounds), ui.day)}
       <div class="history-axis"><span>${this._esc(this._historyTime(bounds.start))}</span><span>${this._esc(this._historyTime(bounds.end))} (next day)</span></div></div>
-      ${this._roomSensorBarHtml(sensor, bounds)}
       <div class="history-periods">${rows || '<p class="muted">No manual room labels on this day.</p>'}</div>
       ${this._loneRadarLabelsHtml(group)}
       <p class="history-edit-note" role="status">${ui.edit ? "Editing the full saved room period." : "Add a period, or select a saved period to edit it."}</p>
@@ -93,20 +91,6 @@ export const panelRoomTimeline = {
       end: field('[data-action="history-end"]'),
       state: field('[data-room-label-action="state"]'),
     };
-  },
-
-  _roomSensorBarHtml(sensor, bounds) {
-    if (!sensor.length) return "";
-    const segments = this._historyDaySegments(sensor, bounds)
-      .map((segment) => {
-        const width =
-          ((segment.end - segment.start) / (bounds.end - bounds.start)) * 100;
-        const name = ROOM_STATUS[segment.state] || "No sensor label";
-        const title = `${this._historyTime(segment.start)} – ${this._historyTime(segment.end)}: ${name}`;
-        return `<span class="history-segment ${segment.state} sensor" style="width:${width}%" title="${this._esc(title)}"></span>`;
-      })
-      .join("");
-    return `<div class="room-sensor-labels"><span class="muted">Sensor labels (read-only, from room presence sources)</span><div class="history-timeline" role="img" aria-label="Sensor room labels">${segments}</div></div>`;
   },
 
   _roomPeriodHtml(label) {

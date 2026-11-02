@@ -87,24 +87,50 @@ module.exports = async function testRoomChart(page) {
   // later redraw can briefly replace it. Read the drawn gates and thresholds from
   // one settled frame rather than re-reading after the wait.
   const drawn = await (
-    await page.waitForFunction((gid) => {
-      const graph = panel
-        ._roomGraphSection(gid)
-        .querySelector("[data-room-graph]");
-      if (!graph || panel._roomGraphState(gid).loading) return false;
-      const thresholds = [
-        ...graph.querySelectorAll(".threshold-line.current + text"),
-      ].map((label) => label.textContent);
-      if (!thresholds.length) return false;
-      const gates = Object.fromEntries(
-        ["a", "b"].map((id) => [
-          id,
-          graph.querySelectorAll(`[data-room-signal="${id}"] .gate-line`)
-            .length,
-        ]),
-      );
-      return { thresholds, gates };
-    }, gid)
+    await page
+      .waitForFunction((gid) => {
+        const graph = panel
+          ._roomGraphSection(gid)
+          .querySelector("[data-room-graph]");
+        if (!graph || panel._roomGraphState(gid).loading) return false;
+        const thresholds = [
+          ...graph.querySelectorAll(".threshold-line.current + text"),
+        ].map((label) => label.textContent);
+        if (!thresholds.length) return false;
+        const gates = Object.fromEntries(
+          ["a", "b"].map((id) => [
+            id,
+            graph.querySelectorAll(`[data-room-signal="${id}"] .gate-line`)
+              .length,
+          ]),
+        );
+        return { thresholds, gates };
+      }, gid)
+      .catch(async (error) => {
+        console.error(
+          "Room chart frame diagnostics:",
+          await page.evaluate((gid) => {
+            const state = panel._roomGraphState(gid);
+            const graph = panel
+              ._roomGraphSection(gid)
+              ?.querySelector("[data-room-graph]");
+            return {
+              loading: state.loading,
+              error: state.error,
+              kind: state.kind,
+              gate: state.gate,
+              loadedKind: state.loadedKind,
+              loadedDay: state.loadedDay,
+              day: panel._historyStateFor(`room:${gid}`).day,
+              visible: panel._roomGraphVisible(gid),
+              dragging: !!panel._dragging,
+              thresholds: panel._roomThresholds(gid, state.data?.series || []),
+              html: graph?.innerHTML,
+            };
+          }, gid),
+        );
+        throw error;
+      })
   ).jsonValue();
   for (const id of ["a", "b"])
     assert.equal(drawn.gates[id], 8, "every other gate of the radar is drawn");

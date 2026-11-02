@@ -365,3 +365,45 @@ def test_dense_noisy_day_matches_per_span_chart(seed):
             runtime, keys, end=end, hours=end / 3600, max_points=400, summary=False
         )
     _close(result["series"], expected[0])
+
+
+def test_chart_source_lanes_keep_manual_external_and_guessed_separate():
+    from tuner_under_test.history import guesses
+
+    runtime = view([(0, row(5))])
+    runtime.data["devices"]["a"]["history_labels"] = [
+        {"start": 10, "end": 30, "state": "unknown", "source": "manual"}
+    ]
+    runtime._days.append("a", dayfile.GuessSpan(600, 0, 20, "present", 18, guesses.EXTERNAL))
+    runtime._days.append("a", dayfile.GuessSpan(600, 20, 600, "not_present", 18, guesses.REFERENCE))
+    result = chart(runtime, end=300)
+    assert result["presence_evidence"] == {
+        "manual": [{"start": 10, "end": 30, "state": "unknown"}],
+        "entity": [{"start": 0, "end": 20, "state": "present"}],
+        "guessed": [{"start": 20, "end": 300, "state": "not_present"}],
+    }
+
+
+def test_resumed_chart_preserves_earlier_source_evidence():
+    from tuner_under_test.presentation.charts import spliced
+
+    earlier = {
+        "series": {},
+        "presence_evidence": {
+            "manual": [],
+            "entity": [],
+            "guessed": [{"start": 0, "end": 20, "state": "present"}],
+        },
+    }
+    tail = {
+        "start": 0,
+        "end": 30,
+        "series": {},
+        "presence_evidence": {
+            "manual": [],
+            "entity": [],
+            "guessed": [{"start": 10, "end": 30, "state": "present"}],
+        },
+    }
+    result = spliced(earlier, tail, {"from": 10, "points": {}})
+    assert result["presence_evidence"]["guessed"][0]["start"] == 0
