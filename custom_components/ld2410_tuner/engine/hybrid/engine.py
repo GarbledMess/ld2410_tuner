@@ -269,7 +269,12 @@ def audited(state, first, pick):
             "base_cost": first.diagnostics["base_cost"],
             "selection_cost": first.diagnostics["selection_cost"],
         }
-        extra = {"anomaly": anomaly.report(found, "discarded", **measured), "first_fit": summary}
+        report = anomaly.report(found, "discarded", **measured)
+        # Reports re-measure on the same masked truth: discarded time stays unobserved.
+        report["discarded_intervals"] = {
+            gid: [list(span) for span in spans] for gid, spans in found.masks.items()
+        }
+        extra = {"anomaly": report, "first_fit": summary}
         return result(second, choice, info, [], extra)
     first.diagnostics["anomaly"] = anomaly.report(found, "kept: no influence", **measured)
     return first

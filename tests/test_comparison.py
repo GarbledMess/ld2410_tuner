@@ -115,12 +115,16 @@ def test_auto_only_scores_are_estimates_and_humans_override_conflicting_guesses(
 def test_current_timing_is_used_for_every_candidate():
     settings = context()
     settings["timing"] = {"timeout": 1, "on_delay": 0.5, "off_delay": 1, "mode": "fallback"}
-    fitting = sys.modules["tuner_under_test.calibration.event_fitting"]
-    with patch.object(fitting, "_objective", wraps=fitting._objective) as objective:
+    from tuner_under_test.engine.hybrid import adapters
+
+    with patch.object(adapters, "device_problem", wraps=adapters.device_problem) as problem:
         report = calculate(settings=settings)
-    # Every candidate is measured on the one objective, built with the current timing.
-    assert len(objective.call_args_list) == 1
-    assert objective.call_args.args[4] == settings["timing"]
+    # Every candidate shares one input problem with the current physical timing.
+    assert problem.call_count == 1
+    assert problem.call_args.args[4] == settings["timing"]
+    assert {item["scoring_mode"] for item in report["patterns"].values()} == {
+        report["scoring_mode"]
+    }
     assert report["timing"] == settings["timing"]
 
 
@@ -284,17 +288,19 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.configuration()
         calls = self.scoring_executor()
         await self.runtime.compare_results("a")
-        with patch.object(comparison, "SCORER_VERSION", 3):
+        changed_version = comparison.SCORER_VERSION + 1
+        with patch.object(comparison, "SCORER_VERSION", changed_version):
             assert jobs.summary(self.runtime, "a")["state"] == "pending"
             report = await self.runtime.compare_results("a")
-            assert report["scorer_version"] == 3
+            assert report["scorer_version"] == changed_version
             assert all(
-                item["scorer_version"] == 3 for item in self.device["comparison_scores"].values()
+                item["scorer_version"] == changed_version
+                for item in self.device["comparison_scores"].values()
             )
             await self.runtime.compare_results("a")
         assert len(calls) == 2
 
-    async def test_only_new_patterns_are_scored_and_identical_slots_reuse_scores(self):
+    async def test_new_bundle_plans_are_rescored_and_identical_slots_reuse_scores(self):
         self.configuration()
         calls = self.scoring_executor()
         await self.runtime.compare_results("a")
@@ -307,10 +313,10 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
         for value in saved["automatic"]["proposals"].values():
             value["threshold"] = 30
         await self.runtime.compare_results("a")
-        assert list(calls[-1]["patterns"]) == ["automatic"]
-        assert all(
-            self.device["comparison_scores"][key] == value for key, value in original.items()
-        )
+        # Another distinct vector changes the common fidelity plan, invalidating
+        # previous scores even though their individual thresholds did not change.
+        assert set(calls[-1]["patterns"]) == {"user", "automatic", "live"}
+        assert set(self.device["comparison_scores"]).isdisjoint(original)
         self.states["number.radar_g0_move_threshold"].state = "30"
         await self.runtime.compare_results("a")
         assert list(calls[-1]["patterns"]) == ["live"]
@@ -415,75 +421,62 @@ class ComparisonRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 
 @pytest.mark.parametrize("corrected", [False, True])
-def test_fixed_comparison_matches_eager_preferences(corrected):
-    from tuner_under_test.calibration import event_fitting
+def test_fixed_comparison_never_prepares_a_threshold_search(corrected):
+    from tuner_under_test.engine.hybrid import engine
 
     settings = context()
     if corrected:
         settings["quality_version"] = 1
-    expected = calculate(settings=settings)
-    # Force the original eager method, including when fixed scoring opts out.
-    prepare = event_fitting._DeviceObjective._member_preferences
-
-    def eager(objective, members, room):
-        objective._prepare_preferences = True
-        return prepare(objective, members, room)
-
-    with patch.object(event_fitting._DeviceObjective, "_member_preferences", eager):
-        assert calculate(settings=settings) == expected
+    with patch.object(engine, "fit", side_effect=AssertionError("fixed scoring refitted")):
+        report = calculate(settings=settings)
+    assert report["patterns"]["user"]["score"] == 100
+    assert report["patterns"]["live"]["error_cost"] > 0
 
 
 def test_comparison_region_metadata_matches_original_sums():
-    from tuner_under_test.calibration import event_fitting
+    from tuner_under_test.engine.hybrid import adapters
 
-    original = event_fitting._objective
-    objectives = []
+    original, problems = adapters.device_problem, []
 
     def capture(*args, **kwargs):
-        objective = original(*args, **kwargs)
-        objectives.append(objective)
-        return objective
+        problem = original(*args, **kwargs)
+        problems.append(problem)
+        return problem
 
     rows = [(timestamp / 7, readings, label) for timestamp, readings, label in recordings()]
     rows[0][1].pop("g0_still")
-    with patch.object(event_fitting, "_objective", capture):
+    with patch.object(adapters, "device_problem", capture):
         report = calculate(rows=rows)
-    regions = objectives[0].regions
-    assert report["counts"] == {
-        source: {
-            state: sum(
-                (b - a) / event_fitting.SAMPLE_SECONDS
-                for a, b, _, label, origin, _ in regions
-                if label == state and origin == source
-            )
-            for state in ("present", "not_present")
-        }
-        for source in ("human", "automatic")
+    problem = problems[0]
+    spans = problem.zones[0].truth
+    totals = {
+        source: dict.fromkeys(("present", "not_present"), 0.0) for source in ("human", "automatic")
     }
-    assert report["incomplete_samples"] == sum(
-        (b - a) / event_fitting.SAMPLE_SECONDS
-        for a, b, readings, *_ in regions
-        if any(key not in readings for key in context()["keys"])
+    for block in problem.rows["a"].blocks(problem.start, problem.end):
+        for i, (a, b) in enumerate(zip(block.times, block.ends, strict=True)):
+            if any(block.columns[c][i] == 255 for c in problem.radars["a"].channels):
+                continue
+            for span in spans:
+                totals[span.source][span.state] += max(0, min(b, span.end) - max(a, span.start)) / 6
+    for source, counts in totals.items():
+        assert report["counts"][source] == pytest.approx(counts)
+    labelled = sum(span.end - span.start for span in spans) / 6
+    assert report["incomplete_samples"] == pytest.approx(
+        labelled - sum(sum(counts.values()) for counts in totals.values())
     )
 
 
 @pytest.mark.parametrize("quality_context", [None, False])
-def test_fixed_assessment_matches_eager_preferences(quality_context):
+def test_fixed_assessment_never_prepares_a_threshold_search(quality_context):
     from tuner_under_test.calibration import event_fitting
+    from tuner_under_test.engine.hybrid import engine
 
     view = harness.types.SimpleNamespace(
         data={"devices": {"a": {}}, "room_snapshot": None}, _history_runtime={}
     )
     harness.record_samples(view, "a", recordings(), [])
     thresholds = {"g0_still": 20, "g1_still": 20}
-    prepare = event_fitting._DeviceObjective._member_preferences
-    expected = event_fitting.assess(view, "a", thresholds, quality_context=quality_context)
-
-    def eager(objective, members, room):
-        objective._prepare_preferences = True
-        return prepare(objective, members, room)
-
-    with patch.object(event_fitting._DeviceObjective, "_member_preferences", eager):
-        assert (
-            event_fitting.assess(view, "a", thresholds, quality_context=quality_context) == expected
-        )
+    with patch.object(engine, "fit", side_effect=AssertionError("fixed scoring refitted")):
+        report = event_fitting.assess(view, "a", thresholds, quality_context=quality_context)
+    assert report["human"]["duration"]["error_cost"] == 0
+    assert report["human"]["duration"]["present_seconds"] == 600

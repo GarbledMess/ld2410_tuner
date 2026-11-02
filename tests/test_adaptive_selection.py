@@ -90,3 +90,65 @@ def test_actual_duration_report_field_names_are_accepted():
     picked = select(ref, pos, ((10.0, 10.0),), measurable=True)
     assert picked.policy == "corrected_positive"
     assert picked.validated
+
+
+def hybrid(missed=2.0, false=10.0, cost=20.0, **counts):
+    """A held-out hybrid score: durations plus the common cost and episode counts."""
+    found = {
+        "mostly_missed_episodes": 0,
+        "empty_periods_mostly_false_active": 0,
+        "empty_periods_failed": 0,
+    }
+    found.update(counts)
+    return report(missed, false=false, cost=cost, **found)
+
+
+def test_hybrid_scores_choose_on_the_common_cost():
+    picked = select(hybrid(), hybrid(cost=19.0), ((10.0, 10.0),), measurable=True)
+    assert (picked.policy, picked.reason) == ("corrected_positive", "held_cost_improvement")
+    # Lower missed time alone is not enough when the common cost does not fall.
+    tie = select(hybrid(), hybrid(1.0, cost=20.0), ((10.0, 10.0),), measurable=True)
+    assert (tie.policy, tie.reason) == ("reference", "held_cost_tie")
+    almost = select(hybrid(), hybrid(cost=20.0 - 5e-10), ((10.0, 10.0),), measurable=True)
+    assert almost.policy == "reference"
+
+
+@pytest.mark.parametrize(
+    "positive,reason",
+    [
+        (hybrid(1.0, cost=1.0, mostly_missed_episodes=1), "held_presence_regression"),
+        (hybrid(1.0, cost=1.0, empty_periods_failed=1), "held_empty_episode_regression"),
+        (
+            hybrid(1.0, cost=1.0, empty_periods_mostly_false_active=1),
+            "held_empty_episode_regression",
+        ),
+        (hybrid(3.0, cost=1.0), "held_presence_regression"),
+        (hybrid(1.0, false=11.0, cost=1.0), "held_empty_duration_regression"),
+    ],
+)
+def test_a_lower_hybrid_cost_cannot_hide_episode_or_duration_harm(positive, reason):
+    picked = select(hybrid(), positive, ((10.0, 10.0),), measurable=True)
+    assert (picked.policy, picked.reason) == ("reference", reason)
+    assert picked.validated
+
+
+def test_hybrid_scores_keep_the_per_empty_episode_guard():
+    picked = select(hybrid(), hybrid(cost=1.0), ((10.0, 0.0), (0.0, 10.0)), measurable=True)
+    assert (picked.policy, picked.reason) == ("reference", "held_empty_episode_regression")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        hybrid(cost=None),
+        hybrid(cost=float("nan")),
+        hybrid(cost=-1.0),
+        hybrid(mostly_missed_episodes=0.5),
+        {key: value for key, value in hybrid().items() if key != "empty_periods_failed"},
+        report(),  # A legacy duration report cannot be ranked against a hybrid one.
+    ],
+)
+def test_invalid_hybrid_scores_are_provisional(bad):
+    picked = select(hybrid(), bad, ((10.0, 10.0),), measurable=True)
+    assert picked.policy == "corrected_positive"
+    assert not picked.validated

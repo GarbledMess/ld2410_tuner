@@ -10,6 +10,8 @@ import room_scenes
 import test_rooms as rooms_harness
 import test_tuner as harness
 from sample_rows import found_of
+from tuner_under_test.engine.hybrid import adapters, fixed, search, search_data
+from tuner_under_test.engine.hybrid.training import TrainingStore
 from tuner_under_test.rooms import (
     application,
     assessment,
@@ -21,9 +23,7 @@ from tuner_under_test.rooms import (
     room_labels,
     truth,
 )
-from tuner_under_test.rooms import objective as objective_module
 from tuner_under_test.rooms.intervals import Timeline
-from tuner_under_test.rooms.objective import Objective
 
 AREA = {"name": "Office", "area_id": "office", "kind": "area", "device_ids": ["a", "b"]}
 DESK = {"name": "Desk", "area_id": "office", "kind": "zone", "device_ids": ["a"]}
@@ -201,6 +201,23 @@ def office_member(key):
     return rooms_harness.member(key, [40] * 100 + [0] * 100, rooms_harness.labels())
 
 
+def fitting_problem(data, room=None, start=0, end=1200):
+    return adapters.room_problem({"room": data}, start, end, {"room": room} if room else {}, 1)
+
+
+def fitting_statistics(data, room=None):
+    problem = fitting_problem(data, room)
+    pattern = {rid: dict(radar.current) for rid, radar in problem.radars.items()}
+    with fixed.FixedScores(problem, 1) as scores:
+        return scores.scores([pattern], problem.zones)[0]["room"]["sufficient_statistics"]
+
+
+def fitting_histograms(problem, rid, channel=0):
+    with TemporaryDirectory() as folder, TrainingStore(Path(folder)) as store:
+        search.collect_training(problem, store)
+        return search_data.histograms(problem, store, rid, channel)
+
+
 class AssessmentTests(unittest.TestCase):
     def office_view(self, **labels):
         return view("area:office", **labels)
@@ -220,15 +237,15 @@ class AssessmentTests(unittest.TestCase):
         # Readings held until the next; the recording's last holds half a sample (to 1197).
         self.assertAlmostEqual(human["not_present"]["seconds"], 201 + 600 - 3)
 
-    def test_objective_and_fit_use_room_truth(self):
+    def test_shared_evaluator_and_fit_use_room_truth(self):
         data = {"a": office_member("a"), "b": office_member("b")}
-        plain = Objective(data, 0, 1200)
-        same = Objective(data, 0, 1200, self.office_view())
-        self.assertEqual(plain.totals, same.totals)
-        self.assertEqual(plain.preferences, same.preferences)
+        self.assertEqual(fitting_statistics(data), fitting_statistics(data, self.office_view()))
+        self.assertEqual(
+            fitting_histograms(fitting_problem(data), "a"),
+            fitting_histograms(fitting_problem(data, self.office_view()), "a"),
+        )
         room = self.office_view(**{"area:office": [label("not_present", start=0, end=201)]})
-        labelled = Objective(data, 0, 1200, room)
-        self.assertAlmostEqual(labelled.totals["human", "present"], 399)
+        self.assertAlmostEqual(fitting_statistics(data, room)["present/human"][0], 399)
         result = fitting.fit(data, 0, 1200, room)
         self.assertAlmostEqual(
             result["before"]["room"]["outcomes"]["human"]["present"]["seconds"], 399
@@ -539,21 +556,10 @@ def guessed_member(key, values, guesses, labels=()):
     return {"view": view, "thresholds": {"g0_move": 20}, "timing": {}}
 
 
-class TrainingObjectiveTests(unittest.TestCase):
+class TrainingEvidenceTests(unittest.TestCase):
     """A radar's own automatic guesses train it too, down-weighted by confidence."""
 
-    def preferences(self, data):
-        seen = []
-
-        def capture(key, human, automatic, value):
-            seen.append(automatic)
-            return {"preferred_threshold": 20}
-
-        with patch.object(objective_module, "gate_preference", capture):
-            Objective(data, 0, 1200, view("area:office"))
-        return seen
-
-    def test_own_guess_gives_an_automatic_preference_with_its_confidence(self):
+    def test_own_guess_gives_automatic_training_evidence_with_its_confidence(self):
         quiet = [{"start": 0, "end": 300, "state": "not_present"}]
         values = [5] * 50 + [70] * 50
         own = [(0, 0)] * 50 + [(1, 99)] * 50  # b guesses Present after its Empty labels ...
@@ -561,13 +567,18 @@ class TrainingObjectiveTests(unittest.TestCase):
             "a": guessed_member("a", [5] * 100, own),  # ... and a agrees: a room needs two.
             "b": guessed_member("b", values, own, quiet),
         }
-        automatic = self.preferences(data)[1]  # Members are fitted in order: a, then b.
+        problem = fitting_problem(data, view("area:office"))
+        automatic = [s for s in problem.zones[0].truth if s.source == "automatic"]
         # 50 samples of b's present guess, by how long the readings held (six-second units;
         # the recording's last reading holds half a sample).
-        self.assertAlmostEqual(sum(row[4] for row in automatic["present"]), 49.5)
-        # Recorded confidence is kept in steps of GUESS_CONFIDENCE_STEP (99 % is stored as
-        # 100 %), and counts as calibrated (0.95), the room label of two agreeing members.
-        self.assertEqual({row[3] for row in automatic["present"]}, {0.95})
+        self.assertAlmostEqual(sum(s.end - s.start for s in automatic) / 6, 49.5)
+        self.assertEqual({s.state for s in automatic}, {"present"})
+        # Raw 99% rounds to 100%; without independent occupied truth each member
+        # receives the conservative 0.75 reliability prior before room combination.
+        self.assertEqual({s.confidence for s in automatic}, {0.75})
+        present, _ = fitting_histograms(problem, "b")
+        self.assertEqual(present[70], 294)  # 49 complete cells; the final 3 s are score-only.
+        self.assertEqual(sum(present), 294)
 
 
 class WeightedTargetTests(unittest.TestCase):
@@ -637,22 +648,23 @@ class SensorLevelTests(unittest.TestCase):
                 self.assertEqual(self.assessed(view("area:office"), inputs), expected)
                 self.assertEqual(self.assessed(sensor_room(end=40), inputs), expected)
 
-    def test_objective_scores_the_sensor_over_member_guesses(self):
+    def test_shared_evaluator_scores_the_sensor_over_member_guesses(self):
         empty = [(2, 60)] * 200  # Both radars record a 0.6 Empty guess at every sample.
         data = {
             "a": guessed_member("a", [40] * 100 + [0] * 100, empty),
             "b": guessed_member("b", [0] * 200, empty),
         }
         room = sensor_room("present", 0.95, end=600)
-        totals = Objective(data, 0, 1200, room).totals
+        totals = fitting_statistics(data, room)
         # The sensor stretch counts as occupied as a human room label over it would, weighted
         # by its confidence; before, the members' Empty guesses pre-empted it (0 s).
         human = view("area:office", **{"area:office": [label("present", end=600)]})
-        occupied = Objective(data, 0, 1200, human).totals["human", "present"]
+        occupied = fitting_statistics(data, human)["present/human"][0]
         self.assertGreater(occupied, 0)
-        self.assertAlmostEqual(totals["automatic", "present"], 0.95 * occupied)
-        plain = Objective(data, 0, 1200, view("area:office")).totals
-        self.assertEqual(plain["automatic", "present"], 0)
+        # A room sensor without recorded ownership retains the 0.75 prior.
+        self.assertAlmostEqual(totals["present/automatic"][0], 0.95 * 0.75 * occupied)
+        plain = fitting_statistics(data, view("area:office"))
+        self.assertNotIn("present/automatic", plain)
 
     def test_one_group_set_fit_matches_fit_with_sensor_labels(self):
         def data():
@@ -692,7 +704,7 @@ class SensorFloorTests(unittest.TestCase):
         self.assertEqual(at("area:office", members(None), weak, estimate), estimate(0))
         self.assertIsNone(at("area:office", members(None), weak))
 
-    def test_objective_ignores_a_weak_sensor_label(self):
+    def test_shared_evaluator_ignores_a_weak_sensor_label(self):
         data = {"a": guessed_member("a", [0] * 200, [(0, 0)] * 200)}
         room = sensor_room("present", 0.5, end=600)
-        self.assertEqual(Objective(data, 0, 1200, room).totals["automatic", "present"], 0)
+        self.assertNotIn("present/automatic", fitting_statistics(data, room))

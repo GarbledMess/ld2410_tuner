@@ -8,6 +8,12 @@ from . import cell_cache, daystore
 from .fit_rows import CapturedRowSource
 
 
+def _result_identity(days, device_id, date):
+    """Disk cell sidecars are worker-only; the integration's own store folds each time."""
+    found = getattr(days, "result_identity", None)
+    return None if found is None else found(device_id, date)
+
+
 class FittingDays:
     def __init__(self, view):
         self.view = view
@@ -21,7 +27,7 @@ class FittingDays:
     def digest(self, device_id, date, channels):
         if date not in self.view._days.days(device_id):
             return None
-        persistent = self.view._days.result_identity(device_id, date)
+        persistent = _result_identity(self.view._days, device_id, date)
         if persistent is not None:
             path, identity = persistent
             cached = cell_cache.load(path, identity, channels)
@@ -47,7 +53,7 @@ class FittingDays:
         try:
             digest.physical.geometry()
         except ValueError:
-            persistent = self.view._days.result_identity(device_id, date)
+            persistent = _result_identity(self.view._days, device_id, date)
             digest = self._fold(device_id, date, channels, persistent)
             digest.partial.close()
         return digest.physical

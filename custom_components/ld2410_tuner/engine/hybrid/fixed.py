@@ -97,7 +97,7 @@ def episodes(zone, owner):
 
 def missed_seconds(metrics):
     occupied, recall = metrics["occupied_seconds"], metrics["occupied_recall"]
-    return occupied * (1 - recall) if recall is not None else 0.0
+    return metrics.get("missed_seconds", occupied * (1 - recall) if recall is not None else 0.0)
 
 
 def untimed(problem):

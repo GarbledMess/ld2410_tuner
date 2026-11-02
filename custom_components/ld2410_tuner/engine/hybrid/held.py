@@ -76,14 +76,15 @@ def _unique(patterns):
 
 def held_score(metrics):
     """Summed later-episode measures: legacy duration fields plus the common cost."""
-    costs = [m["cost"] for m in metrics]
+    # A zone without later time in one class has no cost; the others still compare.
+    costs = [m["cost"] for m in metrics if m["cost"] is not None]
     score = {
         "present_seconds": sum(m["occupied_seconds"] for m in metrics),
         "empty_seconds": sum(m["empty_seconds"] for m in metrics),
         "missed_seconds": sum(fixed.missed_seconds(m) for m in metrics),
         "false_seconds": sum(m["false_active_seconds"] for m in metrics),
         "missed_episodes": sum(m["completely_missed_episodes"] for m in metrics),
-        "cost": None if None in costs else sum(costs),
+        "cost": sum(costs) if costs else None,
     }
     score.update({key: sum(m[key] for m in metrics) for key in COUNTS})
     return score

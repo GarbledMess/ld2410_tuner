@@ -402,7 +402,9 @@ class LearningTests(unittest.TestCase):
         keys = list(constants.HISTORY_KEYS)
         result = fit(row_samples(dict.fromkeys(keys, 20), dict.fromkeys(keys, 10)), keys)
         self.assertEqual(result["status"], "ok")
-        self.assertTrue(all(p["threshold"] == 15 for p in result["proposals"].values()))
+        self.assertTrue(all(10 < p["threshold"] < 20 for p in result["proposals"].values()))
+        self.assertTrue(all(p["sensitivity"] == 1 for p in result["proposals"].values()))
+        self.assertTrue(all(p["false_positives"] == 0 for p in result["proposals"].values()))
 
     def test_many_guesses_cannot_overrule_a_few_human_labels(self):
         rows = [(0, {"g0_still": 14}, "present"), (6, {"g0_still": 10}, "not_present")]
@@ -415,8 +417,12 @@ class LearningTests(unittest.TestCase):
             )
             for i in range(10000)
         ]
-        result = fit(rows, ["g0_still"], automatic=guesses, automatic_weight=0.2)
-        self.assertEqual(result["status"], "insufficient")
+        # Start at the human-supported gap. Automatic volume cannot pull the
+        # setting away from it; nonzero observed class time is sufficient.
+        result = fit(
+            rows, ["g0_still"], current={"g0_still": 12}, automatic=guesses, automatic_weight=0.2
+        )
+        self.assertEqual(result["status"], "ok")
         self.assertEqual(result["training"]["sensitivity"], 1)
         self.assertEqual(result["training"]["false_positive_rate"], 0)
         self.assertTrue(result["automatic_evidence"]["used"])
@@ -431,15 +437,16 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertLess(result["proposals"]["g1_still"]["threshold"], 6)
 
-    def test_partial_gate_observations_still_contribute(self):
+    def test_partial_gate_observations_do_not_invent_full_channel_coverage(self):
         rows = [(i * 6, {"g0_move" if i % 2 else "g1_still": 20}, "present") for i in range(100)]
         rows += [
             (600 + i * 6, {"g0_move" if i % 2 else "g1_still": 5}, "not_present")
             for i in range(100)
         ]
         result = fit(rows, ["g0_move", "g1_still"])
-        self.assertEqual(result["counts"], {"present": 100, "not_present": 100})
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["counts"], {"present": 0, "not_present": 0})
+        self.assertEqual(result["status"], "insufficient")
+        self.assertEqual(result["proposals"], {})
 
     def test_weak_still_signal_is_not_sacrificed(self):
         result = fit(episode_samples({"g0_still": 14}, {"g0_still": 10}), ["g0_still"])
@@ -450,7 +457,10 @@ class LearningTests(unittest.TestCase):
     def test_overlapping_classes_never_safe_at_zero_recall(self):
         result = fit(row_samples({"g0_move": 10}, {"g0_move": 10}), ["g0_move"])
         self.assertEqual(result["status"], "unsafe")
-        self.assertEqual(result["training"]["false_positive_rate"], 1)
+        # Detecting indistinguishable classes would violate the mirror guard.
+        self.assertEqual(result["training"]["sensitivity"], 0)
+        self.assertEqual(result["training"]["false_positive_rate"], 0)
+        self.assertEqual(result["training"]["missed_presence_episodes"], 1)
 
     def test_equality_does_not_trigger(self):
         metrics = sys.modules["tuner_under_test.calibration.metrics"].metrics
@@ -471,7 +481,7 @@ class LearningTests(unittest.TestCase):
     def test_held_out_background_drift_reports_a_time_penalty(self):
         rows = episode_samples({"g0_move": 30}, {"g0_move": 5})
         rows[-20:] = [(i, {"g0_move": 40}, "not_present") for i in range(180, 200)]
-        result = fit(rows, ["g0_move"])
+        result = fit(rows, ["g0_move"], current={"g0_move": 20})
         self.assertEqual(result["training"]["false_positive_rate"], 0.2)
         self.assertEqual(result["validation"]["false_positive_rate"], 1)
         self.assertEqual(result["status"], "tradeoff")
@@ -482,9 +492,9 @@ class LearningTests(unittest.TestCase):
             ["g0_move", "g1_move"],
             current={"g0_move": 20, "g1_move": 42},
         )
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["proposals"]["g1_move"]["threshold"], 42)
-        self.assertEqual(result["proposals"]["g1_move"]["role"], "unchanged")
+        self.assertEqual(result["status"], "insufficient")
+        self.assertEqual(result["counts"], {"present": 0, "not_present": 0})
+        self.assertEqual(result["proposals"], {})
 
     def test_false_positive_penalty_is_for_whole_device(self):
         # Each gate's noise spikes occur at different times; pooling per-gate
@@ -499,7 +509,9 @@ class LearningTests(unittest.TestCase):
             negatives[i][1][keys[0]] = 40
         for i in range(4, 8):
             negatives[i][1][keys[1]] = 40
-        result = fit(rows + negatives, keys)
+        # Begin with both complementary locations detected; the measurement
+        # checks the whole-device union independently of search initialization.
+        result = fit(rows + negatives, keys, current=dict.fromkeys(keys, 20))
         self.assertEqual(result["training"]["false_positive_rate"], 0.008)
         self.assertEqual(result["status"], "tradeoff")
         self.assertEqual(result["training"]["false_positives"], 8)
@@ -512,16 +524,18 @@ class LearningTests(unittest.TestCase):
     def test_guesses_cover_additional_location_at_lower_weight(self):
         keys = ["g0_move", "g1_still"]
         rows = row_samples({keys[0]: 30, keys[1]: 5}, dict.fromkeys(keys, 5))
-        guesses = [(-100 + i, {keys[0]: 5, keys[1]: 6}, "present", 0.6) for i in range(100)]
-        current = {keys[0]: 20, keys[1]: 7}
+        # The new location clears the automatic positive-support floor and has
+        # enough independent cost to exceed the hybrid movement evidence band.
+        guesses = [(-100 + i, {keys[0]: 5, keys[1]: 12}, "present", 0.6) for i in range(100)]
+        current = {keys[0]: 20, keys[1]: 13}
         manual_only = fit(rows, keys, current=current)
         # Episode support uses confidence0.6 times the conservative reliability prior0.75.
-        assisted = fit(rows, keys, current=current, automatic=guesses, automatic_weight=0.2)
-        self.assertEqual(manual_only["proposals"][keys[1]]["threshold"], 7)
-        self.assertLess(assisted["proposals"][keys[1]]["threshold"], 6)
+        assisted = fit(rows, keys, current=current, automatic=guesses, automatic_weight=0.3)
+        self.assertEqual(manual_only["proposals"][keys[1]]["threshold"], 13)
+        self.assertLess(assisted["proposals"][keys[1]]["threshold"], 12)
         self.assertTrue(assisted["automatic_evidence"]["used"])
         self.assertAlmostEqual(
-            assisted["automatic_evidence"]["share"]["present"], 0.05 * 0.45 / 1.45
+            assisted["automatic_evidence"]["share"]["present"], 0.075 * 0.45 / 1.45
         )
         self.assertEqual(assisted["validation"], manual_only["validation"])
 
@@ -1214,7 +1228,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.states[entity_id] = types.SimpleNamespace(state=str(limit))
         entities, current = self.runtime._threshold_configuration("a")
         self.device["last_learning"] = {
-            "method": "human_priority_v11",
+            "method": sys.modules["tuner_under_test.calibration.constants"].METHOD,
             **sys.modules["tuner_under_test.calibration.settings"].signature(self.runtime.data),
             "status": "ok",
             "entities": entities,
@@ -1436,7 +1450,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     def test_ungrouped_radar_evidence_is_its_own_labels_only(self):
         # An ungrouped radar's labelled evidence is its own labels only, whatever room
         # attribution exists elsewhere: no room snapshot travels with its views.
-        from tuner_under_test.calibration import event_fitting
+        from tuner_under_test.engine.hybrid.adapters import device_problem
 
         row = {40: bytes([40] + [255] * 17), 5: bytes([5] + [255] * 17)}
         start = round(self.now - 1300, 3)
@@ -1449,12 +1463,13 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         ]
         view = self.runtime._history_view("a")
         self.assertIsNone(view.data["room_snapshot"])
-        objective = event_fitting._objective(
+        problem = device_problem(
             view, "a", ["g0_move"], {"g0_move": 20}, {}, 0.0, None, start, start + 1200
         )
-        found = {(state, source) for _low, _high, _readings, state, source, _c in objective.regions}
+        truth = problem.zones[0].truth
+        found = {(span.state, span.source) for span in truth}
         self.assertEqual(found, {("present", "human"), ("not_present", "human")})
-        present = sum(b - a for a, b, _r, state, *_ in objective.regions if state == "present")
+        present = sum(span.end - span.start for span in truth if span.state == "present")
         self.assertAlmostEqual(present, 600)
 
     async def test_persisted_guesses_reach_learner_with_confidence(self):

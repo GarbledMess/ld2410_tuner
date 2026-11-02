@@ -88,6 +88,17 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
         await automatic.run(self.runtime, "a", self.learned, self.report)
         return self.report
 
+    def test_guard_accepts_own_writes_when_live_coalesces_with_saved_pattern(self):
+        _, signature = automatic.comparison_jobs._context(self.runtime, "a")
+        applied = {
+            key: proposal["threshold"] for key, proposal in self.learned["proposals"].items()
+        }
+        for key, value in applied.items():
+            self.states[self.learned["entities"][key]].state = str(value)
+        # The final write reduces the distinct pattern count. Normalizing our own
+        # writes must normalize its derived fidelity identity as well.
+        automatic._guard(self.runtime, "a", signature, applied, "automatic")
+
     async def test_improvement_applies_via_writer_and_retains_previous_with_fresh_evidence(self):
         self.device["comparison_scores"] = {"stale": {"score": 100, "scorer_version": 1}}
         await self.run_apply()

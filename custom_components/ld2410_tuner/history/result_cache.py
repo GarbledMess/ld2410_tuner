@@ -26,21 +26,35 @@ _files = OrderedDict()  # Sidecar path -> (its stamp, day identity, producer, en
 _writes = 0
 
 
+# Derived results are explicitly versioned by the evidence, quality and scoring code that
+# produces or consumes them: hybrid fits read rows and quality through these paths.
+SCHEMA = "hybrid_time_episode_v1"
+PRODUCER_SOURCES = (
+    "calibration/evidence_plan.py",
+    "calibration/evidence_budget.py",
+    "calibration/summary_quality.py",
+    "calibration/quality.py",
+    "calibration/quality_evidence.py",
+    "engine/hybrid/adapters.py",
+    "engine/hybrid/evidence.py",
+    "engine/hybrid/quality.py",
+    "engine/hybrid/scoring.py",
+    "history/summaries.py",
+    "history/dayfile.py",
+    "history/day_results.py",
+    "history/fit_days.py",
+    "history/fit_rows.py",
+    "history/result_cache.py",
+    "rooms/attribution_days.py",
+    "rooms/event_attribution.py",
+)
+
+
 @lru_cache(maxsize=1)
 def _producer():
     root = Path(__file__).resolve().parent.parent
-    digest = blake2b(digest_size=16)
-    for name in (
-        "calibration/evidence_plan.py",
-        "calibration/evidence_budget.py",
-        "calibration/summary_quality.py",
-        "history/summaries.py",
-        "history/dayfile.py",
-        "history/day_results.py",
-        "history/result_cache.py",
-        "rooms/attribution_days.py",
-        "rooms/event_attribution.py",
-    ):
+    digest = blake2b(SCHEMA.encode(), digest_size=16)
+    for name in PRODUCER_SOURCES:
         digest.update((root / name).read_bytes())
     return digest.hexdigest()
 

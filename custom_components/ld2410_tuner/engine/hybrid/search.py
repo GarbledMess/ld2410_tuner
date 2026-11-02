@@ -2,6 +2,7 @@
 
 from bisect import bisect_right
 from collections import OrderedDict
+from dataclasses import replace
 from math import ceil
 
 from ...history import pace
@@ -242,10 +243,10 @@ class _Search:
         return pattern
 
     def seeds(self):
-        centre, quiet = _copy(self.start), _copy(self.start)
+        centre = seed_preferences(self.problem, self.training, self.stats, self.attenuate)
+        quiet = _copy(self.start)
         for rid, c in self.coordinates:
             domain = self.problem.radars[rid].domains[c]
-            centre[rid][c] = preferred(domain, self.start[rid][c], self.stats[rid, c])
             quiet[rid][c] = domain[-1]
         return self.start, centre, quiet
 
@@ -258,7 +259,7 @@ class _Search:
         return _unique([self.repair(pat) for pat in (*base, *variants)], self.coordinates)
 
     def repair(self, pattern):
-        return repair(pattern, self.stats, self.start)
+        return repair(pattern, self.stats, self.start, self.energies)
 
     def _variants(self, pattern):
         combined = _copy(pattern)
@@ -273,6 +274,28 @@ class _Search:
                 changed.append(variant)
                 combined[rid][c] = value
         return [*changed[:8], combined] if changed else []
+
+
+def seed_preferences(problem, training, statistics_, attenuate=False):
+    """Per-zone gap centres; a shared coordinate uses their lower median seed."""
+    start = normalize_pattern(problem.radars)
+    votes = {item: [] for item in statistics_}
+    for zone in problem.zones:
+        stats = statistics_
+        if len(problem.zones) > 1:
+            stats = statistics(replace(problem, zones=(zone,)), training, attenuate=attenuate)
+        _seed_votes(problem, zone, start, stats, votes)
+    for (rid, c), values in votes.items():
+        if values:
+            start[rid][c] = sorted(values)[(len(values) - 1) // 2]
+    return start
+
+
+def _seed_votes(problem, zone, start, stats, votes):
+    for rid in zone.members:
+        for c in problem.radars[rid].channels:
+            domain = problem.radars[rid].domains[c]
+            votes[rid, c].append(preferred(domain, start[rid][c], stats[rid, c]))
 
 
 def statistics(problem, store, *, attenuate=False, masks=None):
@@ -372,12 +395,13 @@ def _count_groups(groups, positions, bins):
                     hist[value] += column.count(value) * count * CELL_SECONDS
 
 
-def repair(pattern, stats, start):
+def repair(pattern, stats, start, energies=None):
     """Keep the start on coordinates whose move crosses no training energy and no gap."""
     result = _copy(pattern)
     for (rid, c), stat in stats.items():
         current, value = start[rid][c], result[rid][c]
-        if stat["gap"] is None and not _changes_crossing(stat, current, value):
+        observed = None if energies is None else energies[rid, c]
+        if stat["gap"] is None and not _changes_crossing(stat, current, value, observed):
             result[rid][c] = current
     return result
 
@@ -389,8 +413,12 @@ def _attenuated_histogram(hist):
     return out
 
 
-def _changes_crossing(stat, current, value):
+def _changes_crossing(stat, current, value, observed=None):
     lo, hi = sorted((current, value))
+    # Gap preferences use primary-source histograms, but weighted automatic
+    # evidence can support a move on a gate constant in the human classes.
+    if observed is not None:
+        return bisect_right(observed, lo) != bisect_right(observed, hi)
     return any(stat["hp"][lo + 1 : hi + 1]) or any(stat["he"][lo + 1 : hi + 1])
 
 

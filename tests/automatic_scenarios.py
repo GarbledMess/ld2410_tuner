@@ -54,22 +54,19 @@ def room_conflict(slow):
     return {"a": item}
 
 
-def device_rank(rows, keys, guesses, thresholds, *weight):
-    """The device search's rank of ``thresholds`` on the learner's prepared evidence."""
-    from tuner_under_test.calibration import event_fitting
+def device_score(rows, keys, guesses, thresholds, weight=0):
+    """Shared fixed hybrid evaluation on the learner's admitted evidence."""
+    from tuner_under_test.const import HISTORY_KEYS
+    from tuner_under_test.engine.hybrid import adapters, engine
+    from tuner_under_test.engine.hybrid.fixed import FixedScores
 
     view = SimpleNamespace(data={"devices": {"d": {}}, "room_snapshot": None})
     harness.record_samples(view, "d", rows, guesses)
-    objective = event_fitting._objective(
-        view,
-        "d",
-        keys,
-        dict.fromkeys(keys, 50),
-        {},
-        weight[0] if weight else 0,
-        {},
-        0 if not rows and not guesses else min(row[0] for row in [*rows, *guesses]),
-        view._history_until,
+    start = min(row[0] for row in [*rows, *guesses]) if rows or guesses else 0
+    problem = adapters.device_problem(
+        view, "d", keys, dict.fromkeys(keys, 50), {}, weight, {}, start, view._history_until
     )
-    event_fitting._reference(objective, False, weight[0] if weight else 0)
-    return objective.rank({"d": thresholds})
+    problem = engine.with_horizon(problem)
+    pattern = {"d": {HISTORY_KEYS.index(key): value for key, value in thresholds.items()}}
+    with FixedScores(problem, 1) as scores:
+        return scores.scores([pattern], problem.zones)[0]["d"]

@@ -37,7 +37,7 @@ export const panelComparison = {
     return `<div class="pattern-comparison"><div class="comparison-heading"><b>Compare saved patterns</b><button data-action="refresh-comparison" ${busy ? "disabled" : ""}>Check stored scores</button></div>
       <div class="muted ${busy ? "is-busy" : ""}" role="status">${busy ? "Calculating missing scores…" : this._esc(reason || stored)}</div>
       ${report.patterns ? `<div class="table-scroll"><table class="comparison-table"><thead><tr><th>Pattern</th><th>Score</th><th>Evidence & outcomes</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}
-      <details data-detail="comparison-score"><summary>What the score means<span class=\"section-description\">How scores are calculated and compared.</span></summary><p>100 means no measured errors; each 1% of missed occupied time costs 5 points and each 1% of false presence 1 point. It is a comparison score, not a probability or a guarantee.</p></details></div>`;
+      <details data-detail="comparison-score"><summary>What the score means<span class=\"section-description\">How scores are calculated and compared.</span></summary><p>100 means no measured errors. Each 1% of missed occupied time costs 5 points and each 1% of false-active empty time 1 point.</p><p>Whole periods count too: each 1% of occupied periods mostly missed (under half detected) costs 5 points, and each 1% of empty periods that fail (a trigger starts in them, or over half is false-active) 1 point.</p><p>Patterns are ranked on the unrounded cost. It is a comparison score, not a probability or a guarantee.</p></details></div>`;
   },
 
   _comparisonRow(slot, label, report) {
@@ -68,7 +68,11 @@ export const panelComparison = {
     const excluded =
       Number(item.outliers?.human?.excluded?.present || 0) +
       Number(item.outliers?.automatic?.excluded?.present || 0);
-    return `<p>${this._esc(note || "Timing between recordings is an estimate.")}</p><p>${Number(item.incomplete_samples || 0)} incomplete observations and ${excluded} isolated occupied-state outliers excluded.</p>`;
+    const cells =
+      item.scoring_mode === "cells"
+        ? "<p>Scored on six-second cell maxima: exact replay of every recording exceeded the work budget, so very short events are approximate.</p>"
+        : "";
+    return `<p>${this._esc(note || "Timing between recordings is an estimate.")}</p><p>${Number(item.incomplete_samples || 0)} incomplete observations and ${excluded} isolated occupied-state outliers excluded.</p>${cells}`;
   },
 
   _comparisonMetrics(item, slot) {
@@ -87,7 +91,14 @@ export const panelComparison = {
         return `${source === "human" ? "Human" : "Automatic"}: ${(m.present_samples || 0) - (m.false_negatives || 0)} hits, ${m.false_negatives ?? 0} misses, ${m.false_positives ?? 0} false triggers, ${(m.not_present_samples || 0) - (m.false_positives || 0)} correct empty readings. ${Number(m.duration?.present_seconds || 0).toFixed(1)}s occupied / ${Number(m.duration?.empty_seconds || 0).toFixed(1)}s empty observed; up to ${Number(m.duration?.missed_seconds_upper || 0).toFixed(1)}s missed, ${Number(m.duration?.false_positive_seconds || 0).toFixed(1)}s false-active.`;
       })
       .join(" ");
-    return `${evidence}<br>Presence time ${recall}% · False-active ${falseActive}%<br><span class="muted">${item.target_met ? "99.9% presence target met in replay" : "99.9% presence target not met"}</span><details data-detail="comparison-${slot}"><summary>Sample outcomes<span class="section-description">Measured errors, evidence and timing for this pattern.</span></summary>${this._esc(samples)} Samples support the assessment; elapsed time determines the score.${this._scoreEvidenceHtml(item)}</details>`;
+    const periods = this._periodOutcomeText(item.human);
+    return `${evidence}<br>Presence time ${recall}% · False-active ${falseActive}%${periods ? `<br>${this._esc(periods)}` : ""}<br><span class="muted">${item.target_met ? "99.9% presence target met in replay" : "99.9% presence target not met"}</span><details data-detail="comparison-${slot}"><summary>Sample outcomes<span class="section-description">Measured errors, evidence and timing for this pattern.</span></summary>${this._esc(samples)} Samples support the assessment; elapsed time and whole periods determine the score.${this._scoreEvidenceHtml(item)}</details>`;
+  },
+
+  // Hybrid measurements also count whole occupied and empty periods.
+  _periodOutcomeText(m) {
+    if (m?.mostly_missed_episodes == null) return "";
+    return `Occupied periods mostly missed: ${m.mostly_missed_episodes} of ${m.presence_episodes ?? "—"} · Empty periods failed: ${m.empty_periods_failed ?? "—"}`;
   },
 
   _ensureComparisons() {

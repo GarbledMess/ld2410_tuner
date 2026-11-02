@@ -5,7 +5,7 @@ from copy import deepcopy
 from time import time
 
 from ..worker import bridge
-from . import comparison, comparison_jobs, device_io
+from . import comparison, comparison_cache, comparison_jobs, device_io
 from .scoring import improves
 
 
@@ -55,9 +55,7 @@ def decision(patterns, source="automatic"):
     if not candidate.get("applicable"):
         return "The learned settings no longer match this device."
     if not improves(current, candidate):
-        return (
-            "The learned settings do not reduce the weighted missed-time and false-active penalty."
-        )
+        return "The learned settings do not reduce the weighted time and episode penalty."
     return None
 
 
@@ -72,6 +70,9 @@ def _guard(runtime, device_id, signature, applied, source):
     if current["patterns"]["live"]["thresholds"] != {**expected, **applied}:
         raise ValueError("Device thresholds changed during automatic Apply")
     current["patterns"]["live"]["thresholds"] = expected
+    # Fidelity depends on distinct vectors; undoing our writes must also undo
+    # their derived common-plan count before checking external changes.
+    current["fidelity"] = comparison_cache.fidelity({**current, "keys": list(current["entities"])})
     if current != signature:
         raise ValueError(
             "Labels, timing, saved results or configuration changed; wait for a fresh learn"

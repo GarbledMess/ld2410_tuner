@@ -128,12 +128,23 @@ export const panelTimingSettings = {
     return "Learning accounts for radar hold, then delayed on and delayed off. These are read-only inputs; Apply changes gate thresholds only.";
   },
 
+  // Observation counts are six-second equivalents of observed time: often fractional.
+  _observationText(value) {
+    if (!Number.isFinite(value)) return "—";
+    return Number.isInteger(value) ? String(value) : Number(value).toFixed(1);
+  },
+
   _timingAssumptionsHtml(learning) {
     const timing = learning?.timing;
     const raw = learning?.raw_training;
     const interval = timing?.sample_interval_seconds;
     const paragraphs = [];
-    if (timing?.active)
+    const hybrid = this._hybridBasis(learning?.training?.duration);
+    if (timing?.active && hybrid)
+      paragraphs.push(
+        "Recorded replay: each radar's hold and on/off delays run over its recorded readings from up to 30 minutes before the scored history. Recording gaps restart the replay; label changes do not.",
+      );
+    else if (timing?.active)
       paragraphs.push(
         `Sampled estimate: consecutive high readings are treated as one run; empty-room spikes allow for activity between observations. Gaps and label changes restart the replay. ${learning.training?.timing_warmup_samples || 0} initial observations were left unscored because the preceding device state is unknown.`,
       );
@@ -143,7 +154,7 @@ export const panelTimingSettings = {
       );
     if (raw && timing?.active)
       paragraphs.push(
-        `Before hold and filters: ${raw.false_negatives} missed / ${raw.present_samples} presence observations; ${raw.false_positives} crossings / ${raw.not_present_samples} empty observations. The quality measurements below use the timing estimate.`,
+        `Before hold and filters: ${this._observationText(raw.false_negatives)} missed / ${this._observationText(raw.present_samples)} presence observations; ${this._observationText(raw.false_positives)} crossings / ${this._observationText(raw.not_present_samples)} empty observations. The quality measurements below use the timing estimate.`,
       );
     return paragraphs.map((text) => this._paragraphHtml(text)).join("");
   },

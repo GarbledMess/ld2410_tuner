@@ -413,6 +413,8 @@ async function testReport(page) {
         presence_recall: 1,
         false_positive_percent: 1,
         target_met: true,
+        mostly_missed_episodes: 1,
+        empty_periods_failed: 0,
         outcomes: {
           human: {
             present: state(600, 600, 100, 100),
@@ -440,6 +442,11 @@ async function testReport(page) {
     return panel._load(true);
   });
   assert.match(await desk.innerText(), /Combined score 99.00\/100/);
+  assert.match(
+    await desk.innerText(),
+    /Occupied periods mostly missed: 1\. Empty periods failed: 0\./,
+    "room scores describe their period terms",
+  );
   assert.match(await desk.innerText(), /1 false triggers \/ 99 correct empty/);
   assert.match(
     await desk.innerText(),
@@ -932,6 +939,20 @@ async function testLinkedBand(page) {
   assert.match(text, /Desk: 50\.00\/100 → 60\.00\/100/);
   assert.match(text, /Sofa: 70\.00\/100 → 75\.00\/100/);
   assert.match(text, /Total error cost: 9\.000 → 6\.500/);
+  assert.match(text, /mostly missed and failed periods/);
+  const older = /This joint result used an older learning model/;
+  assert.match(text, older, "a joint result from another learner is marked");
+  await page.evaluate(() => {
+    const [set] = Object.values(fixture.learning_sets);
+    set.learning.slots.user.method = fixture.room_learner_method;
+    return panel._load(true);
+  });
+  assert.doesNotMatch(await linked.innerText(), older);
+  await page.evaluate(() => {
+    const [set] = Object.values(fixture.learning_sets);
+    set.learning.slots.user.method = "room_joint_v1";
+    return panel._load(true);
+  });
   assert.doesNotMatch(
     text,
     /Stored zone score|Combined score/,

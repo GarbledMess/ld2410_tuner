@@ -68,12 +68,16 @@ def selection_costs(problem, scores, quiet):
 
 
 def _allowed(scores):
-    start = _zones(scores[0])
+    start = {
+        gid: metrics.get("guard_counts", metrics) for gid, metrics in _zones(scores[0]).items()
+    }
     return [
         i
         for i, score in enumerate(scores)
         if all(
-            metrics[g] <= start[gid][g] for gid, metrics in _zones(score).items() for g in GUARDS
+            metrics.get("guard_counts", metrics)[g] <= start[gid][g]
+            for gid, metrics in _zones(score).items()
+            for g in GUARDS
         )
     ]
 

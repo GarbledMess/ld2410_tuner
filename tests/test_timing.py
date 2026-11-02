@@ -151,7 +151,12 @@ def test_timing_improves_gate_choice_without_hiding_noise_or_changing_settings()
     assert timed["training"]["false_positives"] == timed["training"]["false_negatives"] == 0
     assert 15 <= timed["proposals"]["g0_still"]["threshold"] < 70
     assert timed["raw_training"]["false_negatives"] == 100
-    assert timed["review"]["period_count"] == 0
+    # Task 13 retains raw review diagnostics: 50 two-reading dips remain
+    # reviewable even though the timed evaluator bridges all of them.
+    assert timed["review"]["period_count"] == 50
+    assert all(period["errors"] == 2 for period in timed["review"]["periods"])
+    assert timed["review"]["periods"][0]["start"] == 30
+    assert timed["review"]["periods"][0]["end"] == 42
     assert timed["outlier_filter"]["excluded"] is False
     assert timed["feasibility"]["status"] == "not_assessed"
 

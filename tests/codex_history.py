@@ -45,19 +45,68 @@ def sample_guesses(samples):
     return guesses.of(view, "a").runs
 
 
-def objective(view, *, start=0, end=None, weight=1.0):
-    """The native device objective with raw confidence, for physical mass checks."""
-    from tuner_under_test.calibration.event_fitting import _objective
+class ObservedEvidence:
+    """Test-side scalar view of streamed TruthSpans, never a production objective."""
 
-    return _objective(
-        view,
-        "a",
-        ["g0_move"],
-        {"g0_move": 20},
-        None,
-        weight,
-        {},
-        start,
-        view._history_until if end is None else end,
-        quality_context=False,
+    def __init__(self, problem):
+        self.problem = problem
+
+    @property
+    def regions(self):
+        from tuner_under_test.engine.hybrid.diagnostics import _pieces
+
+        result = []
+        zone = self.problem.zones[0]
+        for a, b, span, values in _pieces(self.problem, "a", zone.truth):
+            row = (a, b, {"g0_move": values[0]}, span.state, span.source, span.confidence)
+            if result and result[-1][1] == a and result[-1][2:] == row[2:]:
+                result[-1] = (result[-1][0], b, *row[2:])
+            else:
+                result.append(row)
+        return result
+
+    @property
+    def shares(self):
+        from tuner_under_test.calibration.scoring import episode_share
+
+        support = self.problem.policy.quality
+        return tuple(
+            episode_share(
+                self.problem.policy.automatic_weight,
+                support["human_episodes"][state],
+                support["automatic_episode_mass"][state],
+            )
+            for state in ("present", "not_present")
+        )
+
+
+def objective(view, *, start=0, end=None, weight=1.0):
+    """Expose observed hybrid truth as scalar test tuples with recorded confidence."""
+    from tuner_under_test.engine.hybrid.adapters import device_problem
+
+    return ObservedEvidence(
+        device_problem(
+            view,
+            "a",
+            ["g0_move"],
+            {"g0_move": 20},
+            {},
+            weight,
+            {},
+            start,
+            view._history_until if end is None else end,
+            quality_context=False,
+        )
     )
+
+
+def diagnostic_samples(evidence, human):
+    from dataclasses import replace
+
+    from tuner_under_test.engine.hybrid.diagnostics import _radar
+
+    problem = evidence.problem
+    zone = problem.zones[0]
+    zone = replace(zone, truth=tuple(s for s in zone.truth if (s.source == "human") == human))
+    problem = replace(problem, zones=(zone,))
+    return _radar(problem, "a", {"a": {0: 20}}, zone.truth)["samples"]

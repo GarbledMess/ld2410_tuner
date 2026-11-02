@@ -82,7 +82,8 @@ export const panelLearning = {
     const m = learning?.training;
     if (m?.duration)
       return (
-        this._durationValidationHtml(m.duration) + this._sampleOutcomesHtml(m)
+        this._durationValidationHtml(m.duration, false, m) +
+        this._sampleOutcomesHtml(m)
       );
     if (!m || !(m.present_samples || m.not_present_samples))
       return "<p>No human-labelled accuracy measurement yet. Record known occupied and empty periods to check this estimate.</p>";
@@ -126,7 +127,7 @@ export const panelLearning = {
         : "Raw threshold-crossing counts.";
     return `<div class="sample-outcome-report"><b>${automatic ? "Automatically labelled" : "Human-labelled"} snapshot outcomes</b>
       <div class="sample-outcomes">${items.map(([label, low, high, total]) => `<div><span>${label}</span><b>${this._sampleRange(low, high)} / ${Number.isFinite(total) ? total : "—"}</b></div>`).join("")}</div>
-      <p class="muted">${basis} These counts help assess the recording; the time-based cost chooses thresholds. Counts alone do not make a learning job fail.</p></div>`;
+      <p class="muted">${basis} These counts help assess the recording; the error cost chooses thresholds. Counts alone do not make a learning job fail.</p></div>`;
   },
 
   _sampleRange(low, high) {
@@ -156,7 +157,17 @@ export const panelLearning = {
     return low === high ? `${high}%` : `${low}–${high}%`;
   },
 
-  _durationValidationHtml(m, automatic = false) {
+  // Hybrid measurements (time and episode cost) name their basis explicitly.
+  _hybridBasis(m) {
+    return ["physical_interval_time", "six_second_cells"].includes(m?.basis);
+  },
+
+  _periodsHtml(measured) {
+    if (measured?.mostly_missed_episodes == null) return "";
+    return `<p>Occupied periods mostly missed (under half detected): ${measured.mostly_missed_episodes} of ${measured.presence_episodes ?? "—"}. Empty periods failed (a trigger started in them, or over half false-active): ${measured.empty_periods_failed ?? "—"}.</p>`;
+  },
+
+  _durationValidationHtml(m, automatic = false, measured = null) {
     const score =
       m.false_positive_score == null
         ? "—"
@@ -190,13 +201,14 @@ export const panelLearning = {
         : "";
     return `<div class="learning-metrics">${metrics}</div>
       <p>Estimated missed presence: ${this._secondsRange(m.missed_seconds, m.missed_seconds_upper)} of ${this._secondsText(m.present_seconds)} occupied time. Longest estimated gap: ${this._secondsRange(m.longest_missed_seconds, m.longest_missed_seconds_upper)}. Completely missed occupied periods: ${m.missed_presence_episodes}.</p>
-      ${this._errorCostHtml(m, automatic)}
-      <p class="muted">Scores use elapsed time within recorded sessions, not the number of readings. Missing history is not counted as observed time. Timing between snapshots is estimated; empty-time penalties use conservative activity intervals. These are training results, not guaranteed field accuracy.</p>
+      ${this._periodsHtml(measured)}${this._errorCostHtml(m, automatic)}
+      <p class="muted">Scores use elapsed time${this._hybridBasis(m) ? " and whole labelled periods" : ""} within recorded sessions, not the number of readings. Missing history is not counted as observed time. Timing between snapshots is estimated; empty-time penalties use conservative activity intervals. These are training results, not guaranteed field accuracy.</p>
       ${this._paragraphHtml(unscored)}`;
   },
 
   _errorCostHtml(m, automatic) {
     if (m.error_cost == null) return "";
+    if (this._hybridBasis(m)) return this._hybridCostHtml(m, automatic);
     const label = automatic
       ? "Unweighted recorded-time cost"
       : "Search error cost";
@@ -204,6 +216,15 @@ export const panelLearning = {
       ? " Automatic search additionally weights time by confidence, after human evidence."
       : "";
     return `<p class="muted">${label}: ${Number(m.error_cost).toFixed(3)} (lower is better). Missed occupied-time percentage costs ${Number(m.missed_time_cost)}× false-active empty-time percentage, using the conservative missed-time estimate. The 99.9% target remains the quality goal; crossing it does not make extra misses free.${note}</p>`;
+  },
+
+  _hybridCostHtml(m, automatic) {
+    const label = automatic ? "Automatically labelled time cost" : "Error cost";
+    const cells =
+      m.basis === "six_second_cells"
+        ? " Scored on six-second cell maxima because exact replay of every recording exceeded the work budget; very short events and timing are approximate."
+        : "";
+    return `<p class="muted">${label}: ${Number(m.error_cost).toFixed(3)} (lower is better). It adds a time term and a period term: 5× the missed share of occupied time plus the false-active share of empty time, and 5× the share of occupied periods mostly missed plus the share of empty periods that failed, each as a percentage. The 99.9% target remains the quality goal; crossing it does not make extra misses free.${cells}</p>`;
   },
 
   _influenceHtml(periods = []) {
@@ -271,13 +292,19 @@ export const panelLearning = {
   _validationHtml(learning, currentTiming) {
     if (!learning) return "";
     if (learning.joint)
-      return `<section class="learning-report"><b>Joint result · ${this._esc(learning.joint.name)}</b>${this._roomOutcomeHtml(learning.joint.report.room)}<p>These outcomes cover the complete zone, not this radar alone. Use the Apply button to review and apply all members together in Rooms and zones.</p></section>`;
+      return `<section class="learning-report"><b>Joint result · ${this._esc(learning.joint.name)}</b>${this._olderModelHtml(learning)}${this._roomOutcomeHtml(learning.joint.report.room)}<p>These outcomes cover the complete zone, not this radar alone. Use the Apply button to review and apply all members together in Rooms and zones.</p></section>`;
     const outcome = this._applyOutcome(learning, currentTiming);
     return `<section class="learning-report outcome-${outcome.level}" aria-label="Recommendation quality"><b>${outcome.label}</b>
-      ${learning.method !== this._data?.learner_method ? '<p class="notice">This saved result used an older learning model. Its recorded scores have not been recalculated. Learn again before applying it with the current model.</p>' : ""}
+      ${this._olderModelHtml(learning)}
       ${this._humanValidationHtml(learning)}${this._feasibilityHtml(learning)}${this._reviewEvidenceHtml(learning)}
       <details class="learning-diagnostics" data-detail="learning-diagnostics"><summary>Calculation details<span class="section-description">Evidence counts, exclusions and calculation diagnostics.</span></summary>
       ${this._outlierFilterHtml(learning)}${this._backtestHtml(learning.validation)}${this._automaticValidationHtml(learning)}${this._falsePositiveSourcesHtml(learning)}${this._inferenceHtml(learning.automatic_evidence)}${this._learningWarningHtml(learning)}</details></section>`;
+  },
+
+  _olderModelHtml(learning) {
+    return learning.method !== this._data?.learner_method
+      ? '<p class="notice">This saved result used an older learning model. Its recorded scores have not been recalculated. Learn again before applying it with the current model.</p>'
+      : "";
   },
 
   _backtestHtml(backtest) {
@@ -293,7 +320,7 @@ export const panelLearning = {
       !learning.automatic_evidence?.used
     )
       return "";
-    return `<h4>Automatically labelled time (lower-confidence estimates)</h4>${this._durationValidationHtml(learning.estimated_training.duration, true)}${this._sampleOutcomesHtml(learning.estimated_training, true)}`;
+    return `<h4>Automatically labelled time (lower-confidence estimates)</h4>${this._durationValidationHtml(learning.estimated_training.duration, true, learning.estimated_training)}${this._sampleOutcomesHtml(learning.estimated_training, true)}`;
   },
 
   _applyOutcome(learning, currentTiming) {

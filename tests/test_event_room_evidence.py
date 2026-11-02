@@ -34,20 +34,25 @@ def test_room_replay_does_not_read_rows_before_requested_start(monkeypatch):
 )
 def test_assessment_reads_only_required_timing_warmup(monkeypatch, timing, warmup):
     from test_rooms import labels, member
-    from tuner_under_test.history import spans
+    from tuner_under_test.engine.hybrid.constants import WARMUP_SECONDS
+    from tuner_under_test.history.fit_rows import CapturedRowSource
     from tuner_under_test.rooms import assessment
 
     item = member("synthetic", [40] * 100 + [0] * 100, labels(), timing)
-    original = spans._search_day
+    original = CapturedRowSource.window
     starts = []
 
-    def observe(day, start, end, indices):
+    def observe(source, start, end):
         starts.append(start)
-        yield from original(day, start, end, indices)
+        return original(source, start, end)
 
-    monkeypatch.setattr(spans, "_search_day", observe)
-    assessment.calculate({"synthetic": item}, 600, 1200)
-    assert starts == [600 - warmup]
+    monkeypatch.setattr(CapturedRowSource, "window", observe)
+    result = assessment.calculate({"synthetic": item}, 600, 1200)
+    # Hybrid uses its pinned common 1800-second replay horizon for all policies.
+    assert starts and min(starts) == 600 - WARMUP_SECONDS
+    assert all(start >= 600 - WARMUP_SECONDS for start in starts)
+    assert result["room"]["outcomes"]["human"]["present"]["seconds"] == 0
+    assert result["room"]["outcomes"]["human"]["not_present"]["seconds"] == 597
 
 
 @pytest.mark.parametrize("timing", [{}, {"timeout": 5, "on_delay": 2, "off_delay": 3}])

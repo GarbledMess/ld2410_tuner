@@ -181,7 +181,7 @@ class AutomaticRoomTests(unittest.IsolatedAsyncioTestCase):
         assert not result["skipped"]
         assert {device for device, _key, _value in writes} == {"a", "b", "c"}
 
-    async def test_zero_ceiling_preserves_redundant_member_when_shared_radar_covers_union(self):
+    async def test_zero_ceiling_scores_shared_union_and_apply_skips_unchanged_member(self):
         self.runtime.data["learning_schedule"] = {"automatic_weight": 0}
         set_id = self.linked(current=CURRENT)
         self.unlabelled_history(guess=False)
@@ -191,9 +191,11 @@ class AutomaticRoomTests(unittest.IsolatedAsyncioTestCase):
         room_labels.label_room_range(self.runtime, sofa, SPLIT, 1200, "not_present")
         learned = await self.learn(set_id)
         self.assert_lowered(learned["thresholds"], "a", "b")
-        assert learned["thresholds"]["c"]["g0_move"] == CURRENT
+        # Hybrid chooses interior gaps and then lower total configured thresholds,
+        # including a redundant member when its detections do not worsen the zone.
+        self.assert_lowered(learned["thresholds"], "c")
         forced = deepcopy(learned["thresholds"])
-        forced["c"] = dict(forced["b"])
+        forced["c"] = {"g0_move": CURRENT}
         for gid, keys in ((desk, ("a", "b")), (sofa, ("b", "c"))):
             members = {
                 key: {
@@ -208,12 +210,13 @@ class AutomaticRoomTests(unittest.IsolatedAsyncioTestCase):
             )["room"]
             actual = learned["groups"][gid]["after"]["room"]
             # The last loud reading holds until the next one, exactly at the state boundary:
-            # every present second is detected, and lowering c changes nothing.
+            # every present second is detected, and raising redundant c changes nothing.
             self.assertAlmostEqual(actual["presence_recall"], 1.0)
             self.assertAlmostEqual(redundant["presence_recall"], 1.0)
             assert actual["false_positive_percent"] == redundant["false_positive_percent"] == 0
             assert actual["target_met"] == redundant["target_met"] is True
-        assert learned["groups"][sofa]["after"]["devices"]["c"]["presence_recall"] == 0
+        # Exercise Apply's no-op guard with the equally accurate shared-radar pattern.
+        learned["thresholds"] = forced
         writes, (prepare, write) = self.writer()
         with prepare, write:
             result = await application.apply(self.runtime, set_id, learned["id"], "user")

@@ -4,11 +4,12 @@ import random
 from math import ceil
 from unittest.mock import patch
 
+import pytest
 import test_tuner  # noqa: F401
-from tuner_under_test.calibration import event_quality
 from tuner_under_test.calibration.constants import SAMPLE_SECONDS
 from tuner_under_test.calibration.episodes import Episode
 from tuner_under_test.const import HISTORY_KEYS
+from tuner_under_test.engine.hybrid import quality
 
 
 class IndexedKeys(list):
@@ -26,9 +27,12 @@ def test_gate_positions_are_resolved_once_per_collection():
     parent = Episode(0, 100, "present", ("synthetic",))
     cells = [(i, i + 1, (20,) * 18, "present", parent) for i in range(100)]
     positions = IndexedKeys(HISTORY_KEYS)
-    with patch.object(event_quality, "HISTORY_KEYS", positions):
-        result = event_quality._human(cells, keys)
-    assert result[0] == (parent,)
+    with patch.object(quality, "HISTORY_KEYS", positions):
+        result = quality._Densities(keys)
+        for cell in cells:
+            result.add(cell)
+        result.finish()
+    assert tuple(result.episodes) == (parent,)
     assert positions.lookups <= len(keys)
 
 
@@ -50,7 +54,8 @@ def test_accumulation_matches_independent_seeded_duration_oracle():
         )
         low = i / 10
         high = low + rng.randrange(1, 20) / 100
-        cells.append((low, high, values, None if parent is None else parent.state, parent))
+        quantized = tuple(None if value is None else ceil(value) for value in values)
+        cells.append((low, high, quantized, None if parent is None else parent.state, parent))
         if parent is None:
             continue
         observed = [
@@ -78,56 +83,60 @@ def test_accumulation_matches_independent_seeded_duration_oracle():
     expected_empty = {
         key: [v / SAMPLE_SECONDS for v in hist] for key, hist in expected_empty.items()
     }
-    assert event_quality._human(cells, keys) == (
-        tuple(expected_episodes),
-        expected_presence,
-        expected_empty,
-        expected_density,
-    )
-
-
-def test_objective_preference_switches_reuse_only_their_own_histograms():
-    from types import SimpleNamespace
-
-    from tuner_under_test.calibration import event_fitting, event_preferences
-
-    class CountedCells(list):
-        def __init__(self, cells):
-            super().__init__(cells)
-            self.walks = 0
-
-        def __iter__(self):
-            self.walks += 1
-            return super().__iter__()
-
-    rng = random.Random(82395)
-    keys = [HISTORY_KEYS[0], HISTORY_KEYS[7]]
-    cells = [
-        (
-            i / 10,
-            i / 10 + rng.randrange(1, 20) / 100,
-            {key: rng.randrange(101) for key in keys if rng.randrange(5)},
-            "present" if i % 3 else "not_present",
-            "automatic" if i % 2 else "human",
-            0.7,
-        )
-        for i in range(300)
-    ]
-    model = SimpleNamespace(supports=lambda key, value: value > 35)
-    for source_cells in (cells, [(0, 10, {keys[0]: 2}, "not_present", "human", 1)]):
-        objective = event_fitting._DeviceObjective.__new__(event_fitting._DeviceObjective)
-        objective.device_id = "synthetic"
-        objective.current = {"synthetic": dict.fromkeys(keys, 50)}
-        objective.quality = {"synthetic": model}
-        objective.regions = CountedCells(source_cells)
-        objective._preference_histograms = None
-        objective.totals = {("human", state): 1 for state in ("present", "not_present")}
-        for reference in (False, True, False):
-            objective.reference = reference
-            suppressed = ("present", "not_present") if reference else ()
-            expected = event_preferences.preferences(
-                source_cells, objective.current["synthetic"], quality=model, reference=suppressed
+    actual = quality._Densities(keys)
+    for cell in cells:
+        actual.add(cell)
+    actual.finish()
+    assert tuple(actual.episodes) == tuple(expected_episodes)
+    assert {
+        key: [v / SAMPLE_SECONDS for v in hist]
+        for key, hist in zip(keys, actual.empty, strict=True)
+    } == expected_empty
+    for key in keys:
+        masks = expected_presence[key]
+        assert actual.masks()[key] == tuple(
+            sum(
+                1 << energy
+                for energy in range(101)
+                if sum(bool(mask & (1 << energy)) for mask in masks) >= count
             )
-            actual = objective._member_preferences({}, None)
-            assert actual == {"synthetic": expected}
-        assert objective.regions.walks <= len(keys)
+            for count in (1, 2)
+        )
+        for state in ("present", "not_present"):
+            histograms = [
+                hist
+                for (ep, gate), hist in expected_density.items()
+                if gate == key and ep.state == state
+            ]
+            expected = [
+                sum(hist[i] / sum(hist) for hist in histograms) / len(histograms)
+                for i in range(101)
+            ]
+            assert actual.densities(state)[key][0] == pytest.approx(expected)
+
+
+def test_objective_preference_switches_reuse_only_their_own_histograms(tmp_path):
+    from dataclasses import replace
+
+    from test_hybrid_evidence import truth
+    from test_hybrid_search import problem
+    from tuner_under_test.engine.hybrid.search import collect_training, coordinate_costs
+    from tuner_under_test.engine.hybrid.training import TrainingStore
+    from tuner_under_test.engine.hybrid.types import EvidencePolicy
+
+    spans = [
+        truth(0, 6),
+        truth(6, 12, source="automatic", episode="auto"),
+        truth(12, 24, "not_present", episode="empty"),
+    ]
+    p = problem({"a": [(80,), (20,), (30,), (30,)]}, spans=spans)
+    p = replace(p, policy=EvidencePolicy(1, False, {}))
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        original = coordinate_costs(p, store, {"a": {0: 90}}, "a", 0, (10, 40, 90))
+        reference = replace(p, policy=replace(p.policy, reference=True))
+        suppressed = coordinate_costs(reference, store, {"a": {0: 90}}, "a", 0, (10, 40, 90))
+        assert original != suppressed
+        assert coordinate_costs(p, store, {"a": {0: 90}}, "a", 0, (10, 40, 90)) == original
+        assert suppressed[40] == 0
+        assert original[40] > 0

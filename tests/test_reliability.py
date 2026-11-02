@@ -44,7 +44,7 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(measurement["false_negatives"], 5)
             self.assertEqual(measurement["present_samples"], 1000)
             self.assertEqual(measurement["not_present_samples"], 1000)
-            self.assertEqual(measurement["longest_missed_run_samples"], 5)
+        self.assertEqual(result["training"]["longest_missed_run_samples"], 5)
         self.assertEqual(result["counts"]["present"], 1000)
         self.assertEqual(result["training"]["duration"]["missed_seconds"], 30)
         self.assertEqual(result["feasibility"]["status"], "not_assessed")
@@ -71,9 +71,14 @@ class ReliabilityTests(unittest.TestCase):
             row[1].update(dict.fromkeys(KEYS, 2))
         self.assertEqual(filtered(groups)[0], groups)
         result = fit(groups)
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["training"]["false_negatives"], 0)
-        self.assertTrue(any(p["threshold"] < 5 for p in result["proposals"].values()))
+        # Five low samples remain labelled. Within the evidence band the gap
+        # margin can retain these misses rather than chase a tiny duration gain.
+        self.assertEqual(result["status"], "unsafe")
+        self.assertEqual(result["training"]["false_negatives"], 5)
+        self.assertEqual(result["training"]["present_samples"], 1000)
+        self.assertEqual(result["anomaly"]["discarded_count"], 0)
+        thresholds = {k: v["threshold"] for k, v in result["proposals"].items()}
+        self.assertEqual(metrics(groups["present"], thresholds)["false_negatives"], 5)
 
     def test_other_gate_presence_vetoes_exclusion(self):
         groups = observations()
@@ -81,7 +86,12 @@ class ReliabilityTests(unittest.TestCase):
             row[1][KEYS[1]] = 12
         # The second gate independently distinguishes this quiet location from noise.
         self.assertEqual(filtered(groups)[0], groups)
-        self.assertEqual(fit(groups)["training"]["false_negatives"], 0)
+        result = fit(groups)
+        # Independent support prevents anomaly exclusion; it does not bypass
+        # the hybrid evidence band when selecting a gap margin.
+        self.assertEqual(result["anomaly"]["discarded_count"], 0)
+        self.assertEqual(result["training"]["present_samples"], 1000)
+        self.assertEqual(result["training"]["false_negatives"], 5)
 
     def test_gaps_label_changes_and_insufficient_context_stay(self):
         for variant in ("gap", "label", "missing", "duration", "context"):

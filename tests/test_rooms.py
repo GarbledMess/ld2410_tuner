@@ -337,7 +337,7 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
                     ]["state"],
                     "ready",
                 )
-        with patch.object(assessment, "SCORER_VERSION", 3):
+        with patch.object(assessment, "SCORER_VERSION", assessment.SCORER_VERSION + 1):
             self.assertEqual(jobs.summary(self.runtime, "area:office")["state"], "stale")
         self.device["label_revision"] = 1
         self.assertEqual(jobs.summary(self.runtime, "area:office")["state"], "stale")
@@ -824,11 +824,11 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         }
         return desk, t, members, truth.view(self.runtime, desk)
 
-    async def test_objective_and_roles_attribute_a_shared_radar_as_the_learner_does(self):
-        """M2: assessment roles and the joint objective read the learner's attribution (one
+    async def test_training_and_roles_attribute_a_shared_radar_as_the_learner_does(self):
+        """M2: assessment roles and hybrid training read the learner's attribution (one
         baseline, union rule over every group the radar is in), not a per-group baseline."""
+        from test_truth import fitting_histograms, fitting_problem
         from tuner_under_test.rooms import attribution
-        from tuner_under_test.rooms.objective import Objective
 
         desk, episode, members, room = self.shared_radar_desk()
         saved = attribution.snapshot(self.runtime, "a")
@@ -842,8 +842,16 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         role = report["devices"]["a"]
         self.assertGreater(role["missed_seen_seconds"], 0, "the learner's yes is a miss here")
         self.assertEqual(role["missed_seen_inferred_seconds"], role["missed_seen_seconds"])
-        preference = Objective(members, start, end, room).preferences["a"]["g0_move"]
-        self.assertEqual(preference["presence_reference"], 30, "attributed Present is evidence")
+        problem = fitting_problem(members, room, start, end)
+        present, _empty = fitting_histograms(problem, "a")
+        self.assertGreater(present[30], 0, "attributed Present is training evidence")
+        self.assertEqual(sum(present), present[30], "no other energy trains occupied truth")
+        self.assertTrue(
+            any(
+                s.start <= episode < s.end and s.state == "present" for s in problem.zones[0].truth
+            ),
+            "the shared radar keeps the original attributed occupied stretch",
+        )
 
     async def test_a_job_attributes_each_radar_once(self):
         """Roles and measurements share each native human/full fold within the job."""
@@ -985,21 +993,34 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(getattr(self.runtime, "_native_found_job", {}))
 
     async def test_a_device_job_attributes_its_radar_once(self):
-        """Regression: a device-level job on an unprepared view made two attribution passes
-        (human truth, then full truth), each decoding every row; prepared, it makes one."""
+        """Device fitting streams bounded blocks and never constructs old attribution rows."""
         from tuner_under_test.calibration import service
+        from tuner_under_test.engine.hybrid.constants import ROW_BLOCK_ROWS
+        from tuner_under_test.history.fit_rows import CapturedRowSource
 
         await self.learn_office_set()
         entities, current = {"g0_move": "number.a_g0_move"}, {"g0_move": 20}
+        blocks = []
+        original = CapturedRowSource.blocks
+
+        def bounded(source, lo, hi):
+            for block in original(source, lo, hi):
+                blocks.append((source.device_id, len(block.times)))
+                yield block
+
         with (
             patch.object(
                 service.recovery, "prepare_learning", AsyncMock(return_value=(entities, current))
             ),
             patch.object(service, "read_timing", return_value={}),
+            patch.object(CapturedRowSource, "blocks", bounded),
             self.native_builds() as builds,
         ):
             await service._learn_once(self.runtime, "a")
-        self.assert_native_builds(builds, "a")
+        self.assertTrue(blocks)
+        self.assertEqual({device for device, _count in blocks}, {"a"})
+        self.assertLessEqual(max(count for _device, count in blocks), ROW_BLOCK_ROWS)
+        self.assertFalse(builds, "device hybrid truth must use streamed attribution")
         self.assertFalse(getattr(self.runtime, "_native_found_job", {}))
 
     def assert_released(self, views):
