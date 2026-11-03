@@ -51,7 +51,7 @@ class FittingDays:
             return PhysicalRows(channels, array("d"), array("d"), dict.fromkeys(channels, b""))
         digest.partial.close()
         try:
-            digest.physical.geometry()
+            digest.physical.validate()
         except ValueError:
             persistent = _result_identity(self.view._days, device_id, date)
             digest = self._fold(device_id, date, channels, persistent)

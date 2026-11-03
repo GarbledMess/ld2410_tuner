@@ -3,10 +3,15 @@
 # Spill files are written and read only by this process, in its private temp directory.
 import pickle  # nosec B403
 import struct
+import sys
 import tempfile
+import weakref
+from array import array
 from bisect import bisect_right
 from collections import OrderedDict
+from itertools import accumulate, repeat
 from math import ceil
+from operator import and_, getitem, itemgetter, lt, mul, rshift
 from pathlib import Path
 
 from ...calibration.event_replay import _timing
@@ -18,6 +23,13 @@ _TABLES = tuple(bytes(49 if t < v <= 100 else 48 for v in range(256)) for t in r
 _COVER = bytes(49 if value == 1 else 48 for value in range(256))
 _ATT = bytes(3 * v // 5 if v <= 100 else 255 for v in range(256))
 _SEEN = struct.Struct("<dd")
+# One projected block (label runs plus timing reach) replaces fixed physical blocks
+# while it has at most this many cells; its columns spill per channel, raw.
+PROJECTED_CELLS = 2**21
+# Streamed parent counters and denominators stay resident up to this many parents.
+RESIDENT_PARENTS = 2**16
+# Resident channel masks and member unions (each bounded separately).
+MASK_BYTES = 32 * 1024**2
 
 
 def pack_mask(column, threshold):
@@ -87,6 +99,72 @@ def _columns(problem, rid, lo, size, channels):
     ) if coverage else 0
 
 
+def _projected_columns(problem, rid, lo, channels, projection, size):
+    """Projected byte columns and coverage, copied one radar-day at a time."""
+    columns = {c: bytearray([255]) * size for c in channels}
+    coverage = bytearray(size)
+    offsets = [offset for offset, _bits, _position in projection]
+    base = int(lo // CELL_SECONDS)
+    for day in problem.days.dates(rid):
+        digest = problem.days.digest(rid, day, channels)
+        if digest is None:
+            continue
+        try:
+            _copy_day(digest, columns, coverage, projection, offsets, base)
+        finally:
+            close = getattr(digest.partial, "close", None)
+            if close is not None:
+                close()
+    return {c: bytes(col) for c, col in columns.items()}, int(
+        coverage[::-1].translate(_COVER), 2
+    ) if coverage else 0
+
+
+def _copy_day(digest, columns, coverage, projection, offsets, base):
+    first, last = digest.k0 - base, digest.k0 - base + digest.n
+    at = max(0, bisect_right(offsets, first) - 1)
+    for run in projection[at:]:
+        if run[0] >= last:
+            break
+        _copy_run(digest, columns, coverage, run, first, last)
+
+
+def _copy_run(digest, columns, coverage, run, first, last):
+    offset, bits, position = run
+    a, b = max(offset, first), min(offset + bits.bit_length(), last)
+    if b <= a:
+        return
+    source, target = a - first, position + a - offset
+    coverage[target : target + b - a] = digest.cov[source : source + b - a]
+    for c, column in columns.items():
+        column[target : target + b - a] = digest.channels[c][source : source + b - a]
+
+
+def _shared_or(a, b):
+    if a is b or not b:
+        return a
+    if not a:
+        return b
+    value = a | b
+    return a if value == a else b if value == b else value
+
+
+def _prefix_suffix(masks, blocks):
+    """Block-wise ORs of ``masks[:i]`` and ``masks[i:]`` for every ``i``."""
+    if blocks == 1:
+        values = tuple(map(itemgetter(0), masks))
+        prefix = list(zip(accumulate(values, _shared_or, initial=0)))
+        suffix = list(zip(accumulate(reversed(values), _shared_or, initial=0)))[::-1]
+        return prefix, suffix
+    prefix = [tuple(0 for _ in range(blocks))]
+    for lane in masks:
+        prefix.append(tuple(a | b for a, b in zip(prefix[-1], lane, strict=True)))
+    suffix = [tuple(0 for _ in range(blocks))] * (len(masks) + 1)
+    for c in range(len(masks) - 1, -1, -1):
+        suffix[c] = tuple(a | b for a, b in zip(suffix[c + 1], masks[c], strict=True))
+    return prefix, suffix
+
+
 def _advance(raw, coverage, hold, carry, size):
     missing = ((1 << size) - 1) ^ coverage
     prefix = (missing & -missing).bit_length() - 1 if missing else size
@@ -102,6 +180,42 @@ def _advance(raw, coverage, hold, carry, size):
 
 
 def _project(mask, ranges):
+    """Gather each run's bits to its position by slicing one bit string.
+
+    Work follows the mask's own extent: runs before its lowest bit are found by
+    bisection and the scan stops at its highest bit.
+    """
+    if not mask or not ranges:
+        return 0
+    low, high = (mask & -mask).bit_length() - 1, mask.bit_length()
+    bits = format(mask >> low, "b")[::-1]
+    first = max(0, bisect_right(ranges, low, key=_first) - 1)
+    pieces, start = [], ranges[first][2]
+    end = start
+    for k in range(first, len(ranges)):
+        offset, run, position = ranges[k]
+        if offset >= high:
+            break
+        if run & (run + 1) or position < end:
+            return _project_shifts(mask, ranges)
+        pieces.append("0" * (position - end))
+        pieces.append(_piece(bits, offset - low, run.bit_length()))
+        end = position + run.bit_length()
+    joined = "".join(pieces)
+    return int(joined[::-1], 2) << start if joined else 0
+
+
+def _piece(bits, at, count):
+    if at < 0:
+        return "0" * min(count, -at) + bits[: max(0, at + count)]
+    return bits[at : at + count]
+
+
+def _first(run):
+    return run[0]
+
+
+def _project_shifts(mask, ranges):
     result = 0
     for offset, bits, position in ranges:
         result |= ((mask >> offset) & bits) << position
@@ -146,13 +260,62 @@ _LABELS_BY_PID = (
 )
 
 
+def _pattern_signature(values):
+    signature = getattr(values, "signature", None)
+    return signature() if signature is not None else tuple(values.items())
+
+
+def _other_signatures_equal(previous, current, members, excluded):
+    return all(
+        a == b or member == excluded
+        for member, a, b in zip(members, previous, current, strict=True)
+    )
+
+
+class _MemberTree:
+    """Incremental block-wise member ORs, with a fixed conservative byte charge."""
+
+    def __init__(self, members, blocks, channels):
+        self.members = members
+        self.width = 1 << (len(members) - 1).bit_length()
+        self.signatures = [None] * len(members)
+        zero = (0,) * len(blocks)
+        self.nodes = [zero] * (2 * self.width)
+        lane = 64 + sum(40 + (size + 7) // 8 * 4 // 3 for _lo, size in blocks)
+        self.size = 1024 + len(members) * 512 + 2 * self.width * lane
+        self.size += sum(64 * len(channels[member].channels) for member in members)
+
+    def update(self, index, signature, mask):
+        self.signatures[index] = signature
+        at = self.width + index
+        self.nodes[at] = mask
+        while at > 1:
+            at //= 2
+            left, right = self.nodes[2 * at : 2 * at + 2]
+            combined = tuple(map(_shared_or, left, right))
+            if combined == self.nodes[at]:
+                break
+            self.nodes[at] = combined
+
+    def excluding(self, member):
+        if member not in self.members:
+            return self.nodes[1]
+        at = self.width + self.members.index(member)
+        result = self.nodes[0]
+        while at > 1:
+            result = tuple(map(_shared_or, result, self.nodes[at ^ 1]))
+            at //= 2
+        return result
+
+
 class Geometry:
     """Search-lifetime geometry with a bounded resident payload and disk overflow."""
 
     def __init__(self, problem, store, budget=16 * 1024**2):
         self.problem, self.store = problem, store
         self.budget = budget
-        self.resident, self.locations = {}, {}
+        self.resident, self.locations, self.sizes = {}, {}, {}
+        self.spill = None
         self.used = 0
         self.masks = OrderedDict()
         self.mask_bytes = 0
@@ -164,23 +327,17 @@ class Geometry:
         self.coordinate_scores = OrderedDict()
         self.scores = OrderedDict()
         self.formulas = {}
+        self.zone_unions = OrderedDict()
+        self.zone_trees = OrderedDict()
+        self.zone_union_sizes, self.zone_union_bytes = {}, 0
+        self.fits = {}
         self.score_bytes = 0
         self.parent_counts = {}
         self.parent_files = {}
+        self.parent_rows = {}
         start = int(problem.start // CELL_SECONDS) * CELL_SECONDS
         stop = ceil(problem.end / CELL_SECONDS) * CELL_SECONDS
-        width = sum(len(r.channels) + 1 for r in problem.radars.values())
-        self.size = max(SHARD_CELLS, min((stop - start) // CELL_SECONDS, budget // max(1, width)))
-        episodes = store._database.execute(
-            "SELECT count(DISTINCT parent) FROM search_pure"
-        ).fetchone()[0]
-        if episodes > SHARD_CELLS:
-            self.size = SHARD_CELLS
-        self.blocks = tuple(
-            (lo, min(self.size, (stop - lo) // CELL_SECONDS))
-            for lo in range(start, stop, self.size * CELL_SECONDS)
-        )
-        self._projection(start)
+        self._layout(start, stop)
         self._compile_columns()
         self._energies()
         if len(self.blocks) > 1:
@@ -188,7 +345,8 @@ class Geometry:
                 self._compile_parents(zone)
         for lo, size in self.blocks:
             for zone in problem.zones:
-                self.save((zone.group_id, lo, "labels"), self.labels(zone, lo, size))
+                labels = self.labels(zone, lo, size)
+                self.save((zone.group_id, lo, "labels"), labels, pin=self.projection is not None)
         if self.projection is not None:
             self.blocks = ((self.blocks[0][0], max(1, self.projected_size)),)
         self._prepare_streaming()
@@ -202,7 +360,8 @@ class Geometry:
                 self._compile_parents(zone)
                 # labels() expects physical geometry before optional projection.
                 physical_size = self.size if self.projection is not None else size
-                self.save((zone.group_id, lo, "labels"), self.labels(zone, lo, physical_size))
+                labels = self.labels(zone, lo, physical_size)
+                self.save((zone.group_id, lo, "labels"), labels, pin=self.projection is not None)
 
     def _compile_parents(self, zone):
         """Compile disk IDs and denominators once, outside coordinate scoring."""
@@ -229,50 +388,73 @@ class Geometry:
             "SELECT pid,state,source,seconds,weighted FROM timing_parents WHERE zone=? ORDER BY pid",
             (zone.group_id,),
         )
-        count = 0
+        count, resident = 0, []
         with path.open("wb") as output:
             for row in rows:
                 pickle.dump(row, output, protocol=5)
                 count += 1
+                if resident is not None:
+                    resident.append(row)
+                    resident = resident if count <= RESIDENT_PARENTS else None
         self.parent_files[zone.group_id] = path
         self.parent_counts[zone.group_id] = count
+        self.parent_rows[zone.group_id] = resident
 
-    def _projection(self, start):
+    def _layout(self, start, stop):
+        """One projected block when it is small enough, else fixed physical blocks."""
+        total = (stop - start) // CELL_SECONDS
+        projection, projected = self._projection(start, total)
+        if projected <= PROJECTED_CELLS:
+            self.size = total
+            self.blocks = ((start, total),)
+            self.projection, self.projected_size = projection, projected
+            return
+        width = sum(len(r.channels) + 1 for r in self.problem.radars.values())
+        self.size = max(SHARD_CELLS, min(total, self.budget // max(1, width)))
+        episodes = self.store._database.execute(
+            "SELECT count(DISTINCT parent) FROM search_pure"
+        ).fetchone()[0]
+        if episodes > SHARD_CELLS:
+            self.size = SHARD_CELLS
+        self.blocks = tuple(
+            (lo, min(self.size, (stop - lo) // CELL_SECONDS))
+            for lo in range(start, stop, self.size * CELL_SECONDS)
+        )
         self.projection = None
-        if len(self.blocks) == 1:
-            bits = 0
-            hold = max(
-                (
-                    ceil(sum(_timing(r.timing)[i] for i in (0, 2)) / CELL_SECONDS)
-                    for r in self.problem.radars.values()
-                ),
-                default=0,
-            )
-            for a, n in self.store._database.execute("SELECT t,n FROM search_pure"):
-                at = int((a - start) // CELL_SECONDS)
-                bits |= _range(max(0, at - hold), min(self.blocks[0][1], at + n))
-            self.projection, self.projected_size = _runs(bits, 1)
+
+    def _projection(self, start, total):
+        """Label runs, each extended back by the longest timing reach, as cell runs."""
+        bits = 0
+        hold = max(
+            (
+                ceil(sum(_timing(r.timing)[i] for i in (0, 2)) / CELL_SECONDS)
+                for r in self.problem.radars.values()
+            ),
+            default=0,
+        )
+        for a, n in self.store._database.execute("SELECT t,n FROM search_pure"):
+            at = int((a - start) // CELL_SECONDS)
+            bits |= _range(max(0, at - hold), min(total, at + n))
+        return _runs(bits, 1)
 
     def _compile_columns(self):
         for lo, size in self.blocks:
             for rid, radar in self.problem.radars.items():
-                columns, coverage = _columns(self.problem, rid, lo, size, radar.channels)
-                if self.projection is not None:
-                    columns = {
-                        c: b"".join(
-                            col[a : a + bits.bit_length()] + b"\xff"
-                            for a, bits, _ in self.projection
-                        )
-                        for c, col in columns.items()
-                    }
-                    coverage = _project(coverage, self.projection)
-                self.save((rid, lo), (columns, coverage))
+                if self.projection is None:
+                    columns, coverage = _columns(self.problem, rid, lo, size, radar.channels)
+                else:
+                    columns, coverage = _projected_columns(
+                        self.problem, rid, lo, radar.channels, self.projection, self.projected_size
+                    )
+                for channel, column in columns.items():
+                    self.save((rid, lo, channel), column)
+                self.save((rid, lo, "coverage"), coverage)
 
     def _energies(self):
         for lo, _size in self.blocks:
-            for rid in self.problem.radars:
-                columns, _coverage = self.get((rid, lo))
-                for channel, col in columns.items():
+            for rid, radar in self.problem.radars.items():
+                for channel in radar.channels:
+                    col = self.get((rid, lo, channel))
                     self.canonical.setdefault((rid, channel), set()).update(col)
         self.maximum = {
             key: max((v for v in values if v <= 100), default=-1)
@@ -283,24 +465,41 @@ class Geometry:
             for key, values in self.canonical.items()
         }
 
-    def save(self, key, value):
-        data = pickle.dumps(value, protocol=5)
+    def save(self, key, value, *, pin=False):
+        """Keep ``value`` resident within the budget; spill bytes raw, others pickled.
+
+        A pinned value (the one projected block's labels, read by every score)
+        always stays resident and counts toward the budget.
+        """
+        raw = isinstance(value, bytes)
+        data = value if raw else pickle.dumps(value, protocol=5)
         if key in self.resident:
-            self.used -= len(pickle.dumps(self.resident.pop(key), protocol=5))
-        if self.used + len(data) <= self.budget:
+            self.used -= self.sizes.pop(key)
+            del self.resident[key]
+        if pin or self.used + len(data) <= self.budget:
             self.resident[key] = value
+            self.sizes[key] = len(data)
             self.used += len(data)
-        else:
-            path = self.locations.get(key)
-            if path is None:
-                path = Path(self.store._directory.name) / f"geometry-{len(self.locations)}"
-            path.write_bytes(data)
-            self.locations[key] = path
+            return
+        if self.spill is None:
+            self.spill = tempfile.TemporaryFile(dir=self.store._directory.name)
+            self._finalizer = weakref.finalize(self, self.spill.close)
+        self.spill.seek(0, 2)
+        self.locations[key] = self.spill.tell(), len(data), raw
+        self.spill.write(data)
 
     def get(self, key):
         if key in self.resident:
             return self.resident[key]
-        return pickle.loads(self.locations[key].read_bytes())  # nosec B301
+        offset, size, raw = self.locations[key]
+        self.spill.seek(offset)
+        data = self.spill.read(size)
+        return data if raw else pickle.loads(data)  # nosec B301
+
+    def close(self):
+        """Release the spill file (also done when the geometry is collected)."""
+        if self.spill is not None:
+            self._finalizer()
 
     def labels(self, zone, lo, size):
         groups = {}
@@ -324,41 +523,106 @@ class Geometry:
         union = 0
         for offset, bits in groups.values():
             union |= bits << offset
-        ranges, position = [], 0
-        while union:
-            offset = (union & -union).bit_length() - 1
-            local = union >> offset
-            count = (local ^ (local + 1)).bit_length() - 1
-            ranges.append((offset, (1 << count) - 1, position))
-            position += count
-            union &= ~(((1 << count) - 1) << offset)
-        labels = []
-        for key, (offset, bits) in groups.items():
-            projected = _project(bits << offset, ranges)
-            offset = (projected & -projected).bit_length() - 1
-            labels.append((key, offset, projected >> offset))
-        return present, tuple(labels), tuple(ranges)
+        labels = tuple((key, *_local(bits << offset)) for key, (offset, bits) in groups.items())
+        return present, labels, union
 
     def mask(self, zone, member, pattern, signal, attenuate, exclude=None):
         model = self.problem.policy.quality.get("models", {}).get(member)
         signal = signal if model is not None else 0
         key = zone.group_id, member, signal, attenuate
-        signature = tuple(pattern.items())
-        if key not in self.current or self.current[key][0] != signature:
-            masks = [self.channel_mask(zone, member, c, t, signal, attenuate) for c, t in signature]
-            prefix = [tuple(0 for _ in self.blocks)]
-            for lane in masks:
-                prefix.append(tuple(a | b for a, b in zip(prefix[-1], lane, strict=True)))
-            suffix = [tuple(0 for _ in self.blocks)] * (len(masks) + 1)
-            for c in range(len(masks) - 1, -1, -1):
-                suffix[c] = tuple(a | b for a, b in zip(suffix[c + 1], masks[c], strict=True))
-            self._remember_union(key, signature, prefix, suffix)
+        signature = _pattern_signature(pattern)
+        if key in self.current and self.current[key][0] == signature:
+            _, prefix, suffix = self.current[key]
         else:
-            signature, prefix, suffix = self.current[key]
+            prefix, suffix = self._unions(zone, member, signature, signal, attenuate)
+            self._remember_union(key, signature, prefix, suffix)
         if exclude is None:
             return prefix[-1]
         at = next(i for i, (c, _t) in enumerate(signature) if c == exclude)
         return tuple(a | b for a, b in zip(prefix[at], suffix[at + 1], strict=True))
+
+    def others(self, zone, pattern, rid, signal, attenuate):
+        """OR of every other member's union, from member prefix and suffix ORs.
+
+        The member ORs are rebuilt only when some member's thresholds change.
+        """
+        if len(zone.members) > 4:
+            return self._tree_others(zone, pattern, rid, signal, attenuate)
+        members = zone.members
+        key = zone.group_id, signal, attenuate
+        signatures = tuple(_pattern_signature(pattern[m]) for m in members)
+        cached = self.zone_unions.get(key)
+        if cached is not None and _other_signatures_equal(cached[0], signatures, members, rid):
+            prefix, suffix = cached[1], cached[2]
+            self.zone_unions.move_to_end(key)
+        else:
+            unions = [
+                self.mask(zone, m, pattern[m], signal, attenuate)
+                if m != rid
+                else tuple(0 for _ in self.blocks)
+                for m in members
+            ]
+            prefix, suffix = _prefix_suffix(unions, len(self.blocks))
+            retained = tuple(
+                None if member == rid else signature
+                for member, signature in zip(members, signatures, strict=True)
+            )
+            self._remember_zone_union(key, retained, prefix, suffix)
+        if rid not in members:
+            return prefix[-1]
+        at = members.index(rid)
+        return tuple(a | b for a, b in zip(prefix[at], suffix[at + 1], strict=True))
+
+    def _tree_others(self, zone, pattern, rid, signal, attenuate):
+        key = zone.group_id, signal, attenuate
+        tree = self.zone_trees.get(key)
+        if tree is None:
+            tree = _MemberTree(zone.members, self.blocks, self.problem.radars)
+            if tree.size <= MASK_BYTES:
+                self.zone_trees[key] = tree
+                self.zone_union_bytes += tree.size
+        else:
+            self.zone_trees.move_to_end(key)
+        for index, member in enumerate(zone.members):
+            if member == rid:
+                continue
+            signature = _pattern_signature(pattern[member])
+            if signature != tree.signatures[index]:
+                mask = self.mask(zone, member, pattern[member], signal, attenuate)
+                tree.update(index, signature, mask)
+        result = tree.excluding(rid)
+        self._trim_zone_unions()
+        return result
+
+    def _trim_zone_unions(self):
+        while self.zone_union_bytes > MASK_BYTES:
+            if self.zone_unions:
+                old, _value = self.zone_unions.popitem(last=False)
+                self.zone_union_bytes -= self.zone_union_sizes.pop(old)
+            else:
+                _old, tree = self.zone_trees.popitem(last=False)
+                self.zone_union_bytes -= tree.size
+
+    def _remember_zone_union(self, key, signatures, prefix, suffix):
+        self.zone_unions.pop(key, None)
+        self.zone_union_bytes -= self.zone_union_sizes.pop(key, 0)
+        size = (
+            _mask_bytes(prefix + suffix)
+            + 512
+            + len(key[0].encode())
+            + sum(64 + 64 * len(signature or ()) for signature in signatures)
+        )
+        if size > MASK_BYTES:
+            return
+        self.zone_unions[key] = signatures, prefix, suffix
+        self.zone_union_sizes[key] = size
+        self.zone_union_bytes += size
+        self._trim_zone_unions()
+
+    def _unions(self, zone, member, signature, signal, attenuate):
+        """Prefix and suffix ORs of the member's channel masks (one-channel exclusion)."""
+        masks = [self.channel_mask(zone, member, c, t, signal, attenuate) for c, t in signature]
+        return _prefix_suffix(masks, len(self.blocks))
 
     def _remember_union(self, key, signature, prefix, suffix):
         if key in self.current:
@@ -366,11 +630,11 @@ class Geometry:
             self.current_bytes -= _mask_bytes(old_prefix + old_suffix)
         self.current[key] = signature, prefix, suffix
         self.current_bytes += _mask_bytes(prefix + suffix)
-        while self.current_bytes > 8 * 1024**2:
+        while self.current_bytes > MASK_BYTES:
             _, (_signature, old_prefix, old_suffix) = self.current.popitem(last=False)
             self.current_bytes -= _mask_bytes(old_prefix + old_suffix)
 
-    def channel_mask(self, zone, member, channel, threshold, signal, attenuate):
+    def channel_mask(self, zone, member, channel, threshold, signal, attenuate, *, columns=None):
         if threshold >= self.maximum.get((member, channel), -1):
             return tuple(0 for _ in self.blocks)
         model = self.problem.policy.quality.get("models", {}).get(member)
@@ -388,10 +652,11 @@ class Geometry:
             radar = self.problem.radars[member]
             hold, _on, off = _timing(radar.timing)
             for lo, size in self.blocks:
-                columns, coverage = self.get((member, lo))
-                present, _labels, ranges = self.get((zone.group_id, lo, "labels"))
+                column = self._coordinate_column((member, lo, channel), columns)
+                coverage = self.get((member, lo, "coverage"))
+                present, _labels, labelled = self.get((zone.group_id, lo, "labels"))
                 raw = self.raw(
-                    {channel: columns[channel]},
+                    {channel: column},
                     {channel: threshold},
                     present,
                     model,
@@ -402,17 +667,24 @@ class Geometry:
                 active, carry = _advance(
                     raw, coverage, ceil((hold + off) / CELL_SECONDS), carry, size
                 )
-                result.append(_project(active, ranges))
+                result.append(active & labelled)
             result = tuple(result)
             size = _mask_bytes((result,))
             self.masks[key] = result, size
             self.mask_bytes += size
-            while self.mask_bytes > 8 * 1024**2:
+            while self.mask_bytes > MASK_BYTES:
                 _, (_, removed) = self.masks.popitem(last=False)
                 self.mask_bytes -= removed
             return result
         self.masks.move_to_end(key)
         return self.masks[key][0]
+
+    def _coordinate_column(self, key, columns):
+        if columns is None:
+            return self.get(key)
+        if key not in columns:
+            columns[key] = self.get(key)
+        return columns[key]
 
     def raw(self, columns, thresholds, present, model, member, signal, attenuate):
         c, col = next(iter(columns.items()))
@@ -432,17 +704,22 @@ class Geometry:
         return int(col[::-1].translate(self.tables[key]), 2) if col else 0
 
 
+def _complete(geometry, zone, lane):
+    return all(
+        labelled & ~mask == 0
+        for (lo, _size), mask in zip(geometry.blocks, lane, strict=True)
+        for labelled in (geometry.get((zone.group_id, lo, "labels"))[2],)
+    )
+
+
 def _fixed(problem, geometry, zone, pattern, rid, channel, attenuate):
     signals = (0, 1) if problem.policy.quality.get("models") else (0,)
-    fixed = [[0] * len(geometry.blocks) for _ in signals]
-    for member in zone.members:
-        if member != rid:
-            for signal in signals:
-                masks = geometry.mask(zone, member, pattern[member], signal, attenuate)
-                fixed[signal] = [a | b for a, b in zip(fixed[signal], masks, strict=True)]
+    fixed = [list(geometry.others(zone, pattern, rid, signal, attenuate)) for signal in signals]
     if rid not in zone.members:
         return signals, fixed
     for signal in signals:
+        if _complete(geometry, zone, fixed[signal]):
+            continue
         masks = geometry.mask(zone, rid, pattern[rid], signal, attenuate, exclude=channel)
         fixed[signal] = [a | b for a, b in zip(fixed[signal], masks, strict=True)]
     return signals, fixed
@@ -455,12 +732,24 @@ def _zone_costs(problem, geometry, store, zone, pattern, rid, channel, order, at
         value = _mask_cost(problem, geometry, store, zone, tuple(tuple(lane) for lane in fixed))
         return [value] * len(order)
     cache_key = zone.group_id, rid, channel, tuple(tuple(lane) for lane in fixed), order, attenuate
-    if cache_key in geometry.coordinate_scores:
-        return geometry.coordinate_scores[cache_key]
-    candidates = [
-        tuple(geometry.channel_mask(zone, rid, channel, t, s, attenuate) for s in signals)
-        for t in order
-    ]
+    cached = geometry.coordinate_scores.get(cache_key)
+    if cached is not None:
+        return cached
+    columns = {} if len(geometry.blocks) == 1 else None
+
+    def candidate(t):
+        return tuple(
+            geometry.channel_mask(zone, rid, channel, t, s, attenuate, columns=columns)
+            for s in signals
+        )
+
+    minimum = min(order)
+    lowest = candidate(minimum)
+    if _contained(lowest, fixed):
+        masks = tuple(tuple(lane) for lane in fixed)
+        value = _cached_score(problem, geometry, store, zone, (zone.group_id, masks), masks)
+        return _remember_coordinate(geometry, cache_key, [value] * len(order))
+    candidates = [lowest if t == minimum else candidate(t) for t in order]
     results = []
     for candidate in candidates:
         masks = tuple(
@@ -469,6 +758,10 @@ def _zone_costs(problem, geometry, store, zone, pattern, rid, channel, order, at
         )
         key = zone.group_id, masks
         results.append(_cached_score(problem, geometry, store, zone, key, masks))
+    return _remember_coordinate(geometry, cache_key, results)
+
+
+def _remember_coordinate(geometry, cache_key, results):
     geometry.coordinate_scores[cache_key] = results
     geometry.coordinate_bytes += _mask_bytes(cache_key[3]) + 64 * len(results)
     while geometry.coordinate_bytes > 8 * 1024**2:
@@ -477,20 +770,33 @@ def _zone_costs(problem, geometry, store, zone, pattern, rid, channel, order, at
     return results
 
 
+def _contained(candidate, fixed):
+    """The lowest threshold dominates every higher one, including hold carry."""
+    return all(
+        hit & ~other == 0
+        for hits, others in zip(candidate, fixed, strict=True)
+        for hit, other in zip(hits, others, strict=True)
+    )
+
+
 def _mask_bytes(masks):
-    return sum((v.bit_length() + 7) // 8 + 32 for lane in masks for v in lane) + 128
+    values = {id(value): value for lane in masks for value in lane}
+    return (
+        128 + sum(sys.getsizeof(lane) for lane in masks) + sum(map(sys.getsizeof, values.values()))
+    )
 
 
 def _cached_score(problem, geometry, store, zone, key, masks):
-    if key not in geometry.scores:
-        value = _mask_cost(problem, geometry, store, zone, masks)
-        geometry.scores[key] = value
-        geometry.score_bytes += _mask_bytes(masks)
-        while geometry.score_bytes > 8 * 1024**2:
-            (_, old), _value = geometry.scores.popitem(last=False)
-            geometry.score_bytes -= _mask_bytes(old)
-        return value
-    return geometry.scores[key]
+    cached = geometry.scores.get(key)
+    if cached is not None:
+        return cached
+    value = _mask_cost(problem, geometry, store, zone, masks)
+    geometry.scores[key] = value
+    geometry.score_bytes += _mask_bytes(masks)
+    while geometry.score_bytes > 8 * 1024**2:
+        (_, old), _value = geometry.scores.popitem(last=False)
+        geometry.score_bytes -= _mask_bytes(old)
+    return value
 
 
 def _formula(problem, geometry, store, zone):
@@ -544,37 +850,94 @@ def _formula(problem, geometry, store, zone):
                 coefficients.get((key, 3), 0) * weighted / mass,
             )
         )
-    return linear_cost(store, zone.group_id, statistics, policy), lanes, tuple(episodes)
+    base = linear_cost(store, zone.group_id, statistics, policy)
+    return base, _columns_of(lanes, 3), _compiled_episodes(episodes)
+
+
+def _columns_of(rows, width):
+    return tuple(tuple(row[i] for row in rows) for i in range(width))
+
+
+def _compiled_episodes(episodes):
+    """Episode terms as aligned columns; windows read only the episode's own bytes.
+
+    A present episode fails when fewer than half of its cells are active, an
+    empty one when any is. Both become ``left < right`` so one C map decides all.
+    """
+    signal, offset, bits, half, present, factor = _columns_of(episodes, 6)
+    slices = tuple(
+        slice(o >> 3, (o + b.bit_length() + 7) >> 3) for o, b in zip(offset, bits, strict=True)
+    )
+    shifts = tuple(o & 7 for o in offset)
+    halves = tuple(h if p else 0 for h, p in zip(half, present, strict=True))
+    signs = tuple(1 if p else -1 for p in present)
+    return signal, slices, shifts, bits, signs, halves, factor
+
+
+def _episode_flags(compiled, masks):
+    signal, slices, shifts, bits, signs, halves, _factor = compiled
+    pools = tuple(lane[0].to_bytes((lane[0].bit_length() + 7) // 8, "little") for lane in masks)
+    windows = map(getitem, map(pools.__getitem__, signal), slices)
+    local = map(and_, map(rshift, map(int.from_bytes, windows, repeat("little")), shifts), bits)
+    return map(lt, map(mul, map(int.bit_count, local), signs), halves)
 
 
 def _formula_fits(geometry, zone):
-    _, labels, _ranges = geometry.get((zone.group_id, geometry.blocks[0][0], "labels"))
-    groups = {(key[0], key[1], key[3]) for key, _offset, _bits in labels}
-    return len(groups) * geometry.blocks[0][1] // 8 <= 1024**2
+    if zone.group_id not in geometry.fits:
+        _, labels, _ranges = geometry.get((zone.group_id, geometry.blocks[0][0], "labels"))
+        groups = {(key[0], key[1], key[3]) for key, _offset, _bits in labels}
+        geometry.fits[zone.group_id] = len(groups) * geometry.blocks[0][1] // 8 <= 1024**2
+    return geometry.fits[zone.group_id]
 
 
 def _mask_cost(problem, geometry, store, zone, masks):
+    """Closed-form cost of one zone's masks; the same terms in the same order."""
     if len(geometry.blocks) == 1 and _formula_fits(geometry, zone):
         if zone.group_id not in geometry.formulas:
             geometry.formulas[zone.group_id] = _formula(problem, geometry, store, zone)
-        base, lanes, episodes = geometry.formulas[zone.group_id]
-        value = base + sum(
-            factor * (masks[signal][0] & bits).bit_count() for signal, bits, factor in lanes
-        )
-        return value + sum(
-            factor
-            * (
-                ((masks[signal][0] >> offset) & bits).bit_count() < half
-                if present
-                else bool((masks[signal][0] >> offset) & bits)
-            )
-            for signal, offset, bits, half, present, factor in episodes
-        )
+        base, (signals, bits, factors), compiled = geometry.formulas[zone.group_id]
+        lanes = map(and_, map(itemgetter(0), map(masks.__getitem__, signals)), bits)
+        value = base + sum(map(mul, factors, map(int.bit_count, lanes)))
+        return value + sum(map(mul, compiled[-1], _episode_flags(compiled, masks)))
     return _stream_mask_cost(problem, geometry, store, zone, masks)
 
 
 def _stream_mask_cost(problem, geometry, store, zone, masks):
-    from .search_scores import _settle, linear_cost, zone_policy
+    from .search_scores import linear_cost, zone_policy
+
+    rows = geometry.parent_rows.get(zone.group_id)
+    if rows is None:
+        statistics = _spilled_statistics(geometry, store, zone, masks)
+    else:
+        statistics = _resident_statistics(geometry, zone, masks, rows)
+    return linear_cost(store, zone.group_id, statistics, zone_policy(problem, zone))
+
+
+def _resident_statistics(geometry, zone, masks, rows):
+    """The disk counters' sums, in the same order, held in one resident array."""
+    from .search_scores import _settle
+
+    statistics = [{}]
+    counters = array("d", bytes(len(rows) * _SEEN.size))
+    _add_seen(geometry, zone, masks, counters)
+    for pid, state, source, seconds, weighted in rows:
+        seen, weighted_seen = counters[2 * pid], counters[2 * pid + 1]
+        _settle(statistics, (state, source, pid), seconds, weighted, (seen,), (weighted_seen,))
+    return statistics[0]
+
+
+def _add_seen(geometry, zone, masks, counters):
+    for block, (lo, _size) in enumerate(geometry.blocks):
+        _, labels, _ranges = geometry.get((zone.group_id, lo, "labels"))
+        for (state, source, pid, confidence), offset, bits in labels:
+            signal = int(len(masks) > 1 and state == "present" and source != "human")
+            seen = ((masks[signal][block] >> offset) & bits).bit_count() * CELL_SECONDS
+            counters[2 * pid] += seen
+            counters[2 * pid + 1] += seen * confidence
+
+
+def _spilled_statistics(geometry, store, zone, masks):
+    from .search_scores import _settle
 
     statistics = [{}]
     with tempfile.TemporaryFile(dir=store._directory.name) as counters:
@@ -588,7 +951,7 @@ def _stream_mask_cost(problem, geometry, store, zone, masks):
                 _settle(
                     statistics, (state, source, pid), seconds, weighted, (seen,), (weighted_seen,)
                 )
-    return linear_cost(store, zone.group_id, statistics[0], zone_policy(problem, zone))
+    return statistics[0]
 
 
 def _count_seen(geometry, zone, masks, counters):
