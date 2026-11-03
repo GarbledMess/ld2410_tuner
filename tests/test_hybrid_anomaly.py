@@ -891,3 +891,40 @@ def test_merged_flagged_histograms_equal_scalar_cell_counts():
                     flagged.add((side, lo, hi, lo * 6, hi * 6))
                     expected[side].update(v for v in raw[lo:hi] if v <= 100)
         assert anomaly._dropped((column, column), flagged) == expected
+
+
+@pytest.mark.parametrize("value", (0, 40, 100, 255))
+def test_uniform_run_histogram_does_not_copy_run_lengths(value):
+    from array import array
+
+    class Lengths(list):
+        def __getitem__(self, key):
+            assert not isinstance(key, slice), "uniform histogram copied run lengths"
+            return super().__getitem__(key)
+
+    column = anomaly._RunColumn(
+        bytes([value]) * 1000, Lengths([3] * 1000), array("Q", range(3, 3001, 3)), unit=False
+    )
+    for lo, hi in ((0, None), (1, 2999), (2998, 4000), (3000, 3000)):
+        expected = [0] * 101
+        if value <= 100:
+            expected[value] = max(0, min(3000, 3000 if hi is None else hi) - lo)
+        assert column.histogram(lo, hi) == expected
+
+
+def test_uniform_subrange_histograms_equal_expanded_cells():
+    import random
+    from array import array
+    from collections import Counter
+    from itertools import accumulate
+
+    rng = random.Random(20261104)
+    for _ in range(50):
+        lengths = array("I", [rng.randrange(1, 20) for _ in range(30)])
+        values = bytes([255, *([rng.choice((0, 40, 100, 255))] * 28), 20])
+        raw = b"".join(bytes([v]) * n for v, n in zip(values, lengths, strict=True))
+        column = anomaly._RunColumn(values, lengths, array("Q", accumulate(lengths)))
+        for _ in range(20):
+            lo, hi = sorted((rng.randrange(len(raw) + 20), rng.randrange(len(raw) + 20)))
+            expected = Counter(v for v in raw[lo:hi] if v <= 100)
+            assert column.histogram(lo, hi) == [expected[v] for v in range(101)]
