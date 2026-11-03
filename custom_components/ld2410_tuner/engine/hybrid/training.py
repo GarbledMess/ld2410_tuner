@@ -157,6 +157,9 @@ class TrainingStore:
     def close(self):
         if not self._closed:
             self._closed = True
+            geometry = self.__dict__.pop("_timing_geometry", None)
+            if geometry is not None:
+                geometry.close()
             self._database.close()
             self._data.close()
             self._directory.cleanup()

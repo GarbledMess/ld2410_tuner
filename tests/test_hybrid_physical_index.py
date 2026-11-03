@@ -90,7 +90,7 @@ def test_physical_index_warm_cache_roundtrip_is_lazy(tmp_path):
 def test_cell_sidecar_version_includes_physical_rows(tmp_path):
     fit, _, path = fitting(tmp_path)
     fit.digest("synthetic", DAY, (0,))
-    assert CELL_CACHE_VERSION == 3
+    assert CELL_CACHE_VERSION == 4
     assert path.with_suffix(".cell").read_bytes()[9] == CELL_CACHE_VERSION
 
 
@@ -130,3 +130,279 @@ def test_block_wholly_continuing_previous_row_adds_no_row():
     assert list(times) == [0, 18]
     assert list(ends) == [18, 24]
     assert columns == {0: bytes([40, 70])}
+
+
+def _dense_blocks(rows, size=97):
+    """Never-coalescing rows: every selected channel alternates on every row."""
+    from tuner_under_test.engine.hybrid.types import RowBlock
+
+    for at in range(0, rows, size):
+        stop = min(rows, at + size)
+        column = bytes((i % 2) * 40 for i in range(at, stop))
+        yield RowBlock(
+            array("d", (i / 10 for i in range(at, stop))),
+            array("d", ((i + 1) / 10 for i in range(at, stop))),
+            (column,) * 18,
+        )
+
+
+def test_building_a_dense_day_keeps_at_most_one_block_of_rows_resident(monkeypatch):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    monkeypatch.setattr(physical_index, "PHYSICAL_BLOCK_ROWS", 64)
+    builder = physical_index.PhysicalBuilder(tuple(range(18)), 0, 86400)
+    pending = []
+    for part in _dense_blocks(2000):
+        builder.add(part)
+        pending.append(len(builder.times))
+    rows = builder.finish()
+    assert max(pending) <= 64
+    assert rows.count == 2000 and len(rows._blocks()) == -(-2000 // 64)
+    times, ends, columns = rows.window(0, 1e9)
+    assert list(times) == [i / 10 for i in range(2000)]
+    assert columns[3] == bytes((i % 2) * 40 for i in range(2000))
+    assert rows.rows_in(10, 20.05) == len(rows.window(10, 20.05)[0]) == 101
+
+
+def test_blocked_rows_equal_one_block_for_windows_and_counts(monkeypatch):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    rng = random.Random(15)
+    rows, t = [], 100.0
+    for _ in range(700):
+        end = t + rng.randrange(1, 9) / 4
+        rows.append((t, end, vector(rng.choice([40, 41]))))
+        t = end + rng.choice([0, 0, 0.25])
+    whole = physical_rows([block(rows)], 0, 1e6, (0,))
+    monkeypatch.setattr(physical_index, "PHYSICAL_BLOCK_ROWS", 7)
+    blocked = physical_rows([block(rows[i : i + 50]) for i in range(0, 700, 50)], 0, 1e6, (0,))
+    again = PhysicalRows.decode((0,), blocked.encode())
+    assert len(blocked._blocks()) > 20
+    for _ in range(200):
+        lo = rng.uniform(90, t + 10)
+        hi = lo + rng.choice([0, 0.1, 3, 40, 500])
+        for other in (blocked, again):
+            assert other.window(lo, hi) == whole.window(lo, hi)
+            assert other.rows_in(lo, hi) == whole.rows_in(lo, hi)
+    assert again.geometry() == whole.geometry()
+
+
+def test_reading_a_section_spools_it_and_decodes_only_overlapping_blocks(monkeypatch):
+    import io
+
+    from tuner_under_test.engine.hybrid import physical_index
+
+    monkeypatch.setattr(physical_index, "PHYSICAL_BLOCK_ROWS", 64)
+    monkeypatch.setattr(physical_index, "SPOOL_BYTES", 512)
+    monkeypatch.setattr(physical_index, "COPY_BYTES", 100)
+    source = physical_rows(_dense_blocks(2000), 0, 86400, tuple(range(18)))
+    stream = io.BytesIO(b"x" + source.encode() + b"tail")
+    stream.read(1)
+    rows = PhysicalRows.read(stream, source.encoded_size(), tuple(range(18)))
+    assert stream.read() == b"tail"
+    assert rows._spool._rolled
+    decoded = []
+    original = physical_index._decode_block
+
+    def counted(*args):
+        decoded.append(args[1])
+        return original(*args)
+
+    monkeypatch.setattr(physical_index, "_decode_block", counted)
+    rows.window(64.05, 70)
+    assert len(decoded) == 1
+    assert rows.rows_in(0, 1e9) == 2000 and len(decoded) == 1
+
+
+def test_millisecond_decode_constructs_double_arrays_from_sized_exact_values(monkeypatch):
+    from itertools import accumulate
+
+    from tuner_under_test.engine.hybrid import physical_index
+
+    steps = array("q", [1_790_000_000_001, 1, 999, 1234567, -(2**62)])
+    lengths = array("q", [1, 1000, 123, 0, 2**62])
+    raw = physical_index._native(steps).tobytes()
+    raw += physical_index._native(lengths).tobytes()
+    starts = list(accumulate(steps))
+    expected = (
+        array("d", [value / 1000 for value in starts]),
+        array(
+            "d", [(value + length) / 1000 for value, length in zip(starts, lengths, strict=True)]
+        ),
+    )
+    unsized_double_arrays = []
+
+    def recorded_array(code, values):
+        if code == "d" and not hasattr(values, "__len__"):
+            unsized_double_arrays.append(code)
+        return array(code, values)
+
+    monkeypatch.setattr(physical_index, "array", recorded_array)
+    assert physical_index._geometry(raw, 1) == expected
+    assert unsized_double_arrays == []
+
+
+@pytest.mark.parametrize("first", [1_790_000_000_000, -1_790_000_000_000, 2**50 - 10000])
+def test_regular_dyadic_milliseconds_decode_without_per_row_division(monkeypatch, first):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    # Keep the first timestamp at an integer second, including near the safe bound.
+    first -= first % 1000
+    steps = [first, *([500] * 9)]
+    lengths = [125] * 10
+    _assert_geometry_divisions(monkeypatch, physical_index, steps, lengths, 0)
+
+
+def test_regular_geometry_matches_integer_division_across_full_blocks():
+    from itertools import accumulate
+
+    from tuner_under_test.engine.hybrid import physical_index
+
+    rng = random.Random(2410)
+    for _ in range(20):
+        first = rng.randrange(-(2**48), 2**48) // 1000 * 1000
+        step, length = 125 * rng.randrange(1, 10000), 125 * rng.randrange(10000)
+        steps = array("q", [first, *([step] * (physical_index.PHYSICAL_BLOCK_ROWS - 1))])
+        lengths = array("q", [length] * len(steps))
+        starts = list(accumulate(steps))
+        assert physical_index._regular_geometry(steps, lengths) == (
+            array("d", [value / 1000 for value in starts]),
+            array("d", [(value + length) / 1000 for value in starts]),
+        )
+
+
+@pytest.mark.parametrize(
+    ("steps", "lengths"),
+    [
+        ([1000, 126, 126], [125, 125, 125]),
+        ([1001, 500, 500], [125, 125, 125]),
+        ([1000, 500, 1000], [125, 125, 125]),
+        ([1000, 500, 500], [125, 126, 125]),
+        ([2**50 + 376, 500, 500], [125, 125, 125]),
+        ([1000, -500, -500], [125, 125, 125]),
+        ([1000, 500, 500], [-125, -125, -125]),
+        ([1000], [125]),
+        ([], []),
+    ],
+)
+def test_nonregular_milliseconds_keep_exact_integer_division(monkeypatch, steps, lengths):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    _assert_geometry_divisions(monkeypatch, physical_index, steps, lengths, 2 * len(steps))
+
+
+def _assert_geometry_divisions(monkeypatch, module, steps, lengths, divisions):
+    from itertools import accumulate
+    from operator import truediv
+
+    starts = list(accumulate(steps))
+    expected = (
+        array("d", [value / 1000 for value in starts]),
+        array(
+            "d", [(value + length) / 1000 for value, length in zip(starts, lengths, strict=True)]
+        ),
+    )
+    calls = []
+
+    def counted(left, right):
+        calls.append(1)
+        return truediv(left, right)
+
+    raw = module._native(array("q", steps)).tobytes()
+    raw += module._native(array("q", lengths)).tobytes()
+    monkeypatch.setattr(module, "truediv", counted)
+    assert module._geometry(raw, 1) == expected
+    assert len(calls) == divisions
+
+
+def test_regular_geometry_checks_uniformity_without_python_row_iteration():
+    from tuner_under_test.engine.hybrid import physical_index
+
+    class Column(array):
+        def __getitem__(self, key):
+            result = super().__getitem__(key)
+            return Column(self.typecode, result) if isinstance(key, slice) else result
+
+        def __iter__(self):
+            raise AssertionError("uniform geometry iterated every physical row")
+
+    starts, stops = physical_index._regular_geometry(
+        Column("q", [1000, 500, 500, 500]), Column("q", [500] * 4)
+    )
+    assert starts == array("d", [1, 1.5, 2, 2.5])
+    assert stops == array("d", [1.5, 2, 2.5, 3])
+
+
+def test_physical_validation_does_not_translate_entire_energy_columns():
+    from tuner_under_test.engine.hybrid.physical_index import _validate
+
+    class Column(bytes):
+        def translate(self, table):
+            raise AssertionError("energy validation allocated a translated column")
+
+    _validate([0.0, 1.0], [1.0, 2.0], {0: Column([0, 100])})
+    with pytest.raises(ValueError, match="energy"):
+        _validate([0.0, 1.0], [1.0, 2.0], {0: Column([0, 255])})
+
+
+def test_regular_geometry_checks_runs_without_scalar_array_counts():
+    from array import array
+
+    from tuner_under_test.engine.hybrid.physical_index import _regular_geometry
+
+    class Values(array):
+        def count(self, value):
+            raise AssertionError("regular geometry scanned scalar array values")
+
+        def __getitem__(self, item):
+            result = super().__getitem__(item)
+            return Values(self.typecode, result) if isinstance(item, slice) else result
+
+    times, ends = _regular_geometry(Values("q", [1000000, 500, 500]), Values("q", [500] * 3))
+    assert list(times) == [1000.0, 1000.5, 1001.0]
+    assert list(ends) == [1000.5, 1001.0, 1001.5]
+
+
+def test_regular_physical_decode_does_not_recheck_each_geometry_row(monkeypatch):
+    from array import array
+
+    from tuner_under_test.engine.hybrid import physical_index
+
+    original = physical_index.PhysicalRows(
+        (0,),
+        array("d", [1000.0, 1000.5, 1001.0]),
+        array("d", [1000.5, 1001.0, 1001.5]),
+        {0: b"\1\2\3"},
+    )
+    encoded = original.encode()
+
+    def redundant(*args):
+        raise AssertionError("proved regular geometry compared rows again")
+
+    monkeypatch.setattr(physical_index, "lt", redundant)
+    decoded = physical_index.PhysicalRows.decode((0,), encoded)
+    times, ends, columns = decoded.window(1000, 1002)
+    assert list(times) == [1000.0, 1000.5, 1001.0]
+    assert list(ends) == [1000.5, 1001.0, 1001.5]
+    assert columns == {0: b"\1\2\3"}
+    decoded.close()
+    original.close()
+
+
+@pytest.mark.parametrize("duration", [0.0, 0.75])
+def test_regular_physical_decode_still_rejects_invalid_durations(duration):
+    from array import array
+
+    from tuner_under_test.engine.hybrid.physical_index import PhysicalRows
+
+    starts = array("d", [1000.0, 1000.5, 1001.0])
+    original = PhysicalRows(
+        (0,), starts, array("d", [t + duration for t in starts]), {0: b"\1\2\3"}
+    )
+    decoded = PhysicalRows.decode((0,), original.encode())
+    try:
+        with pytest.raises(ValueError, match="geometry"):
+            decoded.window(1000, 1002)
+    finally:
+        decoded.close()
+        original.close()

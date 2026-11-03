@@ -24,6 +24,7 @@ from ...calibration.event_replay import _timing
 from ...const import HISTORY_KEYS
 from ...history import pace
 from .constants import CHUNK_SECONDS, MISSING, ROW_BLOCK_ROWS
+from .scoring import Disjoint
 from .timing import TimingStream
 
 TABLES = tuple(bytes(1 if t < v != MISSING else 0 for v in range(256)) for t in range(101))
@@ -69,13 +70,15 @@ def fold_masks(columns, vectors):
     varying = []
     for c, column in columns.items():
         values = {vector[c] for vector in vectors}
-        for t in values:
+        for t in {min(values), max(values)}:
             cache[c, t] = int.from_bytes(column.translate(TABLES[t]), "little")
         always |= cache[c, max(values)]
         possible |= cache[c, min(values)]
         if len(values) > 1:
             varying.append(c)
     contested = possible & ~always
+    varying = _contested_channels(vectors, varying, cache, contested)
+    _contested_masks(columns, vectors, varying, cache)
     masks = []
     for vector in vectors:
         mask = always
@@ -84,6 +87,21 @@ def fold_masks(columns, vectors):
         masks.append(mask)
     rows = len(next(iter(columns.values()), b""))
     return masks, {"rows": rows, "contested": contested.bit_count(), "always": always.bit_count()}
+
+
+def _contested_masks(columns, vectors, varying, cache):
+    """Translate intermediate thresholds only after the global bounds differ."""
+    for c in varying:
+        for vector in vectors:
+            key = c, vector[c]
+            if key not in cache:
+                cache[key] = int.from_bytes(columns[c].translate(TABLES[vector[c]]), "little")
+
+
+def _contested_channels(vectors, varying, cache, contested):
+    if not contested:
+        return []
+    return [c for c in varying if cache[c, min(v[c] for v in vectors)] & contested]
 
 
 def _supported_masks(columns, vectors, tables):
@@ -117,16 +135,22 @@ def hits(mask, times, ends, gaps):
     """Detected runs as intervals, split at physical gaps."""
     if not mask:
         return []
-    out = []
-    for run in _RUN.finditer(mask.to_bytes(len(times), "little")):
-        first, stop = run.span()
-        k = bisect_right(gaps, first)
-        while k < len(gaps) and gaps[k] < stop:
-            out.append((times[first], ends[gaps[k] - 1]))
-            first = gaps[k]
-            k += 1
-        out.append((times[first], ends[stop - 1]))
-    return out
+    if not gaps:
+        return _gapless_hits(mask, times, ends)
+    data = mask.to_bytes(len(times), "little")
+    cuts = (0, *gaps, len(times))
+    matches = chain.from_iterable(
+        _RUN.finditer(data, first, stop) for first, stop in zip(cuts, cuts[1:], strict=False)
+    )
+    return _gather_hits(matches, times, ends)
+
+
+def _gapless_hits(mask, times, ends):
+    return _gather_hits(_RUN.finditer(mask.to_bytes(len(times), "little")), times, ends)
+
+
+def _gather_hits(matches, times, ends):
+    return [(times[match.start()], ends[match.end() - 1]) for match in matches]
 
 
 def _joinable(close, segment, previous):
@@ -237,13 +261,17 @@ class Records:
         self.steps = 0
 
     def write(self, lo, hi, coverage, outputs):
-        pool, lists = {}, []
+        pool, lists, identities = {}, [], {}
 
         def index(intervals):
+            identity = id(intervals)
+            if identity in identities:
+                return identities[identity][1]
             key = tuple(intervals)
             if key not in pool:
                 pool[key] = len(lists)
                 lists.append(intervals)
+            identities[identity] = intervals, pool[key]
             return pool[key]
 
         rid_index = array("I", (index(coverage[rid]) for rid in self.rids))
@@ -274,7 +302,7 @@ class Records:
     def _list(self):
         n = _COUNT.unpack(self.file.read(_COUNT.size))[0]
         values = _native(array("d", self.file.read(16 * n)))
-        return list(zip(values[0::2], values[1::2], strict=True))
+        return Disjoint(zip(values[0::2], values[1::2], strict=True))
 
     @property
     def spilled_bytes(self):
