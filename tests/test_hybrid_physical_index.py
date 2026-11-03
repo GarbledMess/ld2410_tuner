@@ -200,3 +200,197 @@ def test_reading_a_section_spools_it_and_decodes_only_overlapping_blocks(monkeyp
     rows.window(64.05, 70)
     assert len(decoded) == 1
     assert rows.rows_in(0, 1e9) == 2000 and len(decoded) == 1
+
+
+def test_millisecond_decode_constructs_double_arrays_from_sized_exact_values(monkeypatch):
+    from itertools import accumulate
+
+    from tuner_under_test.engine.hybrid import physical_index
+
+    steps = array("q", [1_790_000_000_001, 1, 999, 1234567, -(2**62)])
+    lengths = array("q", [1, 1000, 123, 0, 2**62])
+    raw = physical_index._native(steps).tobytes()
+    raw += physical_index._native(lengths).tobytes()
+    starts = list(accumulate(steps))
+    expected = (
+        array("d", [value / 1000 for value in starts]),
+        array(
+            "d", [(value + length) / 1000 for value, length in zip(starts, lengths, strict=True)]
+        ),
+    )
+    unsized_double_arrays = []
+
+    def recorded_array(code, values):
+        if code == "d" and not hasattr(values, "__len__"):
+            unsized_double_arrays.append(code)
+        return array(code, values)
+
+    monkeypatch.setattr(physical_index, "array", recorded_array)
+    assert physical_index._geometry(raw, 1) == expected
+    assert unsized_double_arrays == []
+
+
+@pytest.mark.parametrize("first", [1_790_000_000_000, -1_790_000_000_000, 2**50 - 10000])
+def test_regular_dyadic_milliseconds_decode_without_per_row_division(monkeypatch, first):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    # Keep the first timestamp at an integer second, including near the safe bound.
+    first -= first % 1000
+    steps = [first, *([500] * 9)]
+    lengths = [125] * 10
+    _assert_geometry_divisions(monkeypatch, physical_index, steps, lengths, 0)
+
+
+def test_regular_geometry_matches_integer_division_across_full_blocks():
+    from itertools import accumulate
+
+    from tuner_under_test.engine.hybrid import physical_index
+
+    rng = random.Random(2410)
+    for _ in range(20):
+        first = rng.randrange(-(2**48), 2**48) // 1000 * 1000
+        step, length = 125 * rng.randrange(1, 10000), 125 * rng.randrange(10000)
+        steps = array("q", [first, *([step] * (physical_index.PHYSICAL_BLOCK_ROWS - 1))])
+        lengths = array("q", [length] * len(steps))
+        starts = list(accumulate(steps))
+        assert physical_index._regular_geometry(steps, lengths) == (
+            array("d", [value / 1000 for value in starts]),
+            array("d", [(value + length) / 1000 for value in starts]),
+        )
+
+
+@pytest.mark.parametrize(
+    ("steps", "lengths"),
+    [
+        ([1000, 126, 126], [125, 125, 125]),
+        ([1001, 500, 500], [125, 125, 125]),
+        ([1000, 500, 1000], [125, 125, 125]),
+        ([1000, 500, 500], [125, 126, 125]),
+        ([2**50 + 376, 500, 500], [125, 125, 125]),
+        ([1000, -500, -500], [125, 125, 125]),
+        ([1000, 500, 500], [-125, -125, -125]),
+        ([1000], [125]),
+        ([], []),
+    ],
+)
+def test_nonregular_milliseconds_keep_exact_integer_division(monkeypatch, steps, lengths):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    _assert_geometry_divisions(monkeypatch, physical_index, steps, lengths, 2 * len(steps))
+
+
+def _assert_geometry_divisions(monkeypatch, module, steps, lengths, divisions):
+    from itertools import accumulate
+    from operator import truediv
+
+    starts = list(accumulate(steps))
+    expected = (
+        array("d", [value / 1000 for value in starts]),
+        array(
+            "d", [(value + length) / 1000 for value, length in zip(starts, lengths, strict=True)]
+        ),
+    )
+    calls = []
+
+    def counted(left, right):
+        calls.append(1)
+        return truediv(left, right)
+
+    raw = module._native(array("q", steps)).tobytes()
+    raw += module._native(array("q", lengths)).tobytes()
+    monkeypatch.setattr(module, "truediv", counted)
+    assert module._geometry(raw, 1) == expected
+    assert len(calls) == divisions
+
+
+def test_regular_geometry_checks_uniformity_without_python_row_iteration():
+    from tuner_under_test.engine.hybrid import physical_index
+
+    class Column(array):
+        def __getitem__(self, key):
+            result = super().__getitem__(key)
+            return Column(self.typecode, result) if isinstance(key, slice) else result
+
+        def __iter__(self):
+            raise AssertionError("uniform geometry iterated every physical row")
+
+    starts, stops = physical_index._regular_geometry(
+        Column("q", [1000, 500, 500, 500]), Column("q", [500] * 4)
+    )
+    assert starts == array("d", [1, 1.5, 2, 2.5])
+    assert stops == array("d", [1.5, 2, 2.5, 3])
+
+
+def test_physical_validation_does_not_translate_entire_energy_columns():
+    from tuner_under_test.engine.hybrid.physical_index import _validate
+
+    class Column(bytes):
+        def translate(self, table):
+            raise AssertionError("energy validation allocated a translated column")
+
+    _validate([0.0, 1.0], [1.0, 2.0], {0: Column([0, 100])})
+    with pytest.raises(ValueError, match="energy"):
+        _validate([0.0, 1.0], [1.0, 2.0], {0: Column([0, 255])})
+
+
+def test_regular_geometry_checks_runs_without_scalar_array_counts():
+    from array import array
+
+    from tuner_under_test.engine.hybrid.physical_index import _regular_geometry
+
+    class Values(array):
+        def count(self, value):
+            raise AssertionError("regular geometry scanned scalar array values")
+
+        def __getitem__(self, item):
+            result = super().__getitem__(item)
+            return Values(self.typecode, result) if isinstance(item, slice) else result
+
+    times, ends = _regular_geometry(Values("q", [1000000, 500, 500]), Values("q", [500] * 3))
+    assert list(times) == [1000.0, 1000.5, 1001.0]
+    assert list(ends) == [1000.5, 1001.0, 1001.5]
+
+
+def test_regular_physical_decode_does_not_recheck_each_geometry_row(monkeypatch):
+    from array import array
+
+    from tuner_under_test.engine.hybrid import physical_index
+
+    original = physical_index.PhysicalRows(
+        (0,),
+        array("d", [1000.0, 1000.5, 1001.0]),
+        array("d", [1000.5, 1001.0, 1001.5]),
+        {0: b"\1\2\3"},
+    )
+    encoded = original.encode()
+
+    def redundant(*args):
+        raise AssertionError("proved regular geometry compared rows again")
+
+    monkeypatch.setattr(physical_index, "lt", redundant)
+    decoded = physical_index.PhysicalRows.decode((0,), encoded)
+    times, ends, columns = decoded.window(1000, 1002)
+    assert list(times) == [1000.0, 1000.5, 1001.0]
+    assert list(ends) == [1000.5, 1001.0, 1001.5]
+    assert columns == {0: b"\1\2\3"}
+    decoded.close()
+    original.close()
+
+
+@pytest.mark.parametrize("duration", [0.0, 0.75])
+def test_regular_physical_decode_still_rejects_invalid_durations(duration):
+    from array import array
+
+    from tuner_under_test.engine.hybrid.physical_index import PhysicalRows
+
+    starts = array("d", [1000.0, 1000.5, 1001.0])
+    original = PhysicalRows(
+        (0,), starts, array("d", [t + duration for t in starts]), {0: b"\1\2\3"}
+    )
+    decoded = PhysicalRows.decode((0,), original.encode())
+    try:
+        with pytest.raises(ValueError, match="geometry"):
+            decoded.window(1000, 1002)
+    finally:
+        decoded.close()
+        original.close()
