@@ -11,12 +11,16 @@ to a final exact cost.
 """
 
 from array import array
+from bisect import bisect_left, bisect_right
+from dataclasses import replace
+from itertools import compress, repeat
+from operator import add, mul
 
 from .constants import EXACT_BUDGET, MIN_EXACT
-from .digest import _pieces
+from .digest import _pieces, cell_ceil, cell_floor
 from .exact import Evaluator, bounded, regions
-from .physical_index import PhysicalBuilder
-from .types import RowBlock, ScorePlan
+from .search_data import vector_runs
+from .types import ScorePlan
 
 
 def score_regions(problem):
@@ -43,9 +47,10 @@ def plan_scores(problem, pattern_count, *, quiet=False, comparison=False):
 class CellRows:
     """Timed six-second cells exposed as rows, one cached day, forward only."""
 
-    def __init__(self, days, rid, channels):
+    def __init__(self, days, rid, channels, *, regions=None):
         self.days, self.rid = days, rid
         self.channels = tuple(sorted(channels))
+        self.regions = regions
         self._dates = iter(days.dates(rid))
         self._next = None
         self._loaded = []
@@ -64,7 +69,8 @@ class CellRows:
             return None
         try:
             lo = digest.k0 * digest.resolution
-            return lo, lo + digest.n * digest.resolution, cell_rows(digest, self.channels)
+            geometry = digest if self.regions is None else _bounded_digest(digest, self.regions)
+            return lo, lo + digest.n * digest.resolution, cell_rows(geometry, self.channels)
         finally:
             close = getattr(digest.partial, "close", None)
             if close is not None:
@@ -108,29 +114,127 @@ def _before(bounds, lo):
     return bounds is not None and bounds[1] <= lo
 
 
-def cell_rows(digest, channels):
-    """Covered cells and partial pieces, each carrying its cell's maxima."""
-    times, ends, index = array("d"), array("d"), []
+class _OffsetPieces:
+    """Read original partial geometry lazily after cropping a day's cell grid."""
+
+    def __init__(self, partial, offset):
+        self.partial, self.offset = partial, offset
+
+    def __getitem__(self, cell):
+        return _pieces(self.partial, cell + self.offset)
+
+
+def _bounded_digest(digest, regions):
     size = digest.resolution
-    for cell, state in enumerate(digest.cov):
-        if state == 1:
-            edge = (digest.k0 + cell) * size
-            pieces = ((edge, edge + size),)
-        elif state == 2:
-            pieces = tuple(_pieces(digest.partial, cell))
-        else:
-            continue
-        for a, b in pieces:
-            times.append(a)
-            ends.append(b)
-            index.append(cell)
-    columns = [b""] * 18
-    for c in channels:
-        columns[c] = bytes(map(digest.channels[c].__getitem__, index))
-    lo = digest.k0 * size
-    builder = PhysicalBuilder(channels, lo, lo + digest.n * size)
-    builder.add(RowBlock(times, ends, tuple(columns)))
-    return builder.finish()
+    lo, hi = digest.k0 * size, (digest.k0 + digest.n) * size
+    overlap = [(max(a, lo), min(b, hi)) for a, b in regions if a < hi and b > lo]
+    first = max(0, cell_floor(min((a for a, _ in overlap), default=hi), size) - digest.k0)
+    stop = min(digest.n, cell_ceil(max((b for _, b in overlap), default=hi), size) - digest.k0)
+    return replace(
+        digest,
+        k0=digest.k0 + first,
+        n=stop - first,
+        cov=digest.cov[first:stop],
+        channels=tuple(column[first:stop] for column in digest.channels),
+        partial=_OffsetPieces(digest.partial, first),
+    )
+
+
+class _CellWindow:
+    """At most one day's cell geometry, ready for replay without wire encoding."""
+
+    def __init__(self, channels):
+        self.times, self.ends = array("d"), array("d")
+        self.columns = {c: bytearray() for c in channels}
+        self.previous = None
+
+    def append(self, lo, hi, vector):
+        if self.ends and self.ends[-1] == lo and vector == self.previous:
+            self.ends[-1] = hi
+            return
+        self.times.append(lo)
+        self.ends.append(hi)
+        for c, value in zip(self.columns, vector, strict=True):
+            self.columns[c].append(value)
+        self.previous = vector
+
+    def window(self, lo, hi):
+        if hi <= lo:
+            return array("d"), array("d"), dict.fromkeys(self.columns, b"")
+        a, b = bisect_right(self.ends, lo), bisect_left(self.times, hi)
+        times, ends = self.times[a:b], self.ends[a:b]
+        if times:
+            times[0], ends[-1] = max(lo, times[0]), min(hi, ends[-1])
+        return times, ends, {c: bytes(v[a:b]) for c, v in self.columns.items()}
+
+
+def cell_rows(digest, channels):
+    """Coalesce equal selected cell vectors, keeping every partial-coverage gap."""
+    columns = tuple(digest.channels[c] for c in channels)
+    result = _CellWindow(channels)
+    if 2 not in digest.cov:
+        return _full_cell_rows(result, digest, columns)
+    for start, stop in vector_runs((digest.cov, *columns), digest.n):
+        vector = tuple(col[start] for col in columns)
+        if 255 not in vector:
+            _cell_run(result, digest, start, stop, vector)
+    return result
+
+
+def _full_cell_rows(result, digest, columns):
+    """Gather full-cell vector runs by columns rather than scalar row appends."""
+    runs = vector_runs((digest.cov, *columns), digest.n)
+    invalid = int.from_bytes(digest.cov.translate(bytes(v != 1 for v in range(256))), "little")
+    for column in columns:
+        invalid |= int.from_bytes(column.translate(bytes(v == 255 for v in range(256))), "little")
+    usable = invalid.to_bytes(digest.n, "little").translate(bytes(v == 0 for v in range(256)))
+    if len(runs) == digest.n and usable.count(1) == digest.n:
+        return _distinct_full_rows(result, digest, columns)
+    starts = [a for a, _ in runs]
+    stops = [b for _, b in runs]
+    keep = bytes(map(usable.__getitem__, starts))
+    starts, stops = list(compress(starts, keep)), list(compress(stops, keep))
+    result.times = array(
+        "d", map(mul, map(add, repeat(digest.k0), starts), repeat(digest.resolution))
+    )
+    result.ends = array(
+        "d", map(mul, map(add, repeat(digest.k0), stops), repeat(digest.resolution))
+    )
+    result.columns = _gather_cell_columns(result.columns, columns, starts, usable)
+    return result
+
+
+def _gather_cell_columns(channels, columns, starts, usable):
+    if len(starts) == usable.count(1):
+        flags = usable
+    elif len(starts) > len(usable) // 2:
+        flags = bytearray(len(usable))
+        for at in starts:
+            flags[at] = 1
+    else:
+        return {
+            c: bytes(map(col.__getitem__, starts)) for c, col in zip(channels, columns, strict=True)
+        }
+    return {c: bytes(compress(col, flags)) for c, col in zip(channels, columns, strict=True)}
+
+
+def _distinct_full_rows(result, digest, columns):
+    """A complete grid of distinct vectors needs neither gathering nor coalescing."""
+    size, first = digest.resolution, digest.k0 * digest.resolution
+    result.times = array("d", list(range(first, first + digest.n * size, size)))
+    result.ends = array("d", list(range(first + size, first + (digest.n + 1) * size, size)))
+    result.columns = dict(zip(result.columns, columns, strict=True))
+    return result
+
+
+def _cell_run(result, digest, start, stop, vector):
+    size = digest.resolution
+    if digest.cov[start] == 1:
+        result.append((digest.k0 + start) * size, (digest.k0 + stop) * size, vector)
+    elif digest.cov[start] == 2:
+        for cell in range(start, stop):
+            for lo, hi in _pieces(digest.partial, cell):
+                result.append(lo, hi, vector)
 
 
 class CellEvaluator(Evaluator):
@@ -141,11 +245,10 @@ class CellEvaluator(Evaluator):
     def __init__(self, problem, regions, *, directory=None):
         super().__init__(problem, regions, directory=directory)
 
-    def providers(self):
-        return {
-            rid: CellRows(self.problem.days, rid, radar.channels)
-            for rid, radar in self.problem.radars.items()
-        }
+    def source(self, rid):
+        return CellRows(
+            self.problem.days, rid, self.problem.radars[rid].channels, regions=self.regions
+        )
 
 
 class Evaluators:
@@ -186,7 +289,16 @@ def _base_cost(score):
 
 
 def evaluate_patterns(
-    problem, patterns, plan, *, quiet=False, rank=None, evaluators=None, zones=None, keep=1
+    problem,
+    patterns,
+    plan,
+    *,
+    quiet=False,
+    rank=None,
+    evaluators=None,
+    zones=None,
+    keep=1,
+    attribution=True,
 ):
     """Scores of the patterns compared at ``plan`` fidelity, start first.
 
@@ -200,12 +312,16 @@ def evaluate_patterns(
     try:
         indexes = list(range(len(patterns)))
         if plan.mode == "cells_then_exact":
-            cells = evaluators.get("cells").scores(patterns, quiet=quiet, zones=zones)
+            cells = evaluators.get("cells").scores(
+                patterns, quiet=quiet, zones=zones, attribution=attribution
+            )
             order = sorted(indexes[keep:], key=lambda i: ((rank or _base_cost)(cells[i]), i))
             indexes = indexes[:keep] + order[: max(0, plan.finalist_limit - keep)]
         mode = "cells" if plan.mode == "cells" else "exact"
         chosen = [patterns[i] for i in indexes]
-        scores = evaluators.get(mode).scores(chosen, quiet=quiet, zones=zones)
+        scores = evaluators.get(mode).scores(
+            chosen, quiet=quiet, zones=zones, attribution=attribution
+        )
         return [{**score, "pattern_index": i} for i, score in zip(indexes, scores, strict=True)]
     finally:
         if owned:
