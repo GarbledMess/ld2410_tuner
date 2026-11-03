@@ -244,12 +244,28 @@ class _RunColumn:
         stop = min(len(self.values), bisect_right(self.ends, hi) + 1)
         if hi <= lo or first == stop:
             return bins
+        uniform = self._uniform_bins(first, stop, min(hi, self.ends[-1]) - lo)
+        if uniform is not None:
+            return uniform
+        return self._weighted_bins(first, stop, lo, hi)
+
+    def _weighted_bins(self, first, stop, lo, hi):
+        bins = [0] * 101
         sizes = self.lengths[first:stop]
         sizes[0] -= lo - (self.ends[first - 1] if first else 0)
         sizes[-1] -= max(0, self.ends[stop - 1] - hi)
         for value, n in zip(self.values[first:stop], sizes, strict=True):
             if value <= 100:
                 bins[value] += n
+        return bins
+
+    def _uniform_bins(self, first, stop, seconds):
+        value = self.values[first]
+        if self.values.count(value, first, stop) != stop - first:
+            return None
+        bins = [0] * 101
+        if value <= 100:
+            bins[value] = seconds
         return bins
 
     def translate(self, table):
