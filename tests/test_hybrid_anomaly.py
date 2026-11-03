@@ -110,6 +110,96 @@ def base_segments():
     return [(2400, "empty"), (1800, "busy"), (2400, "empty"), (1800, "busy"), (2400, "empty")]
 
 
+def duplicate_columns_problem():
+    segments = [(600, "empty"), (600, "busy"), (600, "empty")]
+    rows, spans = rows_for(segments)
+    rows = [(lo, hi, [values[0]] * 18) for lo, hi, values in rows]
+    labels = clean_truth(spans, segments)
+    labels[0] = label(spans, 0, "present")
+    p = problem_for(rows, labels)
+    radars = {rid: replace(p.radars["a"], device_id=rid) for rid in ("a", "b", "c")}
+    return replace(p, radars=radars, zones=(replace(p.zones[0], members=tuple(radars)),))
+
+
+def test_iteration_computes_one_reference_for_duplicate_raw_channels(tmp_path, monkeypatch):
+    p = duplicate_columns_problem()
+    original = anomaly._reference
+    calls = []
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(anomaly, "_reference", counted)
+    monkeypatch.setattr(anomaly, "AUDIT_BUFFER_BYTES", 1)
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        audit = anomaly._Audit(p, store, p.zones[0])
+        present = [w for wins in audit.windows.values() for w in wins if w[0] == 0]
+        empty = [w for wins in audit.windows.values() for w in wins if w[0] == 1]
+        audit._iteration({}, set(), present, empty)
+    assert len(calls) == 1
+
+
+def scalar_iteration(audit, full, flagged, present, empty):
+    active = list(present)
+    remaining = anomaly._by_kind(empty, audit.source_of)
+    hit = set()
+    for key in audit.keys:
+        columns = tuple(audit.cells.column(key, side) for side in (0, 1))
+        if key not in full:
+            full[key] = tuple(anomaly._histogram(column) for column in columns)
+        reference = anomaly._reference(full[key], columns, flagged)
+        active = anomaly._empty_step(active, reference, columns[0])
+        anomaly._occupied_step(remaining, reference, columns[1], hit)
+    return set(active) | hit
+
+
+@pytest.mark.parametrize("group_budget", [1, 32 * 1024**2])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_duplicate_column_iterations_equal_scalar_filters(
+    tmp_path, monkeypatch, group_budget, reverse
+):
+    p = duplicate_columns_problem()
+    monkeypatch.setattr(anomaly, "AUDIT_BUFFER_BYTES", group_budget)
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        audited = anomaly._Audit(p, store, p.zones[0])
+        if reverse:
+            audited.keys.reverse()
+        present = [w for wins in audited.windows.values() for w in wins if w[0] == 0]
+        empty = [w for wins in audited.windows.values() for w in wins if w[0] == 1]
+        full, scalar_full, flagged = {}, {}, set()
+        for iteration in range(3):
+            expected = scalar_iteration(audited, scalar_full, flagged, present, empty)
+            actual = audited._iteration(full, flagged, present, empty)
+            assert actual == expected
+            if not iteration:
+                assert actual
+            flagged = actual
+
+
+def test_duplicate_raw_values_require_equal_multiplicity_geometry():
+    from array import array
+    from itertools import accumulate
+
+    def columns(sizes):
+        return tuple(
+            anomaly._RunColumn(bytes([70, 20]), array("I", sizes), array("Q", accumulate(sizes)))
+            for _ in range(2)
+        )
+
+    seen = anomaly._DuplicateColumns()
+    assert not seen.seen(columns([2, 3]))
+    assert seen.seen(columns([2, 3]))
+    assert not seen.seen(columns([3, 2]))
+    tiny = anomaly._DuplicateColumns(budget=1)
+    assert not tiny.seen(columns([2, 3]))
+    assert not tiny.seen(columns([2, 3]))
+    assert tiny.used <= tiny.budget
+    assert not tiny.items
+
+
 def clean_truth(spans, segments):
     return [
         label(spans, i, "present" if kind == "busy" else "not_present")
@@ -558,3 +648,201 @@ def test_audit_member_groups_match_one_buffer(tmp_path, monkeypatch):
     grouped = audit(p, tmp_path / "grouped")
     assert whole[0]
     assert grouped == whole
+
+
+def test_audit_columns_keep_run_multiplicities_without_expanding_cells(tmp_path):
+    from tuner_under_test.engine.hybrid.types import ZoneSpec
+
+    rows = [(B, B + 6000, [40] * 18), (B + 6000, B + 12000, [60] * 18)]
+    p = problem_for(rows, [span(B, B + 12000)])
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        cells = anomaly._ZoneCells(p, store, ZoneSpec("room", ("a",), p.zones[0].truth))
+        column = cells.column(("a", 0), 0)
+        assert len(column.values) == 2
+        assert anomaly._histogram(column) == anomaly._histogram(
+            bytes([40]) * 1000 + bytes([60]) * 1000
+        )
+        above = column.translate(anomaly.TABLES[50])
+        raw = bytes([0]) * 1000 + bytes([1]) * 1000
+        for lo, hi in ((0, 2000), (999, 1001), (1000, 1000), (5, 1700)):
+            assert above.count(1, lo, hi) == raw.count(1, lo, hi)
+
+
+def test_run_column_crossings_stay_compressed_and_match_bytes():
+    from array import array
+    from itertools import accumulate
+
+    values = bytes([0, 40, 255, 60, 100])
+    lengths = array("I", [1000, 2, 3, 4000, 1])
+    column = anomaly._RunColumn(values, lengths, array("Q", accumulate(lengths)))
+    raw = b"".join(bytes([v]) * n for v, n in zip(values, lengths, strict=True))
+    for threshold in (0, 40, 60, 100):
+        above = column.translate(anomaly.TABLES[threshold])
+        assert not isinstance(above, bytes)
+        for lo, hi in ((0, len(raw)), (999, 1005), (1002, 1004), (5, 5), (5000, 6000)):
+            assert above.count(1, lo, hi) == raw.translate(anomaly.TABLES[threshold]).count(
+                1, lo, hi
+            )
+            assert column.histogram(lo, hi) == anomaly._histogram(raw[lo:hi])
+
+
+def test_audit_equal_gate_decisions_share_window_counts(tmp_path):
+    rows = [(B, B + 6000, [40] * 18), (B + 6000, B + 12000, [60] * 18)]
+    p = problem_for(rows, [span(B, B + 12000)])
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        cells = anomaly._ZoneCells(p, store, p.zones[0])
+        first = cells.column(("a", 0), 0).translate(anomaly.TABLES[50])
+        second = cells.column(("a", 1), 0).translate(anomaly.TABLES[50])
+        assert first is second
+        windows = [(0, 0, 10, B, B + 60), (0, 995, 1005, B, B + 60)]
+        assert list(first.counts(windows)) == [0, 5]
+        assert first._counts is not None
+        original = first._counts
+        assert list(second.counts(windows)) == [0, 5]
+        assert second._counts is original
+
+
+@pytest.mark.parametrize("budget", (1, 596))
+def test_audit_decision_cache_obeys_byte_budget_without_changing_counts(budget):
+    from array import array
+
+    cache = anomaly._DecisionCache(budget=budget)
+    lengths, ends = array("I", [1, 2]), array("Q", [1, 3])
+    windows = [(0, 0, 3, 0, 18), (0, 1, 2, 6, 12)]
+    for values in (b"\0\1", b"\1\0", b"\0\1"):
+        above = cache.get(values, lengths, ends)
+        raw = values[:1] + values[1:] * 2
+        assert list(above.counts(windows)) == [raw.count(1, 0, 3), raw.count(1, 1, 2)]
+        assert cache.used <= budget
+    assert len(cache.items) == (0 if budget == 1 else 1)
+
+
+def test_equal_audit_decisions_reuse_window_classification(monkeypatch):
+    from array import array
+
+    column = anomaly._RunColumn(
+        b"\0\1", array("I", [100, 100]), array("Q", [100, 200]), anomaly._DecisionCache()
+    )
+    windows = [(0, 0, 100, 0, 600), (0, 100, 200, 600, 1200)]
+    reference = {"empty_bound": 0}
+    original = anomaly._limits
+    calls = []
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(anomaly, "_limits", counted)
+    first = anomaly._empty_step(windows, reference, column)
+    second = anomaly._empty_step(windows, reference, column)
+    assert first == second == windows[:1]
+    assert len(calls) == 1
+
+
+def test_audit_columns_compute_unit_multiplicity_once_per_side(tmp_path, monkeypatch):
+    rows = [(B, B + 6000, [40] * 18), (B + 6000, B + 12000, [60] * 18)]
+    p = problem_for(rows, [span(B, B + 12000)])
+    original = anomaly._RunColumn
+    supplied = []
+
+    def counted(*args, **kwargs):
+        supplied.append(kwargs.get("unit"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(anomaly, "_RunColumn", counted)
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        cells = anomaly._ZoneCells(p, store, p.zones[0])
+        for channel in range(18):
+            cells.column(("a", channel), 0)
+    assert supplied == [False] * 18
+
+
+def test_audit_first_member_buffer_shares_the_label_geometry_scan(tmp_path, monkeypatch):
+    rows = [(B, B + 6000, [40] * 18), (B + 6000, B + 12000, [60] * 18)]
+    p = problem_for(rows, [span(B, B + 12000)])
+    original = anomaly._ZoneCells._runs
+    calls = []
+
+    def counted(self):
+        calls.append(1)
+        yield from original(self)
+
+    monkeypatch.setattr(anomaly._ZoneCells, "_runs", counted)
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        cells = anomaly._ZoneCells(p, store, p.zones[0])
+        column = cells.column(("a", 0), 0)
+        assert column.histogram()[40] == column.histogram()[60] == 1000
+        assert cells.spans == [(0, 0, 0, 2000, B)]
+    assert len(calls) == 1
+
+
+def test_equal_audit_window_lists_reuse_binary_counts(monkeypatch):
+    from array import array
+
+    from tuner_under_test.engine.hybrid.anomaly import _RunAbove
+
+    above = _RunAbove(b"\1\0\1", array("I", [4, 3, 5]), array("Q", [4, 7, 12]))
+    windows = [(0, 0, 5, 0, 30), (0, 5, 12, 30, 72)]
+    assert list(above.counts(windows)) == [4, 5]
+
+    def forbidden():
+        raise AssertionError("equal audit windows rescanned binary column")
+
+    monkeypatch.setattr(above, "_expanded", forbidden)
+    assert list(above.counts(list(windows))) == [4, 5]
+
+
+def test_audit_decision_cache_uses_window_count_for_compressed_runs():
+    from array import array
+
+    cache = anomaly._DecisionCache(budget=4096)
+    cache.window_count = 2
+    lengths, ends = array("I", [10000, 10000]), array("Q", [10000, 20000])
+    first = cache.get(b"\0\1", lengths, ends)
+    windows = [(0, 0, 10000, 0, 60000), (0, 10000, 20000, 60000, 120000)]
+    assert list(first.counts(windows)) == [0, 10000]
+    cache.get(b"\1\0", lengths, ends)
+    assert cache.get(b"\0\1", lengths, ends) is first
+    assert cache.used <= cache.budget
+
+
+def test_audit_member_groups_budget_compressed_vectors(tmp_path, monkeypatch):
+    rows = [(B, B + 6000, [40] * 18), (B + 6000, B + 12000, [60] * 18)]
+    one = problem_for(rows, [span(B, B + 12000)])
+    radars = {f"r{i}": replace(one.radars["a"], device_id=f"r{i}") for i in range(30)}
+    p = replace(one, radars=radars, zones=(replace(one.zones[0], members=tuple(radars)),))
+    monkeypatch.setattr(anomaly, "AUDIT_BUFFER_BYTES", 18 * 30 * 2)
+    original = anomaly._ZoneCells._runs
+    scans = []
+
+    def counted(self):
+        scans.append(1)
+        yield from original(self)
+
+    monkeypatch.setattr(anomaly._ZoneCells, "_runs", counted)
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        cells = anomaly._ZoneCells(p, store, p.zones[0])
+        for rid in sorted(radars):
+            assert cells.column((rid, 0), 0).histogram()[40] == 1000
+    assert len(scans) == 1
+
+
+def test_audit_subset_windows_reuse_classification(monkeypatch):
+    from array import array
+    from operator import le
+
+    above = anomaly._RunAbove(b"\1\0\1", array("I", [4, 3, 5]), array("Q", [4, 7, 12]))
+    windows = [(0, 0, 4, 0, 24), (0, 4, 7, 24, 42), (0, 7, 12, 42, 72)]
+    assert above.select(windows, 0.5, le) == windows[1:2]
+
+    def forbidden(*args):
+        raise AssertionError("subset audit windows repeated classification")
+
+    monkeypatch.setattr(above, "counts", forbidden)
+    assert above.select(windows[1:], 0.5, le) == windows[1:2]
+    assert above.select(windows[:1], 0.5, le) == []
