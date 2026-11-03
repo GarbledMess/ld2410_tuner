@@ -11,6 +11,210 @@ from tuner_under_test.engine.hybrid.scoring import SliceScorer, cost_from_statis
 from tuner_under_test.engine.hybrid.types import EvidencePolicy, ZoneSpec
 
 
+def test_clip_bisects_disjoint_intervals_without_scanning_prefix():
+    from tuner_under_test.engine.hybrid.scoring import _clip
+
+    class Indexed(list):
+        def __iter__(self):
+            raise AssertionError("clipping scanned interval prefix")
+
+    intervals = Indexed((i * 2, i * 2 + 1) for i in range(1000))
+    assert _clip(intervals, 1990.5, 1998.5) == [
+        (1990.5, 1991),
+        (1992, 1993),
+        (1994, 1995),
+        (1996, 1997),
+        (1998, 1998.5),
+    ]
+
+
+def test_single_member_attribution_reuses_signal_integral(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    original = scoring._Overlap
+    calls = []
+
+    class Counted(original):
+        def __init__(self, intervals):
+            calls.append(intervals)
+            super().__init__(intervals)
+
+    monkeypatch.setattr(scoring, "_Overlap", Counted)
+    activity = {"a": scoring.Disjoint([(0, 5), (10, 15)])}
+    coverage = {"a": scoring.Disjoint([(0, 20)])}
+    cache = {}
+    for _ in range(3):
+        with SliceScorer(
+            ZoneSpec("z", ("a",), (truth(0, 10), truth(10, 20, "not_present"))),
+            EvidencePolicy(0, False, {}),
+            (0, 20),
+            tmp_path,
+        ) as scorer:
+            scorer.consume(0, 20, coverage, activity, activity, activity, cache=cache)
+            metrics = scorer.result()
+            assert metrics["exclusive_seconds"] == {"a": 5}
+            assert metrics["occupied_recall"] == 0.5
+    assert sum(v == activity["a"] for v in calls) == 1
+    assert sum(v == coverage["a"] for v in calls) == 1
+
+
+def test_identical_signal_queries_are_evaluated_once_per_observed_label(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    calls = []
+    original = scoring._Overlap.within
+
+    def counted(self, observed):
+        calls.append(1)
+        return original(self, observed)
+
+    monkeypatch.setattr(scoring._Overlap, "within", counted)
+    activity = {"a": scoring.Disjoint([(0, 5), (10, 15)])}
+    with SliceScorer(
+        ZoneSpec("z", ("a",), (truth(0, 10), truth(10, 20, "not_present"))),
+        EvidencePolicy(0, False, {}),
+        (0, 20),
+        tmp_path,
+    ) as scorer:
+        scorer.consume(0, 20, {"a": [(0, 20)]}, activity, activity, activity)
+        assert scorer.result()["exclusive_seconds"] == {"a": 5}
+    assert len(calls) == 2
+
+
+def test_equal_member_activity_reuses_exclusive_integrals(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    calls = []
+    original = scoring._exclusive
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(scoring, "_exclusive", counted)
+    activity = {"a": [(0, 5)], "b": [(3, 8)]}
+    cache = {}
+    for _ in range(3):
+        with SliceScorer(
+            ZoneSpec("z", ("a", "b"), (truth(0, 10),)),
+            EvidencePolicy(0, False, {}),
+            (0, 10),
+            tmp_path,
+        ) as scorer:
+            scorer.consume(
+                0,
+                10,
+                {"a": [(0, 10)], "b": [(0, 10)]},
+                activity,
+                activity,
+                activity,
+                cache=cache,
+            )
+            assert scorer.result()["exclusive_seconds"] == {"a": 3, "b": 3}
+    assert len(calls) == 1
+
+
+def test_longest_miss_uses_gap_maximum_without_visiting_each_miss():
+    from tuner_under_test.engine.hybrid import scoring
+
+    class Counted(scoring._LongestMiss):
+        calls = 0
+
+        def add(self, lo, hi):
+            self.calls += 1
+            super().add(lo, hi)
+
+    longest = Counted()
+    active = scoring._Overlap([(2 * i + 1, 2 * i + 2) for i in range(1000)])
+    longest.observe([(0, 2001)], active)
+    assert longest.longest == 1
+    assert longest.calls <= 2
+
+
+def test_canonical_single_member_replay_does_not_sort_again(monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    rows = scoring.Disjoint([(0, 5), (10, 15)])
+
+    def forbidden(*args):
+        raise AssertionError("canonical replay sorted again")
+
+    monkeypatch.setattr(scoring, "_union", forbidden)
+    assert scoring._room({"a": rows}, ("a",), 2, 12) == [(2, 5), (10, 12)]
+
+
+def test_equal_replay_signals_share_one_overlap_index(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    calls = []
+    original = scoring._Overlap
+
+    class Counted(original):
+        def __init__(self, intervals):
+            calls.append(intervals)
+            super().__init__(intervals)
+
+    monkeypatch.setattr(scoring, "_Overlap", Counted)
+    shared = {"a": [(0, 5), (10, 15)]}
+    with SliceScorer(
+        ZoneSpec("z", ("a",), (truth(0, 10), truth(10, 20, "not_present"))),
+        EvidencePolicy(0, False, {}),
+        (0, 20),
+        tmp_path,
+    ) as scorer:
+        scorer.consume(0, 20, {"a": [(0, 20)]}, shared, shared, shared)
+        result = scorer.result()
+    assert result["occupied_recall"] == 0.5
+    assert sum(v == shared["a"] for v in calls) <= 2
+
+
+def test_chunk_signal_cache_reuses_indexes_across_scorers(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    calls = []
+    original = scoring._Overlap
+
+    class Counted(original):
+        def __init__(self, intervals):
+            calls.append(intervals)
+            super().__init__(intervals)
+
+    monkeypatch.setattr(scoring, "_Overlap", Counted)
+    shared = {"a": [(0, 5), (10, 15)]}
+    cache = {}
+    for source in ("human", "automatic"):
+        with SliceScorer(
+            ZoneSpec("z", ("a",), (truth(0, 10, source=source),)),
+            EvidencePolicy(0, False, {}),
+            (0, 20),
+            tmp_path,
+        ) as scorer:
+            scorer.consume(0, 20, {"a": [(0, 20)]}, shared, shared, shared, cache=cache)
+            assert scorer.result()["occupied_recall"] == 0.5
+    assert sum(v == shared["a"] for v in calls) <= 3
+
+
+def test_chunk_signal_cache_tiny_budget_preserves_metrics(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    shared = {"a": [(0, 5), (10, 15)]}
+    cache, results = {}, []
+    for budget in (scoring.OVERLAP_CACHE_BYTES, 1):
+        monkeypatch.setattr(scoring, "OVERLAP_CACHE_BYTES", budget)
+        cache.clear()
+        with SliceScorer(
+            ZoneSpec("z", ("a",), (truth(0, 10), truth(10, 20, "not_present"))),
+            EvidencePolicy(0, False, {}),
+            (0, 20),
+            tmp_path,
+        ) as scorer:
+            scorer.consume(0, 20, {"a": [(0, 20)]}, shared, shared, shared, cache=cache)
+            results.append(scorer.result())
+        assert cache.get("bytes", 0) <= budget
+    assert results[0] == results[1]
+    assert cache == {}
+
+
 def evaluate(
     tmp_path, spans, active, cuts=(0, 20), policy=None, coverage=None, supported=None, raw=None
 ):
@@ -285,3 +489,89 @@ def test_unconsumed_labels_are_uncovered_and_overlaps_keep_unknown_exclusion(tmp
     assert result["uncovered_label_seconds"] == 13
     assert result["sufficient_statistics"]["present/human"] == [2, 2, 1, 1]
     assert result["sufficient_statistics"]["present/automatic"] == [3, 3, 1, 1]
+
+
+def test_equal_distinct_signal_lists_reuse_integrals(monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    original = scoring._Overlap
+    calls = []
+
+    class Counted(original):
+        def __init__(self, intervals):
+            calls.append(1)
+            super().__init__(intervals)
+
+    monkeypatch.setattr(scoring, "_Overlap", Counted)
+    cache = {}
+    first = scoring._signal_overlaps([{"a": [(0, 5)]}], ("a",), 0, 10, cache)
+    second = scoring._signal_overlaps([{"a": [(0, 5)]}], ("a",), 0, 10, cache)
+    assert first[0].seconds(0, 10) == second[0].seconds(0, 10) == 5
+    assert len(calls) == 1
+
+
+def test_empty_exclusive_members_need_no_integrals(monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    original = scoring._Overlap
+    calls = []
+
+    class Counted(original):
+        def __init__(self, intervals):
+            calls.append(intervals)
+            super().__init__(intervals)
+
+    monkeypatch.setattr(scoring, "_Overlap", Counted)
+    result = scoring._member_overlaps({"a": [(0, 5)], "b": [(0, 5)]}, ("a", "b"), 0, 10, {}, None)
+    assert all(not value.items for value in result.values())
+    assert calls == []
+
+
+def test_equal_member_coverage_is_intersected_once(monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    original = scoring._intersect
+    calls = []
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(scoring, "_intersect", counted)
+    members = tuple(str(i) for i in range(30))
+    coverage = {member: [(1, 4), (6, 9)] for member in members}
+    assert scoring._coverage(coverage, members, 0, 10) == [(1, 4), (6, 9)]
+    assert len(calls) <= 1
+
+
+def test_single_interval_integrals_use_direct_bounds():
+    from tuner_under_test.engine.hybrid import scoring
+
+    class Single(list):
+        def __iter__(self):
+            raise AssertionError("single interval integral allocated an iterator")
+
+    interval = Single([(1, 4)])
+    assert scoring._seconds(interval) == 3
+    assert scoring._Overlap([(0, 2), (3, 5)]).within(interval) == 2
+
+
+def test_internal_cost_only_scoring_skips_exclusive_activity(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import scoring
+
+    def forbidden(*args):
+        raise AssertionError("cost-only scoring computed exclusive attribution")
+
+    monkeypatch.setattr(scoring, "_member_overlaps", forbidden)
+    members = ("a", "b")
+    with SliceScorer(
+        ZoneSpec("z", members, (truth(0, 10),)),
+        EvidencePolicy(0, False, {}),
+        (0, 10),
+        tmp_path,
+        attribution=False,
+    ) as scorer:
+        scorer.consume(0, 10, dict.fromkeys(members, [(0, 10)]), {}, {"a": [(0, 5)]}, {})
+        result = scorer.result()
+    assert result["occupied_recall"] == 0.5
+    assert result["exclusive_seconds"] == {"a": 0.0, "b": 0.0}
