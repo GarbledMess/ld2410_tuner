@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 import pytest
 import test_tuner  # noqa: F401
-from tuner_under_test.calibration.evidence_budget import Chunk
 from tuner_under_test.history import summary_cache
 
 
@@ -29,16 +28,6 @@ def physical(tmp_path):
 VALUES = [
     ("rows", 0),
     ("rows", 123),
-    ("chunks", None),
-    ("chunks", ()),
-    (
-        "chunks",
-        (
-            Chunk(0.0, 2.0, ("present", "source"), 3, 4, 1.5, True, 2.0),
-            Chunk(2, 4, "not_present", 2, 4.0, 1, False, 2),
-            Chunk(4.0, 5.0, None, 0, None, None, False, 0.0),
-        ),
-    ),
     ("quality", (b"\x00\xff", ({0: array("d", [0.0, 1.25])}, {}), ((0.0, 2.0),))),
     ("quality", (b"", (), ())),
 ]
@@ -76,7 +65,7 @@ def test_exact_round_trip(physical, name, value):
         ("rows", 1.0),
         ("other", 1),
         ("chunks", []),
-        ("chunks", (Chunk(0, 1, "present", 1, float("nan"), 0, True, 1),)),
+        ("chunks", ()),
         ("quality", (b"x", ({True: array("d", [1])},), ())),
         ("quality", (b"x", ({0: array("f", [1])},), ())),
         ("quality", (b"x", ({0: array("d", [float("inf")])},), ())),

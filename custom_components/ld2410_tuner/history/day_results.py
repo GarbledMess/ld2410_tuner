@@ -1,7 +1,7 @@
 """Results derived from one finished recorded day, kept until that day changes.
 
 Learning and its daily runs read the same finished days again and again. What they derive
-from a day (row counts, evidence chunks, quality histograms, guess runs) is kept here, keyed
+from a day (row counts, quality histograms, guess runs) is kept here, keyed
 by the day file's identity (``DayStore.identity``: rewritten by thinning or Trim, it is a new
 day) and by the caller's arguments, which include whatever else the result depends on, such
 as the labels inside the day (``fingerprint``). So a day is derived again only when it or its

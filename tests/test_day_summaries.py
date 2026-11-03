@@ -223,17 +223,17 @@ def test_selected_gate_coverage_equals_physical_replay(gates):
 
 
 def test_learning_bounds_use_native_columns_without_materialising_every_vector():
-    from tuner_under_test.calibration import event_fitting
+    from tuner_under_test.history import spans
 
     runtime = SimpleNamespace(data={"devices": {"a": {}}})
     harness.recorded(runtime, "a", [(100, [10] * 18), (110, [20] * 18)], 120)
     with patch.object(dayfile.Day, "vector", side_effect=AssertionError("full replay")):
-        assert event_fitting._bounds(runtime, "a", 105, 115) == (105, 115)
-        assert event_fitting._bounds(runtime, "a", 0, 100) == (0, 0)
-        assert event_fitting._bounds(runtime, "a", 115, 200) == (115, 120)
+        assert spans.bounds(runtime, "a", 105, 115) == (105, 115)
+        assert spans.bounds(runtime, "a", 0, 100) == (0, 0)
+        assert spans.bounds(runtime, "a", 115, 200) == (115, 120)
     runtime._physical_history_start = 108
     runtime._attribution_until = 113
-    assert event_fitting._bounds(runtime, "a", 0, 200) == (108, 113)
+    assert spans.bounds(runtime, "a", 0, 200) == (108, 113)
 
 
 def test_complete_label_horizon_proof_does_not_build_a_second_set_of_day_indexes():

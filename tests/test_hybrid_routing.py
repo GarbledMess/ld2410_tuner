@@ -1,8 +1,7 @@
 """Every production fit and score runs the hybrid engine, and identities mark the change.
 
-The legacy row objectives and searches stay importable until they are deleted, but no
-production entry point may reach them: each is patched to raise while worker, service,
-room, adaptive and Apply paths run on synthetic recorded days.
+The legacy row objectives and searches are absent while worker, service, room,
+adaptive and Apply paths run on synthetic recorded days.
 """
 
 from types import SimpleNamespace
@@ -32,7 +31,6 @@ from tuner_under_test.rooms import (
     fitting,
     groups,
     learning,
-    objective,
 )
 from tuner_under_test.worker import calculations
 
@@ -48,13 +46,11 @@ def _forbidden(name):
 
 
 @pytest.fixture
-def legacy(monkeypatch):
-    """Make every legacy objective, mask table and search raise if constructed or run."""
-    for cls in (objective.Objective, objective.LinkedObjective, objective.Radar):
-        monkeypatch.setattr(cls, "__init__", _forbidden(cls.__name__))
-    monkeypatch.setattr(event_fitting, "_objective", _forbidden("event_fitting._objective"))
-    monkeypatch.setattr(event_fitting, "_search", _forbidden("event_fitting._search"))
-    monkeypatch.setattr(fitting, "search", _forbidden("rooms.fitting.search"))
+def legacy():
+    """The former search APIs are absent while public routing remains exercised."""
+    assert not hasattr(event_fitting, "_objective")
+    assert not hasattr(event_fitting, "_search")
+    assert not hasattr(fitting, "search")
 
 
 @pytest.fixture

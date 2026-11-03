@@ -1,4 +1,8 @@
-"""Read bounded room evidence without relabelling or copying one zone into another."""
+"""Room truth and streamed attribution inputs shared by the hybrid adapters.
+
+Packed rows below serve physical diagnostic utilities; fitting consumes label_inputs
+and streamed_room_targets without constructing a row-mask objective.
+"""
 
 from array import array
 from itertools import islice
@@ -16,7 +20,7 @@ LABELS = ("present", "not_present")
 
 
 class Readings:
-    """One sample's energies of the gates of a search, read like the ``{gate: energy}`` they
+    """One sample's energies of a configured gate layout, read like the ``{gate: energy}`` they
     replace: a byte each and a layout shared by every sample, where a dictionary took
     hundreds of bytes a sample. Only ``get``, ``in``, ``[]`` and ``items`` are read."""
 

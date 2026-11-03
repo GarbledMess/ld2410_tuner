@@ -7,9 +7,10 @@ from unittest.mock import patch
 import test_joint_learning as joint
 import test_rooms as harness
 from test_rooms import set_records
-from tuner_under_test.calibration.scoring import error_cost
+from tuner_under_test.engine.hybrid import adapters
+from tuner_under_test.engine.hybrid.exact import Evaluator
+from tuner_under_test.engine.hybrid.fixed import source
 from tuner_under_test.rooms import application, jobs, room_labels, truth
-from tuner_under_test.rooms.objective import LinkedObjective, Objective
 
 CURRENT = 60  # Above the occupied signal (40), so the radar misses every occupied sample.
 SPLIT = 600
@@ -251,48 +252,48 @@ def radar(threshold):
     return {"a": item}
 
 
+def costs(members, room, value, weight=0):
+    problem = adapters.room_problem({"zone": members}, 0, 1200, {"zone": room}, weight)
+    pattern = {"a": {0: value}}
+    with Evaluator(problem, ((0, 1200),)) as evaluator:
+        total = evaluator.scores([pattern])[0]
+        human = evaluator.scores([pattern], zones=(source(problem.zones[0], "human"),))[0]
+        automatic = evaluator.scores([pattern], zones=(source(problem.zones[0], "automatic"),))[0]
+    return total, human, automatic
+
+
 class AutomaticCostTests(unittest.TestCase):
-    """With no human truth in the window, the ranked primary cost is the automatic one."""
+    """Source precedence applies to the shared full time and episode cost."""
 
     def test_automatic_only_room_ranks_primarily_on_automatic_cost(self):
         room = office_room("area:office", *sensor_labels())
-        objective = Objective(radar(CURRENT), 0, 1200, room)
-        missed = objective.rank({"a": {"g0_move": CURRENT}})
-        found = objective.rank({"a": {"g0_move": 30}})
-        assert missed[0] > 100 > found[0]
-        assert missed[1] > 100 > found[1]
+        missed, human, automatic = costs(radar(CURRENT), room, CURRENT)
+        found, _, _ = costs(radar(CURRENT), room, 30)
+        assert missed["cost"] == automatic["cost"] > 100 > found["cost"]
+        assert human["occupied_seconds"] == human["empty_seconds"] == 0
 
     def test_automatic_weight_does_not_double_count_automatic_only_cost(self):
         room = office_room("area:office", *sensor_labels())
-        plain = Objective(radar(CURRENT), 0, 1200, room).rank({"a": {"g0_move": CURRENT}})
-        blended = Objective(radar(CURRENT), 0, 1200, room, automatic_weight=1.0).rank(
-            {"a": {"g0_move": CURRENT}}
-        )
-        assert blended == plain
-        assert blended[0] == blended[1]  # Primary is the automatic cost alone.
+        plain, _, automatic = costs(radar(CURRENT), room, CURRENT)
+        blended, _, _ = costs(radar(CURRENT), room, CURRENT, weight=1)
+        assert blended["cost"] == plain["cost"] == automatic["cost"]
 
-    def half_labelled(self, signal=None, **options):
-        """Human Empty only, automatic (sensor) Present only."""
-        room = office_room(
+    def half_labelled(self):
+        return office_room(
             "area:office",
             {"start": SPLIT + 100, "end": 1200, "state": "not_present", "source": "manual"},
             sensor_labels()[0],
         )
-        return Objective(signal or radar(CURRENT), 0, 1200, room, **options)
 
     def test_half_labelled_room_ranks_missed_automatic_present_after_equal_human_cost(self):
-        objective = self.half_labelled()
-        # Both are quiet through the human Empty half, so human cost ties at 0.
-        missed = objective.rank({"a": {"g0_move": CURRENT}})
-        found = objective.rank({"a": {"g0_move": 30}})
-        assert missed[0] == found[0] == 0
-        assert found < missed
+        room = self.half_labelled()
+        missed, human_miss, _ = costs(radar(CURRENT), room, CURRENT)
+        found, human_found, _ = costs(radar(CURRENT), room, 30)
+        assert human_miss["false_active_seconds"] == human_found["false_active_seconds"] == 0
+        assert human_miss["cost"] is human_found["cost"] is None
+        assert found["cost"] < missed["cost"]
 
     def test_automatic_sourced_classes_order_ties_not_the_whole_automatic_cost(self):
-        # Human Empty (900-1200), automatic Empty (600-800), automatic-only Present (0-594).
-        # A (30) misses the last 15 percent of Present; B (10) detects all of it but is
-        # active through the automatic Empty. Human cost ties at 0. The full automatic cost
-        # (A 75 < B 100) would pick A; the automatic-sourced class (Present) picks B.
         values = [40] * 85 + [20] * 15 + [15] * 34 + [0] * 66
         room = office_room(
             "area:office",
@@ -306,56 +307,48 @@ class AutomaticCostTests(unittest.TestCase):
                 "confidence": 0.9,
             },
         )
-        item = harness.member("a", values, [])
-        objective = Objective({"a": item}, 0, 1200, room)
-        a, b = ({"a": {"g0_move": value}} for value in (30, 10))
-        ranked_a, ranked_b = objective.rank(a), objective.rank(b)
-        assert ranked_a[0] == ranked_b[0] == 0  # Human cost ties.
-        rates_a, rates_b = objective.rates(a)["automatic"], objective.rates(b)["automatic"]
-        assert error_cost(*rates_a) < error_cost(*rates_b)  # Whole automatic cost prefers A.
-        assert ranked_b < ranked_a
+        members = {"a": harness.member("a", values, [])}
+        a, ah, aa = costs(members, room, 30)
+        b, bh, ba = costs(members, room, 10)
+        assert ah["false_active_seconds"] == bh["false_active_seconds"] == 0
+        assert ah["cost"] is bh["cost"] is None
+        assert aa["cost"] < ba["cost"]
+        assert b["cost"] < a["cost"]
 
     def test_automatic_present_never_overrules_human_empty(self):
-        item = harness.member("a", [40] * 200, [])
-        objective = self.half_labelled({"a": item})
-        detects = objective.rank({"a": {"g0_move": 20}})  # Hits the automatic Present.
-        quiet = objective.rank({"a": {"g0_move": 60}})  # Misses it, clean on human Empty.
-        assert quiet[0] < detects[0]
-        assert quiet < detects
+        members = {"a": harness.member("a", [40] * 200, [])}
+        detects, _, _ = costs(members, self.half_labelled(), 20)
+        quiet, _, _ = costs(members, self.half_labelled(), 60)
+        assert quiet["cost"] < detects["cost"]
 
     def test_half_labelled_room_reports_cost_per_class_source(self):
-        objective = self.half_labelled()
         for value in (CURRENT, 30):
-            thresholds = {"a": {"g0_move": value}}
-            rates = objective.rates(thresholds)
-            assert objective.costs(thresholds)[0] == error_cost(
-                rates["automatic"][0], rates["human"][1]
-            )
+            total, human, automatic = costs(radar(CURRENT), self.half_labelled(), value)
+            stats = total["sufficient_statistics"]
+            assert "present/automatic" in stats
+            assert "not_present/human" in stats
+            assert total["cost"] == 100 * (total["time_term"] + total["episode_term"])
+            assert human["occupied_seconds"] == automatic["empty_seconds"] == 0
 
     def test_half_labelled_room_blends_automatic_class_but_not_twice(self):
-        plain, blended = self.half_labelled(), self.half_labelled(automatic_weight=1.0)
-        assert plain.shares == (0, 0)
-        assert blended.shares[0] > 0  # Present has no human mass: its share still blends.
-        thresholds = {"a": {"g0_move": CURRENT}}
-        assert blended.rank(thresholds)[0] > plain.rank(thresholds)[0] == 0
-        assert blended.rank(thresholds)[1] == plain.rank(thresholds)[1] == 0
+        plain, _, _ = costs(radar(CURRENT), self.half_labelled(), CURRENT)
+        blended, _, _ = costs(radar(CURRENT), self.half_labelled(), CURRENT, weight=1)
+        assert blended["cost"] == plain["cost"] > 0
 
     def test_room_with_human_truth_keeps_human_primary_cost(self):
         manual = [
             {"start": 0, "end": SPLIT, "state": "present", "source": "manual"},
             {"start": SPLIT, "end": 1200, "state": "not_present", "source": "manual"},
         ]
-        room = office_room("area:office", *manual, *sensor_labels())
-        objective = Objective(radar(CURRENT), 0, 1200, room)
-        human = objective.rates({"a": {"g0_move": CURRENT}})["human"]
-        assert objective.rank({"a": {"g0_move": CURRENT}})[0] > 0
-        assert human[0] > 0.9
+        total, human, automatic = costs(
+            radar(CURRENT), office_room("area:office", *manual, *sensor_labels()), CURRENT
+        )
+        assert total["cost"] == human["cost"] > 0
+        assert human["occupied_recall"] == 0
+        assert automatic["occupied_seconds"] == 0
 
     def test_linked_set_counts_automatic_only_zone_in_primary_cost(self):
         room = office_room("area:office", *sensor_labels())
-        linked = LinkedObjective({"area:office": radar(CURRENT)}, 0, 1200, {"area:office": room})
-        assert linked.rank({"a": {"g0_move": CURRENT}})[0] > 0
-
-
-if __name__ == "__main__":
-    unittest.main()
+        problem = adapters.room_problem({"zone": radar(CURRENT)}, 0, 1200, {"zone": room}, 0)
+        with Evaluator(problem, ((0, 1200),)) as evaluator:
+            assert evaluator.scores([{"a": {0: CURRENT}}])[0]["cost"] > 0

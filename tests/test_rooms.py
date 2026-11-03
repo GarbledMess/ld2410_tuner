@@ -8,11 +8,12 @@ from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from unittest.mock import AsyncMock, patch
 
+import legacy_replay as replay
 import room_scenes
 import test_tuner as harness
 from sample_rows import rows_of
 from test_tuner import set_records as set_records
-from tuner_under_test.rooms import assessment, evidence, groups, intervals, jobs, replay, truth
+from tuner_under_test.rooms import assessment, evidence, groups, intervals, jobs, truth
 
 
 def member(device_id, values, labels, timing=None, offset=0):

@@ -1,6 +1,6 @@
 """Elapsed-time calibration scores over observed sessions, never a live detector."""
 
-from functools import cached_property, lru_cache, partial
+from functools import lru_cache, partial
 from weakref import proxy
 
 from .constants import MISSED_TIME_COST
@@ -193,52 +193,9 @@ class DurationGroup:
             _add_window(result, start, end, intervals, confidence, weighted=weighted)
         return result
 
-    @cached_property
-    def window_mass(self):
-        masses = {}
-        for index in self.measured_windows[0][0]:
-            _, window, confidence = self.windows[index]
-            start = window.start
-            masses[index] = confidence.between(start, window.end)
-        return masses
-
-    @cached_property
-    def weighted_seconds(self):
-        total = 0.0
-        for value in self.window_mass.values():
-            total += value
-        return total
-
-    def _weighted(self, bits, latest=False):
-        active = 0.0
-        for index in self.measured_windows[0][0]:
-            offset, window, _ = self.windows[index]
-            # Keep original session addition order; sum() can use different
-            # floating accumulation than these chronological additions.
-            active += self.weighted_part(index, (bits >> offset) & window.mask, latest)
-        return self.weighted_seconds, active
-
-    def _weighted_part(self, index, bits, latest):
-        _, window, confidence = self.windows[index]
-        if not bits:
-            return 0.0
-        if (
-            bits == window.mask
-            and min(window.hold, window.on, window.off) >= 0
-            and window.start >= window.times[0] + window.on
-        ):
-            # A full run covers the scored session: its onset is no later
-            # than warm-up and its held tail reaches the last observation.
-            return self.window_mass[index]
-        start = window.start
-        intervals = _clip(self._intervals(window, bits, latest), start, window.end)
-        return sum(confidence.between(a, b) for a, b in intervals)
-
-    # Keep per-class and per-window contributions bounded across a gate sweep.
+    # Bounded diagnostic measurement caches.
     measure = _CachedMethod(_measure, 8192)
     part = _CachedMethod(_measure_part, 8192)
-    weighted = _CachedMethod(_weighted, 8192)
-    weighted_part = _CachedMethod(_weighted_part, 8192)
 
 
 def _add_window(result, start, end, intervals, confidence, *, weighted=True):
@@ -265,8 +222,7 @@ class DurationReplay:
         )
 
     def summary(self, detected, false, recent=False):
-        # Reported duration fields are unweighted. Confidence only contributes to
-        # automatic_rank; do not integrate it for every human search candidate.
+        # Physical diagnostic duration fields are unweighted.
         present = self.present.measure(detected, recent, weighted=False)
         latest = self.present.measure(detected, recent, True, weighted=False)
         absent = self.absent.measure(false, recent, weighted=False)
@@ -298,27 +254,3 @@ class DurationReplay:
             ),
             "missed_time_cost": MISSED_TIME_COST,
         }
-
-    def rank(self, detected, false):
-        # A quality target is not a free miss budget, nor an infinite penalty.
-        full, recent = (self.summary(detected, false, recent) for recent in (False, True))
-        return (
-            round(full["error_cost"], 10),
-            sum(m["missed_presence_episodes"] for m in (full, recent)),
-            round(recent["error_cost"], 10),
-            round(full["missed_seconds_upper"], 6),
-            round(full["false_positive_percent"] or 0.0, 9),
-            full["false_trigger_events"],
-            (self.present.unscored_mask & ~detected).bit_count(),
-            (self.absent.unscored_mask & false).bit_count(),
-        )
-
-    def automatic_rank(self, detected, false):
-        p, n = self.present.weighted(detected, True), self.absent.weighted(false)
-        miss = 1 - p[1] / p[0] if p[0] else 0.0
-        false_rate = n[1] / n[0] if n[0] else 0.0
-        return round(error_cost(miss, false_rate), 10), round(miss, 12), round(false_rate, 10)
-
-    # Repeated seeds reuse complete ranks without another duration replay.
-    rank = _CachedMethod(rank, 8192)
-    automatic_rank = _CachedMethod(automatic_rank, 4096)

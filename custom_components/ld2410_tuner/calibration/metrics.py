@@ -113,31 +113,3 @@ def above(planes, threshold, everything):
             greater |= equal & planes[bit]  # Those reading 1 here read more.
             equal &= ~planes[bit]
     return greater
-
-
-def threshold_masks(rows, key):
-    """``masks[t]``: bit ``i`` is set when row ``i`` reads more than ``t`` on ``key`` (strictly
-    greater, as in the LD2410 protocol). Thresholds with no reading between them share one mask."""
-    if hasattr(rows, "planes_of"):  # Readings kept as columns: compared a bit at a time.
-        planes, everything = rows.planes_of(key), (1 << len(rows)) - 1
-        masks = {}
-        return [
-            masks.setdefault(mask, mask)
-            for mask in (above(planes, t, everything) for t in range(101))
-        ]
-    size = (len(rows) + 7) // 8
-    bins = {}
-    for i, row in enumerate(rows):
-        values = row[1]
-        if key in values:
-            bits = bins.get(values[key])
-            if bits is None:
-                bits = bins[values[key]] = bytearray(size)
-            bits[i >> 3] |= 1 << (i & 7)
-    masks = [0] * 101
-    running = 0
-    for threshold in range(100, -1, -1):
-        masks[threshold] = running
-        if threshold in bins:
-            running |= int.from_bytes(bins[threshold], "little")
-    return masks

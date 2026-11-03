@@ -1,11 +1,9 @@
 """Synthetic evidence conflicts remain reviewable, never silently relabelled."""
 
-import sys
 from copy import deepcopy
 
 import test_tuner  # noqa: F401
-
-review_evidence = sys.modules["tuner_under_test.calibration.diagnostics"].review_evidence
+from tuner_under_test.calibration.diagnostics import review_evidence
 
 
 def row(ts, energy, state="not_present"):

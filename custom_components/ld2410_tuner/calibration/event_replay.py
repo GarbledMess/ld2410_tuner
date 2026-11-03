@@ -1,4 +1,8 @@
-"""Exact physical-span threshold replay, independent of truth and package metadata."""
+"""Physical diagnostic replay and shared hardware timing primitives.
+
+Hybrid streaming timing shares validation here; the standalone replay remains a
+physical timing oracle and does not allocate a search or row-mask objective.
+"""
 
 from dataclasses import dataclass
 from math import inf, isfinite, isnan

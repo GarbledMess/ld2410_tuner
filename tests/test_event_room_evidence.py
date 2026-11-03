@@ -84,7 +84,6 @@ def test_fit_is_identical_with_extra_history_before_replay_warmup(timing):
 def test_warmup_is_replayed_but_not_scored_as_fit_evidence():
     from test_rooms import labels, member
     from tuner_under_test.rooms import assessment
-    from tuner_under_test.rooms.objective import Objective
 
     item = member(
         "synthetic",
@@ -94,8 +93,7 @@ def test_warmup_is_replayed_but_not_scored_as_fit_evidence():
     )
     members = {"synthetic": item}
     report = assessment.calculate(members, 600, 1800)
-    objective = Objective(members, 600, 1800)
-    assert objective.rates({"synthetic": {"g0_move": 20}})["human"][0] == 0
+    assert report["room"]["outcomes"]["human"]["present"]["active_seconds"] == 600
     assert report["shared_recording_seconds"] == 1197
 
 
@@ -117,7 +115,8 @@ def test_legacy_rows_keep_the_sampled_timing_contract():
 def test_native_room_evidence_reads_stable_spans_and_keeps_float_threshold_semantics():
     from types import SimpleNamespace
 
-    from tuner_under_test.rooms import evidence, replay
+    import legacy_replay as replay
+    from tuner_under_test.rooms import evidence
 
     view = SimpleNamespace(data={"devices": {"arbitrary": {}}}, _history_runtime={})
     test_tuner.recorded(view, "arbitrary", [(0, (10.1,) + (None,) * 17)], 600)
@@ -155,48 +154,21 @@ def test_label_change_does_not_reset_hold_or_pending_on_delay():
 
 
 def test_room_replay_does_not_apply_sample_gap_rules_to_event_cells():
-    from tuner_under_test.rooms import replay
+    import legacy_replay as replay
 
     rows = Rows([0], [bytes([40])], {"g0_move": 0}, ends=[600])
     assert replay.radar(rows, {"g0_move": 20}, {})["coverage"] == [(0, 600)]
 
 
 def test_mixed_sampled_and_event_rows_keep_separate_geometry():
+    import legacy_replay as replay
     from tuner_under_test.calibration.duration import DurationGroup
-    from tuner_under_test.rooms import replay
 
     rows = Rows([0, 6, 10], [bytes([40, 0, 40])], {"g0_move": 0}, ends=[None, None, 600])
     group = DurationGroup(rows)
     result = replay.from_bits(group, group, 5)
     assert result["coverage"] == [(0, 6), (10, 600)]
     assert result["lower"] == [(0, 3), (10, 600)]
-
-
-def test_room_objective_releases_replay_geometry_without_cyclic_collection():
-    import gc
-    import weakref
-
-    from test_rooms import labels, member
-    from tuner_under_test.rooms.objective import Objective
-
-    gc.disable()
-    try:
-        item = member("synthetic", [40] * 100 + [0] * 100, labels())
-        objective = Objective({"synthetic": item}, 0, 1200)
-        objective.rank(objective.current)
-        radar = objective.radars["synthetic"]
-        references = [
-            weakref.ref(objective),
-            weakref.ref(objective.windows),
-            weakref.ref(radar),
-            weakref.ref(radar.positive),
-            weakref.ref(radar.negative),
-            weakref.ref(radar.projector),
-        ]
-        del radar, objective
-        assert all(reference() is None for reference in references)
-    finally:
-        gc.enable()
 
 
 def test_recorded_replay_rows_do_not_retain_per_row_byte_objects(monkeypatch):
@@ -222,27 +194,3 @@ def test_recorded_replay_rows_do_not_retain_per_row_byte_objects(monkeypatch):
     assert list(rows.ends) == [*(i * 6 for i in range(1, count)), count * 6 - 3]
     assert barriers == []
     assert peak < 1_500_000
-
-
-@pytest.mark.parametrize("supported", [frozenset(range(101)), frozenset((20, 80))])
-def test_supported_masks_share_equal_tables_without_expanding_memory(supported):
-    import tracemalloc
-    from array import array
-
-    from tuner_under_test.calibration.metrics import threshold_masks
-    from tuner_under_test.rooms.objective import _supported_tables
-
-    count = 100000
-    column = bytes(i % 101 for i in range(count))
-    rows = Rows(array("d", range(count)), [column], {"g0_move": 0})
-    tables = threshold_masks(rows, "g0_move")
-    allowed = sum(1 << i for i, value in enumerate(column) if value in supported)
-    expected = tuple(bits & allowed for bits in tables)
-    tracemalloc.start()
-    try:
-        actual = _supported_tables(rows, "g0_move", tables, supported)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert actual == expected
-    assert peak < 400_000

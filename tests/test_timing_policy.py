@@ -9,10 +9,10 @@ from unittest.mock import patch
 import pytest
 import test_tuner as harness
 from test_timing import config, entity, state
+from tuner_under_test.calibration import timing_metrics as measure
 
 policy = sys.modules["tuner_under_test.calibration.timing_config"]
 schedule = sys.modules["tuner_under_test.runtime.schedule"]
-measure = sys.modules["tuner_under_test.calibration.timing_metrics"]
 
 
 def timing_report(values, groups):
