@@ -301,3 +301,14 @@ def test_packed_parent_exactly_half_is_not_mostly_missed(tmp_path, confidence):
         collect_training(p, store)
         args = p, store, {"a": {0: 90}}, "a", 0, (40,)
         assert coordinate_costs(*args) == coordinate_costs(*args, folded=False) == {40: 250}
+
+
+def test_search_crossings_retain_original_start_for_every_seed(tmp_path):
+    """The prototype includes the original start even after a seed moves away."""
+    from tuner_under_test.engine.hybrid.search import _Search
+
+    p = problem({"a": [(70,), (80,), (10,), (20,)]}, current=53)
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        engine = _Search(p, store)
+        assert 53 in engine.candidate_base["a", 0]
