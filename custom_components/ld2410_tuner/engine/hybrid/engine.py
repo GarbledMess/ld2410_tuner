@@ -125,6 +125,7 @@ def score(state, patterns, *, zones=None, keep=1):
         evaluators=state.evaluators,
         zones=zones,
         keep=keep,
+        attribution=not _defer_attribution(state),
     )
     base = [{k: v for k, v in s.items() if k != "quiet"} for s in scores]
     return [s["pattern_index"] for s in scores], base, [s["quiet"] for s in scores]
@@ -178,10 +179,26 @@ def first_fit(state):
     return pick, info, []
 
 
+def _defer_attribution(state):
+    return any(len(zone.members) > 1 for zone in state.problem.zones)
+
+
+def _reported_scores(state, pick):
+    """Hydrate only report metrics from vectors already present in replay records."""
+    if not _defer_attribution(state):
+        return state.scores[0], state.scores[pick]
+    indexes = tuple(dict.fromkeys((0, pick)))
+    mode = "cells" if state.plan.mode == "cells" else "exact"
+    patterns = [state.compared[i] for i in indexes]
+    scores = state.evaluators.get(mode).scores(patterns, zones=state.problem.zones)
+    reported = {i: {**state.scores[i], **score} for i, score in zip(indexes, scores, strict=True)}
+    return reported[0], reported[pick]
+
+
 def result(state, pick, info, missing, extra=None):
     """FitResult with pure error costs and separately reported selection terms."""
     costs = selection.selection_costs(state.problem, state.scores, state.quiet)
-    after = state.scores[pick]
+    before, after = _reported_scores(state, pick)
     status = "insufficient" if missing else ("fitted" if pick else "kept")
     diagnostics = {
         "status": status,
@@ -205,7 +222,7 @@ def result(state, pick, info, missing, extra=None):
         diagnostics["insufficient_classes"] = missing
     diagnostics.update(extra or {})
     thresholds = {rid: dict(v) for rid, v in state.compared[pick].items()}
-    return FitResult(thresholds, state.scores[0], after, diagnostics)
+    return FitResult(thresholds, before, after, diagnostics)
 
 
 def _dedupe(patterns):
