@@ -559,8 +559,10 @@ class _Audit:
 
 def _dropped(columns, flagged):
     counts = (Counter(), Counter())
-    for side, lo, hi, _, _ in flagged:
-        counts[side].update(columns[side][lo:hi])
+    for side in (0, 1):
+        ranges = _union((lo, hi) for s, lo, hi, _, _ in flagged if s == side)
+        for lo, hi in ranges:
+            counts[side].update(columns[side][lo:hi])
     return counts
 
 

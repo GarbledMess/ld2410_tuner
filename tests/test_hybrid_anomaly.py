@@ -846,3 +846,48 @@ def test_audit_subset_windows_reuse_classification(monkeypatch):
     monkeypatch.setattr(above, "counts", forbidden)
     assert above.select(windows[1:], 0.5, le) == windows[1:2]
     assert above.select(windows[:1], 0.5, le) == []
+
+
+def test_adjacent_flagged_windows_share_one_histogram_per_side(monkeypatch):
+    from array import array
+    from itertools import accumulate
+
+    values = b"\x14\x3c\x28\x50"
+    lengths = array("I", [3, 4, 2, 3])
+    columns = tuple(
+        anomaly._RunColumn(values, lengths, array("Q", accumulate(lengths))) for _ in range(2)
+    )
+    flagged = {(side, lo, lo + 2, lo * 6, (lo + 2) * 6) for side in (0, 1) for lo in (0, 2, 4, 8)}
+    calls = []
+    original = anomaly._RunColumn.histogram
+
+    def counted(self, lo=0, hi=None):
+        calls.append((lo, hi))
+        return original(self, lo, hi)
+
+    monkeypatch.setattr(anomaly._RunColumn, "histogram", counted)
+    dropped = anomaly._dropped(columns, flagged)
+    assert dropped == ({20: 3, 60: 3, 40: 1, 80: 1},) * 2
+    assert len(calls) == 4
+
+
+def test_merged_flagged_histograms_equal_scalar_cell_counts():
+    import random
+    from array import array
+    from collections import Counter
+    from itertools import accumulate
+
+    rng = random.Random(20261103)
+    for _ in range(40):
+        lengths = array("I", [rng.randrange(1, 9) for _ in range(30)])
+        values = bytes(rng.choice((0, 20, 60, 100, 255)) for _ in lengths)
+        raw = b"".join(bytes([v]) * n for v, n in zip(values, lengths, strict=True))
+        column = anomaly._RunColumn(values, lengths, array("Q", accumulate(lengths)))
+        flagged, expected = set(), (Counter(), Counter())
+        for side in (0, 1):
+            for lo in range(0, len(raw), 3):
+                if rng.random() < 0.75:
+                    hi = min(len(raw), lo + 3)
+                    flagged.add((side, lo, hi, lo * 6, hi * 6))
+                    expected[side].update(v for v in raw[lo:hi] if v <= 100)
+        assert anomaly._dropped((column, column), flagged) == expected
