@@ -5,10 +5,11 @@ from bisect import bisect_left, bisect_right
 from itertools import chain, compress, islice, pairwise, repeat
 from operator import and_, gt, lt
 
-from ..calibration.duration import DurationGroup
-from ..calibration.timing import merged
-from ..calibration.timing_metrics import hit_mask
-from .intervals import Timeline, intersect, union
+import test_tuner  # noqa: F401
+from tuner_under_test.calibration.duration import DurationGroup
+from tuner_under_test.calibration.timing import merged
+from tuner_under_test.calibration.timing_metrics import hit_mask
+from tuner_under_test.rooms.intervals import Timeline, intersect, union
 
 KINDS = ("lower", "possible", "upper")
 # What a ``Projector`` remembers, in doubles of span ends (a megabyte holds 131 072).
@@ -183,3 +184,12 @@ def combined(radars):
 
 def lookups(replayed):
     return {key: Timeline(spans) for key, spans in replayed.items()}
+
+
+def threshold_masks(rows, key):
+    """Independent scalar strict-crossing oracle for packed and ordinary rows."""
+    rows = list(rows)
+    return tuple(
+        sum(1 << i for i, row in enumerate(rows) if row[1].get(key, -1) > threshold)
+        for threshold in range(101)
+    )

@@ -134,32 +134,43 @@ def dense_store(tmp_path, days=3):
     return store
 
 
-def test_evidence_plans_reuse_what_they_derived_from_finished_days(tmp_path):
+def test_hybrid_digests_reuse_what_they_derived_from_finished_days(tmp_path):
     from types import SimpleNamespace
 
-    from tuner_under_test.calibration import evidence_plan
+    from tuner_under_test.history.fit_days import FittingDays
+    from tuner_under_test.worker import history
+    from tuner_under_test.worker.calculations import ReadOnlyDays
 
     store = dense_store(tmp_path)
-    labels = [
-        {"start": START + t, "end": START + t + 3600, "state": ("present", "not_present")[k % 2]}
-        for k, t in enumerate(range(0, 3 * 86_400, 3600))
-    ]
-    read = _history_label_reader({"history_labels": labels})
-    view = SimpleNamespace(_days=store, _history_until=START + 3 * 86_400 - 30)
-    keys, end = ["g0_move", "g1_move"], START + 3 * 86_400 - 30
-    first = evidence_plan.plan(view, "radar", keys, START, end, {}, read, limit=500)
-    assert first is not None and first.status == "bounded"
-    store._cache.clear()
-    finished = set(store.days("radar")[:-1])
-    real = store.day
-
-    def day(device_id, date, until=None):
-        assert date not in finished, "finished day decoded again"
-        return real(device_id, date, until)
-
-    with patch.object(store, "day", side_effect=day):
-        again = evidence_plan.plan(view, "radar", keys, START, end, {}, read, limit=500)
-    assert again == first
+    dates = store.days("radar")
+    entries = []
+    for date in dates[:-1]:
+        path = store._path("radar", date, ".day")
+        entries.append(
+            {
+                "device_id": "radar",
+                "date": date.isoformat(),
+                "path": str(path),
+                "identity": history._identity(path.stat()),
+                "late": [],
+                "persistent": True,
+            }
+        )
+    days = ReadOnlyDays({"days": entries, "budgets": {"max_file_bytes": None}})
+    view = SimpleNamespace(_days=days, _history_until=START + 3 * 86_400 - 30)
+    fitting = FittingDays(view)
+    first = [fitting.digest("radar", date, (0, 1)) for date in dates[:-1]]
+    assert len(first) == 2
+    assert all(list(digest.segments()) for digest in first)
+    # A new wrapper emulates a warm job; finished physical days need no row decoding.
+    with patch.object(
+        days, "open_columns", side_effect=AssertionError("finished day decoded again")
+    ):
+        again = [FittingDays(view).digest("radar", date, (0, 1)) for date in dates[:-1]]
+    for before, after in zip(first, again, strict=True):
+        assert before.channels == after.channels
+        assert before.channels[0] != before.channels[1]
+        assert list(before.segments()) == list(after.segments())
 
 
 def test_quality_evidence_reuses_what_it_derived_from_finished_days(tmp_path):

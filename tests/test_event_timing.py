@@ -1,9 +1,9 @@
 """Precise event cells retain duration when the bitmask replay is used by search."""
 
+import legacy_replay as replay
 import pytest
 import test_tuner  # noqa: F401
 from tuner_under_test.calibration.duration import DurationGroup
-from tuner_under_test.rooms import replay
 
 
 class Cells(list):
@@ -64,12 +64,14 @@ def test_recent_window_and_weighted_rank_use_exact_end():
     group = DurationGroup(Cells([(0, 600, 20)]))
     assert group.recent_start == 480
     assert group.measure(1, recent=True)["active_seconds"] == 120
-    assert group.weighted(1) == (300, 300)
+    measured = group.measure(1)
+    assert (measured["weighted_seconds"], measured["weighted_active_seconds"]) == (300, 300)
 
 
 def test_timed_full_cell_weight_does_not_skip_its_on_delay():
     group = DurationGroup(Cells([(0, 600, 20)]), {"timeout": 2, "on_delay": 1, "off_delay": 3})
-    assert group.weighted(1) == (300, 299.5)
+    measured = group.measure(1)
+    assert (measured["weighted_seconds"], measured["weighted_active_seconds"]) == (300, 299.5)
 
 
 def test_overlapping_cells_are_rejected_instead_of_double_counted():

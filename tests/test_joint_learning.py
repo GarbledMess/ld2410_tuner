@@ -9,12 +9,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import test_rooms as harness
 from test_rooms import labels, member, set_records
-from tuner_under_test.calibration.separation import gate_preference
 from tuner_under_test.engine.hybrid import adapters, search
 from tuner_under_test.engine.hybrid.exact import Evaluator
 from tuner_under_test.engine.hybrid.training import TrainingStore
-from tuner_under_test.rooms import application, fitting, groups, learning
-from tuner_under_test.rooms.objective import Objective
+from tuner_under_test.rooms import application, fitting, groups, learning, roles
 
 
 def example(a, b, current=20):
@@ -82,23 +80,50 @@ def test_automatic_presence_cannot_overrule_human_empty_labels():
     assert result["after"]["room"]["outcomes"]["human"]["not_present"]["active_seconds"] == 0
 
 
-def test_quiet_member_samples_do_not_shift_its_preference():
+def member_statistics(data, room, end, tmp_path):
+    """Accumulate attributed scalar diagnostic evidence through the hybrid store."""
+    from tuner_under_test.engine.hybrid.candidates import channel_statistics
+    from tuner_under_test.engine.hybrid.types import TruthSpan
+    from tuner_under_test.history.label_lookup import _history_label_reader
+    from tuner_under_test.rooms import evidence
+
+    found = {}
+    with TrainingStore(tmp_path, budget=0) as store:
+        for rid, item in data.items():
+            rows = evidence.read(item["view"], rid, ["g0_move"], 0, end)["rows"]
+            target = roles.target(data, room, rid)
+            own = _history_label_reader(item["view"].data["devices"][rid])
+            for i, (start, values, _) in enumerate(rows):
+                label = own(start)
+                answer = (label, "human", 1) if label is not None else target(start)
+                if answer is None or answer[0] not in ("present", "not_present"):
+                    continue
+                state, origin, confidence = answer
+                source = "human" if origin == "human" else "automatic"
+                span = TruthSpan(
+                    start, rows.ends[i], state, source, confidence, f"{rid}/{state}", ()
+                )
+                store.observe(
+                    "zone", rid, start, rows.ends[i], span, [values["g0_move"]] + [255] * 17
+                )
+            bins = store.histograms("zone", rid, 0)
+            found[rid] = channel_statistics(bins["present"], bins["not_present"])
+    return found
+
+
+def test_quiet_member_samples_do_not_shift_its_preference(tmp_path):
     quiet = [i % 10 for i in range(100)]
-    empty_only = [{"start": 600, "end": 1200, "state": "not_present"}]
     data = {
         "a": member("a", [70] * 100 + [10] * 100, labels()),
-        "b": member("b", [10] * 100 + quiet, empty_only),
+        "b": member("b", [10] * 100 + quiet, [{"start": 600, "end": 1200, "state": "not_present"}]),
     }
-    objective = Objective(data, 0, 1200)
-    noise = [(600 + i * 6, {"g0_move": value}, "not_present", 1.0) for i, value in enumerate(quiet)]
-    nothing = {"present": [], "not_present": []}
-    expected = gate_preference("g0_move", {"present": [], "not_present": noise}, nothing, 20)
-    seen = [(i * 6, {"g0_move": 10}, "present", 1.0) for i in range(100)]
-    counted = gate_preference("g0_move", {"present": seen, "not_present": noise}, nothing, 20)
-    assert counted["preferred_threshold"] != expected["preferred_threshold"]
-    assert objective.preferences["b"]["g0_move"] == expected
-    # The radar that rose keeps its Present evidence.
-    assert objective.preferences["a"]["g0_move"]["human_supported"]
+    assert roles.target(data, None, "b")(0) is None
+    assert roles.target(data, None, "b")(600)[:2] == ("not_present", "human")
+    assert roles.target(data, None, "a")(0)[:2] == ("present", "human")
+    stats = member_statistics(data, None, 1200, tmp_path)
+    assert stats["b"]["q25"] is None
+    assert stats["b"]["ceiling"] == 9
+    assert stats["a"]["gap"] == (10, 70)
 
 
 def office_room(*labels):
@@ -110,31 +135,25 @@ def office_room(*labels):
     }
 
 
-def test_unlabelled_member_that_rises_keeps_present_evidence_and_quiet_one_does_not():
+def test_unlabelled_member_that_rises_keeps_present_evidence_and_quiet_one_does_not(tmp_path):
     quiet = [i % 10 for i in range(100)]
     data = {"a": member("a", [70] * 100 + quiet, []), "b": member("b", [10] * 100 + quiet, [])}
     room = office_room(
         {"start": 0, "end": 600, "state": "present", "source": "manual"},
         {"start": 600, "end": 1200, "state": "not_present", "source": "manual"},
     )
-    preferences = Objective(data, 0, 1200, room).preferences
-    # Neither radar is labelled, so rule 2 (its own empty baseline) decides attribution: an
-    # inference, so a's Present rows are automatic evidence (confidence 100/100), not human.
-    noise = [(600 + i * 6, {"g0_move": value}, "not_present", 1.0) for i, value in enumerate(quiet)]
-    nothing = {"present": [], "not_present": []}
-    seen = {"present": [(i * 6, {"g0_move": 70}, "present", 1.0) for i in range(100)]}
-    inferred = gate_preference(
-        "g0_move", {"present": [], "not_present": noise}, {**nothing, **seen}, 20
-    )
-    assert preferences["a"]["g0_move"] == inferred
-    assert preferences["a"]["g0_move"]["presence_reference"] == 70
-    assert not preferences["a"]["g0_move"]["human_supported"]
-    expected = gate_preference("g0_move", {"present": [], "not_present": noise}, nothing, 20)
-    assert preferences["b"]["g0_move"] == expected
-    assert preferences["b"]["g0_move"]["presence_reference"] is None
+    target_a, target_b = (roles.target(data, room, rid) for rid in ("a", "b"))
+    assert target_a(0)[:2] == ("present", "attributed")
+    assert target_a(0)[2] >= 0.55
+    assert target_b(0) is None
+    assert target_a(600)[:2] == target_b(600)[:2] == ("not_present", "human")
+    stats = member_statistics(data, room, 1200, tmp_path)
+    assert stats["a"]["q25"] == 70
+    assert stats["a"]["gap"] == (9, 70)
+    assert stats["b"]["q25"] is None
 
 
-def test_rule_two_below_the_automatic_floor_adds_no_preference_rows():
+def test_rule_two_below_the_automatic_floor_adds_no_preference_rows(tmp_path):
     # 40 quiet samples give a rule-2 confidence of 0.4 < MIN_AUTO_CONFIDENCE: no Present row.
     quiet = [i % 10 for i in range(40)]
     data = {"a": member("a", [70] * 100 + quiet, []), "b": member("b", [10] * 140, [])}
@@ -142,14 +161,13 @@ def test_rule_two_below_the_automatic_floor_adds_no_preference_rows():
         {"start": 0, "end": 600, "state": "present", "source": "manual"},
         {"start": 600, "end": 840, "state": "not_present", "source": "manual"},
     )
-    preference = Objective(data, 0, 840, room).preferences["a"]["g0_move"]
-    noise = [(600 + i * 6, {"g0_move": value}, "not_present", 1.0) for i, value in enumerate(quiet)]
-    nothing = {"present": [], "not_present": []}
-    assert preference == gate_preference("g0_move", {**nothing, "not_present": noise}, nothing, 20)
-    assert preference["presence_reference"] is None
+    target = roles.target(data, room, "a")
+    assert target(0) is None
+    assert target(600)[:2] == ("not_present", "human")
+    assert member_statistics(data, room, 840, tmp_path)["a"]["q25"] is None
 
 
-def test_below_floor_rule_two_keeps_a_more_confident_room_estimate():
+def test_below_floor_rule_two_keeps_a_more_confident_room_estimate(tmp_path):
     # As above, but both radars' guesses make the room estimate Present at 0.9975 > the 0.4
     # guess (a present estimate needs two members saying so): automatic Present evidence for a.
     quiet = [i % 10 for i in range(40)]
@@ -163,12 +181,13 @@ def test_below_floor_rule_two_keeps_a_more_confident_room_estimate():
         {"start": 0, "end": 600, "state": "present", "source": "manual"},
         {"start": 600, "end": 840, "state": "not_present", "source": "manual"},
     )
-    preference = Objective(data, 0, 840, room).preferences["a"]["g0_move"]
-    assert preference["presence_reference"] == 70
-    assert not preference["human_supported"]
+    target = roles.target(data, room, "a")
+    assert target(0)[:2] == ("present", "estimate")
+    assert target(0)[2] >= 0.55
+    assert member_statistics(data, room, 840, tmp_path)["a"]["q25"] == 70
 
 
-def test_own_empty_label_while_room_occupied_feeds_the_baseline():
+def test_own_empty_label_while_room_occupied_feeds_the_baseline(tmp_path):
     # The room is occupied throughout (a is labelled Present). b's only quiet evidence is its
     # own Empty label in the first recording block; its second block is unlabelled and rises.
     quiet = [i % 10 for i in range(100)]
@@ -179,9 +198,12 @@ def test_own_empty_label_while_room_occupied_feeds_the_baseline():
     records = [(i * 6, [value] + [255] * 17 + [0, 0]) for i, value in enumerate(quiet)]
     records += [(1000 + i * 6, [60] + [255] * 17 + [0, 0]) for i in range(100)]
     set_records(data["b"]["view"], "b", records)
-    preference = Objective(data, 0, 1600).preferences["b"]["g0_move"]
-    # Without that baseline the second block would be "unknown" and contribute nothing.
-    assert preference["presence_reference"] == 60
+    target = roles.target(data, None, "b")
+    from tuner_under_test.history.label_lookup import _history_label_reader
+
+    assert _history_label_reader(data["b"]["view"].data["devices"]["b"])(0) == "not_present"
+    assert target(1000)[:2] == ("present", "attributed")
+    assert member_statistics(data, None, 1600, tmp_path)["b"]["q25"] == 60
 
 
 def joint_examples():

@@ -8,11 +8,13 @@ from unittest.mock import patch
 
 import pytest
 import test_tuner as harness
+from legacy_replay import threshold_masks
 from test_tuner import fit
+from tuner_under_test.calibration import timing_metrics as measure_module
 
 config_module = sys.modules["tuner_under_test.calibration.timing_config"]
 timing_module = sys.modules["tuner_under_test.calibration.timing"]
-measure_module = sys.modules["tuner_under_test.calibration.timing_metrics"]
+
 metrics_module = sys.modules["tuner_under_test.calibration.metrics"]
 
 
@@ -109,7 +111,7 @@ def test_recent_window_keeps_context_from_earlier_observations():
     assert result["false_negatives"] == 0
 
 
-def test_timed_rank_matches_public_validation_including_recent_and_gaps():
+def test_timed_diagnostics_match_public_validation_including_recent_and_gaps():
     rng = random.Random(81)
     for _ in range(40):
         time = 0
@@ -123,21 +125,12 @@ def test_timed_rank_matches_public_validation_including_recent_and_gaps():
         replay = sys.modules["tuner_under_test.calibration.duration"].DurationReplay(
             groups["present"], groups["not_present"], settings
         )
-        masks = [
-            metrics_module.threshold_masks(groups[label], "g0_still")[threshold] for label in groups
-        ]
-        rank = replay.rank(*masks)
-        all_metrics = measure_module.evaluate(groups, {"g0_still": threshold}, settings)
-        recent = measure_module.evaluate(groups, {"g0_still": threshold}, settings, recent=True)
-        duration = all_metrics["duration"]
-        assert rank[:6] == (
-            round(duration["error_cost"], 10),
-            duration["missed_presence_episodes"] + recent["duration"]["missed_presence_episodes"],
-            round(recent["duration"]["error_cost"], 10),
-            round(duration["missed_seconds_upper"], 6),
-            round(duration["false_positive_percent"] or 0, 9),
-            duration["false_trigger_events"],
-        )
+        masks = [threshold_masks(groups[label], "g0_still")[threshold] for label in groups]
+        for recent in (False, True):
+            measured = measure_module.evaluate(
+                groups, {"g0_still": threshold}, settings, recent=recent
+            )
+            assert replay.summary(*masks, recent=recent) == measured["duration"]
 
 
 def test_timing_improves_gate_choice_without_hiding_noise_or_changing_settings():

@@ -7,16 +7,14 @@ import unittest
 from array import array
 from unittest.mock import patch
 
+import legacy_replay as replay
 import old_background
 import old_replay as old
 import test_tuner as harness
 from tuner_under_test.calibration.duration import DurationGroup, _clip
 from tuner_under_test.calibration.intervals import WeightedTime, across
-from tuner_under_test.calibration.metrics import threshold_masks
 from tuner_under_test.calibration.timing import _Window, hit_runs, merged
-from tuner_under_test.rooms import fitting, replay, window_rates
 from tuner_under_test.rooms.intervals import union
-from tuner_under_test.rooms.objective import LinkedObjective, Objective
 
 NOW = 1_800_000_000.0
 TIMINGS = (
@@ -424,190 +422,6 @@ def room_labels(rng, end=900):
     }
 
 
-def random_thresholds(rng, item):
-    return {
-        key: {gate: rng.choice((0, 10, 20, 35, 50, 100, rng.randint(0, 100))) for gate in gates}
-        for key, gates in item.current.items()
-    }
-
-
-def plain_radar_rates(item, thresholds):
-    """One radar's rates as its spans are united and integrated (the general path)."""
-    ((key, radar),) = item.radars.items()
-    bits, automatic_bits = radar.bits(thresholds[key]), radar.automatic_bits(thresholds[key])
-    projected = radar.projector.project(bits)
-    automatic = radar.projector.project(automatic_bits)["lower"]
-    return item._source_rates(projected["lower"], projected["upper"], automatic)
-
-
-class SingleRadarRatesTests(unittest.TestCase):
-    """A device's own objective sums each window's integrals instead of uniting its spans.
-    Its sums are exact fixed-point while the general path sums floats span by span, so the
-    two agree to float rounding (a last-bit difference), not necessarily bit for bit."""
-
-    def assertRatesEqual(self, found, expected):
-        self.assertEqual(found.keys(), expected.keys())
-        for source, values in expected.items():
-            for value, wanted in zip(found[source], values, strict=True):
-                self.assertAlmostEqual(value, wanted, delta=1e-12 * max(1, abs(wanted)))
-
-    def test_rates_equal_the_plain_computation_in_any_order(self):
-        rng = random.Random(37)
-        for _ in range(8):
-            member = wide_member(rng, "a", rng.choice(TIMINGS), guessing=rng.random() < 0.7)
-            item = Objective({"a": member}, 0, 900)
-            for _ in range(40):
-                thresholds = random_thresholds(rng, item)
-                expected = plain_radar_rates(Objective({"a": member}, 0, 900), thresholds)
-                self.assertRatesEqual(item.rates(thresholds), expected)
-
-    def test_masks_changed_in_a_few_windows_rate_as_the_plain_computation(self):
-        rng = random.Random(47)
-        for timing in TIMINGS:
-            member = wide_member(rng, "a", timing, count=300, guessing=True, gap=600)
-            item = Objective({"a": member}, 0, 9000)
-            radar = item.radars["a"]
-            frames = radar.projector.frames
-            bits = automatic = random_bits(rng, 300)
-            for _ in range(30):
-                for _ in range(rng.randint(1, 2)):  # A gate's threshold moves: a few windows.
-                    offset, window, _start, _end = rng.choice(frames)
-                    bits ^= (rng.getrandbits(window.mask.bit_length()) & window.mask) << offset
-                if rng.random() < 0.5:
-                    automatic = bits & rng.getrandbits(300)
-                plain = Objective({"a": member}, 0, 9000)
-                plain.windows = None  # The general path: unite the spans, then integrate.
-                expected = plain._rates([(bits, automatic)])
-                found = item._rates([(bits, automatic)])
-                self.assertRatesEqual(found, expected)
-                fresh = Objective({"a": member}, 0, 9000)._rates([(bits, automatic)])
-                self.assertEqual(found, fresh, "the same whichever masks came before")
-
-    def test_a_mask_changed_in_one_window_is_not_walked_window_by_window(self):
-        member = wide_member(random.Random(43), "a", TIMINGS[3], gap=600)
-        item = Objective({"a": member}, 0, 4000)
-        radar = item.radars["a"]
-        assert len(radar.projector.frames) > 3
-        bits = radar.bits({"g0_move": 10, "g0_still": 10})
-        item._rates([(bits, bits)])
-        offset, window, _start, _end = radar.projector.frames[1]
-        changed = bits ^ (window.mask << offset)  # Only the second window's hits differ.
-        expected = Objective({"a": member}, 0, 4000)._rates([(changed, changed)])
-        with patch.object(replay.Projector, "_hits", side_effect=AssertionError("walked")):
-            self.assertEqual(item._rates([(changed, changed)]), expected)
-
-    def test_changed_windows_are_found_from_the_set_bits_alone(self):
-        item = Objective({"a": wide_member(random.Random(53), "a", TIMINGS[3])}, 0, 900)
-        rates = item.windows
-        rates.offsets, rates.ends = [4, 10], [8, 12]  # Windows of samples 4-7 and 10-11.
-        # Bit 11 is in the second window, 9 between the windows, 5 in the first, and 1
-        # before every window.
-        bits = (1 << 11) | (1 << 9) | (1 << 5) | (1 << 1)
-        self.assertEqual(rates._changed(bits), [1, 0])
-        self.assertEqual(rates._changed(1 << 9), [])
-        self.assertEqual(rates._changed(0), [])
-
-    def test_rates_stay_exact_when_the_kept_integrals_are_forgotten(self):
-        rng = random.Random(59)
-        member = wide_member(rng, "a", TIMINGS[4], count=300, guessing=True, gap=600)
-        item = Objective({"a": member}, 0, 9000)
-        with patch.object(window_rates, "LIMIT", 3):
-            for _ in range(20):
-                bits = random_bits(rng, 300)
-                expected = Objective({"a": member}, 0, 9000)._rates([(bits, bits)])
-                self.assertEqual(item._rates([(bits, bits)]), expected)
-                self.assertLessEqual(len(item.windows.known), 3)
-
-
-class ObjectiveEquivalenceTests(unittest.TestCase):
-    def test_rates_equal_the_plain_computation(self):
-        rng = random.Random(31)
-        for _ in range(6):
-            members = {
-                key: wide_member(rng, key, rng.choice(TIMINGS), guessing=rng.random() < 0.7)
-                for key in ("a", "b")
-            }
-            labels = room_labels(rng)
-            item = Objective(members, 0, 900, labels)
-            for _ in range(25):
-                thresholds = random_thresholds(rng, item)
-                # A fresh objective computes from nothing: no remembered masks or spans.
-                expected = Objective(members, 0, 900, labels).rates(thresholds)
-                self.assertEqual(item.rates(thresholds), expected)
-                self.assertEqual(item.rates(thresholds), expected, "and again, remembered")
-
-    def test_a_linked_objective_ranks_as_the_sum_of_plain_group_ranks(self):
-        rng = random.Random(41)
-        members = {key: wide_member(rng, key, rng.choice(TIMINGS), guessing=True) for key in "ab"}
-        groups = {"g1": members, "g2": {"b": members["b"]}}
-        linked = LinkedObjective(groups, 0, 900)
-        for _ in range(20):
-            thresholds = random_thresholds(rng, linked)
-            for gid, item, part in linked.parts(thresholds):
-                self.assertEqual(item.rates(part), Objective(groups[gid], 0, 900).rates(part))
-            self.assertEqual(linked.rank(thresholds), linked.rank(thresholds))
-
-    def test_the_search_finds_what_it_found_without_the_fast_paths(self):
-        rng = random.Random(51)
-        members = {key: wide_member(rng, key, rng.choice(TIMINGS), guessing=True) for key in "ab"}
-        labels = room_labels(rng)
-        fast, plain = Objective(members, 0, 900, labels), Objective(members, 0, 900, labels)
-        oracle = {}
-
-        def plain_rates(thresholds):
-            key = tuple(
-                (device, tuple(sorted(gates.items())))
-                for device, gates in sorted(thresholds.items())
-            )
-            if key not in oracle:
-                oracle[key] = Objective(members, 0, 900, labels).rates(thresholds)
-            return oracle[key]
-
-        plain.rates = plain_rates
-        self.assertEqual(fitting.search(fast), fitting.search(plain))
-
-    def test_possible_spans_are_never_computed_by_the_search(self):
-        rng = random.Random(61)
-        members = {key: wide_member(rng, key, TIMINGS[3]) for key in ("a", "b")}
-        item = Objective(members, 0, 900)
-        window_type = type(item.radars["a"].positive.windows[0][1])
-        with patch.object(window_type, "_possible_onset", side_effect=AssertionError):
-            fitting.search(item)
-
-    def test_hit_masks_seen_before_are_not_replayed_again(self):
-        rng = random.Random(71)
-        members = {key: wide_member(rng, key, TIMINGS[3]) for key in ("a", "b")}
-        item = Objective(members, 0, 900)
-        # Above every reading, 100 and 99 both hit nothing: the same hit masks.
-        quiet_a = {"a": {"g0_move": 100, "g0_still": 100}, "b": {"g0_move": 100, "g0_still": 100}}
-        quiet_b = {"a": {"g0_move": 99, "g0_still": 99}, "b": {"g0_move": 99, "g0_still": 99}}
-        self.assertEqual(item.radars["a"].bits(quiet_a["a"]), item.radars["a"].bits(quiet_b["a"]))
-        loud = {"a": {"g0_move": 5, "g0_still": 5}, "b": {"g0_move": 5, "g0_still": 5}}
-        first = item.rates(loud)
-        with patch.object(DurationGroup, "_spans", side_effect=AssertionError):
-            self.assertEqual(item.rates(loud), first)
-        item.rates(quiet_a)
-        with patch.object(DurationGroup, "_spans", side_effect=AssertionError):
-            self.assertEqual(item.rates(quiet_b), item.rates(quiet_a))
-
-
-class MasksTests(unittest.TestCase):
-    def test_masks_are_unchanged_and_equal_ones_share_memory(self):
-        rng = random.Random(81)
-        rows = [
-            (float(i), {"g0_move": rng.choice((3, 3, 7, 50, 51, 99))}, "unknown")
-            for i in range(300)
-        ]
-        masks = threshold_masks(rows, "g0_move")
-        expected = [
-            sum(1 << i for i, row in enumerate(rows) if row[1]["g0_move"] > threshold)
-            for threshold in range(101)
-        ]
-        self.assertEqual(masks, expected)
-        distinct = {id(mask) for mask in masks}
-        self.assertEqual(len(distinct), len(set(masks)), "equal masks are one object")
-
-
 class ReadingsTests(unittest.TestCase):
     def view(self, rng, count):
         records = [
@@ -688,19 +502,78 @@ class LeanObjectiveTests(unittest.TestCase):
             hits = bits & window.mask
             self.assertEqual(lean._spans(window, hits, True), full._spans(other, hits, True))
 
-    def test_an_objective_keeps_no_rows_once_it_is_built(self):
-        rng = random.Random(96)
-        members = {key: wide_member(rng, key, TIMINGS[3]) for key in ("a", "b")}
-        single = Objective(members, 0, 900)
-        self.assertEqual([len(inputs["rows"]) for inputs in single.inputs.values()], [0, 0])
-        linked = LinkedObjective({"g1": members, "g2": {"b": members["b"]}}, 0, 900)
-        for item in linked.groups.values():
-            self.assertTrue(all(len(inputs["rows"]) == 0 for inputs in item.inputs.values()))
-        self.assertEqual(
-            linked.rank(
-                {"a": {"g0_move": 20, "g0_still": 20}, "b": {"g0_move": 20, "g0_still": 20}}
-            ),
-            linked.rank(
-                {"a": {"g0_move": 20, "g0_still": 20}, "b": {"g0_move": 20, "g0_still": 20}}
-            ),
+
+def test_hybrid_scorer_matches_scalar_referee_in_reversed_candidate_order():
+    from hybrid_referee import referee_score
+    from test_hybrid_evidence import truth
+    from test_hybrid_exact import build, referee_rows
+    from tuner_under_test.engine.hybrid.exact import Evaluator
+    from tuner_under_test.engine.hybrid.types import ZoneSpec
+
+    rows = {
+        "a": [
+            (i * 6, (i + 1) * 6, [value] + [255] * 17)
+            for i, value in enumerate([40, 0, 70, 20, 40, 0, 30, 0])
+        ],
+        "b": [
+            (i * 6, (i + 1) * 6, [value] + [255] * 17)
+            for i, value in enumerate([0, 60, 0, 20, 0, 0, 10, 0])
+        ],
+    }
+    spans = (truth(0, 24), truth(24, 48, "not_present"))
+    timing = {"a": {"timeout": 2, "on_delay": 1, "off_delay": 3}, "b": {}}
+    problem = build(rows, {"a": (0,), "b": (0,)}, timing, (ZoneSpec("zone", ("a", "b"), spans),))
+    patterns = [{"a": {0: a}, "b": {0: b}} for a, b in ((20, 20), (50, 50), (100, 100))]
+    expected = [
+        referee_score(
+            {rid: referee_rows(values, timing[rid]) for rid, values in rows.items()},
+            pattern,
+            [(s.start, s.end, s.state, s.source, s.confidence) for s in spans],
+            (0, 48),
+            include_margins=False,
         )
+        for pattern in patterns
+    ]
+    for ordered, reference in ((patterns, expected), (patterns[::-1], expected[::-1])):
+        with Evaluator(problem, ((0, 48),)) as evaluator:
+            scores = evaluator.scores(ordered)
+            for found, scalar in zip(scores, reference, strict=True):
+                for key in (
+                    "cost",
+                    "false_active_seconds",
+                    "mostly_missed_episodes",
+                    "empty_periods_failed",
+                    "false_triggers",
+                ):
+                    self_same = abs(found[key] - scalar[key]) < 1e-7
+                    assert self_same, key
+
+
+def test_hybrid_spilled_shards_are_bounded_and_close_without_cyclic_collection(tmp_path):
+    import gc
+
+    from tuner_under_test.engine.hybrid.constants import CHANNELS, SHARD_CELLS
+    from tuner_under_test.engine.hybrid.training import TrainingStore
+
+    gc.disable()
+    try:
+        with TrainingStore(tmp_path, budget=0) as store:
+            for value in range(3):
+                store.add(
+                    "zone",
+                    "radar",
+                    "present",
+                    bytes([value]) * CHANNELS * SHARD_CELLS,
+                    b"same parent",
+                )
+            count = 0
+            for side, columns, lineage in store.records("zone", "radar"):
+                assert side == "present" and lineage == b"same parent"
+                assert len(columns) == CHANNELS
+                assert all(len(column) <= SHARD_CELLS for column in columns)
+                assert columns[0] == bytes([count]) * SHARD_CELLS
+                count += 1
+            assert count == 3
+        assert list(tmp_path.iterdir()) == []
+    finally:
+        gc.enable()

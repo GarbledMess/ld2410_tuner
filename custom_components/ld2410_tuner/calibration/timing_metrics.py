@@ -1,4 +1,4 @@
-"""Report the same bounded timing replay used by threshold search."""
+"""Sampled physical timing diagnostics; fitting scores use the hybrid facade."""
 
 from functools import reduce
 from operator import or_

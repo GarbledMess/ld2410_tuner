@@ -19,7 +19,7 @@ MAX_RAW_BYTES = 16 * 1024 * 1024
 MAX_VALUE_BYTES = 1024 * 1024
 MAX_ENTRIES = 256
 MAX_DISK_BYTES = 32 * 1024 * 1024  # All results, apart from the physical indexes' budget.
-NAMES = frozenset(("rows", "chunks", "quality", "attribution"))
+NAMES = frozenset(("rows", "quality", "attribution"))
 MEMORY = 64  # Days' result files kept parsed in this process.
 PRUNE_EVERY = 64
 _files = OrderedDict()  # Sidecar path -> (its stamp, day identity, producer, entries).
@@ -30,8 +30,6 @@ _writes = 0
 # produces or consumes them: hybrid fits read rows and quality through these paths.
 SCHEMA = "hybrid_time_episode_v1"
 PRODUCER_SOURCES = (
-    "calibration/evidence_plan.py",
-    "calibration/evidence_budget.py",
     "calibration/summary_quality.py",
     "calibration/quality.py",
     "calibration/quality_evidence.py",
@@ -70,22 +68,6 @@ def _number(value):
 def _require(condition):
     if not condition:
         raise ValueError("Invalid derived result")
-
-
-def _chunk(value):
-    from ..calibration.evidence_budget import Chunk
-
-    _require(type(value) is Chunk)
-    _require(all(_number(v) for v in (value.start, value.end, value.seconds)))
-    _require(type(value.rows) is int and value.rows >= 0)
-    _require(type(value.edge) is bool)
-    _require(all(v is None or _number(v) for v in (value.peak, value.floor)))
-    state = value.state
-    _require(
-        state is None
-        or type(state) is str
-        or (type(state) is tuple and all(type(v) is str for v in state))
-    )
 
 
 def _histogram(value):
@@ -138,16 +120,11 @@ def _validate(name, value):
         _quality(value)
     elif name == "attribution":
         _attribution(value)
-    elif value is not None:
-        _require(type(value) is tuple)
-        for chunk in value:
-            _chunk(chunk)
 
 
 def _pack(value):
     if isinstance(value, tuple):
-        tag = "chunk" if hasattr(value, "_fields") else "tuple"
-        return [tag, [_pack(v) for v in value]]
+        return ["tuple", [_pack(v) for v in value]]
     if type(value) is dict:
         return ["dict", [[k, _pack(v)] for k, v in value.items()]]
     if type(value) is array:
@@ -180,12 +157,8 @@ def _unpack(value):
         return array("d", items)
     if tag == "dict":
         return _dictionary(items)
-    _require(tag in ("tuple", "chunk"))
+    _require(tag == "tuple")
     values = tuple(_unpack(v) for v in items)
-    if tag == "chunk":
-        from ..calibration.evidence_budget import Chunk
-
-        return Chunk(*values)
     return values
 
 

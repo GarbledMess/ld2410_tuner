@@ -10,7 +10,6 @@ from array import array
 import old_truth
 import room_scenes
 import test_tuner  # noqa: F401  (registers tuner_under_test)
-from tuner_under_test.calibration.metrics import threshold_masks
 from tuner_under_test.calibration.timing_metrics import hit_mask
 from tuner_under_test.const import HISTORY_KEYS
 from tuner_under_test.history import guesses
@@ -165,15 +164,6 @@ class RowsTests(unittest.TestCase):
             listed(shuffled.in_time_order()),
             sorted(listed(shuffled), key=lambda row: row[0]),
         )
-
-    def test_threshold_masks_of_a_column_are_those_of_its_rows(self):
-        rng = random.Random(44)
-        for _ in range(30):
-            rows = random_rows_object(rng, ("a", "b"), rng.choice((0, 1, 7, 64, 300)))
-            for key in ("a", "b"):
-                masks = threshold_masks(rows, key)
-                self.assertEqual(masks, threshold_masks(listed(rows), key))
-                self.assertEqual(len({id(mask) for mask in masks}), len(set(masks)), "shared")
 
     def test_hit_masks_of_columns_are_those_of_rows(self):
         rng = random.Random(45)

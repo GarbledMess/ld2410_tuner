@@ -8,6 +8,7 @@ import pytest
 import test_tuner as harness
 from tuner_under_test.calibration.duration import DurationGroup, DurationReplay
 from tuner_under_test.calibration.influence import period_influence
+from tuner_under_test.calibration.scoring import error_cost
 from tuner_under_test.calibration.timing_metrics import evaluate
 
 
@@ -18,6 +19,17 @@ def rows(times, label="present", energy=30, confidence=None):
 
 def bits(values):
     return sum(1 << i for i, value in enumerate(values) if value)
+
+
+def time_cost(replay, detected, false, weighted=False):
+    """Scalar time-only diagnostic comparison; production search uses hybrid costs."""
+    if not weighted:
+        return replay.summary(detected, false)["error_cost"]
+    present = replay.present.measure(detected, latest=True)
+    absent = replay.absent.measure(false)
+    missed = 1 - present["weighted_active_seconds"] / present["weighted_seconds"]
+    false_rate = absent["weighted_active_seconds"] / absent["weighted_seconds"]
+    return error_cost(missed, false_rate)
 
 
 def test_dense_fluctuations_do_not_outweigh_duration():
@@ -121,7 +133,9 @@ def test_automatic_time_target_precedes_false_positive_penalty():
     replay = DurationReplay(rows(range(100)), rows(range(200, 300), "not_present"))
     all_hits = (1 << 100) - 1
     # Meeting the target with a short false event beats missing a whole second.
-    assert replay.automatic_rank(all_hits, 1 << 20) < replay.automatic_rank(all_hits ^ (1 << 20), 0)
+    assert time_cost(replay, all_hits, 1 << 20, True) < time_cost(
+        replay, all_hits ^ (1 << 20), 0, True
+    )
 
 
 def test_isolated_human_presence_still_overrides_long_confident_guesses():
@@ -140,10 +154,13 @@ def test_isolated_human_presence_still_overrides_long_confident_guesses():
     assert result["estimated_training"]["empty_periods_mostly_false_active"] == 0
 
 
-@pytest.mark.parametrize("rank_method", ["rank", "automatic_rank"])
-def test_user_tradeoffs_have_finite_presence_priority(rank_method):
+@pytest.mark.parametrize("weighted", [False, True])
+def test_user_tradeoffs_have_finite_presence_priority(weighted):
     replay = DurationReplay(rows(range(6000)), rows(range(10000, 16000), "not_present"))
-    rank = getattr(replay, rank_method)
+
+    def rank(detected, false):
+        return time_cost(replay, detected, false, weighted)
+
     all_hits = (1 << 6000) - 1
     missed22 = ((1 << 22) - 1) << 100
     false3 = 7 << 100
@@ -167,8 +184,8 @@ def test_timeout_or_off_delay_covered_dip_can_reduce_false_activity(config):
     dipped = all_hits ^ (3 << 10)
     measured = replay.summary(dipped, 0)
     assert measured["missed_seconds"] == measured["missed_seconds_upper"] == 0
-    assert replay.rank(dipped, 0) < replay.rank(all_hits, 1 << 20)
-    assert replay.automatic_rank(dipped, 0) < replay.automatic_rank(all_hits, 1 << 20)
+    assert time_cost(replay, dipped, 0) < time_cost(replay, all_hits, 1 << 20)
+    assert time_cost(replay, dipped, 0, True) < time_cost(replay, all_hits, 1 << 20, True)
 
 
 def test_on_delay_rejects_only_a_pulse_shorter_than_the_hold_plus_signal():
@@ -179,7 +196,7 @@ def test_on_delay_rejects_only_a_pulse_shorter_than_the_hold_plus_signal():
     sustained = DurationReplay(positive, negative, {"timeout": 2, "on_delay": 1, "off_delay": 0})
     assert rejected.summary(all_hits, 1 << 50)["false_positive_seconds"] == 0
     assert sustained.summary(all_hits, 1 << 50)["false_positive_seconds"] > 0
-    assert rejected.rank(all_hits, 1 << 50) == rejected.rank(all_hits, 0)
+    assert rejected.summary(all_hits, 1 << 50) == rejected.summary(all_hits, 0)
 
 
 def test_avoiding_a_tiny_uncovered_miss_does_not_make_the_device_always_on():
@@ -235,8 +252,9 @@ def test_replay_and_confidence_are_released_without_cyclic_collection():
     gc.disable()
     try:
         replay = DurationReplay(rows(range(10)), rows(range(20, 30), "not_present"))
-        replay.rank(511, 0)
-        replay.automatic_rank(511, 0)
+        replay.summary(511, 0)
+        replay.present.measure(511, latest=True)
+        replay.absent.measure(0)
         references = [weakref.ref(replay), weakref.ref(replay.present), weakref.ref(replay.absent)]
         references.extend(
             weakref.ref(confidence)
