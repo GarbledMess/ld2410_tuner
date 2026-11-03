@@ -19,7 +19,7 @@ import zlib
 from array import array
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
-from itertools import accumulate, compress, count, repeat
+from itertools import accumulate, compress, count, islice, repeat
 from operator import add, eq, lt, sub, truediv
 
 from .constants import MISSING
@@ -31,7 +31,6 @@ COPY_BYTES = 1024**2
 _MAGIC = b"PRB1"
 _DAY = struct.Struct("<4sII")
 _BLOCK = struct.Struct("<IBIIdddd")
-_INVALID = bytes(1 if v == MISSING else 0 for v in range(256))
 _USABLE = bytes(0 if v == MISSING else 1 for v in range(256))
 _TOKENS = count()
 _DECODED = OrderedDict()
@@ -266,7 +265,7 @@ def _encode_block(channels, times, ends, columns):
 
 def _decode_block(channels, rows, milliseconds, geometry, payload, bounds):
     try:
-        times, ends = _geometry(zlib.decompress(payload[:geometry]), milliseconds)
+        times, ends, verified = _decoded_geometry(zlib.decompress(payload[:geometry]), milliseconds)
         raw = zlib.decompress(payload[geometry:])
     except zlib.error as error:
         raise ValueError("Corrupt physical rows") from error
@@ -275,16 +274,18 @@ def _decode_block(channels, rows, milliseconds, geometry, payload, bounds):
     if (times[0], times[-1], ends[0], ends[-1]) != tuple(bounds):
         raise ValueError("Invalid physical block bounds")
     columns = {c: raw[i * rows : (i + 1) * rows] for i, c in enumerate(channels)}
-    _validate(times, ends, columns)
+    _validate(times, ends, columns, geometry_verified=verified)
     return times, ends, columns
 
 
-def _validate(times, ends, columns):
+def _validate(times, ends, columns, *, geometry_verified=False):
     if len(ends) != len(times) or any(len(v) != len(times) for v in columns.values()):
         raise ValueError("Invalid physical rows shape")
-    if not all(map(lt, times, ends)) or any(map(lt, times[1:], ends[:-1])):
+    if not geometry_verified and (
+        not all(map(lt, times, ends)) or any(map(lt, times[1:], ends[:-1]))
+    ):
         raise ValueError("Invalid physical rows geometry")
-    if any(column.translate(_INVALID).count(1) for column in columns.values()):
+    if any(MISSING in column for column in columns.values()):
         raise ValueError("Invalid physical rows energy")
 
 
@@ -304,18 +305,54 @@ def _encode_geometry(times, ends):
 
 
 def _geometry(raw, milliseconds):
+    return _decoded_geometry(raw, milliseconds)[:2]
+
+
+def _decoded_geometry(raw, milliseconds):
     if len(raw) % 16:
         raise ValueError("Invalid physical geometry")
     half = len(raw) // 2
     if not milliseconds:
-        return _native(array("d", raw[:half])), _native(array("d", raw[half:]))
+        return _native(array("d", raw[:half])), _native(array("d", raw[half:])), False
     steps, lengths = _native(array("q", raw[:half])), _native(array("q", raw[half:]))
+    regular = _regular_geometry(steps, lengths)
+    if regular is not None:
+        return *regular, 0 < lengths[0] <= steps[1]
     starts = list(accumulate(steps))
     stops = map(add, starts, lengths)
+    # Sized lists let array allocate once instead of growing for each decoded value.
     return (
-        array("d", map(truediv, starts, repeat(1000))),
-        array("d", map(truediv, stops, repeat(1000))),
+        array("d", list(map(truediv, starts, repeat(1000)))),
+        array("d", list(map(truediv, stops, repeat(1000)))),
+        False,
     )
+
+
+def _regular_geometry(steps, lengths):
+    if len(steps) < 2:
+        return None
+    first, step, length = steps[0], steps[1], lengths[0]
+    if first % 1000 or step <= 0 or length < 0 or step % 125 or length % 125:
+        return None
+    if not _repeated_integer(steps, 1) or not _repeated_integer(lengths, 0):
+        return None
+    last = first + step * (len(steps) - 1) + length
+    if max(abs(first), abs(last)) > 2**50:
+        return None
+    # Multiples of 1/8 second remain exactly representable throughout this range.
+    start, stride, duration = first / 1000, step / 1000, length / 1000
+    return (
+        array("d", list(islice(count(start, stride), len(steps)))),
+        array("d", list(islice(count(start + duration, stride), len(steps)))),
+    )
+
+
+def _repeated_integer(values, offset):
+    """Compare encoded integers in C without boxing one Python value per row."""
+    encoded = values.tobytes()
+    width = values.itemsize
+    token = encoded[offset * width : (offset + 1) * width]
+    return encoded[offset * width :] == token * (len(values) - offset)
 
 
 class PhysicalBuilder:
