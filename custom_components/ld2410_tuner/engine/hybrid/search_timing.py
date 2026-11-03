@@ -3,14 +3,15 @@
 # Spill files are written and read only by this process, in its private temp directory.
 import pickle  # nosec B403
 import struct
+import sys
 import tempfile
 import weakref
 from array import array
 from bisect import bisect_right
 from collections import OrderedDict
-from itertools import repeat
+from itertools import accumulate, repeat
 from math import ceil
-from operator import add, and_, getitem, itemgetter, lt, mul, rshift
+from operator import and_, getitem, itemgetter, lt, mul, rshift
 from pathlib import Path
 
 from ...calibration.event_replay import _timing
@@ -139,8 +140,22 @@ def _copy_run(digest, columns, coverage, run, first, last):
         column[target : target + b - a] = digest.channels[c][source : source + b - a]
 
 
+def _shared_or(a, b):
+    if a is b or not b:
+        return a
+    if not a:
+        return b
+    value = a | b
+    return a if value == a else b if value == b else value
+
+
 def _prefix_suffix(masks, blocks):
     """Block-wise ORs of ``masks[:i]`` and ``masks[i:]`` for every ``i``."""
+    if blocks == 1:
+        values = tuple(map(itemgetter(0), masks))
+        prefix = list(zip(accumulate(values, _shared_or, initial=0)))
+        suffix = list(zip(accumulate(reversed(values), _shared_or, initial=0)))[::-1]
+        return prefix, suffix
     prefix = [tuple(0 for _ in range(blocks))]
     for lane in masks:
         prefix.append(tuple(a | b for a, b in zip(prefix[-1], lane, strict=True)))
@@ -245,6 +260,54 @@ _LABELS_BY_PID = (
 )
 
 
+def _pattern_signature(values):
+    signature = getattr(values, "signature", None)
+    return signature() if signature is not None else tuple(values.items())
+
+
+def _other_signatures_equal(previous, current, members, excluded):
+    return all(
+        a == b or member == excluded
+        for member, a, b in zip(members, previous, current, strict=True)
+    )
+
+
+class _MemberTree:
+    """Incremental block-wise member ORs, with a fixed conservative byte charge."""
+
+    def __init__(self, members, blocks, channels):
+        self.members = members
+        self.width = 1 << (len(members) - 1).bit_length()
+        self.signatures = [None] * len(members)
+        zero = (0,) * len(blocks)
+        self.nodes = [zero] * (2 * self.width)
+        lane = 64 + sum(40 + (size + 7) // 8 * 4 // 3 for _lo, size in blocks)
+        self.size = 1024 + len(members) * 512 + 2 * self.width * lane
+        self.size += sum(64 * len(channels[member].channels) for member in members)
+
+    def update(self, index, signature, mask):
+        self.signatures[index] = signature
+        at = self.width + index
+        self.nodes[at] = mask
+        while at > 1:
+            at //= 2
+            left, right = self.nodes[2 * at : 2 * at + 2]
+            combined = tuple(map(_shared_or, left, right))
+            if combined == self.nodes[at]:
+                break
+            self.nodes[at] = combined
+
+    def excluding(self, member):
+        if member not in self.members:
+            return self.nodes[1]
+        at = self.width + self.members.index(member)
+        result = self.nodes[0]
+        while at > 1:
+            result = tuple(map(_shared_or, result, self.nodes[at ^ 1]))
+            at //= 2
+        return result
+
+
 class Geometry:
     """Search-lifetime geometry with a bounded resident payload and disk overflow."""
 
@@ -264,7 +327,9 @@ class Geometry:
         self.coordinate_scores = OrderedDict()
         self.scores = OrderedDict()
         self.formulas = {}
-        self.zone_unions = {}
+        self.zone_unions = OrderedDict()
+        self.zone_trees = OrderedDict()
+        self.zone_union_sizes, self.zone_union_bytes = {}, 0
         self.fits = {}
         self.score_bytes = 0
         self.parent_counts = {}
@@ -465,7 +530,7 @@ class Geometry:
         model = self.problem.policy.quality.get("models", {}).get(member)
         signal = signal if model is not None else 0
         key = zone.group_id, member, signal, attenuate
-        signature = tuple(pattern.items())
+        signature = _pattern_signature(pattern)
         if key in self.current and self.current[key][0] == signature:
             _, prefix, suffix = self.current[key]
         else:
@@ -481,23 +546,78 @@ class Geometry:
 
         The member ORs are rebuilt only when some member's thresholds change.
         """
+        if len(zone.members) > 4:
+            return self._tree_others(zone, pattern, rid, signal, attenuate)
         members = zone.members
         key = zone.group_id, signal, attenuate
-        signatures = tuple(tuple(pattern[m].items()) for m in members)
+        signatures = tuple(_pattern_signature(pattern[m]) for m in members)
         cached = self.zone_unions.get(key)
-        if cached is not None and cached[0] == signatures:
+        if cached is not None and _other_signatures_equal(cached[0], signatures, members, rid):
             prefix, suffix = cached[1], cached[2]
+            self.zone_unions.move_to_end(key)
         else:
-            unions = [self.mask(zone, m, pattern[m], signal, attenuate) for m in members]
+            unions = [
+                self.mask(zone, m, pattern[m], signal, attenuate)
+                if m != rid
+                else tuple(0 for _ in self.blocks)
+                for m in members
+            ]
             prefix, suffix = _prefix_suffix(unions, len(self.blocks))
-            if _mask_bytes(prefix + suffix) <= MASK_BYTES:
-                self.zone_unions[key] = signatures, prefix, suffix
-            else:
-                self.zone_unions.pop(key, None)
+            retained = tuple(
+                None if member == rid else signature
+                for member, signature in zip(members, signatures, strict=True)
+            )
+            self._remember_zone_union(key, retained, prefix, suffix)
         if rid not in members:
             return prefix[-1]
         at = members.index(rid)
         return tuple(a | b for a, b in zip(prefix[at], suffix[at + 1], strict=True))
+
+    def _tree_others(self, zone, pattern, rid, signal, attenuate):
+        key = zone.group_id, signal, attenuate
+        tree = self.zone_trees.get(key)
+        if tree is None:
+            tree = _MemberTree(zone.members, self.blocks, self.problem.radars)
+            if tree.size <= MASK_BYTES:
+                self.zone_trees[key] = tree
+                self.zone_union_bytes += tree.size
+        else:
+            self.zone_trees.move_to_end(key)
+        for index, member in enumerate(zone.members):
+            if member == rid:
+                continue
+            signature = _pattern_signature(pattern[member])
+            if signature != tree.signatures[index]:
+                mask = self.mask(zone, member, pattern[member], signal, attenuate)
+                tree.update(index, signature, mask)
+        result = tree.excluding(rid)
+        self._trim_zone_unions()
+        return result
+
+    def _trim_zone_unions(self):
+        while self.zone_union_bytes > MASK_BYTES:
+            if self.zone_unions:
+                old, _value = self.zone_unions.popitem(last=False)
+                self.zone_union_bytes -= self.zone_union_sizes.pop(old)
+            else:
+                _old, tree = self.zone_trees.popitem(last=False)
+                self.zone_union_bytes -= tree.size
+
+    def _remember_zone_union(self, key, signatures, prefix, suffix):
+        self.zone_unions.pop(key, None)
+        self.zone_union_bytes -= self.zone_union_sizes.pop(key, 0)
+        size = (
+            _mask_bytes(prefix + suffix)
+            + 512
+            + len(key[0].encode())
+            + sum(64 + 64 * len(signature or ()) for signature in signatures)
+        )
+        if size > MASK_BYTES:
+            return
+        self.zone_unions[key] = signatures, prefix, suffix
+        self.zone_union_sizes[key] = size
+        self.zone_union_bytes += size
+        self._trim_zone_unions()
 
     def _unions(self, zone, member, signature, signal, attenuate):
         """Prefix and suffix ORs of the member's channel masks (one-channel exclusion)."""
@@ -514,7 +634,7 @@ class Geometry:
             _, (_signature, old_prefix, old_suffix) = self.current.popitem(last=False)
             self.current_bytes -= _mask_bytes(old_prefix + old_suffix)
 
-    def channel_mask(self, zone, member, channel, threshold, signal, attenuate):
+    def channel_mask(self, zone, member, channel, threshold, signal, attenuate, *, columns=None):
         if threshold >= self.maximum.get((member, channel), -1):
             return tuple(0 for _ in self.blocks)
         model = self.problem.policy.quality.get("models", {}).get(member)
@@ -532,7 +652,7 @@ class Geometry:
             radar = self.problem.radars[member]
             hold, _on, off = _timing(radar.timing)
             for lo, size in self.blocks:
-                column = self.get((member, lo, channel))
+                column = self._coordinate_column((member, lo, channel), columns)
                 coverage = self.get((member, lo, "coverage"))
                 present, _labels, labelled = self.get((zone.group_id, lo, "labels"))
                 raw = self.raw(
@@ -559,6 +679,13 @@ class Geometry:
         self.masks.move_to_end(key)
         return self.masks[key][0]
 
+    def _coordinate_column(self, key, columns):
+        if columns is None:
+            return self.get(key)
+        if key not in columns:
+            columns[key] = self.get(key)
+        return columns[key]
+
     def raw(self, columns, thresholds, present, model, member, signal, attenuate):
         c, col = next(iter(columns.items()))
         raw = pack_mask(col, thresholds[c])
@@ -577,12 +704,22 @@ class Geometry:
         return int(col[::-1].translate(self.tables[key]), 2) if col else 0
 
 
+def _complete(geometry, zone, lane):
+    return all(
+        labelled & ~mask == 0
+        for (lo, _size), mask in zip(geometry.blocks, lane, strict=True)
+        for labelled in (geometry.get((zone.group_id, lo, "labels"))[2],)
+    )
+
+
 def _fixed(problem, geometry, zone, pattern, rid, channel, attenuate):
     signals = (0, 1) if problem.policy.quality.get("models") else (0,)
     fixed = [list(geometry.others(zone, pattern, rid, signal, attenuate)) for signal in signals]
     if rid not in zone.members:
         return signals, fixed
     for signal in signals:
+        if _complete(geometry, zone, fixed[signal]):
+            continue
         masks = geometry.mask(zone, rid, pattern[rid], signal, attenuate, exclude=channel)
         fixed[signal] = [a | b for a, b in zip(fixed[signal], masks, strict=True)]
     return signals, fixed
@@ -595,12 +732,24 @@ def _zone_costs(problem, geometry, store, zone, pattern, rid, channel, order, at
         value = _mask_cost(problem, geometry, store, zone, tuple(tuple(lane) for lane in fixed))
         return [value] * len(order)
     cache_key = zone.group_id, rid, channel, tuple(tuple(lane) for lane in fixed), order, attenuate
-    if cache_key in geometry.coordinate_scores:
-        return geometry.coordinate_scores[cache_key]
-    candidates = [
-        tuple(geometry.channel_mask(zone, rid, channel, t, s, attenuate) for s in signals)
-        for t in order
-    ]
+    cached = geometry.coordinate_scores.get(cache_key)
+    if cached is not None:
+        return cached
+    columns = {} if len(geometry.blocks) == 1 else None
+
+    def candidate(t):
+        return tuple(
+            geometry.channel_mask(zone, rid, channel, t, s, attenuate, columns=columns)
+            for s in signals
+        )
+
+    minimum = min(order)
+    lowest = candidate(minimum)
+    if _contained(lowest, fixed):
+        masks = tuple(tuple(lane) for lane in fixed)
+        value = _cached_score(problem, geometry, store, zone, (zone.group_id, masks), masks)
+        return _remember_coordinate(geometry, cache_key, [value] * len(order))
+    candidates = [lowest if t == minimum else candidate(t) for t in order]
     results = []
     for candidate in candidates:
         masks = tuple(
@@ -609,6 +758,10 @@ def _zone_costs(problem, geometry, store, zone, pattern, rid, channel, order, at
         )
         key = zone.group_id, masks
         results.append(_cached_score(problem, geometry, store, zone, key, masks))
+    return _remember_coordinate(geometry, cache_key, results)
+
+
+def _remember_coordinate(geometry, cache_key, results):
     geometry.coordinate_scores[cache_key] = results
     geometry.coordinate_bytes += _mask_bytes(cache_key[3]) + 64 * len(results)
     while geometry.coordinate_bytes > 8 * 1024**2:
@@ -617,20 +770,33 @@ def _zone_costs(problem, geometry, store, zone, pattern, rid, channel, order, at
     return results
 
 
+def _contained(candidate, fixed):
+    """The lowest threshold dominates every higher one, including hold carry."""
+    return all(
+        hit & ~other == 0
+        for hits, others in zip(candidate, fixed, strict=True)
+        for hit, other in zip(hits, others, strict=True)
+    )
+
+
 def _mask_bytes(masks):
-    return sum((v.bit_length() + 7) // 8 + 32 for lane in masks for v in lane) + 128
+    values = {id(value): value for lane in masks for value in lane}
+    return (
+        128 + sum(sys.getsizeof(lane) for lane in masks) + sum(map(sys.getsizeof, values.values()))
+    )
 
 
 def _cached_score(problem, geometry, store, zone, key, masks):
-    if key not in geometry.scores:
-        value = _mask_cost(problem, geometry, store, zone, masks)
-        geometry.scores[key] = value
-        geometry.score_bytes += _mask_bytes(masks)
-        while geometry.score_bytes > 8 * 1024**2:
-            (_, old), _value = geometry.scores.popitem(last=False)
-            geometry.score_bytes -= _mask_bytes(old)
-        return value
-    return geometry.scores[key]
+    cached = geometry.scores.get(key)
+    if cached is not None:
+        return cached
+    value = _mask_cost(problem, geometry, store, zone, masks)
+    geometry.scores[key] = value
+    geometry.score_bytes += _mask_bytes(masks)
+    while geometry.score_bytes > 8 * 1024**2:
+        (_, old), _value = geometry.scores.popitem(last=False)
+        geometry.score_bytes -= _mask_bytes(old)
+    return value
 
 
 def _formula(problem, geometry, store, zone):
@@ -704,19 +870,16 @@ def _compiled_episodes(episodes):
     )
     shifts = tuple(o & 7 for o in offset)
     halves = tuple(h if p else 0 for h, p in zip(half, present, strict=True))
-    absent = tuple(not p for p in present)
-    return signal, slices, shifts, bits, present, halves, absent, factor
+    signs = tuple(1 if p else -1 for p in present)
+    return signal, slices, shifts, bits, signs, halves, factor
 
 
 def _episode_flags(compiled, masks):
-    signal, slices, shifts, bits, present, halves, absent, _factor = compiled
+    signal, slices, shifts, bits, signs, halves, _factor = compiled
     pools = tuple(lane[0].to_bytes((lane[0].bit_length() + 7) // 8, "little") for lane in masks)
     windows = map(getitem, map(pools.__getitem__, signal), slices)
     local = map(and_, map(rshift, map(int.from_bytes, windows, repeat("little")), shifts), bits)
-    counts = tuple(map(int.bit_count, local))
-    left = map(mul, counts, present)
-    right = map(add, halves, map(mul, counts, absent))
-    return map(lt, left, right)
+    return map(lt, map(mul, map(int.bit_count, local), signs), halves)
 
 
 def _formula_fits(geometry, zone):

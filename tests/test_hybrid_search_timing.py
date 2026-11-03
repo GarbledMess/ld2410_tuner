@@ -36,6 +36,36 @@ def test_packed_dilation_matches_scalar_with_gaps():
             assert dilate(hits, hold, covered) == expected
 
 
+@pytest.mark.parametrize("attenuate", (False, True))
+def test_dominated_coordinate_decides_only_its_lowest_threshold(tmp_path, monkeypatch, attenuate):
+    from tuner_under_test.engine.hybrid import search_timing as module
+
+    p = problem({"a": [(0, 80), (10, 80), (20, 80), (30, 80)]}, timing={"timeout": 6})
+    pattern = {"a": {0: 100, 1: 0}}
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        geometry = module.Geometry(p, store)
+        try:
+            zone = p.zones[0]
+            module._fixed(p, geometry, zone, pattern, "a", 0, attenuate)
+            calls = []
+            original = geometry.channel_mask
+
+            def counted(zone, rid, channel, threshold, *args, **kwargs):
+                if channel == 0:
+                    calls.append(threshold)
+                return original(zone, rid, channel, threshold, *args, **kwargs)
+
+            monkeypatch.setattr(geometry, "channel_mask", counted)
+            result = module._zone_costs(
+                p, geometry, store, zone, pattern, "a", 0, (0, 10, 20, 100), attenuate
+            )
+            assert result == [200] * 4
+            assert calls == [0]
+        finally:
+            geometry.close()
+
+
 def costs(tmp_path, p, values=(20, 90), *, attenuate=False):
     from tuner_under_test.engine.hybrid.search_timing import timed_coordinate_costs
 
@@ -411,3 +441,209 @@ def test_projection_by_bit_string_slicing_equals_shifted_runs():
     odd = ((0, 0b101, 0), (5, 0b11, 1))
     assert _project(0b1111111, odd) == _project_shifts(0b1111111, odd)
     assert _project(0, odd) == 0 and _project(5, ()) == 0
+
+
+def test_member_unions_share_unchanged_large_masks():
+    from tuner_under_test.engine.hybrid.search_timing import _prefix_suffix
+
+    mask = 1 << 100000
+    prefix, suffix = _prefix_suffix([(mask,)] * 18, 1)
+    assert prefix[-1] == suffix[0] == (mask,)
+    assert all(lane[0] is mask for lane in prefix[1:] + suffix[:-1])
+
+
+def test_dominated_timed_coordinate_reuses_its_complete_cost_family(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import search_timing as module
+
+    p = problem({"a": [(0, 80), (10, 80), (20, 80), (30, 80)]}, timing={"timeout": 6})
+    pattern = {"a": {0: 100, 1: 0}}
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        geometry = module.Geometry(p, store)
+        try:
+            args = (p, geometry, store, p.zones[0], pattern, "a", 0, (0, 10, 20, 100), False)
+            expected = module._zone_costs(*args)
+
+            def forbidden(*args):
+                raise AssertionError("dominated family repeated containment proof")
+
+            monkeypatch.setattr(module, "_contained", forbidden)
+            assert module._zone_costs(*args) == expected
+        finally:
+            geometry.close()
+
+
+def test_other_member_union_ignores_changes_to_excluded_member(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import search_timing as module
+
+    p = problem({"a": [(80, 20), (10, 90)], "b": [(30, 70), (90, 10)]}, timing={"timeout": 6})
+    pattern = {"a": {0: 50, 1: 50}, "b": {0: 50, 1: 50}}
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        geometry = module.Geometry(p, store)
+        try:
+            expected = geometry.others(p.zones[0], pattern, "a", 0, False)
+            pattern["a"][0] = 100
+
+            def forbidden(*args):
+                raise AssertionError("rebuilt unions after only the excluded radar changed")
+
+            monkeypatch.setattr(module, "_prefix_suffix", forbidden)
+            assert geometry.others(p.zones[0], pattern, "a", 0, False) == expected
+        finally:
+            geometry.close()
+
+
+def test_zone_member_union_cache_has_one_aggregate_byte_budget(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import search_timing as module
+
+    p = problem({"a": [(80,), (0,)], "b": [(30,), (90,)]}, timing={"timeout": 6})
+    p = replace(p, zones=tuple(replace(p.zones[0], group_id=f"z{i}") for i in range(4)))
+    pattern = {"a": {0: 50}, "b": {0: 50}}
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        geometry = module.Geometry(p, store)
+        try:
+            monkeypatch.setattr(module, "MASK_BYTES", 4000)
+            monkeypatch.setattr(module, "_mask_bytes", lambda masks: 1500)
+            for zone in p.zones:
+                assert geometry.others(zone, pattern, "a", 0, False) == (2,)
+            retained = sum(
+                module._mask_bytes(p + s) for _signature, p, s in geometry.zone_unions.values()
+            )
+            assert retained <= module.MASK_BYTES
+            assert geometry.zone_union_bytes <= module.MASK_BYTES
+            assert geometry.zone_unions
+        finally:
+            geometry.close()
+
+
+@pytest.mark.parametrize("left,right", [(0, 1), (1, 0), (1, 1)])
+def test_shared_mask_or_does_not_allocate_for_zero_or_identity(left, right):
+    from tuner_under_test.engine.hybrid.search_timing import _shared_or
+
+    class Mask(int):
+        def __or__(self, other):
+            raise AssertionError("allocated an unchanged union mask")
+
+    mask = Mask(1 << 100000)
+    first, second = mask if left else 0, mask if right else 0
+    assert _shared_or(first, second) is mask
+
+
+def test_fully_covered_timed_coordinate_does_not_build_excluded_member_masks(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import search_timing as module
+
+    p = problem({"a": [(20, 80)] * 4, "b": [(80, 80)] * 4}, timing={"timeout": 6})
+    pattern = {"a": {0: 50, 1: 50}, "b": {0: 50, 1: 50}}
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        geometry = module.Geometry(p, store)
+        store._timing_geometry = geometry
+        try:
+            expected = module.timed_coordinate_costs(p, store, pattern, "a", 0, (0, 20, 50, 100))
+            geometry.current.clear()
+            geometry.zone_unions.clear()
+            geometry.zone_union_bytes = 0
+            geometry.zone_union_sizes.clear()
+            geometry.coordinate_scores.clear()
+            geometry.coordinate_bytes = 0
+            original = geometry.mask
+
+            def guarded(zone, member, *args, **kwargs):
+                assert member != "a", "built member masks despite complete coverage by other radar"
+                return original(zone, member, *args, **kwargs)
+
+            monkeypatch.setattr(geometry, "mask", guarded)
+            assert (
+                module.timed_coordinate_costs(p, store, pattern, "a", 0, (0, 20, 50, 100))
+                == expected
+            )
+        finally:
+            geometry.close()
+
+
+def test_wide_timed_union_updates_only_changed_member(tmp_path, monkeypatch):
+    from functools import reduce
+    from operator import or_
+
+    from tuner_under_test.engine.hybrid import search_timing as module
+
+    vectors = {f"r{i}": [(20 + i * 5, 80), (80, i * 10), (60, 10), (0, 90)] for i in range(8)}
+    p = problem(vectors, timing={"timeout": 6})
+    pattern = {rid: {0: 50, 1: 50} for rid in vectors}
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        geometry = module.Geometry(p, store)
+        try:
+            geometry.others(p.zones[0], pattern, "r0", 0, False)
+            pattern["r1"][0] = 90
+            original = geometry.mask
+            expected = reduce(
+                or_,
+                (
+                    original(p.zones[0], rid, pattern[rid], 0, False)[0]
+                    for rid in vectors
+                    if rid != "r0"
+                ),
+                0,
+            )
+            calls = []
+
+            def counted(zone, member, *args, **kwargs):
+                calls.append(member)
+                return original(zone, member, *args, **kwargs)
+
+            monkeypatch.setattr(geometry, "mask", counted)
+            assert geometry.others(p.zones[0], pattern, "r0", 0, False) == (expected,)
+            assert calls == ["r1"]
+        finally:
+            geometry.close()
+
+
+def test_incremental_member_tree_matches_full_unions_after_random_updates():
+    import random
+    from functools import reduce
+    from operator import or_
+    from types import SimpleNamespace
+
+    from tuner_under_test.engine.hybrid.search_timing import _MemberTree
+
+    rng = random.Random(2918)
+    members = tuple(f"r{i}" for i in range(7))
+    blocks = ((0, 17), (102, 64), (486, 129))
+    tree = _MemberTree(members, blocks, dict.fromkeys(members, SimpleNamespace(channels=(0, 1))))
+    masks = [(0,) * len(blocks) for _ in members]
+    for generation in range(200):
+        index = rng.randrange(len(members))
+        masks[index] = tuple(rng.getrandbits(size) for _lo, size in blocks)
+        tree.update(index, ((0, generation),), masks[index])
+        for excluded in (*members, "absent"):
+            selected = [
+                mask for member, mask in zip(members, masks, strict=True) if member != excluded
+            ]
+            expected = tuple(reduce(or_, lane, 0) for lane in zip(*selected, strict=True))
+            assert tree.excluding(excluded) == expected
+
+
+def test_wide_timed_member_trees_share_zone_union_byte_budget(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import search_timing as module
+
+    vectors = {f"r{i}": [(80,), (0,), (90,), (0,)] for i in range(8)}
+    p = problem(vectors, timing={"timeout": 6})
+    p = replace(p, zones=tuple(replace(p.zones[0], group_id=f"z{i}") for i in range(4)))
+    pattern = {rid: {0: 50} for rid in vectors}
+    with TrainingStore(tmp_path) as store:
+        collect_training(p, store)
+        geometry = module.Geometry(p, store)
+        monkeypatch.setattr(module, "MASK_BYTES", 12000)
+        try:
+            for zone in p.zones:
+                assert geometry.others(zone, pattern, "r0", 0, False) == (15,)
+                assert geometry.zone_union_bytes <= module.MASK_BYTES
+            assert len(geometry.zone_trees) == 1
+            monkeypatch.setattr(module, "MASK_BYTES", 1)
+            assert geometry.others(p.zones[0], pattern, "r0", 0, False) == (15,)
+            assert not geometry.zone_trees and geometry.zone_union_bytes == 0
+        finally:
+            geometry.close()
