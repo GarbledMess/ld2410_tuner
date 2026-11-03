@@ -12,6 +12,7 @@ import tempfile
 from bisect import bisect_left, bisect_right
 from dataclasses import replace
 from itertools import accumulate, groupby
+from operator import itemgetter, sub
 from pathlib import Path
 
 from ...calibration.scoring import automatic_share, episode_share, score_from_cost
@@ -21,6 +22,11 @@ from .evidence import _intersect, _labels
 from .types import TruthSpan
 
 STATES = ("present", "not_present")
+OVERLAP_CACHE_BYTES = 8 * 1024**2
+
+
+class Disjoint(list):
+    """Replay-owned sorted, disjoint, positive-duration intervals of one chunk."""
 
 
 def _union(intervals):
@@ -36,11 +42,21 @@ def _union(intervals):
 
 
 def _seconds(intervals):
+    if len(intervals) == 1:
+        return intervals[0][1] - intervals[0][0]
     return sum(hi - lo for lo, hi in intervals)
 
 
 def _clip(intervals, lo, hi):
-    return list(_intersect(intervals, [(lo, hi)])) if hi > lo else []
+    if hi <= lo:
+        return []
+    a = bisect_right(intervals, lo, key=itemgetter(1))
+    b = bisect_left(intervals, hi, key=itemgetter(0))
+    part = intervals[a:b]
+    if part:
+        part[0] = max(lo, part[0][0]), part[0][1]
+        part[-1] = part[-1][0], min(hi, part[-1][1])
+    return part
 
 
 class _Overlap:
@@ -74,18 +90,68 @@ class _Overlap:
         return total - max(0.0, lo - self.starts[i]) - max(0.0, self.ends[j - 1] - hi)
 
     def within(self, observed):
+        if len(observed) == 1:
+            return self.seconds(*observed[0])
         return sum(self.seconds(a, b) for a, b in observed)
 
 
 def _room(values, members, lo, hi):
+    if len(members) == 1 and isinstance(values.get(members[0]), Disjoint):
+        return _clip(values[members[0]], lo, hi)
     return _clip(_union(piece for member in members for piece in values.get(member, ())), lo, hi)
+
+
+def _signal_overlaps(values, members, lo, hi, cache=None):
+    """Identical member streams share their normalized activity and prefix integral."""
+    cache = {} if cache is None else cache
+    result = []
+    for streams in values:
+        pieces = tuple(streams.get(m, ()) for m in members)
+        key = lo, hi, tuple(members), _stream_key(pieces)
+        found = cache.get(key)
+        if found is None:
+            found = pieces, _Overlap(_room(streams, members, lo, hi))
+            _cache_overlap(cache, key, found)
+        result.append(found[1])
+    return tuple(result)
+
+
+def _stream_key(pieces):
+    if sum(map(len, pieces)) <= 64:
+        return tuple(tuple(piece[:]) for piece in pieces)
+    return tuple(map(id, pieces))
+
+
+def _cache_overlap(cache, key, found):
+    size = len(found[1].items) * 160 + len(key[2]) * 128 + 2048
+    _cache_value(cache, key, found, size)
+
+
+def _cache_value(cache, key, found, size):
+    used = cache.get("bytes", 0)
+    if used + size <= OVERLAP_CACHE_BYTES:
+        cache[key] = found
+        cache["bytes"] = used + size
 
 
 def _coverage(values, members, lo, hi):
     shared = [(lo, hi)] if hi > lo and members else []
     for member in members:
-        shared = list(_intersect(shared, values.get(member, ())))
+        pieces = values.get(member, ())
+        if pieces != shared:
+            shared = list(_intersect(shared, pieces))
     return shared
+
+
+def _coverage_overlap(values, members, lo, hi, cache):
+    cache = {} if cache is None else cache
+    pieces = tuple(values.get(m, ()) for m in members)
+    key = lo, hi, tuple(members), "coverage", _stream_key(pieces)
+    found = cache.get(key)
+    if found is None:
+        found = pieces, _Overlap(_coverage(values, members, lo, hi))
+        _cache_overlap(cache, key, found)
+    return found[1]
 
 
 def _exclusive(values, members):
@@ -102,6 +168,21 @@ def _exclusive(values, members):
         _change_active(active, changes)
         previous = edge
     return result
+
+
+def _member_overlaps(values, members, lo, hi, cache, physical):
+    if len(members) == 1:
+        return {members[0]: physical}
+    cache = {} if cache is None else cache
+    pieces = tuple(values.get(m, ()) for m in members)
+    key = lo, hi, tuple(members), "exclusive", _stream_key(pieces)
+    found = cache.get(key)
+    if found is None:
+        indexes = {m: _Overlap(v) for m, v in _exclusive(values, members).items() if v}
+        found = pieces, indexes
+        size = sum(len(v.items) * 160 + 512 for v in indexes.values()) + len(members) * 128 + 2048
+        _cache_value(cache, key, found, size)
+    return found[1]
 
 
 def _activity_events(values, members):
@@ -201,13 +282,21 @@ class _LongestMiss:
 
     def observe(self, observed, active):
         for lo, hi in observed:
-            at = lo
-            for a, b in active.clip(lo, hi):
-                if a > at:
-                    self.add(at, a)
-                at = b
-            if at < hi:
-                self.add(at, hi)
+            self._observe(lo, hi, active)
+
+    def _observe(self, lo, hi, active):
+        i, j = active._range(lo, hi)
+        if j <= i:
+            self.add(lo, hi)
+            return
+        if active.starts[i] > lo:
+            self.add(lo, active.starts[i])
+        gaps = map(sub, active.starts[i + 1 : j], active.ends[i : j - 1])
+        self.longest = max(self.longest, max(gaps, default=0.0))
+        if active.ends[j - 1] < hi:
+            self.add(active.ends[j - 1], hi)
+        else:
+            self.end, self.length = None, 0.0
 
 
 class ScoreStore:
@@ -254,9 +343,12 @@ class SliceScorer:
     Use as a context manager (or close in finally) for cancellation/errors.
     """
 
-    def __init__(self, zone, policy, window, directory: Path, mask=(), store=None):
+    def __init__(
+        self, zone, policy, window, directory: Path, mask=(), store=None, *, attribution=True
+    ):
         zone = masked(zone, mask)
         self.zone, self.policy, self.window = zone, policy, window
+        self.attribution = attribution
         self._labels = iter(_labels(zone.truth))
         self._labelled = 0.0
         self._label = self._next_label()
@@ -274,7 +366,7 @@ class SliceScorer:
         self._db = self._store.db
         self._id = self._store.allocate()
 
-    def consume(self, lo, hi, coverage, raw, active, supported):
+    def consume(self, lo, hi, coverage, raw, active, supported, *, cache=None):
         if self._db is None:
             raise ValueError("Scorer is closed")
         if hi < lo or (self._end is not None and lo < self._end):
@@ -282,20 +374,20 @@ class SliceScorer:
         if hi == lo:
             return
         pace.rest()
-        physical = _room(active, self.zone.members, lo, hi)
+        signals = _signal_overlaps((active, raw, supported), self.zone.members, lo, hi, cache)
+        physical = signals[0].items
         starts = [a for a, _ in physical if a != self._active_end]
         self._active_end = physical[-1][1] if physical else None
         self._end = hi
         a, b = max(lo, self.window[0]), min(hi, self.window[1])
-        shared = _coverage(coverage, self.zone.members, a, b)
-        self._covered += _seconds(shared)
-        signals = (
-            _Overlap(physical),
-            _Overlap(_room(raw, self.zone.members, lo, hi)),
-            _Overlap(_room(supported, self.zone.members, lo, hi)),
+        shared = _coverage_overlap(coverage, self.zone.members, a, b, cache)
+        self._covered += _seconds(shared.items)
+        members = (
+            _member_overlaps(active, self.zone.members, lo, hi, cache, signals[0])
+            if self.attribution
+            else {}
         )
-        members = {m: _Overlap(v) for m, v in _exclusive(active, self.zone.members).items()}
-        self._consume_labels(a, b, _Overlap(shared), signals, starts, members)
+        self._consume_labels(a, b, shared, signals, starts, members)
 
     def _consume_labels(self, lo, hi, coverage, signals, starts, members):
         while self._label is not None and self._label[1] <= lo:
@@ -317,10 +409,10 @@ class SliceScorer:
         source = "human" if span.source == "human" else "automatic"
         seen = physical.within(observed)
         positive = supported if source == "automatic" and state == "present" else physical
-        scored = positive.within(observed)
+        scored = seen if positive is physical else positive.within(observed)
         self._totals[state] += mass
         self._seen[state] += seen
-        self._raw[state] += raw.within(observed)
+        self._raw[state] += seen if raw is physical else raw.within(observed)
         error = mass - scored if state == "present" else scored
         stats = self._stats.setdefault(state + "/" + source, [0.0] * 4)
         stats[0] += mass * span.confidence
@@ -329,7 +421,7 @@ class SliceScorer:
         self._episode(span, source, mass, scored, triggers)
         if state == "present":
             self._longest.observe(observed, physical)
-            self._attribute(observed, members)
+            self._attribute(observed, members, physical, seen)
 
     def _episode(self, span, source, mass, seen, triggers):
         self._db.execute(
@@ -356,9 +448,9 @@ class SliceScorer:
             self._labelled += max(0, min(hi, self.window[1]) - max(lo, self.window[0]))
         return label
 
-    def _attribute(self, observed, exclusive):
+    def _attribute(self, observed, exclusive, physical, seen):
         for member, pieces in exclusive.items():
-            self._exclusive[member] += pieces.within(observed)
+            self._exclusive[member] += seen if pieces is physical else pieces.within(observed)
 
     def _settle(self):
         counts = {
