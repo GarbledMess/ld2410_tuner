@@ -65,7 +65,7 @@ class _Search:
         self.candidate_base = {
             (rid, c): candidate_values(
                 problem.radars[rid].domains[c],
-                problem.radars[rid].domains[c][-1],
+                self.start[rid][c],
                 self.stats[rid, c],
                 {},
             )
