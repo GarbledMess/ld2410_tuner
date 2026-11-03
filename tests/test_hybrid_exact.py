@@ -37,6 +37,152 @@ KEYS = (
 )
 
 
+def test_uncoalesced_full_cells_gather_columns_without_scalar_indexing():
+    from tuner_under_test.engine.hybrid.digest import DayDigest
+    from tuner_under_test.engine.hybrid.evaluate import cell_rows
+
+    class Column(bytes):
+        def __getitem__(self, item):
+            if isinstance(item, int):
+                raise AssertionError("uncoalesced column gathered one cell at a time")
+            return super().__getitem__(item)
+
+    column = Column(range(10))
+    digest = DayDigest(6, 0, 10, (column,) + (bytes([255]) * 10,) * 17, b"\1" * 10, {})
+    times, ends, values = cell_rows(digest, (0,)).window(0, 60)
+    assert list(times) == list(range(0, 60, 6))
+    assert list(ends) == list(range(6, 66, 6))
+    assert values == {0: bytes(range(10))}
+
+
+def test_cell_replay_does_not_encode_temporary_physical_rows(monkeypatch):
+    from tuner_under_test.engine.hybrid import physical_index
+    from tuner_under_test.engine.hybrid.digest import fold_day
+    from tuner_under_test.engine.hybrid.evaluate import cell_rows
+
+    rows = [
+        (0, 6, [40] * 18),
+        (6, 12, [40] * 18),
+        (12, 13, [41] * 18),
+        (14, 18, [41] * 18),
+        (18, 24, [255] * 18),
+    ]
+    digest = fold_day([block(rows)], 0, 24, (0, 1))
+    expected = cell_rows(digest, (0, 1)).window(0, 24)
+
+    def forbidden(*args):
+        raise AssertionError("cell replay encoded temporary rows")
+
+    monkeypatch.setattr(physical_index, "_encode_block", forbidden)
+    actual = cell_rows(digest, (0, 1))
+    assert actual.window(0, 24) == expected
+    assert actual.window(5, 15) == (
+        __import__("array").array("d", [5, 12, 14]),
+        __import__("array").array("d", [12, 13, 15]),
+        {0: bytes([40, 41, 41]), 1: bytes([40, 41, 41])},
+    )
+
+
+def test_full_cell_replay_builds_columns_without_scalar_appends(monkeypatch):
+    from tuner_under_test.engine.hybrid import evaluate
+    from tuner_under_test.engine.hybrid.digest import DayDigest
+
+    digest = DayDigest(6, 0, 4, (bytes([40, 40, 60, 255]),) * 18, bytes([1] * 4), {})
+
+    def forbidden(*args):
+        raise AssertionError("full cell replay appended scalar channel values")
+
+    monkeypatch.setattr(evaluate._CellWindow, "append", forbidden)
+    actual = evaluate.cell_rows(digest, (0, 1)).window(5, 24)
+    assert actual == (
+        __import__("array").array("d", [5, 12]),
+        __import__("array").array("d", [12, 18]),
+        {0: bytes([40, 60]), 1: bytes([40, 60])},
+    )
+
+
+def test_single_radar_training_join_reuses_its_disjoint_stream(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import search_data
+    from tuner_under_test.engine.hybrid.training import TrainingStore
+
+    def forbidden(*args):
+        raise AssertionError("single stream computed a cross-member frontier")
+
+    with TrainingStore(tmp_path) as store:
+        db = search_data._schema(store)
+        expected = [(0.0, 6.0, b"a"), (12.0, 18.0, b"b")]
+        db.executemany("INSERT INTO search_raw VALUES (?,?,?,?)", [("r", *r) for r in expected])
+        monkeypatch.setattr(search_data, "max", forbidden, raising=False)
+        assert list(search_data._joined(db, ("r",))) == expected
+
+
+def test_single_radar_collection_overlays_labels_without_python_row_join(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import search_data
+    from tuner_under_test.engine.hybrid.training import TrainingStore
+
+    p = problem({"a": [(70,), (20,), (20,), (0,)]})
+    with TrainingStore(tmp_path) as store:
+        search_data.collect_training(p, store)
+        expected = store._database.execute("SELECT * FROM search_pure ORDER BY t").fetchall()
+
+    def forbidden(*args):
+        raise AssertionError("single radar collection joined rows in Python")
+
+    monkeypatch.setattr(search_data, "_joined", forbidden)
+    with TrainingStore(tmp_path) as store:
+        search_data.collect_training(p, store)
+        assert (
+            store._database.execute("SELECT * FROM search_pure ORDER BY t").fetchall() == expected
+        )
+
+
+@pytest.mark.parametrize("shard", (1, 3, 4096))
+def test_sql_single_overlay_matches_scalar_self_intersection(tmp_path, shard):
+    from tuner_under_test.engine.hybrid import search_data
+    from tuner_under_test.engine.hybrid.training import TrainingStore
+    from tuner_under_test.engine.hybrid.types import TruthSpan
+
+    labels = (
+        TruthSpan(0.25, 19.5, "present", "human", 0.7, "p", ()),
+        TruthSpan(19.5, 22, "unknown", "human", 1, "u", ()),
+        TruthSpan(22, 40.5, "not_present", "human", 1, "e", ()),
+        TruthSpan(40.5, 60, "present", "entity", 0.8, "q", ()),
+    )
+    p = problem({"a": [(40,)] * 4 + [(255,)] + [(60,)] * 5})
+    p = replace(p, start=0.5, end=59.5, zones=(replace(p.zones[0], truth=labels),))
+
+    def cells(db):
+        return sorted(
+            (state, source, parent, confidence, vector[:18], t + i * 6)
+            for _, state, source, parent, confidence, vector, t, n in db.execute(
+                "SELECT * FROM search_pure"
+            )
+            for i in range(n)
+        )
+
+    with TrainingStore(tmp_path) as store:
+        search_data.collect_training(p, store, shard_cells=shard)
+        db = store._database
+        expected = cells(db)
+        db.execute("DELETE FROM search_pure")
+        # Self-intersection exercises the scalar multi-member oracle with the
+        # same coverage and the first member's energies.
+        zone = replace(p.zones[0], members=("a", "a"))
+        search_data._compile_zone(p, db, zone, shard)
+        assert cells(db) == expected
+
+
+@pytest.mark.parametrize("lo,hi", ((5, 5), (5, 4), (30, 20)))
+def test_cell_window_empty_or_reversed_bounds_are_empty(lo, hi):
+    from array import array
+
+    from tuner_under_test.engine.hybrid.digest import DayDigest
+    from tuner_under_test.engine.hybrid.evaluate import cell_rows
+
+    digest = DayDigest(6, 0, 1, (bytes([40]),) * 18, bytes([1]), {})
+    assert cell_rows(digest, (0,)).window(lo, hi) == (array("d"), array("d"), {0: b""})
+
+
 class Rows:
     """A blocks-only row source; records every read window."""
 
@@ -436,6 +582,124 @@ def test_replay_records_rescore_new_truth_without_reading_rows(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("windowed", (False, True))
+def test_new_vectors_reuse_spooled_decoded_windows(tmp_path, monkeypatch, windowed):
+    from tuner_under_test.engine.hybrid import replay
+    from tuner_under_test.engine.hybrid.exact import Evaluator, exact_scores, regions
+
+    rng = random.Random(117)
+    rows = {"a": random_rows(rng, 0.0, 250)}
+    spans = alternating(rng, 0.0, rows["a"][-1][1])
+    p = build(rows, {"a": (0, 1)}, {"a": {"timeout": 2}}, (ZoneSpec("z", ("a",), spans),))
+    source = Windowed(rows["a"], (0, 1)) if windowed else Rows(rows["a"])
+    p = replace(p, rows={"a": source})
+    patterns = [{"a": {0: 30, 1: 60}}, {"a": {0: 60, 1: 41}}]
+    monkeypatch.setattr(replay, "CHUNK_SECONDS", 13)
+    expected = exact_scores(p, patterns, regions(spans))
+    source.calls.clear()
+    with Evaluator(p, regions(spans), directory=tmp_path) as evaluator:
+        first = evaluator.scores(patterns[:1])
+        reads = len(source.calls)
+        second = evaluator.scores(patterns[1:])
+        assert reads > 1
+        assert len(source.calls) == reads
+    assert first + second == expected
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_spooled_physical_windows_close_when_replay_fails(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import replay
+    from tuner_under_test.engine.hybrid.exact import Evaluator
+
+    p = problem({"a": [(70,), (0,), (20,), (20,)]})
+    p = replace(p, rows={"a": Rows(p.days.rows["a"])})
+
+    def fail(*args):
+        raise RuntimeError("replay interrupted")
+
+    monkeypatch.setattr(replay, "fold_masks", fail)
+    with pytest.raises(RuntimeError, match="replay interrupted"):
+        with Evaluator(p, ((0, 24),), directory=tmp_path) as evaluator:
+            evaluator.scores([{"a": {0: 40}}])
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_physical_window_spool_closes_handles_between_windows(tmp_path):
+    from tuner_under_test.engine.hybrid.exact import Evaluator
+
+    p = problem({"a": [(70,), (0,), (20,), (20,)]})
+    p = replace(p, rows={"a": Rows(p.days.rows["a"])})
+    with Evaluator(p, ((0, 24),), directory=tmp_path) as evaluator:
+        evaluator.scores([{"a": {0: 40}}])
+        assert all(provider.file.closed for provider in evaluator._providers.values())
+
+
+def test_physical_window_spool_segments_crossing_arrays_exactly(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import exact
+
+    monkeypatch.setattr(exact, "_ROW_SPOOL_BYTES", 31, raising=False)
+    monkeypatch.setattr(exact, "SPILL_BYTES", 0, raising=False)
+    p = problem({"a": [(70,), (0,), (20,), (20,)]})
+    p = replace(p, rows={"a": Windowed(p.days.rows["a"], (0,))})
+    patterns = [{"a": {0: 40}}, {"a": {0: 90}}]
+    expected = exact.exact_scores(p, patterns, ((0, 24),))
+    with exact.Evaluator(p, ((0, 24),), directory=tmp_path) as evaluator:
+        got = evaluator.scores(patterns[:1]) + evaluator.scores(patterns[1:])
+        files = [path for path in evaluator.directory.rglob("*") if path.is_file()]
+        assert len(files) > len(evaluator.runs)
+        assert max(path.stat().st_size for path in files if "rows" in str(path)) <= 31
+    assert got == expected
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_small_physical_windows_never_open_disk_spool(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import exact
+
+    p = problem({"a": [(70,), (0,), (20,), (20,)]})
+    p = replace(p, rows={"a": Rows(p.days.rows["a"])})
+
+    def forbidden(*args):
+        raise AssertionError("small physical window opened disk spool")
+
+    monkeypatch.setattr(exact._RowSpool, "_open", forbidden)
+    with exact.Evaluator(p, ((0, 24),), directory=tmp_path) as evaluator:
+        first = evaluator.scores([{"a": {0: 40}}])
+        second = evaluator.scores([{"a": {0: 90}}])
+        assert first[0]["cost"] < second[0]["cost"]
+
+
+def test_physical_window_memory_prefix_budget_is_shared_between_radars(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import exact
+
+    p = problem({"a": [(70,), (0,), (20,), (20,)], "b": [(0,), (70,), (20,), (20,)]})
+    p = replace(p, rows={rid: Rows(rows) for rid, rows in p.days.rows.items()})
+    monkeypatch.setattr(exact, "SPILL_BYTES", 101)
+    with exact.Evaluator(p, ((0, 24),), directory=tmp_path) as evaluator:
+        providers = evaluator.providers()
+        assert sum(len(provider.file.memory) for provider in providers.values()) == 100
+        assert len(providers) == 2
+
+
+@pytest.mark.parametrize("budget", (0, 17, 63, 1000))
+def test_physical_spool_memory_prefix_preserves_cross_boundary_bytes(tmp_path, monkeypatch, budget):
+    from tuner_under_test.engine.hybrid import exact
+
+    monkeypatch.setattr(exact, "_ROW_SPOOL_BYTES", 31)
+    spool = exact._RowSpool(tmp_path, budget=budget)
+    data = bytes(range(256)) * 2
+    try:
+        for start in range(0, len(data), 23):
+            spool.write(data[start : start + 23])
+        spool.close()
+        spool.seek(0)
+        assert spool.read(len(data)) == data
+        assert spool.read(1) == b""
+        assert len(spool.memory) <= budget
+        assert max((p.stat().st_size for p in spool.directory.iterdir()), default=0) <= 31
+    finally:
+        spool.close()
+
+
 def test_chunks_settle_when_a_radar_has_no_rows():
     from tuner_under_test.engine.hybrid.exact import exact_scores
 
@@ -646,3 +910,245 @@ def test_linked_zones_score_with_their_own_support_policy(mode):
         score = evaluator.scores([{"r": {0: 40}}])[0]
     assert score["zones"]["z1"]["cost"] == 0
     assert score["zones"]["z2"]["cost"] == 0
+
+
+def test_cell_evaluator_reuses_cell_geometry_for_new_vectors(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import evaluate
+
+    p = problem({"a": [(70,), (0,), (20,), (20,)]})
+    patterns = [{"a": {0: 40}}, {"a": {0: 90}}]
+    with evaluate.CellEvaluator(p, ((0, 24),), directory=tmp_path) as evaluator:
+        expected = evaluator.scores(patterns)
+    calls = []
+    original = evaluate.cell_rows
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(evaluate, "cell_rows", counted)
+    with evaluate.CellEvaluator(p, ((0, 24),), directory=tmp_path) as evaluator:
+        actual = evaluator.scores(patterns[:1]) + evaluator.scores(patterns[1:])
+    assert actual == expected
+    assert len(calls) == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_gapless_replay_hits_gather_boundaries_without_per_run_bisection(monkeypatch):
+    from array import array
+
+    from tuner_under_test.engine.hybrid import replay
+
+    def forbidden(*args):
+        raise AssertionError("gapless replay bisected each detection run")
+
+    monkeypatch.setattr(replay, "bisect_right", forbidden)
+    times, ends = array("d", range(12)), array("d", range(1, 13))
+    mask = int.from_bytes(b"\1\0\1\1\0\0\1\0\1\1\1\1", "little")
+    assert replay.hits(mask, times, ends, []) == [(0, 1), (2, 4), (6, 7), (8, 12)]
+
+
+def test_gapped_replay_splits_at_coverage_boundaries_without_bisecting_each_run(monkeypatch):
+    from array import array
+
+    from tuner_under_test.engine.hybrid import replay
+
+    def forbidden(*args):
+        raise AssertionError("gapped replay bisected each detection run")
+
+    monkeypatch.setattr(replay, "bisect_right", forbidden)
+    times = array("d", [0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23])
+    ends = array("d", (t + 1 for t in times))
+    mask = int.from_bytes(b"\1\0\1\1\1\1\0\1\1\1\0\1", "little")
+    assert replay.hits(mask, times, ends, [4, 8]) == [
+        (0, 1),
+        (2, 4),
+        (10, 12),
+        (13, 14),
+        (20, 22),
+        (23, 24),
+    ]
+
+
+def test_distinct_fully_covered_cells_reuse_immutable_energy_columns():
+    from array import array
+
+    from tuner_under_test.engine.hybrid.digest import DayDigest
+    from tuner_under_test.engine.hybrid.evaluate import cell_rows
+
+    column = bytes([10, 20, 30, 255, 40])[:3]
+    digest = DayDigest(6, 5, 3, (column,), b"\1" * 3, {})
+    rows = cell_rows(digest, (0,))
+    assert rows.times == array("d", [30, 36, 42])
+    assert rows.ends == array("d", [36, 42, 48])
+    assert rows.columns[0] is column
+
+
+def test_dense_cell_vectors_with_repeats_gather_without_per_channel_scalar_reads():
+    from tuner_under_test.engine.hybrid.digest import DayDigest
+    from tuner_under_test.engine.hybrid.evaluate import cell_rows
+
+    class Column(bytes):
+        def __getitem__(self, key):
+            if isinstance(key, int):
+                raise AssertionError("dense columns read each scalar separately")
+            return super().__getitem__(key)
+
+    column = Column([10, 20, 30, 40, 50, 60, 70, 80, 80, 90])
+    digest = DayDigest(6, 0, 10, (column,), b"\1" * 10, {})
+    rows = cell_rows(digest, (0,))
+    assert list(rows.times) == [0, 6, 12, 18, 24, 30, 36, 42, 54]
+    assert list(rows.ends) == [6, 12, 18, 24, 30, 36, 42, 54, 60]
+    assert rows.columns[0] == bytes([10, 20, 30, 40, 50, 60, 70, 80, 90])
+
+
+def test_cell_source_builds_only_geometry_reachable_by_immutable_regions():
+    from tuner_under_test.engine.hybrid.evaluate import CellRows
+
+    p = problem({"a": [(10,), (20,), (30,), (40,), (50,), (60,), (70,), (80,)]})
+    source = CellRows(p.days, "a", (0,), regions=((12, 30),))
+    _lo, _hi, rows = source._load(0)
+    assert list(rows.times) == [12, 18, 24]
+    assert list(rows.ends) == [18, 24, 30]
+    assert rows.columns[0] == bytes([30, 40, 50])
+
+
+@pytest.mark.parametrize("fail", (False, True))
+def test_evaluator_reuses_one_row_file_handle_and_closes_it_on_exit(tmp_path, monkeypatch, fail):
+    from pathlib import Path
+
+    from tuner_under_test.engine.hybrid import exact
+
+    p = problem({"a": [(10,), (20,), (70,), (80,)]})
+    p = replace(p, rows={"a": Rows(p.days.rows["a"])})
+    opened = []
+    original = Path.open
+
+    def counted(path, *args, **kwargs):
+        stream = original(path, *args, **kwargs)
+        if path.parent.name.startswith("rows-"):
+            opened.append(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", counted)
+    monkeypatch.setattr(exact, "SPILL_BYTES", 0)
+    try:
+        with exact.Evaluator(p, ((0, 24),), directory=tmp_path) as evaluator:
+            evaluator.scores([{"a": {0: 40}}])
+            evaluator.scores([{"a": {0: 90}}])
+            if fail:
+                raise RuntimeError("cancel scoring")
+    except RuntimeError:
+        assert fail
+    assert len(opened) == 1
+    assert all(stream.closed for stream in opened)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("partial", (False, True))
+def test_region_bounded_cell_geometry_equals_whole_day_for_every_requested_window(partial):
+    from tuner_under_test.engine.hybrid.digest import DayDigest
+    from tuner_under_test.engine.hybrid.evaluate import _bounded_digest, cell_rows
+
+    rng = random.Random(318)
+    columns = tuple(bytes(rng.choice((10, 20, 40, 255)) for _ in range(16)) for _ in range(2))
+    cov = bytes(rng.choice((0, 1, 2) if partial else (0, 1)) for _ in range(16))
+    pieces = {
+        i: ((i * 6 + 1, i * 6 + 2), (i * 6 + 4, i * 6 + 5)) for i, v in enumerate(cov) if v == 2
+    }
+    digest = DayDigest(6, 0, 16, columns, cov, pieces)
+    whole = cell_rows(digest, (0, 1))
+    for _ in range(30):
+        starts = sorted(rng.uniform(6, 80) for _ in range(4))
+        regions = ((starts[0], starts[1]), (starts[2], starts[3]))
+        cropped = cell_rows(_bounded_digest(digest, regions), (0, 1))
+        for lo, hi in regions:
+            assert cropped.window(lo, hi) == whole.window(lo, hi)
+    assert not cell_rows(_bounded_digest(digest, ()), (0, 1)).times
+
+
+def test_fold_masks_only_decides_contested_rows_after_global_bounds():
+    from tuner_under_test.engine.hybrid.replay import fold_masks
+
+    class Column(bytes):
+        translations = 0
+
+        def translate(self, table):
+            type(self).translations += 1
+            return super().translate(table)
+
+    # The second gate always detects. Intermediate first-gate thresholds can
+    # never change a decision, even though that gate varies across the bundle.
+    columns = {0: Column([20, 30, 40, 50]), 1: Column([90] * 4)}
+    vectors = [{0: threshold, 1: 80} for threshold in range(10, 61, 10)]
+    masks, info = fold_masks(columns, vectors)
+    assert masks == [int.from_bytes(b"\1" * 4, "little")] * 6
+    assert info == {"rows": 4, "contested": 0, "always": 4}
+    assert Column.translations <= 3
+
+
+def test_fold_masks_ignores_gate_without_any_contested_detection():
+    from tuner_under_test.engine.hybrid.replay import fold_masks
+
+    class Column(bytes):
+        translations = 0
+
+        def translate(self, table):
+            type(self).translations += 1
+            return super().translate(table)
+
+    columns = {0: Column([50, 0]), 1: bytes([90, 0]), 2: bytes([0, 50])}
+    vectors = [{0: threshold, 1: 80, 2: threshold} for threshold in range(10, 61, 10)]
+    masks, info = fold_masks(columns, vectors)
+    assert masks == [257] * 4 + [1] * 2
+    assert info == {"rows": 2, "contested": 1, "always": 1}
+    assert Column.translations == 2
+
+
+def test_replay_hit_gather_does_not_allocate_intermediate_boundary_pairs(monkeypatch):
+    from tuner_under_test.engine.hybrid import replay
+
+    class Match:
+        pairs = 0
+
+        def __init__(self, first, stop):
+            self.first, self.stop = first, stop
+
+        def span(self):
+            type(self).pairs += 1
+            return self.first, self.stop
+
+        def start(self):
+            return self.first
+
+        def end(self):
+            return self.stop
+
+    monkeypatch.setattr(replay, "re", SimpleNamespace(Match=Match))
+    matches = (Match(a, b) for a, b in ((0, 2), (3, 4)))
+    assert replay._gather_hits(matches, [0, 1, 2, 3], [1, 2, 3, 4]) == [(0, 2), (3, 4)]
+    assert Match.pairs == 0
+
+
+def test_replay_records_index_shared_interval_objects_once(tmp_path):
+    from tuner_under_test.engine.hybrid.replay import Records
+
+    class Intervals(list):
+        copies = 0
+
+        def __iter__(self):
+            type(self).copies += 1
+            return super().__iter__()
+
+    values = Intervals([(0.0, 1.0), (2.0, 3.0)])
+    records = Records(tmp_path, ["r"], [("r", (50,))])
+    try:
+        records.write(0.0, 6.0, {"r": values}, [(values, values, values)])
+        # One identity-key copy and one binary serialization of the unique list.
+        assert Intervals.copies == 2
+        records.rewind()
+        _, _, coverage, outputs = records.read()
+        assert list(coverage["r"]) == list(values)
+        assert all(part is coverage["r"] for part in outputs["r", (50,)])
+    finally:
+        records.close()
