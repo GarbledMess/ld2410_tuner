@@ -4,6 +4,104 @@ import pytest
 import test_tuner  # noqa: F401
 
 
+def test_scaling_failed_child_removes_captured_inputs(tmp_path, monkeypatch):
+    import asyncio
+
+    import hybrid_scaling
+    from tuner_under_test.worker.supervisor import WorkerFailed
+
+    fixture = hybrid_scaling.build_fixture(tmp_path, radars=1, days=2)
+    request = hybrid_scaling._request
+
+    def invalid_request(*args):
+        path = request(*args)
+        path.write_bytes(b"invalid request")
+        return path
+
+    monkeypatch.setattr(hybrid_scaling, "_request", invalid_request)
+    with pytest.raises(WorkerFailed, match="ProtocolRejected"):
+        asyncio.run(hybrid_scaling._run_fixture(fixture, tmp_path, 2, False, False))
+    assert not list(tmp_path.glob("scaling-job-*"))
+    assert list((tmp_path / "history").iterdir())
+
+
+def test_scaling_cancelled_child_is_reaped_before_inputs_are_removed(tmp_path, monkeypatch):
+    import asyncio
+
+    import hybrid_scaling
+
+    fixture = hybrid_scaling.build_fixture(tmp_path, radars=1, days=1)
+    create = asyncio.create_subprocess_exec
+    processes = []
+
+    async def run():
+        spawned = asyncio.Event()
+
+        async def capture(*args, **kwargs):
+            process = await create(*args, **kwargs)
+            processes.append(process)
+            spawned.set()
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+        task = asyncio.create_task(hybrid_scaling._run_fixture(fixture, tmp_path, 1, False, False))
+        try:
+            await asyncio.wait_for(spawned.wait(), 30)
+            assert list(tmp_path.glob("scaling-job-*/history.sqlite"))
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert processes[0].returncode is not None
+            assert not list(tmp_path.glob("scaling-job-*"))
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_scaling_cancelled_capture_finishes_before_directory_cleanup(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+
+    import hybrid_scaling
+
+    fixture = hybrid_scaling.build_fixture(tmp_path, radars=1, days=1)
+    request = hybrid_scaling._request
+    release = threading.Event()
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        captured = asyncio.Event()
+
+        def blocked_capture(*args):
+            path = request(*args)
+            loop.call_soon_threadsafe(captured.set)
+            if not release.wait(30):
+                raise TimeoutError("Test did not release capture")
+            assert path.exists()
+            return path
+
+        monkeypatch.setattr(hybrid_scaling, "_request", blocked_capture)
+        task = asyncio.create_task(hybrid_scaling._run_fixture(fixture, tmp_path, 1, False, False))
+        try:
+            await asyncio.wait_for(captured.wait(), 30)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            assert list(tmp_path.glob("scaling-job-*/request.json"))
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not list(tmp_path.glob("scaling-job-*"))
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
 def test_scaling_fixture_covers_full_days_and_keeps_a_live_day(tmp_path):
     from hybrid_scaling import DAY, START, build_fixture
 

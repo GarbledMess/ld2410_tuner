@@ -165,16 +165,23 @@ def run_scaling(root: Path, radars=30, days=28, *, warm=False, trace=False, dens
     in the result. The Linux path always installs the production worker limits.
     """
     import asyncio
-    import tempfile
-    from concurrent.futures import ThreadPoolExecutor
 
     root.mkdir(parents=True, exist_ok=True)
     fixture = build_fixture(root, radars, days, density=density)
+    return asyncio.run(_run_fixture(fixture, root, days, warm, trace))
+
+
+async def _run_fixture(fixture, root, days, warm, trace):
+    """Keep captures owned until preparation and every child have finished cleanup."""
+    import asyncio
+    import tempfile
+
+    from tuner_under_test.worker.supervisor import owned_preparation
+
     with tempfile.TemporaryDirectory(prefix="scaling-job-", dir=root) as temporary:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            path = executor.submit(_request, fixture, Path(temporary), days).result()
-        cold = asyncio.run(_launch(path, trace if not warm else False))
-        result = asyncio.run(_launch(path, trace)) if warm else cold
+        path = await owned_preparation(asyncio.to_thread(_request, fixture, Path(temporary), days))
+        cold = await _launch(path, trace if not warm else False)
+        result = await _launch(path, trace) if warm else cold
         result.update(
             mode="warm" if warm else "cold",
             radar_days=fixture["radar_days"],
