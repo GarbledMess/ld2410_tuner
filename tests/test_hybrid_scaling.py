@@ -4,6 +4,90 @@ import pytest
 import test_tuner  # noqa: F401
 
 
+def _capacity():
+    import runpy
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        **runpy.run_path(str(Path(__file__).parent / "lab/hybrid_capacity_checks.py"))
+    )
+
+
+def test_capacity_cpu_verdict_keeps_the_pinned_desktop_budgets():
+    capacity = _capacity()
+    assert capacity.budget_failures("cpu30", {"cpu_seconds": 10}) == []
+    assert capacity.budget_failures("cpu30", {"cpu_seconds": 11}) == ["cpu_seconds > 10"]
+    assert capacity.budget_failures("warm7", {"cpu_seconds": 2}) == []
+    assert capacity.budget_failures("warm7", {"cpu_seconds": 3}) == ["cpu_seconds > 2"]
+    assert capacity.budget_failures("memory30", {"traced_peak_bytes": 64 * 1024**2}) == [
+        "traced_peak_bytes >= 67108864"
+    ]
+
+
+def test_capacity_report_records_failed_jobs_and_continues(tmp_path):
+    capacity = _capacity()
+    calls = []
+
+    def run(root, **dimensions):
+        calls.append(dimensions)
+        if len(calls) == 1:
+            raise RuntimeError("CPU time budget exhausted")
+        return {**_capacity_result(), "cpu_seconds": 3}
+
+    output = tmp_path / "report.json"
+    report = capacity.measure(tmp_path / "jobs", output, ["cpu30", "warm7"], run)
+    assert len(calls) == 2
+    assert calls[0] == {"radars": 30, "days": 28}
+    assert calls[1] == {"radars": 7, "days": 28, "warm": True}
+    assert report["cases"]["cpu30"]["status"] == "failed"
+    assert report["cases"]["cpu30"]["error"] == "CPU time budget exhausted"
+    assert report["cases"]["warm7"]["failures"] == ["cpu_seconds > 2"]
+    assert not report["passed"]
+    import json
+
+    assert json.loads(output.read_text()) == report
+
+
+def _capacity_result():
+    return {
+        "cpu_seconds": 1,
+        "isolated": True,
+        "no_site": True,
+        "no_bytecode": True,
+        "legality": True,
+        "max_row_block": 4096,
+        "resident_digests_at_end": 0,
+        "open_spill_files": 0,
+        "thresholds": {"r0": {"g0_move": 50}},
+        "cost_before": 2,
+        "cost_after": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "reason"),
+    [
+        ("isolated", False, "child isolation flags missing"),
+        ("legality", False, "illegal thresholds"),
+        ("max_row_block", 4097, "raw block exceeds 4096 rows"),
+        ("resident_digests_at_end", 1, "digests retained after job"),
+        ("open_spill_files", 1, "spill files retained after job"),
+    ],
+)
+def test_capacity_report_rejects_invalid_or_leaking_jobs(key, value, reason):
+    result = {**_capacity_result(), key: value}
+    assert reason in _capacity().job_failures(result)
+
+
+def test_capacity_report_rejects_changed_warm_results():
+    result = _capacity_result()
+    result["cold"] = {**result, "cost_after": 0}
+    assert _capacity().job_failures(result) == ["cold/warm fitting results differ"]
+    result["cold"]["cost_after"] = result["cost_after"]
+    assert _capacity().job_failures(result) == []
+
+
 def test_scaling_failed_child_removes_captured_inputs(tmp_path, monkeypatch):
     import asyncio
 
