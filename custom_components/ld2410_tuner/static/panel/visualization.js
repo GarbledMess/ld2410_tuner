@@ -38,21 +38,6 @@ export const panelVisualization = {
       return `<line x1="${CHART_MARGIN.left}" y1="${y}" x2="${width - CHART_MARGIN.right}" y2="${y}" class="threshold-line ${style}"></line><text x="${CHART_MARGIN.left + 4}" y="${Math.max(9, y - 3)}" class="axis-label ${style}">${this._esc(label)} ${this._fmt(value)}</text>`;
     };
 
-    const bandColor = {
-      present: "rgba(46,125,50,0.18)",
-      not_present: "rgba(120,120,120,0.14)",
-      unknown: "rgba(255,193,7,0.14)",
-    };
-    const bands = (data.labels || [])
-      .map((l) => {
-        const x0 = xScale(Math.max(l.start, data.start));
-        const x1 = xScale(Math.min(l.end, data.end));
-        const fill = bandColor[l.state];
-        if (!fill || x1 <= x0) return "";
-        return `<rect x="${x0.toFixed(1)}" y="${CHART_MARGIN.top}" width="${(x1 - x0).toFixed(1)}" height="${CHART_PLOT_H}" fill="${fill}"></rect>`;
-      })
-      .join("");
-
     const yTicks = [0, 25, 50, 75, 100]
       .map((v) => {
         const y = yScale(v);
@@ -93,9 +78,8 @@ export const panelVisualization = {
 
     const toolbarHtml = this._selectionToolbarHtml(cs);
 
-    return `${this._learnStatusHtml(learnedProposal, cs, d.last_learning, d.timing_configuration)}<svg viewBox="0 0 ${width} ${CHART_H}" preserveAspectRatio="xMidYMid meet">
+    return `${this._learnStatusHtml(learnedProposal, cs, d.last_learning, d.timing_configuration)}<svg viewBox="0 0 ${width} ${CHART_H + 96}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Radar signal history and presence evidence">
       <rect x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}" class="plot-bg"></rect>
-      ${bands}
       ${yTicks}
       ${xTicks}
       ${otherLines}
@@ -106,7 +90,7 @@ export const panelVisualization = {
       ${thresholdLine(noiseCeiling, "noise-ceiling", "Noise max")}
       <rect data-role="selection-hit" class="selection-hit" x="${CHART_MARGIN.left}" y="${CHART_MARGIN.top}" width="${plotWidth}" height="${CHART_PLOT_H}"></rect>
       ${selectionSvg}
-    </svg>${toolbarHtml}`;
+    ${this._presenceLanesSvg(data.presence_evidence || { manual: data.labels }, data, width)}</svg>${this._presenceLegendHtml()}${toolbarHtml}`;
   },
   _tickAnchor(index, count) {
     if (index === 0) return "start";

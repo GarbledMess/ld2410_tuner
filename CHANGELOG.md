@@ -1,5 +1,12 @@
 # Release notes
 
+## Unreleased
+
+- Radar and room status charts now show labelled Human, Entity / sensor and Guessed
+  evidence lanes. Each kind can be hidden with a remembered viewer preference. Room
+  guesses stay separate per radar. Rendering clips and merges periods and batches
+  SVG paths by state; toggling uses the loaded data without another request.
+
 ## 1.32.1 - unreleased
 
 - Home Assistant no longer reports "Something is blocking Home Assistant from wrapping up
