@@ -64,6 +64,12 @@ def _live(store, rid, day):
             store.append(rid, dayfile.End(end))
 
 
+def _check_dimensions(radars, days, density):
+    for name, value in (("radars", radars), ("days", days), ("density", density)):
+        if type(value) is not int or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
+
+
 def build_fixture(root, radars=30, days=28, *, density=1):
     """Write one day at a time, keeping only each radar's final day live.
 
@@ -73,9 +79,7 @@ def build_fixture(root, radars=30, days=28, *, density=1):
     """
     from tuner_under_test.history import daystore
 
-    for name, value in (("radars", radars), ("days", days), ("density", density)):
-        if type(value) is not int or value < 1:
-            raise ValueError(f"{name} must be a positive integer")
+    _check_dimensions(radars, days, density)
     store = daystore.DayStore(root / "history", cache_bytes=0)
     devices, rows = {}, 0
     labels = [label for day in range(days) for label in _labels(START + day * DAY)]
@@ -140,7 +144,7 @@ def _request(fixture, directory, days):
     return path
 
 
-async def _launch(path, trace):
+async def _launch(path, trace, spill_signal=None):
     import json
     import os
 
@@ -149,7 +153,7 @@ async def _launch(path, trace):
     supervisor = Supervisor(Path(__file__), deadline=1800, stdout_bytes=1024 * 1024)
 
     async def prepare():
-        return str(path), str(os.getpid()), str(int(trace))
+        return str(path), str(os.getpid()), str(int(trace)), str(spill_signal or "")
 
     try:
         return json.loads(await supervisor.run(prepare))
@@ -171,7 +175,46 @@ def run_scaling(root: Path, radars=30, days=28, *, warm=False, trace=False, dens
     return asyncio.run(_run_fixture(fixture, root, days, warm, trace))
 
 
-async def _run_fixture(fixture, root, days, warm, trace):
+def run_limit_checks():
+    """Exercise actual kernel ceilings in a disposable protected Linux child."""
+    import asyncio
+
+    return asyncio.run(_launch(Path("--probe-limits"), False))
+
+
+def _probe_file_limit(limit):
+    import errno
+    import signal
+    import tempfile
+
+    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+    with tempfile.TemporaryFile() as stream:
+        try:
+            stream.truncate(limit + 1)
+        except OSError as error:
+            if error.errno == errno.EFBIG:
+                return True
+            raise
+    raise RuntimeError("Kernel did not enforce the file-size ceiling")
+
+
+def _probe_descriptor_limit(limit):
+    import errno
+    import os
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        for count in range(limit + 1):
+            try:
+                stack.enter_context(open(os.devnull, "rb"))
+            except OSError as error:
+                if error.errno == errno.EMFILE:
+                    return count
+                raise
+    raise RuntimeError("Kernel did not enforce the descriptor ceiling")
+
+
+async def _run_fixture(fixture, root, days, warm, trace, *, pause_at_spill=False):
     """Keep captures owned until preparation and every child have finished cleanup."""
     import asyncio
     import tempfile
@@ -180,7 +223,8 @@ async def _run_fixture(fixture, root, days, warm, trace):
 
     with tempfile.TemporaryDirectory(prefix="scaling-job-", dir=root) as temporary:
         path = await owned_preparation(asyncio.to_thread(_request, fixture, Path(temporary), days))
-        cold = await _launch(path, trace if not warm else False)
+        signal = Path(temporary) / "spill-ready" if pause_at_spill else None
+        cold = await _launch(path, trace if not warm else False, signal)
         result = await _launch(path, trace) if warm else cold
         result.update(
             mode="warm" if warm else "cold",
@@ -258,11 +302,13 @@ def _measure_digests():
     return metrics, live
 
 
-def _measure_spills():
+def _measure_spills(spill_signal=None):
     """High-water bytes in temporary streams, including rolled spools and replay.
 
     Persistent sidecars and SQLite metadata are excluded. Tracking the underlying
     disk file counts a rolled spool once, even when its contents are copied out.
+    The optional cancellation-test barrier pauses with a real spill open; normal
+    measurements never supply it.
     """
     import tempfile
 
@@ -284,6 +330,9 @@ def _measure_spills():
             count = self.stream.write(value)
             live[id(self)] = max(live[id(self)], self.stream.tell())
             metrics["spill_bytes"] = max(metrics["spill_bytes"], sum(live.values()))
+            if spill_signal is not None:
+                self.stream.flush()
+                _pause_at_spill(spill_signal, metrics["spill_bytes"])
             return count
 
         def truncate(self, size=None):
@@ -313,6 +362,15 @@ def _measure_spills():
     return metrics
 
 
+def _pause_at_spill(path, size):
+    """Cancellation-test barrier; the owner cancels the paused child, then reaps it."""
+    import time
+
+    path.write_text(str(size), encoding="utf-8")
+    while path.exists():
+        time.sleep(0.01)
+
+
 def _child():
     import json
     import os
@@ -328,12 +386,23 @@ def _child():
         controls = install(
             Budget(512 * 1024**2, 120, 128 * 1024**2), expected_parent=int(sys.argv[2])
         )
+    if sys.argv[1] == "--probe-limits":
+        if controls is None:
+            raise RuntimeError("Kernel limit probes require Linux")
+        result = {
+            "file_limit_enforced": _probe_file_limit(controls["file_bytes"]),
+            "descriptors_opened": _probe_descriptor_limit(controls["open_files"]),
+            "limits": controls,
+        }
+        print(json.dumps(result))
+        return
     if sys.argv[3] == "1":
         tracemalloc.start()
     started = time.process_time()
     from tuner_under_test.worker import calculations, protocol
 
-    spill_metrics = _measure_spills()
+    spill_signal = Path(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else None
+    spill_metrics = _measure_spills(spill_signal)
     metrics = _measure_reads()
     digest_metrics, live_digests = _measure_digests()
     request = protocol.unpack(Path(sys.argv[1]).read_bytes(), "learn")

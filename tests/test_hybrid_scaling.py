@@ -62,6 +62,12 @@ def _capacity_result():
         "thresholds": {"r0": {"g0_move": 50}},
         "cost_before": 2,
         "cost_after": 1,
+        "limits": {
+            "memory_bytes": 512 * 1024**2,
+            "cpu_seconds": 120,
+            "file_bytes": 128 * 1024**2,
+            "open_files": 64,
+        },
     }
 
 
@@ -86,6 +92,124 @@ def test_capacity_report_rejects_changed_warm_results():
     assert _capacity().job_failures(result) == ["cold/warm fitting results differ"]
     result["cold"]["cost_after"] = result["cost_after"]
     assert _capacity().job_failures(result) == []
+
+
+def test_capacity_report_requires_exact_linux_worker_limits():
+    capacity = _capacity()
+    expected = {
+        "memory_bytes": 512 * 1024**2,
+        "cpu_seconds": 120,
+        "file_bytes": 128 * 1024**2,
+        "open_files": 64,
+    }
+    assert capacity.limit_failures({"limits": expected}) == []
+    assert capacity.limit_failures({"limits": None}) == ["Linux worker limits missing"]
+    for key in expected:
+        changed = {**expected, key: expected[key] + 1}
+        assert capacity.limit_failures({"limits": changed}) == [
+            f"Linux worker limit differs: {key}"
+        ]
+
+
+def test_capacity_memory_scaling_reports_growth_without_hiding_failed_cases():
+    capacity = _capacity()
+    cases = {
+        name: {
+            "status": "passed",
+            "source_rows": rows,
+            "traced_peak_bytes": peak,
+            "resident_digest_bytes": 1_065_240,
+        }
+        for name, rows, peak in (
+            ("day1", 14580, 25_000_000),
+            ("day7", 102060, 26_000_000),
+            ("day28", 408240, 27_000_000),
+            ("dense28", 811160, 28_000_000),
+        )
+    }
+    summary = capacity.memory_scaling(cases)
+    assert summary["status"] == "passed"
+    assert summary["peak_growth_bytes"] == {
+        "day7": 1_000_000,
+        "day28": 2_000_000,
+        "dense28": 3_000_000,
+    }
+    assert summary["resident_digest_range_bytes"] == [1_065_240, 1_065_240]
+    cases["day28"] = {"status": "failed", "error": "worker CPU allowance exhausted"}
+    summary = capacity.memory_scaling(cases)
+    assert summary["status"] == "incomplete"
+    assert summary["unavailable"] == ["day28"]
+
+
+def test_capacity_memory_scaling_keeps_absolute_budgets_at_every_size():
+    capacity = _capacity()
+    cases = {
+        name: {
+            "status": "passed",
+            "source_rows": 14580 * days,
+            "traced_peak_bytes": 20_000_000,
+            "resident_digest_bytes": 1_000_000,
+        }
+        for name, days in (("day1", 1), ("day7", 7), ("day28", 28), ("dense28", 56))
+    }
+    cases["dense28"]["traced_peak_bytes"] = 64 * 1024**2
+    assert capacity.memory_scaling(cases)["failures"] == [
+        "dense28: traced_peak_bytes >= 67108864",
+    ]
+    assert capacity.memory_scaling(cases)["status"] == "failed"
+    cases["dense28"]["status"] = "failed"
+    summary = capacity.memory_scaling(cases)
+    assert summary["status"] == "failed"
+    assert summary["traced_peak_bytes"]["dense28"] == 64 * 1024**2
+    assert capacity.memory_scaling({})["status"] == "incomplete"
+
+
+def test_capacity_report_rejects_unprotected_linux_results(tmp_path, monkeypatch):
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    report = _capacity().measure(
+        tmp_path / "jobs",
+        tmp_path / "report.json",
+        ["cpu30"],
+        lambda *args, **kwargs: {**_capacity_result(), "limits": None},
+    )
+    assert report["cases"]["cpu30"]["failures"] == ["Linux worker limits missing"]
+    assert not report["passed"]
+    assert report["memory_scaling"]["status"] == "incomplete"
+
+
+def test_scaling_exercises_kernel_file_and_descriptor_limits():
+    import sys
+
+    from hybrid_scaling import run_limit_checks
+    from tuner_under_test.worker.supervisor import WorkerFailed
+
+    if sys.platform != "linux":
+        with pytest.raises(WorkerFailed, match="Kernel limit probes require Linux"):
+            run_limit_checks()
+        return
+    result = run_limit_checks()
+    assert result["file_limit_enforced"]
+    assert 0 < result["descriptors_opened"] < 64
+    assert result["limits"]["file_bytes"] == 128 * 1024**2
+    assert result["limits"]["open_files"] == 64
+    assert result["limits"]["memory_bytes"] == 512 * 1024**2
+    assert result["limits"]["cpu_seconds"] == 120
+
+
+def test_capacity_report_preserves_kernel_probe_failure(tmp_path):
+    probe = {"status": "failed", "error": "descriptor ceiling was not enforced"}
+    report = _capacity().measure(
+        tmp_path / "jobs",
+        tmp_path / "report.json",
+        ["cpu30"],
+        lambda *args, **kwargs: _capacity_result(),
+        resource_checks=probe,
+    )
+    assert report["resource_checks"] == probe
+    assert report["cases"]["cpu30"]["status"] == "passed"
+    assert not report["passed"]
 
 
 def test_scaling_failed_child_removes_captured_inputs(tmp_path, monkeypatch):
@@ -132,6 +256,49 @@ def test_scaling_cancelled_child_is_reaped_before_inputs_are_removed(tmp_path, m
         try:
             await asyncio.wait_for(spawned.wait(), 30)
             assert list(tmp_path.glob("scaling-job-*/history.sqlite"))
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert processes[0].returncode is not None
+            assert not list(tmp_path.glob("scaling-job-*"))
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_scaling_cancellation_reaps_child_paused_with_an_open_spill(tmp_path, monkeypatch):
+    import asyncio
+
+    import hybrid_scaling
+
+    fixture = hybrid_scaling.build_fixture(tmp_path, radars=1, days=1)
+    create = asyncio.create_subprocess_exec
+    processes = []
+
+    async def capture(*args, **kwargs):
+        process = await create(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    async def run():
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+        task = asyncio.create_task(
+            hybrid_scaling._run_fixture(fixture, tmp_path, 1, False, False, pause_at_spill=True)
+        )
+
+        async def spill_ready():
+            while not (markers := list(tmp_path.glob("scaling-job-*/spill-ready"))):
+                if task.done():
+                    await task
+                await asyncio.sleep(0.01)
+            return markers[0]
+
+        try:
+            marker = await asyncio.wait_for(spill_ready(), 30)
+            assert int(marker.read_text()) > 0
+            assert processes[0].returncode is None
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
