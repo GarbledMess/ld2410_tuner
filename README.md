@@ -222,11 +222,19 @@ noise/presence gaps across all radars. There is no strongest-radar winner or fix
 threshold floor. A weak, nonseparating radar is not forced to detect every occupied
 moment. The report shows combined outcomes without double-counting occupied time.
 
-The joint learner uses the same continuous interval replay as group assessment,
-including valid spikes and lower-confidence automatic labels. It uses a bounded,
-deterministic coordinate search with multiple starting points; it does not claim
-the globally optimal solution or independently validated field accuracy. Joint
-measurements are not interchangeable with individually filtered learner scores.
+The hybrid learner proposes thresholds from six-second energy histograms, then
+checks a bounded shortlist against the recorded physical spans and each radar's
+timing. Histograms retain both typical energy and spikes; the final replay keeps
+their actual durations. Deterministic search and work limits give the same result
+on fast and slow machines. Search is heuristic and does not guarantee a global
+optimum or future field accuracy.
+
+Learning favours catching occupied episodes while limiting false activity across
+empty periods. A candidate cannot make more empty periods mostly false-active
+than the starting settings. Automatic evidence remains subordinate to human
+labels. The label audit can exclude suspicious sub-stretches when re-scoring
+supports the change; it keeps the stored labels intact and reports its decisions.
+The review shows timing fidelity, evidence limitations and any discarded time.
 
 Results appear in each member's existing User learnt / Autolearnt slot, with joint
 outcomes clearly identified. Apply on a device opens the group review. The group
@@ -1159,3 +1167,37 @@ references. Changing the entity source configuration resets
 its entity and inferred reference contributions while preserving human references.
 Pausing recording pauses reference training too. Profile summaries and unfamiliar
 readings appear inside the existing automatic-analysis card.
+
+## Offline hybrid validation
+
+From a source checkout, run the developer validator against your own history:
+
+```sh
+python tools/validate_hybrid.py --history /path/to/history-export --output /path/to/validation-report
+```
+
+The input can be v2 radar export JSON files, `metadata.json` with a `history/`
+day-store directory, or a Home Assistant `.storage` directory containing
+`ld2410_tuner.data` and `ld2410_tuner/history/`. The output directory must be outside
+the repository and separate from the input. Run locally with Python; Home
+Assistant does not need to be running.
+
+The tool fits training folds and measures held-out episodes using an independent
+replay referee, records CPU and memory measurements, and writes `report.json`.
+`--baseline /path/to/previous/report.json` also re-scores frozen baseline thresholds
+under the same protocol; it is not an automatic proof of identical fitted results.
+Exit codes are 0 for passing checks, 1 for numerical or resource failures, and 2
+for invalid input. A resource failure remains a failure even when accuracy passes.
+
+History is read without modification and derived caches use a detached temporary
+directory. Reports replace radar and room identities with anonymous aliases and
+contain aggregate metrics, threshold patterns and held-out/training time intervals,
+without raw readings or label text. Nothing is uploaded. Keep input exports private
+and review reports before sharing: timestamps and aggregate measurements can
+still reveal usage patterns.
+
+Full worker capacity is checked separately with synthetic raw history using
+`python tests/lab/hybrid_capacity_checks.py --output /path/to/capacity.json`.
+It records cold/warm work, memory, spill and resource-limit evidence, and returns
+nonzero for missed gates. Capacity targets have not all been met; a constrained
+x86 lab is not a measured Home Assistant Green performance guarantee.
