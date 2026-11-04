@@ -49,6 +49,26 @@ def test_capacity_report_records_failed_jobs_and_continues(tmp_path):
     assert json.loads(output.read_text()) == report
 
 
+def test_capacity_report_persists_running_case_before_fixture_generation(tmp_path):
+    import json
+
+    capacity = _capacity()
+    output = tmp_path / "report.json"
+
+    def run(root, **dimensions):
+        pending = json.loads(output.read_text())
+        assert pending["cases"]["cpu30"] == {
+            "status": "running",
+            "dimensions": {"radars": 30, "days": 28},
+        }
+        assert not pending["passed"]
+        return _capacity_result()
+
+    report = capacity.measure(tmp_path / "jobs", output, ["cpu30"], run)
+    assert report["cases"]["cpu30"]["status"] == "passed"
+    assert report["passed"]
+
+
 def _capacity_result():
     return {
         "cpu_seconds": 1,
