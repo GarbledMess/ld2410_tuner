@@ -2,7 +2,7 @@
   "profile": {
     "memory_mib": 2048,
     "vcpus": 2,
-    "container_cpus": 1,
+    "container_cpus": 0.5,
     "container_memory_mib": 1536,
     "disk_gib": 24,
     "port": 0
@@ -27,7 +27,7 @@
     "/api/config",
     "/api/states"
   ],
-  "command_timeout": 1800,
+  "command_timeout": 3600,
   "commands": {
     "container_python": "chroot /work/os docker exec ha-lab python3 -c 'import sys,os; print(sys.version); print(os.getpriority(os.PRIO_PROCESS,0)); print(open(\"/proc/self/oom_score_adj\").read())'",
     "limits": "chroot /work/os docker exec ha-lab python3 /lab/scripts/limits_check.py",
@@ -36,6 +36,7 @@
     "production_worker_http": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/production_checks.py",
     "dense_legacy_learning": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/dense_history_checks.py",
     "large_day_chart": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/large_day_checks.py",
-    "python_qa": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/qa.py"
+    "python_qa": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/qa.py",
+    "hybrid_capacity": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/hybrid_capacity_checks.py --output /config/lab-reports/hybrid-capacity.json"
   }
 }
