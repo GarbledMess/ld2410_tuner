@@ -196,6 +196,32 @@ def _namespace():
     sys.modules[package.__name__] = package
 
 
+def _measure_reads():
+    """Count actual worker reads without retaining blocks or changing their order."""
+    from tuner_under_test.history import cell_cache, fit_rows
+
+    metrics = {"max_row_block": 0, "raw_rows_read": 0, "cache_hits": 0}
+    blocks = fit_rows.CapturedRowSource.blocks
+    load = cell_cache.load
+
+    def counted_blocks(source, lo, hi):
+        for block in blocks(source, lo, hi):
+            count = len(block.times)
+            metrics["max_row_block"] = max(metrics["max_row_block"], count)
+            metrics["raw_rows_read"] += count
+            yield block
+
+    def counted_load(*args, **kwargs):
+        digest = load(*args, **kwargs)
+        if digest is not None:
+            metrics["cache_hits"] += 1
+        return digest
+
+    fit_rows.CapturedRowSource.blocks = counted_blocks
+    cell_cache.load = counted_load
+    return metrics
+
+
 def _child():
     import json
     import os
@@ -216,6 +242,7 @@ def _child():
     started = time.process_time()
     from tuner_under_test.worker import calculations, protocol
 
+    metrics = _measure_reads()
     request = protocol.unpack(Path(sys.argv[1]).read_bytes(), "learn")
     report = calculations.execute(request)
     elapsed = time.process_time() - started
@@ -232,6 +259,7 @@ def _child():
         "thresholds": thresholds,
         "cost_before": report["cost_before"],
         "cost_after": report["cost_after"],
+        **metrics,
         "legality": all(
             type(value) is int and 0 <= value <= 100
             for values in thresholds.values()

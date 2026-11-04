@@ -91,6 +91,9 @@ def test_scaling_runs_complete_cold_job_in_a_fresh_child(tmp_path):
     assert len(result["thresholds"]["r0"]) == 18
     assert result["cost_before"] >= 0
     assert result["cost_after"] >= 0
+    assert result["raw_rows_read"] >= result["source_rows"]
+    assert 0 < result["max_row_block"] <= 4096
+    assert result["cache_hits"] == 0
     if sys.platform == "linux":
         assert result["limits"]["memory_bytes"] == 512 * 1024**2
         assert result["limits"]["cpu_seconds"] == 120
@@ -110,6 +113,9 @@ def test_scaling_warm_job_preserves_thresholds_and_base_costs(tmp_path):
     assert result["cost_before"] == result["cold"]["cost_before"]
     assert result["cost_after"] == result["cold"]["cost_after"]
     assert result["pid"] != result["cold"]["pid"]
+    assert result["cache_hits"] > 0
+    assert result["raw_rows_read"] < result["cold"]["raw_rows_read"]
+    assert result["cold"]["raw_rows_read"] >= result["source_rows"]
     assert result["traced_peak_bytes"] == 0
     assert not list(tmp_path.glob("scaling-job-*"))
 
