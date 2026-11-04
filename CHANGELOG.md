@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Replace threshold fitting with the hybrid histogram and physical-replay engine.
+  Learning reports episode-level errors, timing fidelity and suspicious label
+  sub-stretches, with deterministic work limits and guarded recommendations.
+  Stored history and labels are preserved; performance capacity gates remain
+  unmet on some synthetic workloads.
+- Add an offline hybrid validator for private history exports. It writes anonymous
+  held-out accuracy and resource reports without modifying source history or
+  uploading recordings.
+
 - Radar and room status charts now show labelled Human, Entity / sensor and Guessed
   evidence lanes. Each kind can be hidden with a remembered viewer preference. Room
   guesses stay separate per radar. Rendering clips and merges periods and batches

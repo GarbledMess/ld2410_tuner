@@ -14,7 +14,9 @@ custom_components/ld2410_tuner/
 ├── presence/                # Automatic labels and pure inference
 ├── rooms/                   # Areas, zones, room labels, attribution, learning sets
 ├── history/                 # Recording, cleanup, human labels/timeouts
-├── calibration/             # Explicit Learn/Apply, fitting, search, metrics
+├── calibration/             # Explicit Learn/Apply, job policy and result storage
+├── engine/hybrid/           # Pure threshold fitting and fixed-pattern evaluation
+├── worker/                  # Captured inputs, subprocess ownership and limits
 ├── presentation/            # History queries, dashboard snapshots/exports
 ├── static/
 │   ├── ld2410-tuner-panel.js # Public panel entrypoint
@@ -29,7 +31,7 @@ custom_components/ld2410_tuner/
 | `runtime/` | `coordinator.py` owns state/tasks; `discovery.py` follows registry changes; `websocket.py` exposes administrator commands |
 | `presence/` | `autolabelling.py` records guesses/feedback; `inference.py` implements the pure temporal estimator; `reference_training.py` builds per-radar references; `rebuilds.py` owns reference rebuild policy: events only `mark_stale` (`reference_stale_since`), and `refresh` (overnight pass, "Refresh references") rebuilds in the executor (coalesced, revision-checked) |
 | `history/` | Recorded history is owned by the day store and nothing else holds it. `daystore.py` owns the folder `<config>/.storage/ld2410_tuner/history/<radar>/<YYYY-MM-DD>.log` (live) and `.day` (finished; UTC days): `append` on the event loop touches memory only, `flush` (executor) appends logs and finishes ended days, `open` repairs an interrupted finish and ends coverage left open by a crash; `dayfile.py` is the one codec (append-only log records; zlib columnar finished day, one byte a gate per change, 255 missing, float32 for a non-integer day, plus the day's guess runs); `ingest.py` is the one writer (delivered changes at their own millisecond time, guess run changes, explicit ends of coverage); `live.py` is the poll's recording work (only values events missed); `spans.py` is the one reader (`events`, `day_spans`: physical spans, a reading holds until the next); `day_results.py` keeps what learning derives from a finished day (row counts, evidence chunks, quality histograms, guess runs) until that day file or the labels inside it change (`DayStore.identity`, `day_results.fingerprint`), so daily learning recomputes only new or relabelled days; `summaries.py` and `summary_cache.py` are label-independent duration indexes per finished day (optional `.sum` files, worker-only, 64 MiB, never own history); `guesses.py` and `trust.py` read automatic guess runs as evidence; `label_lookup.py` and `labels.py` own human labels/timeouts and `label_counts.py` the per-radar labelled time behind histograms; `convert.py` is the only reader of the old JSON formats (one-way, at startup); `cleanup.py` cuts time ranges out of finished days; `policy.py` owns retention settings; `budget.py` plans age/size cuts; `storage.py` owns guarded persistence and recording controls; `recording.py` owns runtime history operations |
-| `calibration/` | `service.py` owns Learn/Apply and hardware guards; `jobs.py` owns task lifetime, result saving and job reports; `results.py` owns the four saved-result slots; `event_fitting.py` (with `event_replay.py`, `event_timing.py`, `event_quality.py`, `event_preferences.py`), `metrics.py`, `scoring.py`, `constants.py` own the numerical learner over physical spans; `evidence_budget.py` chooses a bounded, representative set of recorded time when a history is too dense to replay in full; `duration.py` scores observed elapsed time; `influence.py` attributes errors to recorded chunks; `recovery.py` owns bounded pre-Learn recovery; `timing.py` and `timing_metrics.py` replay sampled device timing, while `timing_config.py` reads optional HA timing entities |
+| `calibration/` | `service.py` owns Learn/Apply and hardware guards; `jobs.py` owns task lifetime, result saving and job reports; `results.py` owns the four saved-result slots; `event_fitting.py` routes fitting to `engine/hybrid/`; `metrics.py`, `scoring.py`, `constants.py` provide shared scoring contracts; `duration.py` scores observed elapsed time; `influence.py` attributes errors to recorded chunks; `recovery.py` owns bounded pre-Learn recovery; `timing.py` and `timing_metrics.py` replay sampled device timing, while `timing_config.py` reads optional HA timing entities |
 | `rooms/` | `layout.py` builds the area/zone/elsewhere/area-less/unassigned tree; `room_labels.py` owns manual and sensor room labels (manual-only revision for stale edits, separate sensor revision; finalising a sensor label marks member references stale); `room_sources.py` reads camera/boolean/Bermuda sources; `truth.py` applies precedence (own human label, implied, member-derived human truth, room sensor labels, member guesses, then the noisy-OR estimate; sensor labels below `MIN_AUTO_CONFIDENCE` are ignored); `attribution.py` decides which radar saw a room's occupancy (own human label, else sustained energy above its empty baseline) computed once per job (`event_attribution`); `seen_by.py` uses that same function and cache for chips; `roles.py` computes per-radar role metrics, and `objective.py` per-radar preferences, from it too (a job computes it once per radar); `sets.py`, `objective.py`, `fitting.py`, `learning.py`, `application.py` implement linked learning sets, set-level jobs and Apply |
 | `presentation/` | `charts.py` aggregates history; `snapshots.py` builds dashboard/export data |
 | `static/panel/` | `view.js` owns the shell/draw lifecycle; `card.js`, `controls.js`, `learning.js` own card sections and interactions; `chart.js`, `visualization.js`, `selection.js` own history requests, SVG drawing, and range interaction; `jobs.js` renders server-owned learning progress; `layout.js` renders the room tree and group headers; `room_timeline.js` and `room_report.js` render room labelling, Seen-by chips and the role scoreboard; `constants.js` owns shared values |
@@ -54,11 +56,13 @@ replay tools use the same grouped module paths as the installed integration.
   report per device. Errors and shutdown interruption are recorded; runtime startup
   marks any persisted running report interrupted. Job status updates do not redraw
   focused inputs. Stage progress is indeterminate, not a fabricated completion rate.
-- The fitting search retains its iteration order and strict tie-breaking. The
-  search minimizes a finite time cost (5 times missed occupied-time rate plus
-  false-active empty-time rate), then uses confidence-weighted automatic time.
-  The 99.9% recall target assesses quality rather than granting a free miss budget. Quality failures are
-  advisory for manual Apply; entity identity and write guards still apply.
+- The hybrid fitting search is deterministic and uses data-defined coordinate
+  order, preserving radar-rename invariance. Episode-balanced costs and guards
+  precede duration and margin tie-breaks. A candidate may not increase the number
+  of mostly false-active empty periods relative to the start. The duration component
+  retains the 5:1 missed/false-active cost; quiet-presence
+  regularization affects training selection only. Quality failures remain advisory
+  for manual Apply; entity identity and write guards still apply.
 - Timing replay is an offline calibration input, never a replacement presence
   entity. It combines gates before the radar hold and any known on/off filters.
   Search, recent validation and review periods use the same replay; raw metrics
@@ -103,11 +107,11 @@ replay tools use the same grouped module paths as the installed integration.
   skips overlapping ticks and stops between radars on unload. Registry access and live
   state changes remain on HA's event loop. Seen-by attribution uses the latest 72 hours;
   this display window does not remove stored history or change learning evidence.
-- Learning replays physical spans exactly. When a radar's recorded rows exceed the learning
-  budget, `calibration/evidence_budget.select` keeps the most valuable recorded time whole
-  (newest per class, quietest presence, loudest empty noise, then stretches beside label
-  edges) and samples the rest of each class evenly, each sampled window standing for its
-  class's unsampled time (`Window.scale`), so class totals and rates stay unbiased.
+- Hybrid fitting reads history in blocks of at most 4096 rows and derives
+  six-second cells. It does not sample away evidence to meet a time budget.
+  Automatic evidence is limited to the last 28 days; human evidence is admitted
+  newest-first up to 400 labelled hours, retaining the label crossing the cap.
+  Room fits retain their seven-day learning window.
 - A radar's readings are classified when something notably changes, not on every tick
   (`inference.reclassify`: a channel `CHANGE` away for `SUSTAIN` seconds, a changed filter,
   references, calibration or external source, a classification not at rest, or the
@@ -141,9 +145,9 @@ replay tools use the same grouped module paths as the installed integration.
 - Human evidence trains at weight 1. All automatic evidence (a radar's own guesses,
   room estimate, sensor room labels, rule-2 attribution) counts at confidence times the
   integration-wide "Automatic evidence weight" (`calibration/settings.py`, stored in
-  `learning_schedule`, 0-1, default 0). Both learners rank on human cost +
+  `learning_schedule`, 0-1, default 0). Hybrid scoring combines human cost +
   `scoring.automatic_share` x automatic cost (share capped at `AUTO_CLASS_CAP` of the
-  human mass), then the earlier lexicographic tie-breaks; at 0 automatic evidence only
+  human mass), with episode support accounted separately; at 0 automatic evidence only
   breaks ties. References are tagged human, entity or radar.
 - Automatic Apply of a learning set refuses when a zone was skipped or would get
   worse.
@@ -160,6 +164,59 @@ replay tools use the same grouped module paths as the installed integration.
   radar's label revision and related manual room label revisions are unchanged; a
   failed, discarded or cancelled pass keeps the radar stale. Learn does not read
   references, so it does not refresh them first.
+
+## Hybrid fitting and evaluation
+
+`engine/hybrid/` owns the numerical contract. Adapters construct per-radar physical
+sources and zone evidence; `engine.py` searches histogram proposals, prepares a
+bounded shortlist and scores it with physical replay. Cells retain energy
+histograms and maxima, with confidence and episode identity carried separately.
+Exact replay combines enabled gates before applying each radar's timing, then
+unions member detections for each zone. Lower-fidelity fallback is explicit in
+the result; it never presents histogram estimates as exact physical validation.
+`evaluate.py` is the shared fixed-pattern path for assessment and Apply comparison.
+The original start remains among the static candidates for every search seed.
+
+The anomaly audit examines windows within labels against trimmed class references.
+It caps suspected time, re-scores the existing shortlist plus required seed patterns
+with suspects masked, and accepts a discard only beyond the evidence margin.
+It never deletes or flips stored labels or discards a whole label merely because
+part is suspicious. Reports retain discarded and kept decisions, or explain why
+the deterministic operation budget prevented testing. No elapsed-CPU guard changes
+the chosen result.
+
+Finished-day cell sidecars and energy indexes are label-independent and invalidated
+by source identity and cache version. Live days are rebuilt. Decision-relevance
+folding, exact vector reuse and bounded caches reduce repeated scoring without
+changing the admitted evidence. Physical replay and timing streams spill to
+job-owned temporary files; cancellation waits for the owned child and preparation
+work before removing captured inputs.
+
+Production numerical workers are stdlib-only and run with `-I -S -B`. Linux
+controls enforce 512 MiB address space, 120 CPU seconds, 128 MiB per file and 64
+file descriptors before numerical imports. Supervisor ownership covers success,
+failure and cancellation. Unsupported isolation fails explicitly. These hard
+limits are separate from the stricter desktop performance acceptance targets.
+
+`tests/hybrid_scaling.py` builds deterministic raw disk history before job timers,
+then measures fresh cold and warm worker children through production capture and
+execution. `tests/lab/hybrid_capacity_checks.py` reports the full-size and memory
+matrix, legal thresholds, cache reads, spill cleanup and Linux kernel probes.
+CPU and traced-memory cases run separately. The dedicated CI capacity job preserves
+incremental evidence and fails missed gates. The low-share shared lab configuration
+is `tools/ha_lab_hybrid_capacity.json`; its x86 CPU quota limits scheduling share,
+not instructions per CPU-second, so it does not emulate a Green's processor speed.
+Measured capacity failures remain explicit and are not accuracy failures or passes.
+
+`tools/validate_hybrid.py` validates private exports offline under `exp2-cv-v2`,
+using held-out folds and the independent `tests/hybrid_referee.py` oracle. See the
+[command and input formats](../README.md#offline-hybrid-validation). It keeps caches
+outside the source history and emits anonymous aggregate reports. Frozen baseline
+thresholds can be re-scored using `--baseline`; equality of fitted outputs requires
+comparing the reports separately from timing measurements and source hashes.
+Accepted search limitations include complementary gates that improve only together
+and sensitivity to held-out energy drift. Coordinate order intentionally differs
+from the prototype to preserve radar-rename invariance.
 
 ## Weak-machine efficiency
 
@@ -179,18 +236,15 @@ keeps the numbers.
 - Day files decode to columns (`array` times and ends, a `bytes` column a gate), so a
   radar-day of 777,600 changes decodes in well under a second; room evidence rows keep
   the same byte columns (`rooms/evidence.Rows`).
-- Learning keeps per-day derived results (`history/day_results.py`, memory only, bounded by
-  entries and 64 MiB) keyed by the finished day's identity and the labels inside it, so a
-  repeated Learn (the next overnight run) re-derives only days that are new or relabelled;
-  live and closing days are never kept.
+- Hybrid fitting caches label-independent finished-day cells and indexes under
+  explicit byte budgets. Relabelling reuses physical cells but rebuilds evidence;
+  live days remain uncached (see Hybrid fitting and evaluation above).
 - Label counts, label edits and reference rebuilds read per-day duration indexes
   (`history/summaries.py`) instead of replaying every change; a label edit recounts only
   the time whose label changed (`label_counts.update`).
-- The timing windows return spans as `(starts, ends)` lists (`timing.merged`), runs of
-  hits come from one regular expression (`timing.hit_runs`), and the joint search keeps
-  each window's spans for the hits it has seen (`replay.Projector`, bounded) and the
-  rates of each set of hit masks it has ranked (`Objective.rates`). `evidence.Readings`
-  keeps a sample's energies a byte each.
+- Hybrid timing replay streams bounded physical chunks and spills longer
+  intermediate runs. Fixed-pattern comparisons select one common fidelity for
+  every pattern before scoring; persisted comparisons include its scorer identity.
 
 ## Quality checks
 
