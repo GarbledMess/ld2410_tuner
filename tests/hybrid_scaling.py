@@ -222,6 +222,90 @@ def _measure_reads():
     return metrics
 
 
+def _measure_digests():
+    """Track live digest payloads by identity, without retaining the digests.
+
+    Bytes count channel/coverage buffers and energy-index arrays; Python object
+    overhead and physical-row spools are measured separately by tracemalloc.
+    """
+    from tuner_under_test.engine.hybrid.digest import DayDigest
+
+    live = {}
+    metrics = {"max_resident_digests": 0, "resident_digest_bytes": 0}
+    initialize = DayDigest.__init__
+
+    def counted_init(digest, *args, **kwargs):
+        initialize(digest, *args, **kwargs)
+        size = sum(map(len, digest.channels)) + len(digest.cov)
+        if digest.index is not None:
+            size += digest.index.nbytes()
+        live[id(digest)] = size
+        metrics["max_resident_digests"] = max(metrics["max_resident_digests"], len(live))
+        metrics["resident_digest_bytes"] = max(metrics["resident_digest_bytes"], sum(live.values()))
+
+    def released(digest):
+        live.pop(id(digest), None)
+
+    DayDigest.__init__ = counted_init
+    DayDigest.__del__ = released
+    return metrics, live
+
+
+def _measure_spills():
+    """High-water bytes in temporary streams, including rolled spools and replay.
+
+    Persistent sidecars and SQLite metadata are excluded. Tracking the underlying
+    disk file counts a rolled spool once, even when its contents are copied out.
+    """
+    import tempfile
+
+    live = {}
+    metrics = {"spill_bytes": 0, "max_spill_files": 0, "open_spill_files": 0}
+    original = tempfile.TemporaryFile
+
+    class CountedFile:
+        def __init__(self, *args, **kwargs):
+            self.stream = original(*args, **kwargs)
+            live[id(self)] = 0
+            metrics["open_spill_files"] = len(live)
+            metrics["max_spill_files"] = max(metrics["max_spill_files"], len(live))
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def write(self, value):
+            count = self.stream.write(value)
+            live[id(self)] = max(live[id(self)], self.stream.tell())
+            metrics["spill_bytes"] = max(metrics["spill_bytes"], sum(live.values()))
+            return count
+
+        def truncate(self, size=None):
+            size = self.stream.truncate(size)
+            live[id(self)] = size
+            metrics["spill_bytes"] = max(metrics["spill_bytes"], sum(live.values()))
+            return size
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+        def close(self):
+            try:
+                self.stream.close()
+            finally:
+                live.pop(id(self), None)
+                metrics["open_spill_files"] = len(live)
+
+        def __del__(self):
+            if "stream" in self.__dict__:
+                self.close()
+
+    tempfile.TemporaryFile = CountedFile
+    return metrics
+
+
 def _child():
     import json
     import os
@@ -242,7 +326,9 @@ def _child():
     started = time.process_time()
     from tuner_under_test.worker import calculations, protocol
 
+    spill_metrics = _measure_spills()
     metrics = _measure_reads()
+    digest_metrics, live_digests = _measure_digests()
     request = protocol.unpack(Path(sys.argv[1]).read_bytes(), "learn")
     report = calculations.execute(request)
     elapsed = time.process_time() - started
@@ -260,6 +346,9 @@ def _child():
         "cost_before": report["cost_before"],
         "cost_after": report["cost_after"],
         **metrics,
+        **digest_metrics,
+        **spill_metrics,
+        "resident_digests_at_end": len(live_digests),
         "legality": all(
             type(value) is int and 0 <= value <= 100
             for values in thresholds.values()
