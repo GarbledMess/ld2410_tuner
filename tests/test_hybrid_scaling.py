@@ -71,3 +71,74 @@ def test_scaling_fixture_rejects_invalid_dimensions(tmp_path, field, value):
 
     with pytest.raises(ValueError, match=field):
         build_fixture(tmp_path, **{field: value})
+
+
+def test_scaling_runs_complete_cold_job_in_a_fresh_child(tmp_path):
+    import os
+    import sys
+
+    from hybrid_scaling import run_scaling
+
+    result = run_scaling(tmp_path, radars=1, days=1, trace=True)
+    assert result["pid"] != os.getpid()
+    assert result["isolated"] and result["no_site"] and result["no_bytecode"]
+    assert result["mode"] == "cold"
+    assert result["radar_days"] == 1
+    assert result["source_rows"] == 14580
+    assert result["cpu_seconds"] > 0
+    assert result["traced_peak_bytes"] > 0
+    assert result["legality"]
+    assert len(result["thresholds"]["r0"]) == 18
+    assert result["cost_before"] >= 0
+    assert result["cost_after"] >= 0
+    if sys.platform == "linux":
+        assert result["limits"]["memory_bytes"] == 512 * 1024**2
+        assert result["limits"]["cpu_seconds"] == 120
+        assert result["limits"]["file_bytes"] == 128 * 1024**2
+        assert result["limits"]["open_files"] == 64
+    else:
+        assert result["limits"] is None
+    assert not list(tmp_path.glob("scaling-job-*"))
+
+
+def test_scaling_warm_job_preserves_thresholds_and_base_costs(tmp_path):
+    from hybrid_scaling import run_scaling
+
+    result = run_scaling(tmp_path, radars=1, days=2, warm=True)
+    assert result["mode"] == "warm"
+    assert result["thresholds"] == result["cold"]["thresholds"]
+    assert result["cost_before"] == result["cold"]["cost_before"]
+    assert result["cost_after"] == result["cold"]["cost_after"]
+    assert result["pid"] != result["cold"]["pid"]
+    assert result["traced_peak_bytes"] == 0
+    assert not list(tmp_path.glob("scaling-job-*"))
+
+
+def test_scaling_captures_default_dimensions_without_protocol_overflow(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from hybrid_scaling import DAY, START, _labels, _request
+    from tuner_under_test.history import dayfile, daystore
+    from tuner_under_test.worker import calculations, manifest, protocol
+
+    store = daystore.DayStore(tmp_path / "history", cache_bytes=0)
+    labels = [label for day in range(28) for label in _labels(START + day * DAY)]
+    devices = {f"r{i}": {"history_labels": labels, "training_state": "unknown"} for i in range(30)}
+    for rid in devices:
+        for index in range(28):
+            start = START + index * DAY
+            builder = dayfile.DayBuilder(start, start + DAY)
+            builder.add(dayfile.Change(start, dict.fromkeys(range(18), 20)))
+            builder.add(dayfile.End(start + DAY))
+            store.replace(rid, daystore.date_of(start), builder.day())
+    directory = tmp_path / "job"
+    directory.mkdir()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        path = executor.submit(
+            _request, {"store": store, "devices": devices}, directory, 28
+        ).result()
+    request = protocol.unpack(path.read_bytes(), "learn")
+    restored = calculations.restore(manifest.expand(request)["views"]["all"])
+    assert len(restored._days.entries) == 30 * 28
+    assert len(restored.data["devices"]) == 30
+    assert all(len(restored._days.days(rid)) == 28 for rid in devices)
