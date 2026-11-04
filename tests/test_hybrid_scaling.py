@@ -94,6 +94,11 @@ def test_scaling_runs_complete_cold_job_in_a_fresh_child(tmp_path):
     assert result["raw_rows_read"] >= result["source_rows"]
     assert 0 < result["max_row_block"] <= 4096
     assert result["cache_hits"] == 0
+    assert result["spill_bytes"] >= 0
+    assert result["open_spill_files"] == 0
+    assert 0 < result["max_resident_digests"] <= 3
+    assert result["resident_digests_at_end"] == 0
+    assert 0 < result["resident_digest_bytes"] < 4 * 1024**2
     if sys.platform == "linux":
         assert result["limits"]["memory_bytes"] == 512 * 1024**2
         assert result["limits"]["cpu_seconds"] == 120
@@ -148,3 +153,48 @@ def test_scaling_captures_default_dimensions_without_protocol_overflow(tmp_path)
     assert len(restored._days.entries) == 30 * 28
     assert len(restored.data["devices"]) == 30
     assert all(len(restored._days.days(rid)) == 28 for rid in devices)
+
+
+def test_scaling_spill_metrics_measure_concurrent_disk_bytes(monkeypatch):
+    import tempfile
+
+    import hybrid_scaling
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tempfile, "SpooledTemporaryFile", tempfile.SpooledTemporaryFile)
+        patch.setattr(tempfile, "TemporaryFile", tempfile.TemporaryFile)
+        metrics = hybrid_scaling._measure_spills()
+        with tempfile.SpooledTemporaryFile(max_size=8) as first:
+            first.write(b"1234")
+            assert metrics["spill_bytes"] == 0
+            first.write(b"56789")
+            assert metrics["spill_bytes"] == 9
+            with tempfile.SpooledTemporaryFile(max_size=8) as second:
+                second.write(b"abcdefghij")
+                assert metrics["spill_bytes"] == 19
+                assert metrics["max_spill_files"] == 2
+            assert metrics["open_spill_files"] == 1
+        assert metrics["open_spill_files"] == 0
+        assert metrics["spill_bytes"] == 19
+
+
+def test_scaling_spill_metrics_include_unspooled_replay_streams(monkeypatch):
+    import tempfile
+
+    import hybrid_scaling
+
+    with monkeypatch.context() as patch:
+        patch.setattr(tempfile, "TemporaryFile", tempfile.TemporaryFile)
+        patch.setattr(tempfile, "SpooledTemporaryFile", tempfile.SpooledTemporaryFile)
+        metrics = hybrid_scaling._measure_spills()
+        with tempfile.TemporaryFile() as stream:
+            stream.write(b"replay")
+            assert metrics["spill_bytes"] == 6
+            assert metrics["open_spill_files"] == 1
+            stream.truncate(20)
+            assert metrics["spill_bytes"] == 20
+            stream.truncate(4)
+            with tempfile.TemporaryFile() as other:
+                other.write(b"0123456789")
+                assert metrics["spill_bytes"] == 20
+        assert metrics["open_spill_files"] == 0
