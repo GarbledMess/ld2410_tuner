@@ -205,6 +205,7 @@ RUNTIME_FILES = (
     "static/panel/recorded_csv.js",
     "static/panel/timing_settings.js",
     "static/panel/sources.js",
+    "static/panel/presence_lanes.js",
     "static/panel/bermuda.js",
     "static/panel/source_picker.js",
     "static/panel/selection.js",

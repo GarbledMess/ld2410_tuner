@@ -1,3 +1,4 @@
+import { panelPresenceLanes } from "./panel/presence_lanes.js";
 import { panelRendering } from "./panel/rendering.js";
 import { panelComparison } from "./panel/comparison.js";
 import { panelSources } from "./panel/sources.js";
@@ -287,6 +288,7 @@ Object.assign(
   panelTimeline,
   panelActivity,
   panelChart,
+  panelPresenceLanes,
   panelVisualization,
   panelSelection,
   panelRoomLearning,
