@@ -1,8 +1,7 @@
 """Deterministic raw day files for scaling checks; no recorded history is used."""
 
 from array import array
-
-from tuner_under_test.history import dayfile, daystore
+from pathlib import Path
 
 DAY = 86400
 START = 1_790_000_000 // DAY * DAY
@@ -42,6 +41,8 @@ def _energy(radar, channel, offset, day):
 
 
 def _day(radar, day, density):
+    from tuner_under_test.history import dayfile
+
     start = START + day * DAY
     offsets = tuple(_times(density))
     times = array("d", (start + offset for offset in offsets))
@@ -55,6 +56,8 @@ def _day(radar, day, density):
 
 
 def _live(store, rid, day):
+    from tuner_under_test.history import dayfile
+
     for index, (start, end) in enumerate(zip(day.times, day.ends, strict=True)):
         store.append(rid, dayfile.Change(start, dict(enumerate(day.vector(index)))))
         if end < day.end and end < day.times[index + 1]:
@@ -68,6 +71,8 @@ def build_fixture(root, radars=30, days=28, *, density=1):
     cover 06:00-14:00. Base rows are six seconds apart (three at density two),
     with two 125-ms burst rows every 15 minutes. No cell digests are prepared.
     """
+    from tuner_under_test.history import daystore
+
     for name, value in (("radars", radars), ("days", days), ("density", density)):
         if type(value) is not int or value < 1:
             raise ValueError(f"{name} must be a positive integer")
@@ -92,3 +97,149 @@ def build_fixture(root, radars=30, days=28, *, density=1):
         "base_cadence_seconds": 6 / density,
         "labelled_duty_cycle": 1 / 3,
     }
+
+
+def _request(fixture, directory, days):
+    from types import SimpleNamespace
+
+    from tuner_under_test.const import HISTORY_KEYS
+    from tuner_under_test.worker import capture, codec, manifest, protocol
+
+    end = START + days * DAY
+    view = SimpleNamespace(
+        data={"devices": fixture["devices"], "room_snapshot": None},
+        _days=fixture["store"],
+        _history_until=end,
+        _snapshot_history_start=START,
+        _physical_history_start=START,
+        _attribution_until=end,
+    )
+    with manifest.Writer(directory / "history.sqlite") as writer:
+        capture.prepare_multi({"all": view}, directory, sink=writer)
+    request = {"manifest": str(writer.path)}
+    members = {
+        rid: {"view_key": "all", "thresholds": dict.fromkeys(HISTORY_KEYS, 50), "timing": {}}
+        for rid in fixture["devices"]
+    }
+    labels = [{**label, "source": "manual"} for label in fixture["devices"]["r0"]["history_labels"]]
+    room = {"group_id": "room", "groups": {}, "room_labels": {"room": labels}}
+    request.update(
+        operation="room_fit",
+        parameters=codec.encode(
+            {
+                "members": {"room": members},
+                "rooms": {"room": room},
+                "start": START,
+                "end": end,
+                "weight": 0.0,
+            }
+        ),
+    )
+    path = directory / "request.json"
+    path.write_bytes(protocol.pack("learn", request))
+    return path
+
+
+async def _launch(path, trace):
+    import json
+    import os
+
+    from tuner_under_test.worker.supervisor import Supervisor
+
+    supervisor = Supervisor(Path(__file__), deadline=1800, stdout_bytes=1024 * 1024)
+
+    async def prepare():
+        return str(path), str(os.getpid()), str(int(trace))
+
+    try:
+        return json.loads(await supervisor.run(prepare))
+    finally:
+        await supervisor.aclose()
+
+
+def run_scaling(root: Path, radars=30, days=28, *, warm=False, trace=False, density=1):
+    """Generate outside the timer, capture once, then run complete fresh child jobs.
+
+    Warm means a second child using sidecars produced by the first child. Windows
+    exercises the stdlib job but cannot install Linux protection; this is explicit
+    in the result. The Linux path always installs the production worker limits.
+    """
+    import asyncio
+    import tempfile
+    from concurrent.futures import ThreadPoolExecutor
+
+    root.mkdir(parents=True, exist_ok=True)
+    fixture = build_fixture(root, radars, days, density=density)
+    with tempfile.TemporaryDirectory(prefix="scaling-job-", dir=root) as temporary:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            path = executor.submit(_request, fixture, Path(temporary), days).result()
+        cold = asyncio.run(_launch(path, trace if not warm else False))
+        result = asyncio.run(_launch(path, trace)) if warm else cold
+        result.update(
+            mode="warm" if warm else "cold",
+            radar_days=fixture["radar_days"],
+            source_rows=fixture["source_rows"],
+            base_cadence_seconds=fixture["base_cadence_seconds"],
+            labelled_duty_cycle=fixture["labelled_duty_cycle"],
+        )
+        if warm:
+            result["cold"] = cold
+        return result
+
+
+def _namespace():
+    import sys
+    from types import ModuleType
+
+    package = ModuleType("tuner_under_test")
+    package.__path__ = [str(Path(__file__).resolve().parents[1] / "custom_components/ld2410_tuner")]
+    sys.modules[package.__name__] = package
+
+
+def _child():
+    import json
+    import os
+    import sys
+    import time
+    import tracemalloc
+
+    _namespace()
+    from tuner_under_test.worker.limits import Budget, install
+
+    controls = None
+    if sys.platform == "linux":
+        controls = install(
+            Budget(512 * 1024**2, 120, 128 * 1024**2), expected_parent=int(sys.argv[2])
+        )
+    if sys.argv[3] == "1":
+        tracemalloc.start()
+    started = time.process_time()
+    from tuner_under_test.worker import calculations, protocol
+
+    request = protocol.unpack(Path(sys.argv[1]).read_bytes(), "learn")
+    report = calculations.execute(request)
+    elapsed = time.process_time() - started
+    peak = tracemalloc.get_traced_memory()[1] if tracemalloc.is_tracing() else 0
+    thresholds = report["thresholds"]
+    result = {
+        "pid": os.getpid(),
+        "isolated": bool(sys.flags.isolated),
+        "no_site": bool(sys.flags.no_site),
+        "no_bytecode": bool(sys.dont_write_bytecode),
+        "limits": controls,
+        "cpu_seconds": elapsed,
+        "traced_peak_bytes": peak,
+        "thresholds": thresholds,
+        "cost_before": report["cost_before"],
+        "cost_after": report["cost_after"],
+        "legality": all(
+            type(value) is int and 0 <= value <= 100
+            for values in thresholds.values()
+            for value in values.values()
+        ),
+    }
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    _child()
