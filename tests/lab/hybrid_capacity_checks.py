@@ -124,6 +124,12 @@ def measure(root, output, cases, run, *, resource_checks=None):
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     for name in cases:
+        report["cases"][name] = {"status": "running", "dimensions": CASES[name]}
+        output.write_text(
+            json.dumps({**report, "passed": False}, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
         print(f"Measuring {name}: {CASES[name]}", flush=True)
         try:
             result = run(root / name, **CASES[name])
