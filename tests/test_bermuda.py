@@ -84,6 +84,50 @@ class BermudaTests(unittest.IsolatedAsyncioTestCase):
             "device_ids": ["b"],
         }
 
+    def missing(self):
+        module = sys.modules["tuner_under_test.presence.bermuda"]
+        return module.missing_rooms(self.runtime)
+
+    def house(self, *areas):
+        """Radars a and b are in the bedroom and office, c has no area; extra areas have none."""
+        self.areas()
+        ar = sys.modules["homeassistant.helpers.area_registry"]
+        listed = [("bedroom", "Main Bedroom"), ("office", "Office"), *areas]
+        ar.async_get.return_value = types.SimpleNamespace(
+            async_list_areas=lambda: [
+                types.SimpleNamespace(id=key, name=name) for key, name in listed
+            ]
+        )
+        for key in ("a", "b", "c"):
+            self.runtime.data["devices"].setdefault(key, {})["entities"] = {"move": "sensor.x"}
+
+    def test_every_area_with_a_recording_radar_is_a_bermuda_room(self):
+        self.house()
+        self.assertEqual(self.missing(), [])
+
+    def test_a_room_whose_radar_is_not_recording_says_so(self):
+        self.house()
+        self.runtime.data["devices"]["b"]["recording_enabled"] = False
+        self.assertEqual(
+            self.missing(), [{"area_id": "office", "name": "Office", "reason": "recording_off"}]
+        )
+
+    def test_an_area_without_a_radar_says_so(self):
+        self.house(("kitchen", "Küche <1>"))
+        self.assertEqual(
+            self.missing(), [{"area_id": "kitchen", "name": "Küche <1>", "reason": "no_radar"}]
+        )
+
+    def test_missing_rooms_are_listed_by_name(self):
+        self.house(("z", "attic"), ("y", "Zoo"), ("x", "Bath"))
+        self.assertEqual([room["name"] for room in self.missing()], ["attic", "Bath", "Zoo"])
+
+    def test_no_areas_means_no_missing_rooms(self):
+        self.areas()
+        ar = sys.modules["homeassistant.helpers.area_registry"]
+        ar.async_get.return_value = types.SimpleNamespace(async_list_areas=lambda: [])
+        self.assertEqual(self.missing(), [])
+
     def test_shared_room_settings_and_range_inheritance(self):
         self.shared_room()
         module = sys.modules["tuner_under_test.presence.bermuda"]
