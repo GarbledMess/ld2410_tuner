@@ -1,5 +1,13 @@
 # Release notes
 
+## Unreleased
+
+- Recording no longer stops saving after a late or slow worker cleanup. One such event
+  closed the worker service until Home Assistant restarted, while readings piled up in
+  memory. Saves now continue, directly if the service really has to close.
+- A recorded history save that fails is now logged, and the stall warning names a closed
+  worker, the storage lock and what the save is waiting on.
+
 ## 1.32.0 - 2026-10-27
 
 - The Bermuda section is much simpler: one **Use this phone** switch per phone or watch,

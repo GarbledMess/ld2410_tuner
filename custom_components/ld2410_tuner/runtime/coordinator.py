@@ -107,6 +107,7 @@ class TunerRuntime:
         self._history_saved_at = time.time()
         self._history_waiting_since = None
         self._history_stall_warned = False
+        self._history_flush_error = None
 
     def _schedule_flush(self) -> None:
         """Append recorded changes to the day logs shortly (executor): recording needs no JSON
@@ -124,7 +125,10 @@ class TunerRuntime:
 
         await asyncio.sleep(STORE_DELAY)
         if self._days is not None:
-            await flushing.flush(self)
+            try:
+                await flushing.flush(self)
+            except Exception as error:
+                history_save.failed(self, error)
 
     def _schedule_state_save(self, now) -> None:
         """Recording state in the JSON store (classifications, live histograms) is saved at
