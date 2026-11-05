@@ -7,6 +7,9 @@
   Automatic evidence remains limited to 28 days and human evidence to the newest
   400 labelled hours, keeping the crossing label whole.
 
+- Learning now lowers all of a fit's thresholds together when that catches more labelled
+  presence for little false activity, so quiet presence is missed less often.
+
 - Replace threshold fitting with the hybrid histogram and physical-replay engine.
   Learning reports episode-level errors, timing fidelity and suspicious label
   sub-stretches, with deterministic work limits and guarded recommendations.

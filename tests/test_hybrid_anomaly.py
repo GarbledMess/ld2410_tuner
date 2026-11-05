@@ -565,8 +565,9 @@ def test_cpu_budget_reports_not_tested(monkeypatch):
 
 
 def test_masked_audit_never_repeats_coordinate_search(monkeypatch):
-    from tuner_under_test.engine.hybrid import replay, search
+    from tuner_under_test.engine.hybrid import engine, replay, search
 
+    monkeypatch.setattr(engine, "PRESENCE_SHIFTS", ())  # This counts the audit's own replays.
     rows, truth = phone_case()
     runs, original_run, original_replay = [], search._Search.run, replay.replay
     audited = []
@@ -596,6 +597,30 @@ def test_masked_audit_never_repeats_coordinate_search(monkeypatch):
     later = sum(n for after, n in runs if after)
     assert first > later
     assert later <= 4
+
+
+def test_presence_shift_adds_only_its_own_replays_to_the_masked_audit(monkeypatch):
+    from tuner_under_test.engine.hybrid import engine, replay
+    from tuner_under_test.engine.hybrid.constants import PRESENCE_SHIFTS
+
+    rows, truth = phone_case()
+    runs, audited = [], []
+    original_audit, original_replay = anomaly.audit, replay.replay
+
+    def mark(*args, **kwargs):
+        audited.append(True)
+        return original_audit(*args, **kwargs)
+
+    def counted(problem, providers, regions, wanted, *args):
+        runs.append((bool(audited), sum(len(v) for v in wanted.values())))
+        return original_replay(problem, providers, regions, wanted, *args)
+
+    monkeypatch.setattr(anomaly, "audit", mark)
+    monkeypatch.setattr("tuner_under_test.engine.hybrid.exact.replay", counted)
+    assert engine.PRESENCE_SHIFTS == PRESENCE_SHIFTS
+    _, report = fit(rows, truth)
+    assert report.diagnostics["anomaly"]["status"] == "discarded"
+    assert sum(n for after, n in runs if after) <= 4 + 2 * len(PRESENCE_SHIFTS)
 
 
 def test_hardware_speed_never_changes_anomaly_choice(monkeypatch):

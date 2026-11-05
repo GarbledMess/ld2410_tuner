@@ -87,11 +87,12 @@ class ReliabilityTests(unittest.TestCase):
         # The second gate independently distinguishes this quiet location from noise.
         self.assertEqual(filtered(groups)[0], groups)
         result = fit(groups)
-        # Independent support prevents anomaly exclusion; it does not bypass
-        # the hybrid evidence band when selecting a gap margin.
+        # Independent support prevents anomaly exclusion, and the second gate's clean
+        # separation lets the presence shift catch this location at no false cost.
         self.assertEqual(result["anomaly"]["discarded_count"], 0)
         self.assertEqual(result["training"]["present_samples"], 1000)
-        self.assertEqual(result["training"]["false_negatives"], 5)
+        self.assertEqual(result["training"]["false_negatives"], 0)
+        self.assertEqual(result["training"]["false_positives"], 0)
 
     def test_gaps_label_changes_and_insufficient_context_stay(self):
         for variant in ("gap", "label", "missing", "duration", "context"):
