@@ -98,3 +98,104 @@ def test_stuck_task_diagnostics_include_stack_and_worker(runtime, monkeypatch, c
             await asyncio.gather(runtime._flush_task, return_exceptions=True)
 
     asyncio.run(run())
+
+
+def test_stalled_diagnostics_name_a_quarantined_worker_and_the_storage_lock(runtime, monkeypatch):
+    from tuner_under_test.runtime import history_save
+    from tuner_under_test.worker.supervisor import CleanupFailed, Supervisor
+
+    async def run():
+        runtime._worker_service = Supervisor(__file__)
+        runtime._worker_service._closed = True
+        runtime._worker_service._failure = CleanupFailed("synthetic")
+        await runtime._storage_lock.acquire()
+        report = history_save.diagnostics(runtime)
+        assert "'closed': True" in report
+        assert "CleanupFailed" in report
+        assert "storage lock: held" in report
+
+    asyncio.run(run())
+
+
+def test_stalled_diagnostics_follow_the_awaited_chain(runtime):
+    from tuner_under_test.runtime import history_save
+
+    async def innermost_wait():
+        await asyncio.Event().wait()
+
+    async def outer_wait():
+        await innermost_wait()
+
+    async def run():
+        task = asyncio.create_task(outer_wait(), name="synthetic flush")
+        await asyncio.sleep(0)
+        try:
+            assert "in innermost_wait" in history_save._task_details(task)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_a_failing_flush_is_logged_once_and_cleared_by_success(runtime, monkeypatch, caplog):
+    async def run():
+        attempts = []
+
+        async def fail(_runtime):
+            attempts.append(1)
+            raise ValueError("synthetic flush failure")
+
+        monkeypatch.setattr(flushing, "flush", fail)
+        monkeypatch.setattr("tuner_under_test.runtime.coordinator.STORE_DELAY", 0)
+        await runtime._delayed_flush()
+        await runtime._delayed_flush()
+        assert len(attempts) == 2
+        assert caplog.text.count("synthetic flush failure") == 2  # The message and its traceback.
+        assert len(caplog.records) == 1
+        from tuner_under_test.runtime import history_save
+
+        history_save.completed(runtime)
+        await runtime._delayed_flush()
+        assert len(caplog.records) == 2
+
+    asyncio.run(run())
+
+
+def test_flush_writes_directly_when_the_worker_is_quarantined(runtime, monkeypatch, caplog):
+    from tuner_under_test.worker.supervisor import Closed
+
+    async def run():
+        async def closed(_runtime):
+            raise Closed("Worker supervisor is closed")
+
+        async def executor(function, *args):
+            return function(*args)
+
+        monkeypatch.setattr(flushing, "_drain", closed)
+        runtime.hass.async_add_executor_job = executor
+        pending(runtime)
+        monkeypatch.setattr("time.time", lambda: 1792490402.0)
+        await flushing.flush(runtime)
+        assert not flushing._pending(runtime._days)
+        assert runtime._history_saved_at == 1792490402.0
+
+    asyncio.run(run())
+    assert "saving recorded history directly" in caplog.text
+
+
+def test_flush_does_not_write_directly_once_shutdown_has_closed_workers(runtime, monkeypatch):
+    from tuner_under_test.worker.supervisor import Closed
+
+    async def run():
+        async def closed(_runtime):
+            raise Closed("Tuner numerical workers are stopped")
+
+        monkeypatch.setattr(flushing, "_drain", closed)
+        runtime._worker_closed = True
+        pending(runtime)
+        with pytest.raises(Closed):
+            await flushing.flush(runtime)
+        assert flushing._pending(runtime._days)
+
+    asyncio.run(run())
