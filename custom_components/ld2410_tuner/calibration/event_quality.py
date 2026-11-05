@@ -1,10 +1,12 @@
 """Duration evidence with label lineage independent of recording segmentation."""
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import deque
-from functools import lru_cache
+from functools import lru_cache, reduce
 from hashlib import sha256
+from itertools import repeat
 from math import ceil
+from operator import add, mul, sub
 
 from ..const import HISTORY_KEYS
 from ..history import dayfile, guesses, spans
@@ -105,7 +107,7 @@ class _Human:
         return tuple(self.episodes), presence, empty, self.densities
 
 
-def _observed(cells, human, digest):
+def _observed(cells, human, digest, *, integer_values=False):
     values_text = lru_cache(maxsize=128, typed=True)(_cell_values)
     previous_parent = previous_state = object()
     pending = []
@@ -118,7 +120,9 @@ def _observed(cells, human, digest):
             previous_parent, previous_state = parent, state
         # Equal signed zeros have different text and must not share a cache key.
         text = (
-            repr(cell) if 0 in values else f"({low!r}, {high!r}, {values_text(*values)}, {suffix}"
+            repr(cell)
+            if not integer_values and 0 in values
+            else f"({low!r}, {high!r}, {values_text(*values)}, {suffix}"
         )
         pending.append(text)
         if len(pending) == 256:
@@ -195,26 +199,24 @@ def _auto_parents(runs, owner):
 def _source_evidence(cells, runs, owner, keys):
     from .quality_evidence import AutomaticEpisode, Overlap, _intersections
 
-    if not runs:
+    if not runs or not keys:
         deque(cells, maxlen=0)
         return (), ()
     parents = dict(zip(runs, _auto_parents(runs, owner), strict=True))
     automatic, overlaps = {}, {}
     positions = tuple(HISTORY_KEYS.index(key) for key in keys)
-    usable = (
-        (a, b, parent if state in LABELS else state)
-        for a, b, values, state, parent in cells
-        if any(values[position] is not None for position in positions)
-    )
-    for low, high, human, run in _intersections(usable, runs):
-        confidence = guesses.confidence(run[3])
+    confidence_by_run = {run: guesses.confidence(run[3]) for run in runs}
+    for low, high, interval, run in _intersections(_usable_intervals(cells, positions), runs):
+        human, times, ends = interval
+        confidence = confidence_by_run[run]
         if not MIN_AUTO_CONFIDENCE <= confidence <= 1:
             continue
-        duration = high - low
         if human is None:
-            _add(automatic, (parents[run], run[4]), confidence * duration, duration)
+            _add_interval(automatic, (parents[run], run[4]), confidence, low, high, times, ends)
         elif isinstance(human, Episode):
-            _add(overlaps, (human, run[4], run[2]), duration * (human.state == run[2]), duration)
+            _add_interval(
+                overlaps, (human, run[4], run[2]), human.state == run[2], low, high, times, ends
+            )
     return (
         tuple(
             AutomaticEpisode(ep, basis, mass / duration, owner)
@@ -222,6 +224,43 @@ def _source_evidence(cells, runs, owner, keys):
         ),
         tuple(Overlap(*key, mass, duration) for key, (mass, duration) in overlaps.items()),
     )
+
+
+def _usable_intervals(cells, positions):
+    """Bound geometry while walking labels rather than intersecting every cell."""
+    times, ends = [], []
+    previous = None
+    for a, b, _values, state, parent in _readable_cells(cells, positions):
+        human = parent if state in LABELS else state
+        if times and (a != ends[-1] or human is not previous or len(times) == 4096):
+            yield times[0], ends[-1], (previous, times, ends)
+            times, ends = [], []
+        times.append(a)
+        ends.append(b)
+        previous = human
+    if times:
+        yield times[0], ends[-1], (previous, times, ends)
+
+
+def _readable_cells(cells, positions):
+    first, rest = positions[0], positions[1:]
+    return (
+        cell
+        for cell in cells
+        if cell[2][first] is not None or any(cell[2][position] is not None for position in rest)
+    )
+
+
+def _add_interval(target, key, confidence, low, high, times, ends):
+    # Keep the original cell-order additions, including their floating-point rounding.
+    mass, duration = target.get(key, (0.0, 0.0))
+    first, after = bisect_right(ends, low), bisect_left(times, high)
+    starts, stops = times[first:after], ends[first:after]
+    starts[0], stops[-1] = max(low, starts[0]), min(high, stops[-1])
+    seconds = list(map(sub, stops, starts))
+    mass = reduce(add, map(mul, repeat(confidence), seconds), mass)
+    duration = reduce(add, seconds, duration)
+    target[key] = mass, duration
 
 
 def _add(target, key, mass, duration):
