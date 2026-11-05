@@ -48,15 +48,24 @@ def _enforce_history_retention(runtime, *_args) -> None:
 
 
 async def _retain(runtime):
-    if _cleanup_due(runtime, time.time()):
-        await runtime.async_clean_history()
+    if time.time() < runtime.data.get("maintenance_retry", {}).get("after", 0):
         return
+    if _cleanup_due(runtime, time.time()):
+        while True:
+            await runtime.async_clean_history()
+            if not runtime.data.get("maintenance_progress"):
+                return
+            await asyncio.sleep(60)  # Release storage and worker admission between durable batches.
     for device_id in list(runtime.data["devices"]):
         await label_counts.ensure(runtime, device_id)
 
 
 def _cleanup_due(runtime, now):
     """Whether any radar's last cleanup (``history_cleanup``) is missing or a day old."""
+    if now < runtime.data.get("maintenance_retry", {}).get("after", 0):
+        return False
+    if runtime.data.get("maintenance_progress"):
+        return True
     return any(
         now - device.get("history_cleanup", {}).get("timestamp", -CLEAN_EVERY) >= CLEAN_EVERY
         for device in runtime.data["devices"].values()
@@ -65,9 +74,20 @@ def _cleanup_due(runtime, now):
 
 async def async_clean_history(runtime, *, persist=True):
     """Normalize stored history at startup and hourly, without racing writes."""
+    from ..worker.supervisor import WorkerFailed
     from . import storage
 
-    report = await storage._persist(runtime, clean=True, persist=persist)
+    try:
+        report = await storage._persist(runtime, clean=True, persist=persist)
+    except (ValueError, OSError, WorkerFailed, TimeoutError):
+        previous = runtime.data.get("maintenance_retry", {}).get("delay", CLEAN_EVERY // 2)
+        delay = min(7 * CLEAN_EVERY, previous * 2)
+        runtime.data["maintenance_retry"] = {"delay": delay, "after": time.time() + delay}
+        await storage.save_directly(runtime)
+        raise
+    runtime.data.pop("maintenance_retry", None)
+    if report.get("batched"):
+        return bool(report["removed_automatic_seconds"] or report["removed_human_seconds"])
     for device_id in list(runtime.data["devices"]):
         await label_counts.ensure(runtime, device_id)
     return bool(report["removed_automatic_seconds"] or report["removed_human_seconds"])

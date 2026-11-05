@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections import OrderedDict, defaultdict
 from typing import Any
@@ -27,6 +28,7 @@ from ..rooms import room_labels, room_sources
 from ..worker import priority
 from . import discovery, history_save, schedule
 
+_LOGGER = logging.getLogger(__name__)
 STATE_SAVE_SECONDS = 300  # Recording state saves; history goes to the day logs.
 
 
@@ -107,6 +109,7 @@ class TunerRuntime:
         self._history_saved_at = time.time()
         self._history_waiting_since = None
         self._history_stall_warned = False
+        self._history_flush_error = None
 
     def _schedule_flush(self) -> None:
         """Append recorded changes to the day logs shortly (executor): recording needs no JSON
@@ -124,7 +127,10 @@ class TunerRuntime:
 
         await asyncio.sleep(STORE_DELAY)
         if self._days is not None:
-            await flushing.flush(self)
+            try:
+                await flushing.flush(self)
+            except Exception as error:
+                history_save.failed(self, error)
 
     def _schedule_state_save(self, now) -> None:
         """Recording state in the JSON store (classifications, live histograms) is saved at
@@ -150,8 +156,17 @@ class TunerRuntime:
             await asyncio.sleep(STORE_DELAY)
             try:
                 await self.async_save()
-            except ValueError:
-                return  # Reported in the panel; a settings change can retry.
+            except Exception as error:
+                await self._save_without_maintenance(error)
+                return  # A settings change can retry the maintenance.
+
+    async def _save_without_maintenance(self, error) -> None:
+        """A failed cleanup must not cost labels and settings that are only in memory."""
+        _LOGGER.warning("Storage maintenance failed; saving labels and settings: %s", error)
+        try:
+            await storage.save_directly(self)
+        except Exception:
+            _LOGGER.exception("Labels and settings could not be saved")
 
     async_save = storage.async_save
     configure_room = room_groups.configure

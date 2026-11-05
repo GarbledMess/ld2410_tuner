@@ -8,6 +8,7 @@ before it runs; queued requests must retain only small IDs, not history snapshot
 import asyncio
 import contextlib
 import json
+import logging
 import math
 import os
 import signal
@@ -17,6 +18,8 @@ import time
 from pathlib import Path
 
 from .diagnostics import Observation, safely
+
+_LOGGER = logging.getLogger(__name__)
 
 _POSIX = os.name == "posix"
 
@@ -100,6 +103,24 @@ async def _reap(process, grace):
         raise CleanupFailed("Worker did not exit after termination and kill") from error
 
 
+def _close_pipes(process):
+    transport = getattr(process, "_transport", None)
+    if transport is not None:
+        transport.close()
+
+
+def _settle_late_drains(process, drains):
+    """A late event loop can time out drains that finished; only real failures quarantine."""
+    for drain in drains:
+        if drain.done() and not drain.cancelled() and drain.exception() is not None:
+            raise CleanupFailed("Worker output could not be read") from drain.exception()
+    if not all(drain.done() and not drain.cancelled() for drain in drains):
+        # The process is gone, so nothing can overlap the next job. A slow pipe on a busy
+        # host must not quarantine the service: that stops every save until a restart.
+        _close_pipes(process)
+        _LOGGER.warning("Worker exited with its output pipes still open; closed them")
+
+
 async def _cleanup(spawning, readers, grace):
     process = await spawning  # Shielded creation remains owned even after cancellation.
     for reader in readers:
@@ -110,8 +131,8 @@ async def _cleanup(spawning, readers, grace):
         await _reap(process, grace)
         try:
             await asyncio.wait_for(asyncio.gather(*drains), grace)
-        except TimeoutError as error:
-            raise CleanupFailed("Worker output pipes remained open after exit") from error
+        except TimeoutError:
+            _settle_late_drains(process, drains)
     except CleanupFailed:
         raise
     except Exception as error:
@@ -257,6 +278,8 @@ class Supervisor:
             priority, started = self._active_details
             active = {"background": priority, "running_seconds": max(0, now - started)}
         return {
+            "closed": self._closed,
+            "failure": None if self._failure is None else repr(self._failure),
             "active": active,
             "foreground": len(queue) - background,
             "background": background,
