@@ -6,6 +6,7 @@ retaining an episode by gate matrix of 101-bin histograms.
 """
 
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from hashlib import sha256
 
 from ...calibration import event_quality
@@ -40,7 +41,7 @@ class _Densities:
         low, high, values, _state, parent = cell
         if parent is None:
             return
-        if parent != self.parent:
+        if parent is not self.parent and parent != self.parent:
             self.finish()
             self.parent = parent
         self._values(values, high - low)
@@ -106,6 +107,48 @@ def _physical(source, start, end):
             yield spans.Span(lo, hi, row, "event")
 
 
+def _native_cells(source, reader, owner, start, end):
+    """Resolve labels directly over captured columns, without allocating physical spans."""
+    labels = event_quality._LabelCells(reader, owner, start, end)
+    vector = _vector_reader(source.channels)
+    low = max(start, getattr(source.view, "_physical_history_start", float("-inf")))
+    for block in source.blocks(low, end):
+        pace.rest()
+        values = _block_vectors(block, source.channels, vector)
+        for lo, hi, row in zip(block.times, block.ends, values, strict=True):
+            if start < lo < hi < end and labels.low <= lo and hi <= labels.high:
+                yield lo, hi, row, labels.state, labels.parent
+            else:
+                yield from _split_cell(labels, max(start, lo), min(end, hi), row)
+
+
+def _vector_reader(channels):
+    @lru_cache(maxsize=128)
+    def read(values):
+        row = [None] * len(HISTORY_KEYS)
+        for channel, value in zip(channels, values, strict=True):
+            row[channel] = _PHYSICAL_VALUES[value]
+        return tuple(row)
+
+    return read
+
+
+def _block_vectors(block, channels, vector):
+    if len(channels) <= 4:
+        return map(vector, zip(*(block.columns[c] for c in channels), strict=True))
+    return zip(
+        *(map(_PHYSICAL_VALUES.__getitem__, column) for column in block.columns), strict=True
+    )
+
+
+def _split_cell(labels, low, high, values):
+    while low < high:
+        state, parent, edge = labels.at(low)
+        stop = min(high, edge)
+        yield low, stop, values, state, parent
+        low = stop
+
+
 def _runs(view, device_id, start, end, reader):
     clipped = [
         (max(start, run[0]), min(end, run[1]), *run[2:])
@@ -153,10 +196,8 @@ def collect_quality(
     )
     runs = _runs(view, device_id, auto_start, end, reader)
     densities, digest = _Densities(keys), sha256()
-    cells = event_quality._cells(
-        _physical(source, start, end), reader, owner, start, end, start, end
-    )
-    observed = event_quality._observed(cells, densities, digest)
+    cells = _native_cells(source, reader, owner, start, end)
+    observed = event_quality._observed(cells, densities, digest, integer_values=True)
     automatic, overlaps = event_quality._source_evidence(observed, runs, owner, keys)
     densities.finish()
     digest = event_quality._fingerprint(

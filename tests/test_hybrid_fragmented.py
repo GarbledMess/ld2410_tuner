@@ -2,7 +2,8 @@
 
 import json
 import sqlite3
-from dataclasses import asdict, is_dataclass, replace
+from collections.abc import Mapping
+from dataclasses import asdict, fields, is_dataclass, replace
 from math import ceil
 from types import SimpleNamespace
 
@@ -51,7 +52,9 @@ def legacy_pieces(p, device_id, truth):
 def wire(value):
     def default(item):
         if is_dataclass(item):
-            return asdict(item)
+            return {field.name: getattr(item, field.name) for field in fields(item)}
+        if isinstance(item, Mapping):
+            return dict(item)
         return list(item)
 
     return json.dumps(value, default=default, separators=(",", ":")).encode()
@@ -210,3 +213,353 @@ def test_piece_merge_preserves_gaps_overrides_missing_and_crossing_rows(bounds):
     assert wire(list(diagnostics._pieces(p, "r", truth))) == wire(
         list(legacy_pieces(p, "r", truth))
     )
+
+
+def legacy_fold_rows(folder, block, start, end, first, after):
+    for i in range(first, after):
+        lo, hi = max(start, block.times[i]), min(end, block.ends[i])
+        values = {c: block.columns[c][i] for c in folder.selected}
+        if hi > lo and 255 not in values.values():
+            folder.row(lo, hi, values)
+
+
+def legacy_source_evidence(cells, runs, owner, keys):
+    from tuner_under_test.calibration import event_quality as eq
+    from tuner_under_test.calibration.episodes import Episode
+    from tuner_under_test.calibration.quality_evidence import (
+        AutomaticEpisode,
+        Overlap,
+        _intersections,
+    )
+    from tuner_under_test.const import HISTORY_KEYS
+    from tuner_under_test.history import guesses
+
+    parents = dict(zip(runs, eq._auto_parents(runs, owner), strict=True))
+    automatic, overlaps = {}, {}
+    positions = tuple(HISTORY_KEYS.index(key) for key in keys)
+    usable = (
+        (a, b, parent if state in eq.LABELS else state)
+        for a, b, values, state, parent in cells
+        if any(values[position] is not None for position in positions)
+    )
+    for low, high, human, run in _intersections(usable, runs):
+        confidence = guesses.confidence(run[3])
+        if not eq.MIN_AUTO_CONFIDENCE <= confidence <= 1:
+            continue
+        duration = high - low
+        if human is None:
+            eq._add(automatic, (parents[run], run[4]), confidence * duration, duration)
+        elif isinstance(human, Episode):
+            eq._add(overlaps, (human, run[4], run[2]), duration * (human.state == run[2]), duration)
+    return (
+        tuple(
+            AutomaticEpisode(ep, basis, mass / duration, owner)
+            for (ep, basis), (mass, duration) in automatic.items()
+        ),
+        tuple(Overlap(*key, mass, duration) for key, (mass, duration) in overlaps.items()),
+    )
+
+
+def test_burst_and_offset_rows_fold_without_scalar_calls(monkeypatch):
+    from test_hybrid_digest import block
+    from tuner_under_test.engine.hybrid import digest
+
+    rows = [(0.25 + i / 8, 0.25 + (i + 1) / 8, [i % 101] * 18) for i in range(24000)]
+    source = block(rows)
+    with monkeypatch.context() as previous:
+        previous.setattr(digest, "_fold_rows", legacy_fold_rows)
+        expected = digest.fold_day([source], 0, 3006, (0, 1))
+    calls = []
+    original = digest._Folder.row
+
+    def counted(folder, *args):
+        calls.append(1)
+        return original(folder, *args)
+
+    monkeypatch.setattr(digest._Folder, "row", counted)
+    actual = digest.fold_day([source], 0, 3006, (0, 1))
+    assert actual.channels == expected.channels
+    assert actual.cov == expected.cov
+    assert dict(actual.partial) == dict(expected.partial)
+    assert len(calls) <= 2
+
+
+def test_source_intersections_follow_runs_and_labels(monkeypatch):
+    from tuner_under_test.calibration import event_quality as eq
+    from tuner_under_test.calibration.episodes import Episode
+    from tuner_under_test.history import guesses
+
+    parent = Episode(10.125, 2000.375, "present", ("r",))
+    cells = [
+        (
+            i / 8,
+            (i + 1) / 8,
+            (20,) * 18,
+            "present" if 81 <= i < 16003 else None,
+            parent if 81 <= i < 16003 else None,
+        )
+        for i in range(24000)
+    ]
+    runs = (
+        (0.0, 1000.375, "present", guesses.level(90), 1),
+        (1000.375, 3000.0, "not_present", guesses.level(80), 2),
+    )
+    expected = legacy_source_evidence(cells, runs, ("r",), ["g0_move"])
+    original, calls = guesses.confidence, []
+
+    def counted(value):
+        calls.append(1)
+        return original(value)
+
+    monkeypatch.setattr(guesses, "confidence", counted)
+    assert wire(eq._source_evidence(iter(cells), runs, ("r",), ["g0_move"])) == wire(expected)
+    assert len(calls) <= len(runs)
+
+
+def test_quantized_zero_fingerprint_formats_parent_once():
+    from hashlib import sha256
+
+    from tuner_under_test.calibration import event_quality as eq
+    from tuner_under_test.calibration.episodes import Episode
+
+    class Parent(Episode):
+        representations = 0
+
+        def __repr__(self):
+            type(self).representations += 1
+            return super().__repr__()
+
+    parent = Parent(0, 100, "present", ("r",))
+    cells = [(i, i + 1, (0,) * 18, "present", parent) for i in range(100)]
+    expected = sha256(b"[" + b"".join(repr(c).encode() + b"\0" for c in cells) + b"]")
+    Parent.representations = 0
+    actual = sha256()
+    list(eq._observed(cells, eq._Human(["g0_move"]), actual, integer_values=True))
+    assert actual.digest() == expected.digest()
+    assert Parent.representations == 1
+
+
+def test_finished_physical_cache_ignores_later_cutoff_and_labels(tmp_path, monkeypatch):
+    from tuner_under_test.history import fit_days
+
+    view = worker_view(tmp_path, "r", [10, 20, 30, 40])
+    entry = next(iter(view._days.entries.values()))
+    entry["persistent"] = True
+    date = view._days.days("r")[0]
+    view._history_until = 2 * 86400
+    original = fit_days._cached_physical
+    calls = []
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(fit_days, "_cached_physical", counted)
+    first = fit_days.FittingDays(view).physical("r", date, (0,))
+    expected = first.window(0, 86400)
+    first.close()
+    before = len(calls)
+    view._history_until = 3 * 86400
+    view.data["devices"]["r"]["history_labels"] = [{"start": 0, "end": 20, "state": "present"}]
+    second = fit_days.FittingDays(view).physical("r", date, (0,))
+    assert second.window(0, 86400) == expected
+    second.close()
+    assert len(calls) == before
+
+
+def test_native_cells_match_original_without_span_allocations(tmp_path, monkeypatch):
+    from tuner_under_test.calibration import event_quality as eq
+    from tuner_under_test.engine.hybrid import quality
+    from tuner_under_test.history.fit_rows import CapturedRowSource
+    from tuner_under_test.history.label_lookup import index_reader
+
+    view = worker_view(tmp_path, "r", [0, 20, 255, 40, 0, 60])
+    source = CapturedRowSource(view, "r", (0,))
+    reader = index_reader(
+        ([0.0, 3.125, 12, 19.5, 30], ["present", None, "unknown", "not_present", "present"])
+    )
+    bounds = (1.0, 35.5)
+    expected = list(eq._cells(quality._physical(source, *bounds), reader, ("r",), *bounds, *bounds))
+    original, calls = quality.spans.Span, []
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(quality.spans, "Span", counted)
+    assert wire(list(quality._native_cells(source, reader, ("r",), *bounds))) == wire(expected)
+    assert calls == []
+
+
+def test_physical_builder_coalesces_without_row_vector_calls(monkeypatch):
+    from test_hybrid_digest import block
+    from tuner_under_test.engine.hybrid import physical_index
+
+    rows = [(i / 8, (i + 1) / 8, [i // 7 % 101] * 18) for i in range(24000)]
+    original, calls = physical_index._fresh, []
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(physical_index, "_fresh", counted)
+    result = physical_index.physical_rows([block(rows)], 0, 3000, (0, 1))
+    assert result.count == ceil(24000 / 7)
+    assert len(calls) < 10
+
+
+@pytest.mark.parametrize("epoch", [0, 1790000000])
+def test_source_interval_bytes_match_seeded_scalar_oracle(epoch):
+    import random
+
+    from tuner_under_test.calibration import event_quality as eq
+    from tuner_under_test.calibration.episodes import Episode
+    from tuner_under_test.history import guesses
+
+    rng = random.Random(137)
+    parents = [
+        Episode(
+            epoch + i * 100, epoch + (i + 1) * 100, "present" if i % 2 else "not_present", ("r",)
+        )
+        for i in range(12)
+    ]
+    cells, t = [], epoch - 1.0
+    for i in range(9000):
+        lo = t + rng.choice((0, 0.001, 0.125))
+        t = lo + rng.choice((0.001, 0.123, 0.25, 1))
+        parent = parents[i // 750] if i % 7 else None
+        state = parent.state if parent is not None else rng.choice((None, "unknown"))
+        cells.append(
+            (lo, t, tuple(rng.choice((None, 0, 20, 100)) for _ in range(18)), state, parent)
+        )
+    runs = tuple(
+        (epoch + a, epoch + b, state, guesses.level(confidence), i % 3)
+        for i, (a, b, state, confidence) in enumerate(
+            [
+                (-1, 10.123, "present", 90),
+                (10.123, 1300.99, "present", 80),
+                (1350.1, 2900, "not_present", 100),
+                (2900, 4000, "present", 5),
+            ]
+        )
+    )
+    from tuner_under_test.const import HISTORY_KEYS
+
+    keys = ["g0_move", HISTORY_KEYS[17]]
+    expected = legacy_source_evidence(cells, runs, ("r",), keys)
+    assert expected[0] and expected[1]
+    assert wire(eq._source_evidence(iter(cells), runs, ("r",), keys)) == wire(expected)
+
+
+def test_quality_thresholds_and_full_report_bytes_match_original_collectors(tmp_path, monkeypatch):
+    from test_hybrid_facade import device_fit
+    from tuner_under_test.calibration import event_quality as eq
+    from tuner_under_test.engine.hybrid import adapters, digest, quality
+    from tuner_under_test.history import dayfile
+    from tuner_under_test.worker import history
+
+    values, labels = alternating(40)
+    values[100:120] = [0] * 20
+    view = worker_view(tmp_path, "r", values, labels)
+    entry = next(iter(view._days.entries.values()))
+    from pathlib import Path
+
+    path = Path(entry["path"])
+    day = dayfile.decode_day(path.read_bytes())
+    day.guesses = [(0, 2400.125, "present", 18, 1), (2400.125, 4800, "not_present", 16, 2)]
+    path.write_bytes(dayfile.encode_day(day))
+    entry["identity"] = history._identity(path.stat())
+    contexts = []
+    original = adapters.collect_quality
+
+    def recorded(*args, **kwargs):
+        result = original(*args, **kwargs)
+        contexts.append(wire(result))
+        return result
+
+    monkeypatch.setattr(adapters, "collect_quality", recorded)
+    current = wire(device_fit(view, weight=0.5))
+    current_contexts = list(contexts)
+    assert current_contexts
+    contexts.clear()
+    monkeypatch.setattr(digest, "_fold_rows", legacy_fold_rows)
+    monkeypatch.setattr(eq, "_source_evidence", legacy_source_evidence)
+    monkeypatch.setattr(
+        quality,
+        "_native_cells",
+        lambda source, reader, owner, start, end: eq._cells(
+            quality._physical(source, start, end), reader, owner, start, end, start, end
+        ),
+    )
+    assert wire(device_fit(view, weight=0.5)) == current
+    assert contexts == current_contexts
+
+
+def test_source_interval_accumulation_uses_bulk_arithmetic():
+    import sys
+    from array import array
+
+    from tuner_under_test.calibration import event_quality as eq
+
+    times = array("d", (i / 1000 for i in range(10000)))
+    ends = array("d", ((i + 1) / 1000 for i in range(10000)))
+    expected = {"r": (0.123, 1.234)}
+    for a, b in zip(times, ends, strict=True):
+        eq._add(expected, "r", 0.85 * (b - a), b - a)
+    actual, steps = {"r": (0.123, 1.234)}, []
+
+    def trace(frame, event, _argument):
+        if frame.f_code is eq._add_interval.__code__ and event == "line":
+            steps.append(1)
+        return trace
+
+    sys.settrace(trace)
+    try:
+        eq._add_interval(actual, "r", 0.85, 0, 10, times, ends)
+    finally:
+        sys.settrace(None)
+    assert wire(actual) == wire(expected)
+    assert len(steps) < 100
+
+
+def test_native_cells_reuse_repeated_quantized_vectors(tmp_path):
+    from tuner_under_test.engine.hybrid import quality
+    from tuner_under_test.history.fit_rows import CapturedRowSource
+    from tuner_under_test.history.label_lookup import index_reader
+
+    view = worker_view(tmp_path, "r", [10, 20, 30] * 1000)
+    source = CapturedRowSource(view, "r", (0,))
+    reader = index_reader(([], []))
+    cells = list(quality._native_cells(source, reader, ("r",), 0, 18000))
+    assert len(cells) == 3000
+    assert {cell[2][0] for cell in cells} == {10, 20, 30}
+    assert len({id(cell[2]) for cell in cells}) == 3
+
+
+def test_source_intervals_reuse_identical_label_objects():
+    from tuner_under_test.calibration import event_quality as eq
+    from tuner_under_test.calibration.episodes import Episode
+
+    class Parent(Episode):
+        comparisons = 0
+
+        def __eq__(self, other):
+            type(self).comparisons += 1
+            return super().__eq__(other)
+
+    parent = Parent(0, 3000, "present", ("r",))
+    cells = [(i, i + 1, (20,) * 18, "present", parent) for i in range(3000)]
+    intervals = list(eq._usable_intervals(cells, (0,)))
+    assert len(intervals) == 1
+    assert intervals[0][:2] == (0, 3000)
+    assert Parent.comparisons <= 2
+
+
+def test_bulk_fold_excludes_zero_and_reversed_duration_rows():
+    from test_hybrid_digest import block
+    from tuner_under_test.engine.hybrid import digest
+
+    source = block([(0, 1, [20] * 18), (1, 1, [100] * 18), (1, 0.5, [99] * 18), (1, 6, [30] * 18)])
+    result = digest.fold_day([source], 0, 6, (0,))
+    assert result.channels[0] == bytes([30])
+    assert result.cov == b"\x01"
