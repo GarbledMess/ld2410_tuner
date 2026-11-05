@@ -10,6 +10,7 @@ from bisect import bisect_right
 from dataclasses import replace
 
 from ...calibration.episodes import Episode
+from ...calibration.event_replay import _timing
 from .evaluate import Evaluators, plan_scores
 from .evidence import _labels
 from .types import TruthSpan, ZoneSpec
@@ -113,7 +114,11 @@ class FixedScores:
         self.plan = plan_scores(problem, max(1, pattern_count), comparison=True)
         self.mode = "cells" if self.plan.mode == "cells" else "exact"
         self._timed = Evaluators(problem, self.plan, directory=directory)
-        self._raw = Evaluators(untimed(problem), self.plan, directory=directory)
+        self._raw = (
+            Evaluators(untimed(problem), self.plan, directory=directory)
+            if any(any(_timing(radar.timing)) for radar in problem.radars.values())
+            else self._timed
+        )
 
     def scores(self, patterns, zones, *, raw=False):
         """Per pattern ``{zone id: metrics}`` for every zone in ``zones``."""
@@ -123,7 +128,8 @@ class FixedScores:
 
     def close(self):
         self._timed.close()
-        self._raw.close()
+        if self._raw is not self._timed:
+            self._raw.close()
 
     def __enter__(self):
         return self

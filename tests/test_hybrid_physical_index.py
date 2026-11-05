@@ -406,3 +406,149 @@ def test_regular_physical_decode_still_rejects_invalid_durations(duration):
     finally:
         decoded.close()
         original.close()
+
+
+def test_worker_physical_windows_share_validation_across_row_sources(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    fit, days, _ = fitting(tmp_path)
+    expected = fit.digest("synthetic", DAY, (0,)).physical.window(0, 86400)
+    decoded = []
+    original = physical_index._decode_block
+
+    def counted(*args):
+        decoded.append(args[1])
+        return original(*args)
+
+    monkeypatch.setattr(physical_index, "_decode_block", counted)
+    for _ in range(3):
+        rows = CapturedRowSource(fit.view, "synthetic", (0,))
+        assert rows.rows_in(0, 86400) == len(expected[0])
+        assert rows.window(0, 86400) == expected
+        rows._day[1].close()
+    assert len(decoded) == 1
+    assert not days.shared.cache
+
+
+def test_shared_physical_rows_recheck_capture_cutoff_and_source_identity(tmp_path):
+    from test_hybrid_rows import payload, reference
+
+    fit, days, path = fitting(tmp_path)
+    assert fit.physical("synthetic", DAY, (0,)).rows_in(0, 86400) == 3
+    fit.view._history_until = 1.5
+    rows = CapturedRowSource(fit.view, "synthetic", (0,))
+    assert rows.window(0, 86400)[1][-1] == 1.5
+    fit.view._history_until = float("inf")
+    path.write_bytes(payload(count=4))
+    days.entries[("synthetic", DAY)]["identity"] = reference(path).identity
+    assert fit.physical("synthetic", DAY, (0,)).rows_in(0, 86400) == 4
+
+
+def test_shared_physical_cache_is_bounded_by_bytes(tmp_path, monkeypatch):
+    from tuner_under_test.history import fit_days
+
+    fit, _, _ = fitting(tmp_path)
+    monkeypatch.setattr(fit_days, "SPILL_BYTES", 1)
+    expected = fit.physical("synthetic", DAY, (0,)).window(0, 86400)
+    assert fit.physical("synthetic", DAY, (0,)).window(0, 86400) == expected
+    assert fit.view._days.shared._fit_physical.size == 0
+
+
+def test_shared_physical_cache_evicts_without_closing_other_readers(tmp_path, monkeypatch):
+    from tuner_under_test.history import fit_days
+
+    fit, _, _ = fitting(tmp_path)
+    rows = fit.physical("synthetic", DAY, (0,))
+    expected = rows.window(0, 86400)
+    monkeypatch.setattr(fit_days, "SPILL_BYTES", 2000)
+    cache = fit_days._PhysicalCache()
+    cache.put("first", rows)
+    retained = cache.get("first")
+    cache.put("second", rows)
+    assert cache.get("first") is None
+    assert 0 < cache.size <= 2000
+    second = cache.get("second")
+    second.close()
+    rows.close()
+    assert retained.window(0, 86400) == expected
+    retained.close()
+
+
+def test_validated_physical_blocks_do_not_decode_again_after_plain_cache_eviction(monkeypatch):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    rows = PhysicalRows(
+        (0,), array("d", [0, 0.125, 1, 2]), array("d", [0.125, 1, 2, 3]), {0: b"1234"}
+    )
+    decoded = PhysicalRows.decode((0,), rows.encode())
+    calls = []
+    original = physical_index._decode_block
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(physical_index, "_decode_block", counted)
+    try:
+        expected = decoded.window(0, 3)
+        physical_index._DECODED.clear()
+        physical_index._DECODED_BYTES[0] = 0
+        assert decoded.window(0, 3) == expected
+        assert calls == [1]
+    finally:
+        rows.close()
+        decoded.close()
+
+
+@pytest.mark.parametrize("count", [0, 1, 17000])
+def test_compiled_physical_buffers_preserve_every_byte(count, monkeypatch):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    rng = random.Random(1927)
+    times = array("d", (i / 3 for i in range(count)))
+    ends = array("d", (t + 0.125 for t in times))
+    columns = {c: bytes(rng.randrange(101) for _ in times) for c in (0, 17)}
+    rows = PhysicalRows((17, 0), times, ends, columns)
+    decoded = PhysicalRows.decode((17, 0), rows.encode())
+    monkeypatch.setattr(physical_index, "_COMPILED", physical_index._CompiledBlocks())
+    try:
+        expected = decoded.window(-1, 1e9)
+        physical_index._DECODED.clear()
+        physical_index._DECODED_BYTES[0] = 0
+        actual = decoded.window(-1, 1e9)
+        assert actual[0].tobytes() == times.tobytes() == expected[0].tobytes()
+        assert actual[1].tobytes() == ends.tobytes() == expected[1].tobytes()
+        assert actual[2] == columns == expected[2]
+    finally:
+        decoded.close()
+        rows.close()
+
+
+def test_compiled_physical_cache_is_byte_bounded_and_evicts(monkeypatch):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    value = array("d", [0, 1]), array("d", [1, 2]), {0: b"12"}
+    monkeypatch.setattr(physical_index, "SPILL_BYTES", 600)
+    cache = physical_index._CompiledBlocks()
+    cache.put((0, 0), value)
+    cache.put((1, 0), value)
+    assert cache.get((0, 0), (0,)) is None
+    assert cache.get((1, 0), (0,)) == value
+    assert 0 < cache.size <= 600
+    monkeypatch.setattr(physical_index, "SPILL_BYTES", 1)
+    empty = physical_index._CompiledBlocks()
+    empty.put((0, 0), value)
+    assert not empty.entries and empty.size == 0
+
+
+def test_compiled_physical_geometry_fits_without_retaining_plain_rows(monkeypatch):
+    from tuner_under_test.engine.hybrid import physical_index
+
+    times = array("d", (1790000000 + i * 6 for i in range(8192)))
+    ends = array("d", (t + 6 for t in times))
+    value = times, ends, {0: b"\x28" * len(times)}
+    monkeypatch.setattr(physical_index, "SPILL_BYTES", 8192)
+    cache = physical_index._CompiledBlocks()
+    cache.put((0, 0), value)
+    assert cache.get((0, 0), (0,)) == value
+    assert 0 < cache.size <= 8192

@@ -42,6 +42,104 @@ def test_physical_rows_reuse_sidecar_without_decoding_energy_index(tmp_path, mon
     assert path.with_suffix(".cell").exists()
 
 
+def test_training_cells_do_not_materialize_unused_energy_index(tmp_path, monkeypatch):
+    fit, days, _ = fitting(tmp_path)
+    expected = fit.digest("synthetic", DAY, (0,))
+
+    def forbidden(*_args):
+        raise AssertionError("training decoded unused energy positions")
+
+    monkeypatch.setattr(cell_cache, "read_index", forbidden)
+    with patch.object(days, "open_columns", side_effect=AssertionError("decoded warm rows")):
+        actual = FittingDays(fit.view).digest("synthetic", DAY, (0,))
+    assert actual.channels == expected.channels
+    assert actual.cov == expected.cov
+    assert list(actual.segments()) == list(expected.segments())
+    assert actual.physical.window(0, 86400) == expected.physical.window(0, 86400)
+
+
+@pytest.mark.parametrize("positions", [(0, 0), (2, 1), (0, 3)])
+def test_unused_index_still_rejects_invalid_positions(positions):
+    import io
+    import struct
+
+    encoded = b"\x12\x01" + struct.pack("<BH2H", 40, 2, *positions) + b"\0" * 17
+    with pytest.raises(ValueError, match="positions"):
+        cell_cache._skip_index(io.BytesIO(encoded), 3)
+
+
+def test_unused_index_still_rejects_duplicate_energies():
+    import io
+    import struct
+
+    encoded = b"\x12\x02" + struct.pack("<BH", 40, 0) * 2 + b"\0" * 17
+    with pytest.raises(ValueError, match="positions"):
+        cell_cache._skip_index(io.BytesIO(encoded), 3)
+
+
+def test_unchanged_sidecar_validates_unused_positions_once(tmp_path, monkeypatch):
+    fit, days, path = fitting(tmp_path)
+    expected = fit.digest("synthetic", DAY, (0,))
+    identity = days.result_identity("synthetic", DAY)[1]
+    calls = []
+    original = cell_cache._check_positions
+
+    def counted(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(cell_cache, "_check_positions", counted)
+    first = cell_cache.load(path, identity, (0,), with_index=False)
+    checked = len(calls)
+    second = cell_cache.load(path, identity, (0,), with_index=False)
+    physical = cell_cache.load_physical(path, identity, (0,))
+    assert first.channels == second.channels == expected.channels
+    assert physical.window(0, 86400) == expected.physical.window(0, 86400)
+    assert checked > 0 and len(calls) == checked
+
+
+def test_unused_position_reuse_rechecks_checksum_even_with_unchanged_stat(tmp_path):
+    import io
+    import os
+    import struct
+    import zlib
+
+    fit, days, path = fitting(tmp_path)
+    fit.digest("synthetic", DAY, (0,))
+    identity = days.result_identity("synthetic", DAY)[1]
+    assert cell_cache.load(path, identity, (0,), with_index=False) is not None
+    cache = path.with_suffix(".cell")
+    found = cache.stat()
+    raw = bytearray(cache.read_bytes())
+    stream = io.BytesIO(raw)
+    _, n = cell_cache._header(stream, identity, (0,))
+    first = stream.tell() + 19 * n + 2
+    energy, count = struct.unpack_from("<BH", raw, first)
+    raw[first + 3 + 2 * count] = energy  # Duplicate energy in the next bucket.
+    raw[-4:] = struct.pack("<I", zlib.crc32(raw[:-4]))
+    cache.write_bytes(raw)
+    os.utime(cache, ns=(found.st_atime_ns, found.st_mtime_ns))
+    assert cell_cache.load(path, identity, (0,), with_index=False) is None
+
+
+def test_unused_index_metadata_evicts_by_bytes(monkeypatch):
+    import io
+
+    monkeypatch.setattr(cell_cache, "CELL_CACHE_MEMORY_BYTES", 2000)
+    offsets = cell_cache._IndexOffsets()
+    encoded = b"\x12" + b"\0" * 18
+    for key in ("a", "b", "a"):
+        stream = io.BytesIO(encoded)
+        offsets.skip(stream, 3, key, 1)
+        assert stream.tell() == len(encoded)
+        assert 0 < offsets.size <= 2000
+        assert len(offsets.entries) == 1
+    monkeypatch.setattr(cell_cache, "CELL_CACHE_MEMORY_BYTES", 1)
+    empty = cell_cache._IndexOffsets()
+    empty.skip(io.BytesIO(encoded), 3, "a", 1)
+    assert empty.size == 0 and not empty.entries
+
+
 def test_physical_replay_rebuilds_corrupt_sidecar(tmp_path):
     fit, days, path = fitting(tmp_path)
     expected = fit.digest("synthetic", DAY, (0,)).physical.window(0, 86400)
