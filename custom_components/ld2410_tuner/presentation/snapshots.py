@@ -117,6 +117,7 @@ def snapshot(runtime) -> dict[str, Any]:
         "timing_settings": timing_config.settings(runtime),
         "bermuda": bermuda.settings(runtime),
         "bermuda_devices": bermuda.devices(runtime),
+        "bermuda_missing_rooms": bermuda.missing_rooms(runtime),
         "storage": storage.summary(runtime),
         "history_save": {
             "saved_at": runtime._history_saved_at,

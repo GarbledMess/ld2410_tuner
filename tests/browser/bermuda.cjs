@@ -209,6 +209,28 @@ module.exports = async function testBermuda(page, screenshotDir) {
       await panel._load(true);
     });
     assert.match(await section.innerText(), /No Bermuda tracked devices found/);
+    await page.evaluate(async () => {
+      fixture.bermuda_missing_rooms = [
+        { area_id: "kitchen", name: "Kitchen <main>", reason: "recording_off" },
+        { area_id: "garage", name: "Garage", reason: "no_radar" },
+        { area_id: "attic", name: "Attic", reason: "no_radar" },
+      ];
+      await panel._load(true);
+    });
+    const missing = await section.innerText();
+    assert.match(missing, /Recording is off in: Kitchen <main>\./);
+    assert.match(
+      missing,
+      /No radar assigned in Home Assistant: Garage, Attic\./,
+    );
+    await page.evaluate(async () => {
+      fixture.bermuda_missing_rooms = [];
+      await panel._load(true);
+    });
+    assert.doesNotMatch(
+      await section.innerText(),
+      /Recording is off in|No radar assigned/,
+    );
     assert.equal(await section.locator("[data-bermuda-room]").count(), 2);
     await page.evaluate(async () => {
       fixture.rooms.groups = {};
