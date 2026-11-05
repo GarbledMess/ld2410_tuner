@@ -167,7 +167,6 @@ RUNTIME_FILES = (
     "rooms/learning.py",
     "rooms/evidence.py",
     "rooms/event_attribution.py",
-    "rooms/stream_attribution.py",
     "rooms/groups.py",
     "rooms/intervals.py",
     "rooms/jobs.py",

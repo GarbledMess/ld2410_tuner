@@ -14,7 +14,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import anomaly, selection
-from .constants import PRESENCE_SHIFTS, ROBUST_SEARCH_MIN_WEIGHT, ROBUST_SHORTLIST, ROBUST_SWEEPS
+from .constants import (
+    PRESENCE_ROUNDS,
+    PRESENCE_SHIFTS,
+    ROBUST_SEARCH_MIN_WEIGHT,
+    ROBUST_SHORTLIST,
+    ROBUST_SWEEPS,
+)
 from .domains import normalize_pattern
 from .evaluate import Evaluators, evaluate_patterns, plan_scores, score_regions
 from .evidence import evidence_horizon
@@ -193,20 +199,41 @@ def _lowered(pattern, amount, radars):
     }
 
 
+def _gate_steps(pattern, radars):
+    """Every pattern one supported step lower on a single channel."""
+    for rid, row in pattern.items():
+        for c, threshold in row.items():
+            below = [t for t in radars[rid].domains[c] if t < threshold]
+            if below:
+                yield {**pattern, rid: {**row, c: below[-1]}}
+
+
+def _presence_walk(state, base, zones):
+    """Lower thresholds while presence is worth the false time: all together first, because
+    that step is cheap to test, then one gate at a time, so a noisy gate stops only itself."""
+    radars = state.problem.radars
+    current, found = base, None
+    moves = [_lowered(base, k, radars) for k in PRESENCE_SHIFTS]
+    for _ in range(PRESENCE_ROUNDS):
+        patterns = _dedupe([current, *moves, *_gate_steps(current, radars)])
+        _, scores, quiet = score(state, patterns, zones=zones, keep=len(patterns))
+        chosen = selection.presence_shift(scores)
+        if chosen == 0:
+            break
+        current, found, moves = patterns[chosen], (scores[chosen], quiet[chosen]), []
+    return current, found
+
+
 def presence_shift(state, pick, info, zones=None):
     """Spend false-active time on presence the cost-ranked candidates leave behind."""
     base = state.compared[pick]
-    patterns = _dedupe([base, *(_lowered(base, k, state.problem.radars) for k in PRESENCE_SHIFTS)])
-    _, scores, quiet = score(state, patterns, zones=zones, keep=len(patterns))
-    chosen = selection.presence_shift(scores)
-    info["presence_shift"] = max(
-        base[rid][c] - patterns[chosen][rid][c] for rid in base for c in base[rid]
-    )
-    if chosen == 0:
+    current, found = _presence_walk(state, base, zones)
+    info["presence_shift"] = max(base[r][c] - current[r][c] for r in base for c in base[r])
+    if found is None:
         return pick
-    state.compared.append(patterns[chosen])
-    state.scores.append(scores[chosen])
-    state.quiet.append(quiet[chosen])
+    state.compared.append(current)
+    state.scores.append(found[0])
+    state.quiet.append(found[1])
     return len(state.compared) - 1
 
 

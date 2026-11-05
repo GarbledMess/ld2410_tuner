@@ -34,6 +34,7 @@ PRESENCE_FLOOR = 0.005
 # chose alike and 20 lost one fold (2026-11-05,
 # tuned on the same folds, so optimistic); the cost-ranked search alone left this presence.
 PRESENCE_SHIFTS = (1, 2, 3, 4, 6, 8, 12)
+PRESENCE_ROUNDS = 12  # One gate step per round, so a fit's extra replay work stays bounded.
 PRESENCE_PRICE = 50.0
 FALSE_TRIGGER_SECONDS = 30.0  # A trigger costs more than its seconds: it can wake a room.
 ROBUST_SHORTLIST = 6
