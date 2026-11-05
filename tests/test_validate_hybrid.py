@@ -3,6 +3,10 @@
 import base64
 import importlib.util
 import json
+import subprocess
+import sys
+import tempfile
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +27,7 @@ def cli():
     # Synthetic contract tests must not inherit the pytest process's RSS peak.
     # Resource-failure tests override this boundary explicitly below.
     module._rss = lambda: 64 * 1024**2
+    module.validate = partial(module.validate, jobs=1)
     return module
 
 
@@ -84,7 +89,12 @@ def test_validation_requires_user_history_path(tmp_path, monkeypatch):
     assert not (tmp_path / "out").exists()
     history, _, _ = synthetic(tmp_path, episodes=2)
     monkeypatch.setattr(module, "_rss", lambda: 1024**3)
-    assert module.main(["--history", str(history), "--output", str(tmp_path / "failed")]) == 1
+    assert (
+        module.main(
+            ["--history", str(history), "--output", str(tmp_path / "failed"), "--jobs", "1"]
+        )
+        == 1
+    )
 
 
 def test_validation_never_writes_inside_history(tmp_path, monkeypatch):
@@ -629,3 +639,243 @@ def test_room_without_recorded_members_is_skipped(tmp_path):
     assert room["status"] == "skipped"
     assert room["folds"] == []
     assert room["failures"] == []
+
+
+def multi_history(tmp_path):
+    history, path, _ = synthetic(tmp_path, episodes=2)
+    data = json.loads(path.read_text())
+    device = data["devices"]["private-device-id"]
+    skipped = json.loads(json.dumps(device))
+    skipped["history"]["labels"] = []
+    data["devices"] = {"slow-first": device, "skipped-second": skipped, "third": device}
+    data["groups"] = {"room": {"device_ids": ["slow-first", "third"]}}
+    data["room_labels"] = {
+        "room": [{**label, "source": "manual"} for label in device["history"]["labels"]]
+    }
+    path.write_text(json.dumps(data))
+    return history
+
+
+def without_performance(value):
+    if isinstance(value, dict):
+        return {k: without_performance(v) for k, v in value.items() if k != "performance"}
+    if isinstance(value, list):
+        return [without_performance(v) for v in value]
+    return value
+
+
+def test_parallel_matches_serial_and_cleans_worker_copies(tmp_path, monkeypatch):
+    module = cli()
+    history = multi_history(tmp_path)
+    before = snapshot(history)
+    serial = module.validate(history, tmp_path / "serial", jobs=1)
+    baseline = tmp_path / "serial" / "report.json"
+    serial = module.validate(history, tmp_path / "frozen-serial", baseline=baseline, jobs=1)
+    temporary_root = tmp_path / "temporary"
+    temporary_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temporary_root))
+    parallel = module.validate(history, tmp_path / "parallel", baseline=baseline, jobs=2)
+    assert without_performance(serial) == without_performance(parallel)
+    assert [(s["alias"], s["status"]) for s in parallel["sets"]] == [
+        ("R1", "ok"),
+        ("R2", "skipped"),
+        ("R3", "ok"),
+        ("G1", "ok"),
+    ]
+    assert snapshot(history) == before
+    assert list(temporary_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("jobs", ["0", "-1", "no", "1.5"])
+def test_jobs_cli_rejects_invalid_values(tmp_path, jobs):
+    module = cli()
+    with pytest.raises(SystemExit) as exc:
+        module.main(["--history", str(tmp_path), "--output", str(tmp_path / "out"), "--jobs", jobs])
+    assert exc.value.code == 2
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("jobs", [0, -1, 1.5, "2", True])
+def test_validate_rejects_invalid_jobs(tmp_path, jobs):
+    with pytest.raises(ValueError, match="jobs"):
+        cli().validate(tmp_path, tmp_path / "out", jobs=jobs)
+
+
+def test_default_jobs_uses_physical_core_estimate(monkeypatch):
+    module = cli()
+    for cores, expected in [(None, 1), (1, 1), (2, 1), (16, 8), (64, 8)]:
+        monkeypatch.setattr(module.os, "cpu_count", lambda cores=cores: cores)
+        assert module._default_jobs() == expected
+
+
+@pytest.mark.parametrize("failure", ["exception", "death", "initializer"])
+def test_real_worker_failure_exits_without_report(tmp_path, failure):
+    history = multi_history(tmp_path)
+    harness = tmp_path / "run_failure.py"
+    harness.write_text(
+        "import sys, multiprocessing, threading, time, tempfile\n"
+        f"sys.path.insert(0, {str(ROOT / 'tools')!r})\n"
+        "import validate_hybrid as validator\n"
+        "def fail_task(rid, alias):\n"
+        "    validator._worker_set(rid, alias)\n"
+        "    raise RuntimeError('Injected unexpected worker failure')\n"
+        "def kill_worker():\n"
+        "    while not multiprocessing.active_children():\n"
+        "        time.sleep(0.001)\n"
+        "    multiprocessing.active_children()[0].terminate()\n"
+        "if __name__ == '__main__':\n"
+        f"    tempfile.tempdir = {str(tmp_path / 'temporary')!r}\n"
+        + (
+            "    validator._worker_set = fail_task\n"
+            if failure == "exception"
+            else (
+                "    original = validator._worker_snapshot\n"
+                "    def broken(context):\n"
+                "        result = original(context)\n"
+                f"        result['entries'][0]['path'] = {str(tmp_path / 'private-identity.day')!r}\n"
+                "        return result\n"
+                "    validator._worker_snapshot = broken\n"
+                if failure == "initializer"
+                else "    threading.Thread(target=kill_worker, daemon=True).start()\n"
+            )
+        )
+        + f"    raise SystemExit(validator.main(['--history', {str(history)!r}, "
+        f"'--output', {str(tmp_path / 'out')!r}, '--jobs', '2']))\n"
+    )
+    (tmp_path / "temporary").mkdir()
+    before = snapshot(history)
+    result = subprocess.run([sys.executable, str(harness)], capture_output=True, timeout=60)
+    assert result.returncode == 1, result.stderr.decode()
+    assert b"private-identity" not in result.stderr
+    assert not (tmp_path / "out" / "report.json").exists()
+    assert list((tmp_path / "temporary").iterdir()) == []
+    assert snapshot(history) == before
+
+
+def test_parallel_order_is_independent_of_completion(tmp_path, monkeypatch):
+    module = cli()
+    history = multi_history(tmp_path)
+    helper = tmp_path / "ordered_worker.py"
+    marker = tmp_path / "second-finished"
+    helper.write_text(
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "import validate_hybrid as validator\n"
+        "def run(rid, alias):\n"
+        f"    marker = Path({str(marker)!r})\n"
+        "    if alias == 'R1':\n"
+        "        until = time.monotonic() + 30\n"
+        "        while not marker.exists():\n"
+        "            if time.monotonic() > until:\n"
+        "                raise RuntimeError('second set did not finish')\n"
+        "            time.sleep(0.01)\n"
+        "    result = validator._worker_set(rid, alias)\n"
+        f"    Path({str(tmp_path)!r}, alias + '.directory').write_text(\n"
+        "        str(validator._WORKER_CONTEXT.detached))\n"
+        "    if alias == 'R2':\n"
+        "        marker.touch()\n"
+        "    return result\n"
+    )
+    monkeypatch.syspath_prepend(str(ROOT / "tools"))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    worker = __import__("validate_hybrid")
+    ordered = __import__("ordered_worker")
+    monkeypatch.setattr(worker, "_worker_set", ordered.run)
+    original = module.as_completed
+    completed = []
+
+    def record(futures):
+        for future in original(futures):
+            completed.append(future.result()["alias"])
+            yield future
+
+    monkeypatch.setattr(module, "as_completed", record)
+    report = module.validate(history, tmp_path / "out", jobs=2)
+    assert completed.index("R2") < completed.index("R1")
+    assert [item["alias"] for item in report["sets"]] == ["R1", "R2", "R3", "G1"]
+    directories = [Path(p.read_text()) for p in tmp_path.glob("*.directory")]
+    assert len(set(directories)) == 2
+    assert all(not path.exists() for path in directories)
+
+
+def test_script_cli_runs_spawn_workers(tmp_path):
+    history = multi_history(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "validate_hybrid.py"),
+            "--history",
+            str(history),
+            "--output",
+            str(tmp_path / "out"),
+            "--jobs",
+            "2",
+        ],
+        capture_output=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert json.loads(result.stdout)["status"] == "ok"
+    report = json.loads((tmp_path / "out" / "report.json").read_text())
+    assert report["sets"][0]["folds"][0]["performance"]["cold"]["rss_scope"] == (
+        "worker process lifetime high-water mark"
+    )
+
+
+@pytest.mark.parametrize("jobs", [1, 2])
+@pytest.mark.parametrize("sets", [None, {}, [{"alias": "R1"}], [{"alias": "R1", "folds": [{}]}]])
+def test_malformed_baseline_is_invalid_before_workers(tmp_path, jobs, sets):
+    module = cli()
+    history, _, _ = synthetic(tmp_path, episodes=2)
+    baseline = {
+        "protocol": module.PROTOCOL,
+        "tolerances": module.TOLERANCES,
+        "hashes": {"constants": module.hashes()["constants"]},
+    }
+    if sets is not None:
+        baseline["sets"] = sets
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(baseline))
+    assert (
+        module.main(
+            [
+                "--history",
+                str(history),
+                "--output",
+                str(tmp_path / "out"),
+                "--baseline",
+                str(path),
+                "--jobs",
+                str(jobs),
+            ]
+        )
+        == 2
+    )
+    assert not (tmp_path / "out" / "report.json").exists()
+
+
+@pytest.mark.parametrize("jobs", [1, 2])
+@pytest.mark.parametrize("invalid", ["timing", "room_member"])
+def test_invalid_worker_input_keeps_exit_code_two(tmp_path, jobs, invalid):
+    module = cli()
+    history, path, _ = synthetic(tmp_path, episodes=2)
+    data = json.loads(path.read_text())
+    if invalid == "timing":
+        data["devices"]["private-device-id"]["timing_configuration"] = {"timeout": "invalid"}
+    else:
+        data["groups"] = {"room": {"device_ids": ["missing-device"]}}
+    path.write_text(json.dumps(data))
+    assert (
+        module.main(
+            [
+                "--history",
+                str(history),
+                "--output",
+                str(tmp_path / "out"),
+                "--jobs",
+                str(jobs),
+            ]
+        )
+        == 2
+    )
+    assert not (tmp_path / "out" / "report.json").exists()

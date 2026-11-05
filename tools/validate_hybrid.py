@@ -18,6 +18,7 @@ import importlib
 import importlib.util
 import json
 import math
+import multiprocessing
 import os
 import shutil
 import sys
@@ -25,6 +26,7 @@ import tempfile
 import time
 import tracemalloc
 from array import array
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -1068,7 +1070,23 @@ def _baseline(path):
         raise ValueError("Baseline protocol or frozen tolerances differ")
     if baseline.get("hashes", {}).get("constants") != hashes()["constants"]:
         raise ValueError("Baseline numerical constants differ")
+    _baseline_structure(baseline)
     return baseline
+
+
+def _baseline_structure(baseline):
+    _baseline_fields(baseline, {"sets": list})
+    for item in baseline["sets"]:
+        _baseline_fields(item, {"alias": str, "folds": list, "aggregate": dict, "status": str})
+        for fold in item["folds"]:
+            _baseline_fields(fold, {"heldout": list, "thresholds": dict, "primary": dict})
+
+
+def _baseline_fields(value, fields):
+    if not isinstance(value, dict) or not all(
+        isinstance(value.get(key), kind) for key, kind in fields.items()
+    ):
+        raise ValueError("Invalid baseline report structure")
 
 
 def _baseline_check(report, baseline):
@@ -1089,8 +1107,132 @@ def _baseline_check(report, baseline):
     }
 
 
-def validate(history: Path, output: Path, *, baseline: Path | None = None) -> dict:
+def _default_jobs():
+    return max(1, min(8, (os.cpu_count() or 1) // 2))
+
+
+def _jobs(value):
+    if type(value) is not int or value < 1:
+        raise ValueError("jobs must be a positive integer")
+    return value
+
+
+def _cli_jobs(value):
+    try:
+        return _jobs(int(value))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("jobs must be a positive integer") from error
+
+
+def _worker_snapshot(context):
+    return {
+        "devices": context.devices,
+        "groups": context.groups,
+        "room_labels": context.room_labels,
+        "start": context.start,
+        "end": context.end,
+        "entries": list(context.view._days.entries.values()),
+        "budgets": context.view._days.budgets,
+    }
+
+
+def _worker_init(snapshot, parent, baseline):
+    global _WORKER_CONTEXT, _WORKER_BASELINE
+    try:
+        _WORKER_CONTEXT = _worker_context(snapshot, parent)
+        _WORKER_BASELINE = baseline
+    except Exception:
+        # Executor logs initializer tracebacks; keep input identities out of stderr.
+        raise RuntimeError("Validation worker setup failed") from None
+
+
+def _worker_context(snapshot, parent):
+    detached = Path(tempfile.mkdtemp(prefix="worker-", dir=parent))
+    entries = []
+    for entry in snapshot["entries"]:
+        source = Path(entry["path"])
+        target = detached / source.parent.name / source.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        entries.append(
+            {
+                **entry,
+                **_capture(
+                    target, entry["device_id"], entry["date"], persistent=entry["persistent"]
+                ),
+            }
+        )
+    data = {key: snapshot[key] for key in ("devices", "groups", "room_labels")}
+    view = SimpleNamespace(
+        data=data,
+        _days=modules().days.ReadOnlyDays({"days": entries, "budgets": snapshot["budgets"]}),
+        _history_until=snapshot["end"],
+        _attribution_until=snapshot["end"],
+        _attribution_guesses={},
+    )
+    return SimpleNamespace(
+        **data, view=view, start=snapshot["start"], end=snapshot["end"], detached=detached
+    )
+
+
+def _worker_set(rid, alias):
+    result = _set(_WORKER_CONTEXT, rid, alias, _WORKER_BASELINE)
+    for fold in result["folds"]:
+        for measurement in fold["performance"].values():
+            measurement["rss_scope"] = "worker process lifetime high-water mark"
+    return result
+
+
+def _stop_workers(pool):
+    # Python 3.12 has no public terminate_workers API. Stop running fits before
+    # shutdown so failures cannot wait for unrelated sets or race temp cleanup.
+    processes = list(pool._processes.values())
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+    for process in processes:
+        process.join()
+
+
+def _parallel_sets(context, targets, baseline, jobs):
+    # A stable import name is required even when callers load this file by path.
+    sys.path.insert(0, str(Path(__file__).parent))
+    try:
+        worker = importlib.import_module("validate_hybrid")
+        return _pool_sets(worker, context, targets, baseline, jobs)
+    finally:
+        sys.path.pop(0)
+
+
+def _pool_sets(worker, context, targets, baseline, jobs):
+    pool = ProcessPoolExecutor(
+        max_workers=jobs,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=worker._worker_init,
+        initargs=(_worker_snapshot(context), context.detached, baseline),
+    )
+    try:
+        futures = {pool.submit(worker._worker_set, *target): i for i, target in enumerate(targets)}
+        results = [None] * len(targets)
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+        return results
+    except BaseException as error:
+        _stop_workers(pool)
+        if isinstance(error, (ValueError, OSError, KeyError, TypeError)):
+            raise
+        if isinstance(error, Exception):
+            raise RuntimeError("Validation worker failed") from error
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+def validate(
+    history: Path, output: Path, *, baseline: Path | None = None, jobs: int | None = None
+) -> dict:
     """Return/write an anonymous report; ValueError/OSError indicate invalid input."""
+    jobs = _default_jobs() if jobs is None else _jobs(jobs)
     history, output, baseline = checked_paths(history, output, baseline)
     frozen = _baseline(baseline)  # Freeze before producing any new results.
     with tempfile.TemporaryDirectory(prefix="hybrid-validation-") as temporary:
@@ -1099,7 +1241,11 @@ def validate(history: Path, output: Path, *, baseline: Path | None = None) -> di
             *((rid, alias) for rid, alias in _aliases(context).items()),
             *((gid, "G" + str(i)) for i, gid in enumerate(context.groups, 1)),
         ]
-        sets = [_set(context, rid, alias, frozen) for rid, alias in targets]
+        sets = (
+            [_set(context, rid, alias, frozen) for rid, alias in targets]
+            if jobs == 1
+            else _parallel_sets(context, targets, frozen, jobs)
+        )
     report = {
         "protocol": PROTOCOL,
         "hashes": hashes(),
@@ -1145,12 +1291,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--history", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--baseline", type=Path)
+    parser.add_argument(
+        "--jobs", type=_cli_jobs, default=None, help="set workers (default: up to 8)"
+    )
     args = parser.parse_args(argv)
     try:
-        report = validate(args.history, args.output, baseline=args.baseline)
+        report = validate(args.history, args.output, baseline=args.baseline, jobs=args.jobs)
     except (ValueError, OSError, KeyError, TypeError):
         print("Invalid validation input; no private details emitted", file=sys.stderr)
         return 2
+    except RuntimeError:
+        print(
+            "Validation worker failed; no report written or private details emitted",
+            file=sys.stderr,
+        )
+        return 1
     print(json.dumps({"protocol": PROTOCOL, "status": report["status"]}))
     return 0 if report["status"] == "ok" else 1
 
