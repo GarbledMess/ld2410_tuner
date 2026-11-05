@@ -1180,7 +1180,10 @@ The input can be v2 radar export JSON files, `metadata.json` with a `history/`
 day-store directory, or a Home Assistant `.storage` directory containing
 `ld2410_tuner.data` and `ld2410_tuner/history/`. The output directory must be outside
 the repository and separate from the input. Run locally with Python; Home
-Assistant does not need to be running.
+Assistant does not need to be running. Sets run in separate processes, each with its own
+detached history copy. Use `--jobs N` to choose the number of workers (default: half
+the logical CPUs, capped at 8 and at least 1); `--jobs 1` runs in-process. RSS is the
+worker process lifetime peak when using multiple workers.
 
 The tool fits training folds and measures held-out episodes using an independent
 replay referee, records CPU and memory measurements, and writes `report.json`.
