@@ -22,6 +22,25 @@ class SeparationTests(unittest.TestCase):
 
     def test_gate_noise_is_not_hidden_by_another_gates_false_trigger(self):
         keys = ["g0_still", "g1_still"]
+        rows = [(i * 6, {keys[0]: 80, keys[1]: 80}, "present") for i in range(1000)]
+        rows += [
+            (
+                10000 + i * 6,
+                {keys[0]: 21 if i == 100 else 3, keys[1]: 100 if i == 100 else 3},
+                "not_present",
+            )
+            for i in range(1000)
+        ]
+        guesses = [(30000 + i * 6, {keys[0]: 7, keys[1]: 0}, "present", 0.99) for i in range(1000)]
+        result = harness.fit(rows, keys, automatic=guesses)
+        self.assertEqual(result["training"]["false_negatives"], 0)
+        self.assertEqual(result["training"]["false_positives"], 0)
+        self.assertEqual(result["proposals"][keys[0]]["false_positives"], 0)
+        self.assertGreaterEqual(result["proposals"][keys[0]]["threshold"], 21)
+        self.assertLess(result["proposals"][keys[0]]["threshold"], 80)
+
+    def test_a_single_false_trigger_is_not_paid_for_with_five_percent_of_presence(self):
+        keys = ["g0_still", "g1_still"]
         rows = [
             (i * 6, {keys[0]: 0 if i < 50 else 80, keys[1]: 80}, "present") for i in range(1000)
         ]
@@ -33,12 +52,8 @@ class SeparationTests(unittest.TestCase):
             )
             for i in range(1000)
         ]
-        guesses = [(30000 + i * 6, {keys[0]: 7, keys[1]: 0}, "present", 0.99) for i in range(1000)]
-        result = harness.fit(rows, keys, automatic=guesses)
-        self.assertEqual(result["training"]["false_positives"], 0)
-        self.assertEqual(result["proposals"][keys[0]]["false_positives"], 0)
-        self.assertGreaterEqual(result["proposals"][keys[0]]["threshold"], 21)
-        self.assertLess(result["proposals"][keys[0]]["threshold"], 80)
+        result = harness.fit(rows, keys)
+        self.assertEqual(result["training"]["false_negatives"], 0)
 
     def test_automatic_share_can_spend_margin_without_sacrificing_human_labels(self):
         rows = harness.row_samples({"g0_still": 80}, {"g0_still": 20})

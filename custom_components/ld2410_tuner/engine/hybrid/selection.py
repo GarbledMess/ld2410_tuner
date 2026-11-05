@@ -10,7 +10,14 @@ within the band the most central gap margin wins, then lower thresholds, then
 cost and candidate order. The quiet prior never enters a reported error cost.
 """
 
-from .constants import MISSED_WEIGHT, QUIET_CAP, QUIET_SECONDS, QUIET_SLACK, ROBUST_WEIGHT
+from .constants import (
+    MISSED_WEIGHT,
+    PRESENCE_FLOOR,
+    QUIET_CAP,
+    QUIET_SECONDS,
+    QUIET_SLACK,
+    ROBUST_WEIGHT,
+)
 from .domains import evidence_margin
 from .evidence import _labels
 
@@ -82,6 +89,23 @@ def _allowed(scores):
     ]
 
 
+def _human_recall(metrics):
+    # Automatic guesses are weaker evidence: they may spend margin, never force a threshold.
+    values = metrics.get("sufficient_statistics", {}).get("present/human")
+    return 1 - values[1] / values[0] if values and values[0] else None
+
+
+def _recall(score):
+    values = (_human_recall(m) for m in _zones(score).values())
+    return min((v for v in values if v is not None), default=0.0)
+
+
+def _presence_floor(scores, allowed):
+    """Catching presence outranks cost: keep the start, drop candidates far below the best."""
+    floor = max(_recall(scores[i]) for i in allowed) - PRESENCE_FLOOR
+    return [i for i in allowed if i == 0 or _recall(scores[i]) >= floor]
+
+
 def _margin(scores):
     return sum(
         evidence_margin(m["occupied_episodes"], m["empty_periods"])
@@ -116,14 +140,16 @@ def _ranker(problem, patterns, tied, costs, statistics):
 def choose(problem, patterns, scores, quiet, statistics):
     """Index of the chosen score (0 is the start) and the selection audit."""
     costs = [c for c, _ in selection_costs(problem, scores, quiet)]
-    allowed = _allowed(scores)
+    guarded = _allowed(scores)
+    allowed = _presence_floor(scores, guarded)
     margin = _margin(scores)
     best = min(costs[i] for i in allowed)
     info = {
         "margin": round(margin, 6),
         "start_cost": costs[0],
         "best_cost": best,
-        "guarded": len(scores) - len(allowed),
+        "guarded": len(scores) - len(guarded),
+        "presence_floored": len(guarded) - len(allowed),
         "selection_costs": costs,
     }
     if costs[0] - best <= margin:

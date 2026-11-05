@@ -176,6 +176,67 @@ def test_selection_cost_caps_the_quiet_prior():
     assert pick == 0
 
 
+def _human_stats(recall, automatic=None):
+    stats = {"present/human": [100.0, 100.0 * (1 - recall), 1.0, 0.0]}
+    if automatic is not None:
+        stats["present/automatic"] = [100.0, 100.0 * (1 - automatic), 1.0, 0.0]
+    return stats
+
+
+def _recalled(cost, recall, automatic=None):
+    return {
+        **result(cost, occ=20, emp=20),
+        "sufficient_statistics": _human_stats(recall, automatic),
+    }
+
+
+def test_cheaper_candidate_cannot_give_up_presence_beyond_the_floor():
+    from tuner_under_test.engine.hybrid.selection import choose
+
+    problem, stats, pats = chooser(3)
+    base = wrap([_recalled(100.0, 0.9), _recalled(40.0, 0.95), _recalled(60.0, 1.0)])
+    pick, info = choose(problem, pats, base, None, stats)
+    assert pick == 2
+    assert info["presence_floored"] == 1
+
+
+def test_presence_floor_allows_candidates_within_its_slack():
+    from tuner_under_test.engine.hybrid.selection import choose
+
+    problem, stats, pats = chooser(3)
+    base = wrap([_recalled(100.0, 0.9), _recalled(40.0, 0.996), _recalled(60.0, 1.0)])
+    assert choose(problem, pats, base, None, stats)[0] == 1
+
+
+def test_presence_floor_never_removes_the_start():
+    from tuner_under_test.engine.hybrid.selection import choose
+
+    problem, stats, pats = chooser(2)
+    base = wrap([_recalled(50.0, 0.5), _recalled(50.2, 1.0)])
+    pick, info = choose(problem, pats, base, None, stats)
+    assert pick == 0
+    assert info["why"] == "improvement within evidence margin"
+
+
+def test_presence_floor_uses_the_worst_zone_and_tolerates_missing_human_presence():
+    from tuner_under_test.engine.hybrid.selection import _recall
+
+    high, low = (_recalled(1.0, r) for r in (1.0, 0.5))
+    assert _recall({"zones": {"a": high, "b": low}}) == 0.5
+    assert _recall({"zones": {"a": {}, "b": low}}) == 0.5
+    assert _recall({}) == 0.0
+
+
+def test_presence_floor_ignores_automatic_presence():
+    from tuner_under_test.engine.hybrid.selection import choose
+
+    problem, stats, pats = chooser(3)
+    base = wrap(
+        [_recalled(100.0, 0.9), _recalled(40.0, 1.0, automatic=0.0), _recalled(60.0, 1.0, 1.0)]
+    )
+    assert choose(problem, pats, base, None, stats)[0] == 1
+
+
 def test_zero_class_time_keeps_current_without_proposals():
     from tuner_under_test.engine.hybrid.engine import fit
 
