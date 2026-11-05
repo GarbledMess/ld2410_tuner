@@ -313,6 +313,29 @@ def test_fit_lowers_thresholds_for_quiet_presence_the_cost_leaves_behind():
     assert got.after["false_active_seconds"] == 0
 
 
+def test_lowering_only_uses_values_the_radar_supports():
+    from tuner_under_test.engine.hybrid.engine import _lowered
+
+    radar = RadarSpec("a", (0, 1), {0: (10, 20, 30, 40), 1: (20, 30)}, {0: 40, 1: 30}, {})
+    pattern = {"a": {0: 40, 1: 30}}
+    assert _lowered(pattern, 1, {"a": radar}) == {"a": {0: 30, 1: 20}}
+    assert _lowered(pattern, 12, {"a": radar}) == {"a": {0: 20, 1: 20}}
+    assert _lowered(pattern, 100, {"a": radar}) == {"a": {0: 10, 1: 20}}
+
+
+def test_fit_with_coarse_radar_steps_returns_only_supported_thresholds():
+    from tuner_under_test.engine.hybrid.engine import fit
+
+    rows, spans = episodes(40, seconds=600, present=(60, 70), empty=(4, 9))
+    quiet = {i for i, row in enumerate(rows) if row[0] % 7200 == 1200 and row[2][0] >= 60}
+    rows = [(a, b, [34] + v[1:]) if i in quiet else (a, b, v) for i, (a, b, v) in enumerate(rows)]
+    domain = tuple(range(0, 101, 10))
+    problem = fit_problem(rows, spans)
+    radar = replace(problem.radars["a"], domains={0: domain})
+    got = fit(replace(problem, radars={"a": radar}))
+    assert got.thresholds["a"][0] in domain
+
+
 def test_fit_does_not_lower_thresholds_into_a_false_cliff():
     from tuner_under_test.engine.hybrid.engine import fit
 
