@@ -3,9 +3,13 @@
 import io
 import mmap
 import struct
+import sys
 import tempfile
 import zlib
+from array import array
 from contextlib import contextmanager
+from itertools import repeat
+from operator import add, lt, truediv
 
 from ..history import dayfile
 
@@ -187,7 +191,10 @@ def _integers(stream, offset, count, first, length, planes):
         raw = bytearray(length * 4)
         for plane in range(4):
             raw[plane::4] = _read_at(stream, offset + plane * count + first, length)
-    return [v[0] for v in struct.iter_unpack("<i", raw)]
+    values = array("i", raw)
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values.tolist()
 
 
 class _ColumnReader:
@@ -237,14 +244,23 @@ class _ColumnReader:
             pace.rest()
 
     def _write_times(self, starts, ends, previous_end):
-        for lo, hi in zip(starts, ends, strict=True):
-            if hi < lo or hi > self.end - self.start:
-                raise HistoryRejected("Invalid physical coverage")
-            if previous_end is not None and lo < previous_end:
-                raise HistoryRejected("Unordered physical coverage")
-            self.index.write(struct.pack("<dd", (self.start + lo) / 1000, (self.start + hi) / 1000))
-            previous_end = hi
-        return previous_end
+        if len(starts) != len(ends):
+            raise HistoryRejected("Invalid physical coverage")
+        if any(map(lt, ends, starts)) or max(ends, default=0) > self.end - self.start:
+            raise HistoryRejected("Invalid physical coverage")
+        if starts and previous_end is not None and starts[0] < previous_end:
+            raise HistoryRejected("Unordered physical coverage")
+        if any(map(lt, starts[1:], ends[:-1])):
+            raise HistoryRejected("Unordered physical coverage")
+        times = map(truediv, map(add, starts, repeat(self.start)), repeat(1000))
+        stops = map(truediv, map(add, ends, repeat(self.start)), repeat(1000))
+        values = array("d", [0.0]) * (2 * len(starts))
+        values[::2] = array("d", times)
+        values[1::2] = array("d", stops)
+        if sys.byteorder != "little":
+            values.byteswap()
+        self.index.write(values.tobytes())
+        return ends[-1] if ends else previous_end
 
     def _bisect(self, value, side):
         lo, hi = 0, self.count
@@ -274,8 +290,6 @@ class _ColumnReader:
         return bytes(ceil(v) if isfinite(v) and 0 <= v <= 100 else 255 for v in values)
 
     def blocks(self, lo, hi, channels):
-        from array import array
-
         from ..engine.hybrid.constants import ROW_BLOCK_ROWS
         from ..engine.hybrid.types import RowBlock
         from ..history import pace
@@ -285,9 +299,11 @@ class _ColumnReader:
         first, after = self._bisect(lo, "end"), self._bisect(hi, "start")
         for begin in range(first, after, ROW_BLOCK_ROWS):
             count = min(ROW_BLOCK_ROWS, after - begin)
-            pairs = list(struct.iter_unpack("<dd", _read_at(self.index, begin * 16, count * 16)))
-            times = array("d", (max(lo, a) for a, b in pairs))
-            ends = array("d", (min(hi, b) for a, b in pairs))
+            pairs = array("d", _read_at(self.index, begin * 16, count * 16))
+            if sys.byteorder != "little":
+                pairs.byteswap()
+            times, ends = pairs[::2], pairs[1::2]
+            times[0], ends[-1] = max(lo, times[0]), min(hi, ends[-1])
             columns = tuple(
                 self._column(c, begin, count) if c in channels else bytes([255]) * count
                 for c in range(18)

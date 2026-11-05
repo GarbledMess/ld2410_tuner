@@ -8,6 +8,84 @@ from tuner_under_test.history import dayfile
 from tuner_under_test.worker import history
 
 
+def test_time_index_writes_one_buffer_per_block():
+    import io
+    import struct
+
+    class Index(io.BytesIO):
+        writes = 0
+
+        def write(self, data):
+            self.writes += 1
+            return super().write(data)
+
+    reader = object.__new__(history._ColumnReader)
+    reader.start, reader.end, reader.index = 1790000000000, 1790086400000, Index()
+    starts = list(range(0, 24000, 6))
+    ends = [value + 5 for value in starts]
+    assert reader._write_times(starts, ends, None) == ends[-1]
+    assert reader.index.getvalue() == b"".join(
+        struct.pack("<dd", (reader.start + a) / 1000, (reader.start + b) / 1000)
+        for a, b in zip(starts, ends, strict=True)
+    )
+    assert reader.index.writes == 1
+
+
+def test_column_blocks_decode_time_arrays_without_per_row_generators():
+    import io
+    import struct
+    import sys
+    from array import array
+
+    reader = object.__new__(history._ColumnReader)
+    reader.count = 9000
+    reader.index = io.BytesIO(
+        b"".join(struct.pack("<dd", i * 6, i * 6 + 5) for i in range(reader.count))
+    )
+    reader.raw = io.BytesIO(bytes([20]) * reader.count * 18)
+    reader.flags = [0] * 18
+    reader.offsets = [i * reader.count for i in range(18)]
+    calls = []
+
+    def profile(frame, event, _arg):
+        if event == "call" and frame.f_code.co_filename == history.__file__:
+            calls.append(frame.f_code.co_name)
+
+    sys.setprofile(profile)
+    try:
+        blocks = list(reader.blocks(2, 53995, (0, 17)))
+    finally:
+        sys.setprofile(None)
+    times = array("d", (value for block in blocks for value in block.times))
+    ends = array("d", (value for block in blocks for value in block.ends))
+    assert times == array("d", [2, *range(6, 54000, 6)])
+    assert ends == array("d", [*range(5, 53999, 6), 53995])
+    assert all(block.columns[0] == bytes([20]) * len(block.times) for block in blocks)
+    assert all(block.columns[1] == bytes([255]) * len(block.times) for block in blocks)
+    assert calls.count("<genexpr>") <= 60
+
+
+@pytest.mark.parametrize("planes", [False, True])
+def test_integer_columns_decode_in_bulk(planes, monkeypatch):
+    import io
+    import struct
+    from types import SimpleNamespace
+
+    values = [-2147483648, -1, 0, 1, 2147483647] * 100
+    raw = struct.pack("<" + "i" * len(values), *values)
+    if planes:
+        raw = b"".join(raw[i::4] for i in range(4))
+    calls = []
+
+    def counted(*args):
+        calls.append(1)
+        return struct.iter_unpack(*args)
+
+    monkeypatch.setattr(history, "struct", SimpleNamespace(iter_unpack=counted))
+    assert history._integers(io.BytesIO(raw), 0, len(values), 2, 100, planes) == values[2:102]
+    assert not calls
+
+
 def encoded(rows=0, runs=0, flags=None, body=b""):
     header = dayfile.HEADER.pack(1, 0, 86400000, rows, runs, *(flags or [0] * 18))
     return dayfile.MAGIC + zlib.compress(header + body)
@@ -256,3 +334,32 @@ def test_v2_accumulated_timestamp_overflow_is_rejected_before_columns(monkeypatc
     with pytest.raises(history.HistoryRejected, match="Invalid or oversized") as caught:
         history.decode(dayfile.MAGIC + zlib.compress(header + body))
     assert str(caught.value.__cause__) == "Invalid delta timestamps"
+
+
+@pytest.mark.parametrize("count", [0, 1, 4096])
+def test_timestamp_index_interleaves_columns_without_row_tuples(monkeypatch, count):
+    import builtins
+    import struct
+    from io import BytesIO
+
+    starts = [i * 6 for i in range(count)]
+    ends = [i * 6 + 5 for i in range(count)]
+    reader = history._ColumnReader.__new__(history._ColumnReader)
+    reader.start, reader.end = 1790000000000, 1790000100000
+    reader.index = BytesIO()
+    tuples = []
+
+    def counted_zip(*args, strict=False):
+        for row in builtins.zip(*args, strict=strict):
+            tuples.append(1)
+            yield row
+
+    monkeypatch.setattr(history, "zip", counted_zip, raising=False)
+    result = reader._write_times(starts, ends, None)
+    expected = b"".join(
+        struct.pack("<dd", (reader.start + lo) / 1000, (reader.start + hi) / 1000)
+        for lo, hi in builtins.zip(starts, ends, strict=True)
+    )
+    assert reader.index.getvalue() == expected
+    assert result == (ends[-1] if ends else None)
+    assert not tuples
