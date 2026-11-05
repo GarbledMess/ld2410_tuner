@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.32.2 - 2026-11-05
+
+- Learn no longer stops after two minutes of CPU on slower hardware. Fits may now use up to
+  15 minutes of CPU at the lowest processor and disk priority, and saving recordings has its
+  own queue, so a long fit cannot hold up a save or a graph.
+
 ## 1.32.1 - 2026-11-05
 
 - Graphs, Learn and room assessments no longer fail with "Metadata node budget exceeded".

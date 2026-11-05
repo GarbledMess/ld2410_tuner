@@ -19,7 +19,7 @@ def main():
     """Read one capped request file and emit exactly one versioned result."""
     _namespace()
     from ld2410_child.worker.diagnostics import describe, emit, safely
-    from ld2410_child.worker.limits import Budget, install
+    from ld2410_child.worker.limits import Budget, idle_disk_priority, install
 
     mode = sys.argv[3] if len(sys.argv) == 4 else None
     if len(sys.argv) not in (3, 4) or mode not in (None, "storage", "display"):
@@ -28,10 +28,14 @@ def main():
     memory_mib = 256 if mode == "display" else 512
     # Reading children spill one inflated day (history.DAY_BYTES at most) before mapping it.
     file_mib = 192 if mode == "storage" else 128
+    # Fits are queued at the lowest priority and nobody waits on them; charts and saves stay short.
+    cpu_seconds = 900 if mode is None else 120
     controls = install(
-        Budget(memory_mib * 1024 * 1024, 120, file_mib * 1024 * 1024),
+        Budget(memory_mib * 1024 * 1024, cpu_seconds, file_mib * 1024 * 1024),
         expected_parent=int(sys.argv[2]),
     )
+    if mode is None:
+        idle_disk_priority()
     emit("protected", limits=controls)
     from ld2410_child.worker import calculations, codec, protocol
 
