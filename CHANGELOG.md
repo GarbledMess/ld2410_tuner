@@ -9,6 +9,8 @@
   worker, the storage lock and what the save is waiting on.
 - Labels and settings are no longer lost when storage maintenance fails or runs out of
   time, whether during normal use or at shutdown. They are now saved without it.
+- The Bermuda section now names rooms it can't use and why: recording is off for the
+  room's radar, or no radar is assigned to that Home Assistant area.
 
 ## 1.32.0 - 2026-10-27
 
