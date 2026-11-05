@@ -101,7 +101,7 @@ def _threads():
 
 def diagnostics(runtime):
     services = []
-    for name in ("_worker_service", "_final_storage_service"):
+    for name in ("_storage_service", "_worker_service", "_final_storage_service"):
         service = getattr(runtime, name, None)
         state = None if service is None else service.diagnostics()
         services.append(f"worker {name}: {state}")

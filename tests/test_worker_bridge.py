@@ -144,6 +144,63 @@ def test_metadata_check_finishes_on_the_loop_if_data_keeps_changing(monkeypatch)
     assert threads[-1] is threading.main_thread()
 
 
+def test_a_long_fit_cannot_hold_up_saving_recordings():
+    async def run():
+        owner = runtime()
+        fit = bridge._service(owner, "learn")
+        storage = bridge._storage_service(owner)
+        assert storage is not fit
+        assert storage is not bridge._service(owner, "charts")
+        assert fit.deadline >= 3600
+        assert storage.deadline == 180
+        assert bridge._service(owner, "charts").deadline == 180
+        await bridge.stop(owner)
+        assert storage.diagnostics()["closed"]
+
+    asyncio.run(run())
+
+
+def test_only_flushes_use_the_storage_lane(monkeypatch):
+    from tuner_under_test.worker import transactions
+
+    used = []
+
+    async def admit(service, prepare, consume, finish):
+        used.append(service)
+
+    async def run():
+        owner = runtime()
+        monkeypatch.setattr(transactions, "_admit", admit)
+        await transactions.run(owner, "flush", {}, None)
+        assert used == [bridge._storage_service(owner)]
+        # Rewrites stay in line with label recounts and fits: they would race otherwise.
+        await transactions.run(owner, "maintenance", {}, None)
+        assert used[1] is bridge._service(owner, "learn")
+        await bridge.stop(owner)
+
+    asyncio.run(run())
+
+
+def test_fit_children_ask_for_idle_disk_priority(monkeypatch):
+    from tuner_under_test.worker import limits
+
+    calls = []
+    libc = SimpleNamespace(syscall=lambda *args: calls.append(args) or 0)
+    monkeypatch.setattr(limits.platform, "machine", lambda: "aarch64")
+    limits.idle_disk_priority(libc)
+    assert calls == [(30, 1, 0, 3 << 13)]
+
+
+def test_unknown_machines_skip_idle_disk_priority(monkeypatch):
+    from tuner_under_test.worker import limits
+
+    calls = []
+    libc = SimpleNamespace(syscall=lambda *args: calls.append(args) or 0)
+    monkeypatch.setattr(limits.platform, "machine", lambda: "riscv64")
+    limits.idle_disk_priority(libc)
+    assert not calls
+
+
 def test_job_manifest_pages_day_metadata_without_changing_the_views(tmp_path):
     import datetime
 
