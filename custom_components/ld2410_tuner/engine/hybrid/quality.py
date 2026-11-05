@@ -92,13 +92,18 @@ class _Densities:
         }
 
 
+_PHYSICAL_VALUES = (*range(255), None)
+
+
 def _physical(source, start, end):
     start = max(start, getattr(source.view, "_physical_history_start", float("-inf")))
     for block in source.blocks(start, end):
         pace.rest()
-        for index, (lo, hi) in enumerate(zip(block.times, block.ends, strict=True)):
-            values = tuple(None if col[index] == 255 else col[index] for col in block.columns)
-            yield spans.Span(lo, hi, values, "event")
+        values = zip(
+            *(map(_PHYSICAL_VALUES.__getitem__, column) for column in block.columns), strict=True
+        )
+        for lo, hi, row in zip(block.times, block.ends, values, strict=True):
+            yield spans.Span(lo, hi, row, "event")
 
 
 def _runs(view, device_id, start, end, reader):
