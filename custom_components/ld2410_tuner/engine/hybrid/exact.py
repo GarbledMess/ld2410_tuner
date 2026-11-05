@@ -8,12 +8,13 @@ or a pattern that differs only on other radars, never repeats replay or scoring.
 
 import struct
 import tempfile
+import zlib
 from array import array
 from dataclasses import replace
 from pathlib import Path
 
 from ...history import pace
-from .constants import SPILL_BYTES, WARMUP_SECONDS
+from .constants import ROW_BLOCK_ROWS, SPILL_BYTES, WARMUP_SECONDS
 from .domains import attenuated_threshold
 from .evidence import _labels
 from .physical_index import physical_rows
@@ -24,6 +25,7 @@ from .types import TruthSpan
 
 LABELLED = ("present", "not_present")
 _WINDOW = struct.Struct("<ddQ")
+_COMPRESSED = struct.Struct("<I")
 _ROW_SPOOL_BYTES = 8 * 1024**2
 
 
@@ -196,14 +198,21 @@ class _Physical:
         if head:
             return self._read(head, lo, hi)
         rows = self._load(lo, hi)
-        times, ends, columns = rows
+        times, _ends, _columns = rows
         self.file.write(_WINDOW.pack(lo, hi, len(times)))
-        self.file.write(memoryview(times).cast("B"))
-        self.file.write(memoryview(ends).cast("B"))
-        for channel in self.channels:
-            self.file.write(columns[channel])
+        for at in range(0, len(times), ROW_BLOCK_ROWS):
+            self._write_block(rows, at)
         self.size = self.file.disk_bytes
         return rows
+
+    def _write_block(self, rows, at):
+        times, ends, columns = rows
+        stop = at + ROW_BLOCK_ROWS
+        raw = times[at:stop].tobytes() + ends[at:stop].tobytes()
+        raw += b"".join(columns[c][at:stop] for c in self.channels)
+        encoded = zlib.compress(raw, 1)
+        self.file.write(_COMPRESSED.pack(len(encoded)))
+        self.file.write(encoded)
 
     def _load(self, lo, hi):
         window = getattr(self.source, "window", None)
@@ -215,10 +224,17 @@ class _Physical:
         start, end, count = _WINDOW.unpack(head)
         if (start, end) != (lo, hi):
             raise ValueError("Physical replay windows changed")
-        times, ends = array("d", [0]) * count, array("d", [0]) * count
-        self.file.readinto(memoryview(times).cast("B"))
-        self.file.readinto(memoryview(ends).cast("B"))
-        return times, ends, {channel: self.file.read(count) for channel in self.channels}
+        times, ends = array("d"), array("d")
+        columns = {c: bytearray() for c in self.channels}
+        for at in range(0, count, ROW_BLOCK_ROWS):
+            n = min(ROW_BLOCK_ROWS, count - at)
+            length = _COMPRESSED.unpack(self.file.read(_COMPRESSED.size))[0]
+            raw = zlib.decompress(self.file.read(length))
+            times.frombytes(raw[: 8 * n])
+            ends.frombytes(raw[8 * n : 16 * n])
+            for i, channel in enumerate(self.channels):
+                columns[channel] += raw[(16 + i) * n : (17 + i) * n]
+        return times, ends, {c: bytes(v) for c, v in columns.items()}
 
     def close(self):
         self.file.close()

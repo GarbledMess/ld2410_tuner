@@ -51,10 +51,10 @@ def support_tables(radar, model):
         return None
     tables = {}
     for c in radar.channels:
-        allowed = bytes(
-            1 if v <= 100 and model.supports(HISTORY_KEYS[c], v) else 0 for v in range(256)
+        admitted = bytes(
+            v if v <= 100 and model.supports(HISTORY_KEYS[c], v) else 0 for v in range(256)
         )
-        tables[c] = tuple(bytes(map(min, TABLES[t], allowed)) for t in range(101))
+        tables[c] = tuple(admitted.translate(table) for table in TABLES)
     return tables
 
 
