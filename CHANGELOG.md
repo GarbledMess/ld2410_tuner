@@ -43,6 +43,8 @@
 - History cleanup no longer runs out of CPU or memory on a large store. It works through
   small batches in the background, keeps its progress, and waits up to a week between
   retries after failures. Routine saves no longer start a worker or copy any history.
+- The Bermuda section now names rooms it can't use and why: recording is off for the
+  room's radar, or no radar is assigned to that Home Assistant area.
 
 ## 1.32.0 - 2026-10-27
 

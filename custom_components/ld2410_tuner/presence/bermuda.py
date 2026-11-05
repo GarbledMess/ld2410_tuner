@@ -69,6 +69,19 @@ def _area_rooms(runtime):
     }
 
 
+def missing_rooms(runtime):
+    """Areas that cannot be switched on yet, and why, so a missing room explains itself."""
+    areas, members, _ = groups.definitions(runtime)
+    usable = _area_rooms(runtime)
+    missing = []
+    for area_id, name in areas.items():
+        if f"area:{area_id}" not in usable:
+            radars = [item for item in members.values() if item["area_id"] == area_id]
+            reason = "recording_off" if radars else "no_radar"
+            missing.append({"area_id": area_id, "name": name, "reason": reason})
+    return sorted(missing, key=lambda room: room["name"].casefold())
+
+
 def validate(runtime, values):
     _object(values, DEFAULTS, "Supply Bermuda devices, max_distance and rooms")
     entries = values["devices"]
