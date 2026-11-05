@@ -38,6 +38,11 @@
   memory. Saves now continue, directly if the service really has to close.
 - A recorded history save that fails is now logged, and the stall warning names a closed
   worker, the storage lock and what the save is waiting on.
+- Labels and settings are no longer lost when storage maintenance fails or runs out of
+  time, whether during normal use or at shutdown. They are now saved without it.
+- History cleanup no longer runs out of CPU or memory on a large store. It works through
+  small batches in the background, keeps its progress, and waits up to a week between
+  retries after failures. Routine saves no longer start a worker or copy any history.
 
 ## 1.32.0 - 2026-10-27
 

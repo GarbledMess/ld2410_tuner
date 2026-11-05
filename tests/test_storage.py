@@ -367,7 +367,15 @@ class StorageRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 live["histograms"]["g0_move"]["present"][3] += 7
                 live["history_labels"].append({"start": 1, "end": 2, "state": "present"})
 
-        self.worker_transport.after = concurrent
+        executor = self.hass.async_add_executor_job
+
+        async def after_check(function, *args):
+            result = await executor(function, *args)
+            if function is storage._routine_report:
+                await concurrent({"operation": "maintenance", "data": args[1]})
+            return result
+
+        self.hass.async_add_executor_job = after_check
         with patch("tuner_under_test.history.storage.time.time", return_value=NOW):
             await self.runtime.async_save()
         saved = self.runtime.store.async_save.call_args.args[0]
