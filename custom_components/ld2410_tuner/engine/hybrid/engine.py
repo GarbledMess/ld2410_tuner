@@ -179,14 +179,24 @@ def first_fit(state):
     return pick, info, []
 
 
-def _lowered(pattern, amount):
-    return {rid: {c: max(0, t - amount) for c, t in row.items()} for rid, row in pattern.items()}
+def _lowered(pattern, amount, radars):
+    """Each threshold ``amount`` lower, at the next value its radar supports (at least a step)."""
+
+    def lower(domain, threshold):
+        below = [t for t in domain if t < threshold]
+        wanted = threshold - amount
+        return max((t for t in below if t <= wanted), default=below[0] if below else threshold)
+
+    return {
+        rid: {c: lower(radars[rid].domains[c], t) for c, t in row.items()}
+        for rid, row in pattern.items()
+    }
 
 
 def presence_shift(state, pick, info, zones=None):
     """Spend false-active time on presence the cost-ranked candidates leave behind."""
     base = state.compared[pick]
-    patterns = _dedupe([base, *(_lowered(base, k) for k in PRESENCE_SHIFTS)])
+    patterns = _dedupe([base, *(_lowered(base, k, state.problem.radars) for k in PRESENCE_SHIFTS)])
     _, scores, quiet = score(state, patterns, zones=zones, keep=len(patterns))
     chosen = selection.presence_shift(scores)
     info["presence_shift"] = max(
