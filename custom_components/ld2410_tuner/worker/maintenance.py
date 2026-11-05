@@ -8,6 +8,10 @@ from . import startup
 
 
 def execute(request):
+    if "batch" in request:
+        from . import retention
+
+        return retention.execute(request)
     root, directory = Path(request["root"]), Path(request["directory"])
     store = daystore.DayStore(root)
     now, candidate = request["now"], request["data"]
