@@ -38,6 +38,22 @@ export const panelBermuda = {
     </div>`;
   },
 
+  _bermudaMissingHtml() {
+    const missing = this._data?.bermuda_missing_rooms || [];
+    const note = (reason, text) => {
+      const names = missing
+        .filter((room) => room.reason === reason)
+        .map((room) => this._esc(room.name));
+      return names.length
+        ? `<p class="field-note">${text}: ${names.join(", ")}.</p>`
+        : "";
+    };
+    return (
+      note("recording_off", "Recording is off in") +
+      note("no_radar", "No radar assigned in Home Assistant")
+    );
+  },
+
   _drawBermuda() {
     const section = this.shadowRoot.querySelector("#bermuda");
     section.open = !!this._bermudaOpen;
@@ -72,6 +88,7 @@ export const panelBermuda = {
       }</div>
       <h3>Rooms</h3>
       <div class="bermuda-list">${rooms.map(([id, group]) => this._bermudaRoomHtml(id, group)).join("") || '<p class="muted">No area rooms with radars found.</p>'}</div>
+      ${this._bermudaMissingHtml()}
       <button data-action="bermuda-save">Save Bermuda settings</button>
       <div class="settings-action-status muted" role="status"></div>`,
     );
