@@ -84,6 +84,66 @@ def test_preflight_still_refuses_unbounded_metadata():
         bridge.preflight(owner)
 
 
+def test_metadata_check_stays_off_the_home_assistant_loop(monkeypatch):
+    import threading
+
+    threads = []
+    original = bridge.preflight
+
+    def checked(owner):
+        threads.append(threading.current_thread())
+        return original(owner)
+
+    async def run():
+        owner = runtime()
+        monkeypatch.setattr(bridge, "preflight", checked)
+
+        def prepare():
+            raise ValueError("stop here")
+
+        with pytest.raises(ValueError, match="stop here"):
+            await bridge.calculate(owner, "learn", prepare)
+        await bridge.stop(owner)
+
+    asyncio.run(run())
+    assert threads and threads[0] is not threading.main_thread()
+
+
+def test_metadata_check_retries_when_the_loop_changes_data_underneath_it(monkeypatch):
+    attempts = []
+
+    def changing(owner):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("dictionary changed size during iteration")
+
+    async def run():
+        owner = runtime()
+        monkeypatch.setattr(bridge, "preflight", changing)
+        await bridge._checked(owner)
+
+    asyncio.run(run())
+    assert len(attempts) == 2
+
+
+def test_metadata_check_finishes_on_the_loop_if_data_keeps_changing(monkeypatch):
+    import threading
+
+    threads = []
+
+    def changing(owner):
+        threads.append(threading.current_thread())
+        if threads[-1] is not threading.main_thread():
+            raise RuntimeError("dictionary changed size during iteration")
+
+    async def run():
+        monkeypatch.setattr(bridge, "preflight", changing)
+        await bridge._checked(runtime())
+
+    asyncio.run(run())
+    assert threads[-1] is threading.main_thread()
+
+
 def test_job_manifest_pages_day_metadata_without_changing_the_views(tmp_path):
     import datetime
 

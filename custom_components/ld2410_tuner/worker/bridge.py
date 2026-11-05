@@ -74,6 +74,17 @@ def _build(holder, operation, prepared):
     return (str(path), str(os.getpid()), *(("display",) if operation in DISPLAY else ()))
 
 
+async def _checked(runtime):
+    """Off the loop: walking a large home's metadata would stall the UI on slow hardware.
+    The loop can resize a dict mid-walk; after a retry, finish where nothing can move."""
+    for _ in range(2):
+        try:
+            return await runtime.hass.async_add_executor_job(preflight, runtime)
+        except RuntimeError:
+            pass
+    return preflight(runtime)
+
+
 async def calculate(runtime, operation, prepare):
     """Admit IDs first; acquire views/files only after admission and own cleanup."""
     service = _service(runtime, operation)
@@ -82,7 +93,7 @@ async def calculate(runtime, operation, prepare):
     async def admitted():
         # Raw views contain only a validated device ID and day bounds, no training copies.
         if operation != "recording_rows":
-            preflight(runtime)
+            await owned_preparation(_checked(runtime))
         prepared = prepare()
         return await owned_preparation(
             runtime.hass.async_add_executor_job(_build, holder, operation, prepared)
