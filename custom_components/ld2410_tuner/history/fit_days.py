@@ -9,9 +9,14 @@ from .fit_rows import CapturedRowSource
 
 
 def _result_identity(days, device_id, date):
-    """Disk cell sidecars are worker-only; the integration's own store folds each time."""
-    found = getattr(days, "result_identity", None)
+    """Disk cell sidecars are worker-only; copied live inputs stay job-private."""
+    found = getattr(days, "cell_identity", None) or getattr(days, "result_identity", None)
     return None if found is None else found(device_id, date)
+
+
+def _cache_root(days, path):
+    found = getattr(days, "cell_cache_root", None)
+    return path.parent.parent if found is None else found(path)
 
 
 class FittingDays:
@@ -41,19 +46,24 @@ class FittingDays:
         digest = fold_day(rows.blocks(start, end), start, end, channels)
         if persistent is not None:
             path, identity = persistent
-            cell_cache.store(path, path.parent.parent, identity, channels, digest)
+            cell_cache.store(path, _cache_root(self.view._days, path), identity, channels, digest)
         return digest
 
     def physical(self, device_id, date, channels):
         """One day's usable rows; an unreadable cached section is rebuilt once."""
-        digest = self.digest(device_id, date, channels)
-        if digest is None:
+        if date not in self.view._days.days(device_id):
             return PhysicalRows(channels, array("d"), array("d"), dict.fromkeys(channels, b""))
+        persistent = _result_identity(self.view._days, device_id, date)
+        if persistent is not None:
+            path, identity = persistent
+            physical = cell_cache.load_physical(path, identity, channels)
+            if physical is not None:
+                try:
+                    physical.validate()
+                    return physical
+                except ValueError:
+                    pass
+        digest = self._fold(device_id, date, channels, persistent)
         digest.partial.close()
-        try:
-            digest.physical.validate()
-        except ValueError:
-            persistent = _result_identity(self.view._days, device_id, date)
-            digest = self._fold(device_id, date, channels, persistent)
-            digest.partial.close()
+        digest.physical.validate()
         return digest.physical

@@ -339,7 +339,9 @@ def test_worker_identity_tracks_persistence_and_changes(physical):
     date = datetime.date(1970, 1, 1)
     store = worker_days(path)
     assert store.result_identity("radar", date) == (path, identity)
-    assert worker_days(path, persistent=False).result_identity("radar", date) is None
+    live = worker_days(path, persistent=False)
+    assert live.result_identity("radar", date) is None
+    assert live.cell_identity("radar", date) is None
     assert store.result_identity("missing", date) is None
     os.utime(path, ns=(identity[0], identity[0] + 1000000))
     assert store.result_identity("radar", date) is None

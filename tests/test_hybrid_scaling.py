@@ -462,7 +462,9 @@ def test_scaling_runs_complete_cold_job_in_a_fresh_child(tmp_path):
     assert result["cost_after"] >= 0
     assert result["raw_rows_read"] >= result["source_rows"]
     assert 0 < result["max_row_block"] <= 4096
-    assert result["cache_hits"] == 0
+    # Cold means no sidecar from another job; its copied live day can be reused
+    # after the first fold within this one immutable job.
+    assert result["cache_hits"] >= 1
     assert result["spill_bytes"] >= 0
     assert result["open_spill_files"] == 0
     assert 0 < result["max_resident_digests"] <= 3
@@ -492,6 +494,38 @@ def test_scaling_warm_job_preserves_thresholds_and_base_costs(tmp_path):
     assert result["cold"]["raw_rows_read"] >= result["source_rows"]
     assert result["traced_peak_bytes"] == 0
     assert not list(tmp_path.glob("scaling-job-*"))
+
+
+def test_captured_live_day_reuses_job_private_cells(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from unittest.mock import patch
+
+    from hybrid_scaling import _request, build_fixture
+    from tuner_under_test.history.fit_days import FittingDays
+    from tuner_under_test.worker import calculations, manifest, protocol
+
+    fixture = build_fixture(tmp_path / "raw", radars=1, days=1)
+    with TemporaryDirectory(dir=tmp_path) as owned:
+        job = Path(owned)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            request_path = executor.submit(_request, fixture, job, 1).result()
+        request = protocol.unpack(request_path.read_bytes(), "learn")
+        view = calculations.restore(manifest.expand(request)["views"]["all"])
+        day = view._days.live_date("r0")
+        captured = Path(view._days.entries["r0", day]["path"])
+        assert captured.parent == job
+        assert view._days.result_identity("r0", day) is None
+        with patch.object(view._days, "open_columns", wraps=view._days.open_columns) as reads:
+            first = FittingDays(view).digest("r0", day, tuple(range(18)))
+            second = FittingDays(view).digest("r0", day, tuple(range(18)))
+        assert first.channels == second.channels
+        first.partial.close()
+        second.partial.close()
+        assert reads.call_count == 1
+        assert captured.with_suffix(".cell").exists()
+    assert not job.exists()
 
 
 def test_scaling_captures_default_dimensions_without_protocol_overflow(tmp_path):
