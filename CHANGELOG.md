@@ -1,6 +1,6 @@
 # Release notes
 
-## 1.32.1 - unreleased
+## 1.32.1 - 2026-11-05
 
 - Graphs, Learn and room assessments no longer fail with "Metadata node budget exceeded".
   Automatic room labels from Bermuda and other sensors pushed saved data over a fixed limit;
@@ -12,8 +12,6 @@
 - Saved radar results from the current learner are no longer labelled "Older learning model
   · learn again". The panel compared results against an outdated learner name, so no result
   could reach "Targets met".
-## Unreleased
-
 - Recording no longer stops saving after a late or slow worker cleanup. One such event
   closed the worker service until Home Assistant restarted, while readings piled up in
   memory. Saves now continue, directly if the service really has to close.
@@ -26,8 +24,6 @@
   retries after failures. Routine saves no longer start a worker or copy any history.
 - The Bermuda section now names rooms it can't use and why: recording is off for the
   room's radar, or no radar is assigned to that Home Assistant area.
-## Unreleased
-
 - Radar and room status charts now show labelled Human, Entity / sensor and Guessed
   evidence lanes. Each kind can be hidden with a remembered viewer preference. Room
   guesses stay separate per radar. Rendering clips and merges periods and batches
