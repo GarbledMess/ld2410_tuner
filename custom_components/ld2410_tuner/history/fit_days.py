@@ -111,7 +111,7 @@ class FittingDays:
                 path,
                 tuple(identity[:2]),
                 tuple(sorted(channels)),
-                getattr(self.view, "_history_until", None),
+                min(daystore.bounds(date)[1], getattr(self.view, "_history_until", float("inf"))),
             )
             physical = None if cache is None else cache.get(key)
             if physical is not None:

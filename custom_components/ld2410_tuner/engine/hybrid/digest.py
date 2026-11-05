@@ -2,11 +2,12 @@
 
 import struct
 import tempfile
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import repeat
 from math import ceil, floor, isfinite
-from operator import eq, ge, le, mod, sub
+from operator import eq, ge, le, lt, mod, sub
 from re import finditer
 
 from .constants import CELL_SECONDS, CHANNELS, MISSING
@@ -155,14 +156,43 @@ class _Folder:
 
 
 def _fold_rows(folder, block, start, end, first, after):
+    flags = int.from_bytes(bytes(map(ge, block.times[first:after], repeat(start))), "little")
+    flags &= int.from_bytes(bytes(map(le, block.ends[first:after], repeat(end))), "little")
+    flags &= int.from_bytes(
+        bytes(map(lt, block.times[first:after], block.ends[first:after])), "little"
+    )
+    for c in folder.selected:
+        flags &= int.from_bytes(block.columns[c][first:after].translate(_USABLE), "little")
+    previous = first
+    for match in finditer(b"\x01+", flags.to_bytes(after - first, "little")):
+        a, b = first + match.start(), first + match.end()
+        _clipped_rows(folder, block, start, end, previous, a)
+        for lo, hi in _contiguous(block, a, b):
+            _reduce_cells(folder, block, lo, hi)
+        previous = b
+    _clipped_rows(folder, block, start, end, previous, after)
+
+
+def _clipped_rows(folder, block, start, end, first, after):
     for i in range(first, after):
-        lo, hi = block.times[i], block.ends[i]
-        lo, hi = max(start, lo), min(end, hi)
-        if hi <= lo:
-            continue
+        lo, hi = max(start, block.times[i]), min(end, block.ends[i])
         values = {c: block.columns[c][i] for c in folder.selected}
-        if MISSING not in values.values():
+        if hi > lo and MISSING not in values.values():
             folder.row(lo, hi, values)
+
+
+def _reduce_cells(folder, block, first, after):
+    """Reduce contiguous usable rows in C, including bursts and offset cells."""
+    lo, hi = block.times[first], block.ends[after - 1]
+    folder.coverage(lo, hi)
+    for k in range(cell_floor(lo, CELL_SECONDS), cell_ceil(hi, CELL_SECONDS)):
+        a = bisect_right(block.ends, k * CELL_SECONDS, first, after)
+        b = bisect_left(block.times, (k + 1) * CELL_SECONDS, a, after)
+        cell = k - folder.k0
+        for c in folder.selected:
+            value = max(block.columns[c][a:b])
+            old = folder.columns[c][cell]
+            folder.columns[c][cell] = value if old == MISSING else max(old, value)
 
 
 def _full_batches(block, start, end, selected):
