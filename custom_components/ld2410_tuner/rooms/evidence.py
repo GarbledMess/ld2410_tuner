@@ -201,20 +201,6 @@ class _StreamEpisode:
         self.baseline = baseline
         self.states, self.seen, self.begin = set(), set(), {}
 
-    def add(self, low, high, values, own):
-        from ..calibration.constants import ATTRIBUTION_SUSTAIN_SECONDS
-
-        self.states.add(own(low))
-        for gate, quiet in self.baseline.items():
-            value = values[gate]
-            if value is None or value <= quiet.ceiling():
-                self.begin.pop(gate, None)
-                continue
-            begin = self.begin.setdefault(gate, low)
-            if high - begin >= ATTRIBUTION_SUSTAIN_SECONDS:
-                self.seen.add(gate)
-        self.end = high
-
     def result(self):
         from ..calibration.constants import ATTRIBUTION_FULL_CONFIDENCE_SAMPLES
 
@@ -244,43 +230,21 @@ def _stream_cells(view, device_id, edges, start, end):
 
 
 def _stream_baseline(view, device_id, edges, reads, own, start, end):
+    from . import stream_attribution
     from .attribution import quiet_reader
-    from .event_attribution import _baseline
 
     quiet = quiet_reader(own, reads)
-    cells = _stream_cells(view, device_id, edges, start, end)
-    # _baseline consumes its two iterables in lockstep, so tee holds one cell.
-    from itertools import tee
-
-    physical, answers = tee(cells)
-    return _baseline(physical, (quiet(low) for low, _high, _values in answers))
+    if not any(map(quiet, _stream_points(edges, start, end))):
+        return {}
+    blocks = stream_attribution.pieces(view, device_id, edges, start, end)
+    return stream_attribution.baseline(blocks, quiet)
 
 
 def _stream_found(view, device_id, edges, reads, own, baseline, start, end):
-    from math import nextafter
+    from . import stream_attribution
 
-    from .event_attribution import _present
-
-    active, found = {}, {group: [] for group in reads}
-    for low, high, values in _stream_cells(view, device_id, edges, start, end):
-        for group, read in reads.items():
-            _stream_update(
-                active, found, group, _present(read(low), values), low, high, values, own, baseline
-            )
-    for group, run in active.items():
-        found[group].append(((run.start, nextafter(run.end, -inf)), run.result()))
-    return found
-
-
-def _stream_update(active, found, group, present, low, high, values, own, baseline):
-    from math import nextafter
-
-    run = active.get(group)
-    if run is not None and (run.end != low or not present):
-        found[group].append(((run.start, nextafter(run.end, -inf)), run.result()))
-        active.pop(group)
-    if present:
-        active.setdefault(group, _StreamEpisode(low, baseline)).add(low, high, values, own)
+    blocks = stream_attribution.pieces(view, device_id, edges, start, end)
+    return stream_attribution.found(blocks, reads, own, baseline)
 
 
 def streamed_room_targets(view, device_id, raw, start, end):
@@ -314,6 +278,14 @@ def _room_dependencies(contexts, dependencies, timestamp, state):
     return () if any(label and label[0] == state for label in sensors) else dependencies
 
 
+def _stream_reader(read, edges):
+    """Resolve truth once per label interval, shared by both physical passes."""
+    from ..history.label_lookup import index_reader
+
+    points = [-inf, *edges]
+    return index_reader((points, list(map(read, points))))
+
+
 def _stream_attribution(view, device_id, saved, others, start, end):
     from . import attribution, truth
 
@@ -325,8 +297,11 @@ def _stream_attribution(view, device_id, saved, others, start, end):
     edges = sorted(
         {*own.edges, *(edge for context in contexts.values() for edge in truth.edges(context))}
     )
-    baseline = _stream_baseline(view, device_id, edges, reads, own, start, end)
-    found = _stream_found(view, device_id, edges, reads, own, baseline, start, end)
+    reads = {group: _stream_reader(read, edges) for group, read in reads.items()}
+    found = {group: [] for group in reads}
+    if _stream_occupied(reads, edges, start, end):
+        baseline = _stream_baseline(view, device_id, edges, reads, own, start, end)
+        found = _stream_found(view, device_id, edges, reads, own, baseline, start, end)
     return {"own": own, "truths": reads, "contexts": contexts, "found": found}
 
 
@@ -352,3 +327,12 @@ def combine(labels):
         return None
     source = "human" if all(item[1] == "human" for item in labels) else "automatic"
     return "not_present", source, min(item[2] for item in labels)
+
+
+def _stream_points(edges, start, end):
+    return [start, *(edge for edge in edges if start < edge < end)] if start < end else []
+
+
+def _stream_occupied(reads, edges, start, end):
+    points = _stream_points(edges, start, end)
+    return any((read(t) or (None,))[0] == "present" for read in reads.values() for t in points)
