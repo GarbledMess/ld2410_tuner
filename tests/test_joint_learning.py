@@ -523,16 +523,124 @@ class JointRuntimeTests(unittest.IsolatedAsyncioTestCase):
             keys.append(view._attribution_since)
         self.assertEqual(len(set(keys)), 3)
 
-    async def test_learning_window_is_forwarded_to_the_fit(self):
+    async def test_retained_history_is_forwarded_to_the_fit(self):
         self.office()
         with (
             patch.object(learning.recovery, "prepare_learning", AsyncMock()),
             patch.object(learning.time, "time", return_value=1200),
-            patch.object(learning, "LEARNING_DAYS", 3),
             patch.object(learning.fitting, "fit_set", wraps=learning.fitting.fit_set) as fit,
         ):
             await learning.start_device(self.runtime, "a", "user", "area:office")
-        self.assertEqual(fit.call_args.args[1:3], (1200 - 3 * 86400, 1200))
+        self.assertEqual(fit.call_args.args[1:3], (0, 1200))
+
+    async def test_room_job_fits_when_all_human_labels_are_older_than_a_week(self):
+        self.office()
+        with (
+            patch.object(learning.recovery, "prepare_learning", AsyncMock()),
+            patch.object(learning.time, "time", return_value=10 * 86400 + 1200),
+        ):
+            await learning.start_device(self.runtime, "a", "automatic", "area:office")
+        stored = self.runtime.data["room_learning"]["area:office"]
+        assert stored["job"]["status"] == "completed"
+        result = stored["slots"]["automatic"]
+        assert result["after"]["room"]["outcomes"]["human"]["present"]["seconds"] > 590
+        assert result["after"]["room"]["outcomes"]["human"]["not_present"]["seconds"] > 590
+
+    async def test_old_human_label_changes_room_job_thresholds(self):
+        self.office()
+        recent = 10 * 86400
+
+        def history(key):
+            item = member(key, [70] * 100 + [40] * 100, labels())
+            records = [(i * 6, [70 if i < 100 else 40] + [255] * 17) for i in range(200)]
+            records += [(recent + i * 6, [70 if i < 100 else 10] + [255] * 17) for i in range(200)]
+            set_records(item["view"], key, records)
+            item["view"].data["devices"][key]["history_labels"] += [
+                {**label, "start": recent + label["start"], "end": recent + label["end"]}
+                for label in labels()
+            ]
+            return item["view"]
+
+        self.runtime._history_view = history
+        with (
+            patch.object(learning.recovery, "prepare_learning", AsyncMock()),
+            patch.object(learning.time, "time", return_value=recent + 1200),
+        ):
+            await learning.start_device(self.runtime, "a", "automatic", "area:office")
+        learned = self.runtime.data["room_learning"]["area:office"]["slots"]["automatic"]
+        recent_members = {key: {**member(key, [], []), "view": history(key)} for key in ("a", "b")}
+        recent_only = learning._fit_set(
+            {"area:office": recent_members}, recent, recent + 1200, {}, 0.5
+        )
+        assert learned["thresholds"] != recent_only["thresholds"]
+        assert all(value["g0_move"] >= 40 for value in learned["thresholds"].values())
+
+    async def test_room_job_keeps_human_cap_and_automatic_horizon(self):
+        self.office()
+        hour, day = 3600, 86400
+        human_start = 10 * day
+        human_end = human_start + 400 * hour
+        recent = 44 * day
+
+        def history(key):
+            human = [
+                {"start": 0, "end": 1200, "state": "not_present"},
+                {"start": human_start, "end": human_start + 200 * hour, "state": "present"},
+                {"start": human_start + 200 * hour, "end": human_end, "state": "not_present"},
+            ]
+            item = member(key, [], human)
+            records = []
+            for offset, energy, code in (
+                (0, 40, 0),
+                (2 * day, 70, 1),
+                (human_start, 70, 0),
+                (human_end - 1200, 10, 0),
+                (recent, 70, 1),
+                (recent + 1200, 10, 2),
+            ):
+                records += [
+                    (offset + i * 6, [energy] + [255] * 17 + [code, 100]) for i in range(200)
+                ]
+            set_records(item["view"], key, records)
+            return item["view"]
+
+        self.runtime._history_view = history
+        with (
+            patch.object(learning.recovery, "prepare_learning", AsyncMock()),
+            patch.object(learning.time, "time", return_value=recent + 2400),
+        ):
+            await learning.start_device(self.runtime, "a", "automatic", "area:office")
+        result = self.runtime.data["room_learning"]["area:office"]["slots"]["automatic"]
+        outcomes = result["after"]["room"]["outcomes"]
+        assert outcomes["human"]["present"]["seconds"] == 1197
+        assert outcomes["human"]["not_present"]["seconds"] == 1197
+        assert outcomes["automatic"]["present"]["seconds"] == 1200
+        assert outcomes["automatic"]["not_present"]["seconds"] == 1197
+
+    async def test_overnight_room_job_fits_old_human_labels(self):
+        from tuner_under_test.runtime import schedule
+
+        self.office()
+        self.runtime.data["learning_schedule"] = {"enabled": True, "auto_apply": False}
+        self.runtime.async_save = AsyncMock()
+        with (
+            patch.object(learning.recovery, "prepare_learning", AsyncMock()),
+            patch.object(learning.time, "time", return_value=10 * 86400 + 1200),
+        ):
+            await schedule._run(self.runtime, "2026-11-05")
+        for device in self.runtime.data["devices"].values():
+            attempt = device["nightly_learning"]
+            assert attempt["status"] != "error", attempt.get("error")
+            assert attempt["result_id"]
+
+    async def test_saved_seven_day_result_still_loads_and_passes_staleness_guard(self):
+        learned = await self._learn()
+        learned["before"]["start"] = learned["after"]["start"] = 1200 - 7 * 86400
+        self.runtime.data["room_learning"] = deepcopy(self.runtime.data["room_learning"])
+        restored = application.selected(self.runtime, "area:office", learned["id"], "user")
+        assert restored == learned
+        application.guard(self.runtime, restored, {})
+        assert learning.projection(restored, "a")["joint"]["report"]["start"] == 1200 - 7 * 86400
 
     async def test_joint_job_deduplicates_device_requests_and_saves_both(self):
         self.office()
