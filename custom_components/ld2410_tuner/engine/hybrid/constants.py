@@ -27,6 +27,8 @@ ROBUST_WEIGHT = 1.0
 QUIET_SECONDS = 14400.0
 QUIET_SLACK = 0.10
 QUIET_CAP = 100.0
+# A candidate may not detect this much less training presence than the best allowed one.
+PRESENCE_FLOOR = 0.005
 ROBUST_SHORTLIST = 6
 ROBUST_SWEEPS = 1
 ROBUST_SEARCH_MIN_WEIGHT = 0.05

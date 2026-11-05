@@ -326,8 +326,17 @@ def test_room_objective_zero_weight_ranks_human_cost_first():
 
 
 def test_room_fit_weighted_automatic_empty_evidence_counts():
-    result = fitting.fit(room_conflict(2), 0, 1200, automatic_weight=1.0)
+    result = fitting.fit(room_conflict(0), 0, 1200, automatic_weight=1.0)
     assert 30 <= result["thresholds"]["a"]["g0_move"] < 70
+
+
+def test_automatic_empty_evidence_cannot_cost_human_presence():
+    result = fitting.fit(room_conflict(2), 0, 1200, automatic_weight=1.0)
+    assert result["thresholds"]["a"]["g0_move"] < 30
+    assert (
+        result["after"]["room"]["outcomes"]["human"]["present"]["active_seconds"]
+        == (result["after"]["room"]["outcomes"]["human"]["present"]["seconds"])
+    )
 
 
 def test_room_cost_uses_source_statistics_for_time_and_episodes():
