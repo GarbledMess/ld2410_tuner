@@ -65,6 +65,25 @@ def test_reference_profile_budget_precedes_reference_view_copy():
         bridge.preflight(owner)
 
 
+def test_preflight_accepts_a_large_home_with_months_of_bermuda_labels():
+    owner = runtime()
+    # A real radar's learning counts are about 3,700 values; Bermuda adds about 250 labels a day, 30 days of that here.
+    histograms = {
+        f"g{gate}": {"present": [0] * 100, "not_present": [0] * 100} for gate in range(18)
+    }
+    owner.data["devices"] = {f"r{i}": {"histograms": histograms} for i in range(28)}
+    label = {"start": 1.0, "end": 2.0, "state": "present", "source": "sensor", "confidence": 1.0}
+    owner.data["room_labels"] = {f"area:{i}": [label] * 536 for i in range(14)}
+    bridge.preflight(owner)
+
+
+def test_preflight_still_refuses_unbounded_metadata():
+    owner = runtime()
+    owner.data["room_labels"] = {"area:a": [{"start": 1.0}] * (bridge.METADATA_NODES + 1)}
+    with pytest.raises(ValueError, match="budget exceeded"):
+        bridge.preflight(owner)
+
+
 def test_job_manifest_pages_day_metadata_without_changing_the_views(tmp_path):
     import datetime
 

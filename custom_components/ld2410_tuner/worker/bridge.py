@@ -11,7 +11,7 @@ from . import priority, protocol
 from .supervisor import Closed, Supervisor, owned_preparation
 
 METADATA_BYTES = 1024 * 1024
-METADATA_NODES = 65536
+METADATA_NODES = 150_000  # Each of: all radars' metadata, and shared room inputs.
 
 
 def preflight(runtime):
@@ -27,7 +27,7 @@ def preflight(runtime):
         "reference_profile",
     )
     selected = {key: {field: item.get(field) for field in fields} for key, item in devices.items()}
-    selected["room_inputs"] = {
+    room_inputs = {
         key: data.get(key)
         for key in (
             "room_groups",
@@ -37,7 +37,9 @@ def preflight(runtime):
             "storage_settings",
         )
     }
+    # Separately: Bermuda's many room labels must not use up the radars' share, or the reverse.
     protocol._check(selected, METADATA_BYTES, METADATA_NODES)
+    protocol._check(room_inputs, METADATA_BYTES, METADATA_NODES)
 
 
 # Read-only display jobs get their own single child, so a chart never waits behind
