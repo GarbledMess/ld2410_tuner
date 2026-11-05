@@ -160,19 +160,19 @@ def test_quiet_cost_has_slack_so_thresholds_do_not_ride_the_empty_edge():
 def test_quiet_weight_shrinks_with_occupied_evidence():
     from tuner_under_test.engine.hybrid.selection import quiet_weight
 
-    assert quiet_weight(0) == 0.5
-    assert quiet_weight(14400) == 0.5
-    assert quiet_weight(28800) == pytest.approx(0.25)
+    assert quiet_weight(0) == 1.0
+    assert quiet_weight(14400) == 1.0
+    assert quiet_weight(28800) == pytest.approx(0.5)
 
 
 def test_selection_cost_caps_the_quiet_prior():
     from tuner_under_test.engine.hybrid.selection import choose
 
-    problem, stats, pats = chooser(2, occupied=3600.0)  # weight 0.5
+    problem, stats, pats = chooser(2, occupied=3600.0)  # weight 1
     base = wrap([result(100.0, occ=20, emp=20), result(60.0, occ=20, emp=20)])
     quiet = wrap([{"time_term": 0.0, "episode_term": 0.0}, {"time_term": 5.0, "episode_term": 5.0}])
     pick, info = choose(problem, pats, base, quiet, stats)
-    assert info["selection_costs"][1] == pytest.approx(60.0 + 50.0)  # 0.5 x 1000 capped at 50
+    assert info["selection_costs"][1] == pytest.approx(60.0 + 100.0)  # 1 x 1000 capped at 100
     assert pick == 0
 
 
@@ -201,7 +201,7 @@ def test_fit_moves_to_the_supported_gap_and_reports_costs_separately():
     assert d["status"] == "fitted"
     assert d["scoring_mode"] == "exact"
     assert d["selection_cost"] == pytest.approx(
-        d["base_cost"] + min(50.0, d["quiet_weight"]["z"] * d["quiet_cost"])
+        d["base_cost"] + min(100.0, d["quiet_weight"]["z"] * d["quiet_cost"])
     )
     exact = exact_scores(p, [got.thresholds], regions(spans))[0]
     assert got.after["cost"] == pytest.approx(exact["cost"])
@@ -218,7 +218,7 @@ def test_quiet_prior_is_not_heldout_error_cost():
     got = fit(p)
     assert "quiet" not in got.after
     assert "quiet" not in got.before
-    assert got.diagnostics["quiet_weight"]["z"] == 0.5
+    assert got.diagnostics["quiet_weight"]["z"] == 1.0
     pure = exact_scores(p, [got.thresholds], regions(spans))[0]
     assert got.after["cost"] == pytest.approx(pure["cost"])
     assert got.diagnostics["selection_cost"] >= got.after["cost"]
@@ -231,7 +231,7 @@ def test_quiet_candidate_search_runs_only_for_short_occupied_evidence(monkeypatc
     rows, spans = episodes(10, quiet=True)  # 300 s occupied: full prior weight
     p = fit_problem(rows, spans)
     assert fit(p).diagnostics["quiet_search"] is True
-    monkeypatch.setattr(selection, "QUIET_SECONDS", 30.0)  # same data now counts as long
+    monkeypatch.setattr(selection, "QUIET_SECONDS", 15.0)  # same data now counts as long
     assert fit(p).diagnostics["quiet_search"] is False
 
 
