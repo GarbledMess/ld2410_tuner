@@ -4,12 +4,17 @@ import struct
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import repeat
 from math import ceil, floor, isfinite
+from operator import eq, ge, le, mod, sub
+from re import finditer
 
 from .constants import CELL_SECONDS, CHANNELS, MISSING
 from .physical_index import PhysicalBuilder
 
 _PAIR = struct.Struct("<dd")
+_USABLE = bytes(0 if value == MISSING else 1 for value in range(256))
+_ZERO_MISSING = bytes(range(255)) + b"\x00"
 
 
 def cell_floor(t, resolution):
@@ -126,15 +131,19 @@ class _Folder:
         if self.pending is None:
             return
         lo, hi = self.pending
-        for k in range(cell_floor(lo, CELL_SECONDS), cell_ceil(hi, CELL_SECONDS)):
-            a, b = max(lo, k * CELL_SECONDS), min(hi, (k + 1) * CELL_SECONDS)
-            cell = k - self.k0
-            if b - a == CELL_SECONDS:
-                self.cov[cell] = 1
-            else:
-                self.cov[cell] = 2
-                self.partial.append(cell, a, b)
+        first, after = cell_ceil(lo, CELL_SECONDS), cell_floor(hi, CELL_SECONDS)
+        if after > first:
+            self.cov[first - self.k0 : after - self.k0] = b"\x01" * (after - first)
+        if lo < first * CELL_SECONDS:
+            self._partial(first - 1, lo, min(hi, first * CELL_SECONDS))
+        if hi > after * CELL_SECONDS and after >= first:
+            self._partial(after, max(lo, after * CELL_SECONDS), hi)
         self.pending = None
+
+    def _partial(self, k, lo, hi):
+        cell = k - self.k0
+        self.cov[cell] = 2
+        self.partial.append(cell, lo, hi)
 
     def row(self, lo, hi, values):
         self.coverage(lo, hi)
@@ -145,15 +154,64 @@ class _Folder:
                 self.columns[c][cell] = values[c] if old == MISSING else max(old, values[c])
 
 
-def _fold_block(folder, block, start, end):
-    folder.physical.add(block)
-    for i, (lo, hi) in enumerate(zip(block.times, block.ends, strict=True)):
+def _fold_rows(folder, block, start, end, first, after):
+    for i in range(first, after):
+        lo, hi = block.times[i], block.ends[i]
         lo, hi = max(start, lo), min(end, hi)
         if hi <= lo:
             continue
         values = {c: block.columns[c][i] for c in folder.selected}
         if MISSING not in values.values():
             folder.row(lo, hi, values)
+
+
+def _full_batches(block, start, end, selected):
+    flags = int.from_bytes(
+        bytes(map(eq, map(sub, block.ends, block.times), repeat(CELL_SECONDS))), "little"
+    )
+    flags &= int.from_bytes(
+        bytes(map(eq, map(mod, block.times, repeat(CELL_SECONDS)), repeat(0))), "little"
+    )
+    flags &= int.from_bytes(bytes(map(ge, block.times, repeat(start))), "little")
+    flags &= int.from_bytes(bytes(map(le, block.ends, repeat(end))), "little")
+    for c in selected:
+        flags &= int.from_bytes(block.columns[c].translate(_USABLE), "little")
+    for match in finditer(b"\x01+", flags.to_bytes(len(block.times), "little")):
+        yield from _contiguous(block, match.start(), match.end())
+
+
+def _contiguous(block, first, after):
+    offset = first + 1
+    joined = bytes(map(eq, block.times[offset:after], block.ends[first : after - 1]))
+    for match in finditer(b"\x00", joined):
+        stop = offset + match.start()
+        yield first, stop
+        first = stop
+    yield first, after
+
+
+def _copy_cells(folder, block, first, after):
+    lo, hi = block.times[first], block.ends[after - 1]
+    folder.coverage(lo, hi)
+    cell = cell_floor(lo, CELL_SECONDS) - folder.k0
+    stop = cell + after - first
+    missing = bytes([MISSING]) * (after - first)
+    for c in folder.selected:
+        old = folder.columns[c][cell:stop]
+        values = block.columns[c][first:after]
+        if old != missing:
+            values = bytes(map(max, old.translate(_ZERO_MISSING), values))
+        folder.columns[c][cell:stop] = values
+
+
+def _fold_block(folder, block, start, end):
+    folder.physical.add(block)
+    previous = 0
+    for first, after in _full_batches(block, start, end, folder.selected):
+        _fold_rows(folder, block, start, end, previous, first)
+        _copy_cells(folder, block, first, after)
+        previous = after
+    _fold_rows(folder, block, start, end, previous, len(block.times))
 
 
 def fold_day(blocks, start, end, channels):

@@ -604,9 +604,10 @@ class _Room:
             for z in zones
         }
 
-    def skipped(self, before):
+    def skipped(self, scores):
+        before = scores.scores([_current(self.problem)], self.problem.zones)[0]
         gids = sorted(before)
-        skipped = {gid: NO_CLASS for gid in gids if before[gid][1]["cost"] is None}
+        skipped = {gid: NO_CLASS for gid in gids if before[gid]["cost"] is None}
         if len(skipped) == len(gids):
             raise ValueError(skipped[gids[0]])
         return skipped
@@ -659,7 +660,7 @@ def fit_set(
     problem = _room_problem(groups, start, end, rooms, automatic_weight, quality_contexts)
     room = _Room(groups, rooms, problem)
     with fixed.FixedScores(room.problem, 1) as scores:
-        skipped = room.skipped(room.bundles(scores, room.problem.zones, _current(room.problem)))
+        skipped = room.skipped(scores)
     scorable = _subset(problem, set(room.seen) - set(skipped))
     audit = None
     policy = "corrected_positive"

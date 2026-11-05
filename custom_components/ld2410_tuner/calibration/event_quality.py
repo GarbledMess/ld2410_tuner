@@ -1,6 +1,8 @@
 """Duration evidence with label lineage independent of recording segmentation."""
 
-from bisect import bisect_left, bisect_right
+from bisect import bisect_right
+from collections import deque
+from functools import lru_cache
 from hashlib import sha256
 from math import ceil
 
@@ -20,17 +22,38 @@ def collect_streamed(view, device_id, keys, start, end, human_reader, owner):
 
 
 def _cells(physical, reader, owner, start, end, first, last):
+    labels = _LabelCells(reader, owner, first, last)
     for cell in physical:
-        low, high = max(start, cell.start), min(end, cell.end)
-        cuts = [
-            low,
-            *reader.edges[bisect_right(reader.edges, low) : bisect_left(reader.edges, high)],
-            high,
-        ]
-        for a, b in zip(cuts, cuts[1:], strict=False):
-            if b > a:
-                state = reader(a)
-                yield a, b, cell.values, state, _parent(reader, a, state, owner, first, last)
+        low, high = cell.start, cell.end
+        if start < low < high < end and labels.low <= low and high <= labels.high:
+            yield low, high, cell.values, labels.state, labels.parent
+            continue
+        low, high = max(start, low), min(end, high)
+        while low < high:
+            state, parent, edge = labels.at(low)
+            stop = min(high, edge)
+            yield low, stop, cell.values, state, parent
+            low = stop
+
+
+class _LabelCells:
+    def __init__(self, reader, owner, first, last):
+        self.reader, self.owner = reader, owner
+        self.first, self.last = first, last
+        self.low, self.high = 0, 0
+        self.state, self.parent = None, None
+
+    def at(self, timestamp):
+        if not self.low <= timestamp < self.high:
+            edges = self.reader.edges
+            index = bisect_right(edges, timestamp)
+            self.low = edges[index - 1] if index else float("-inf")
+            self.high = edges[index] if index < len(edges) else float("inf")
+            self.state = self.reader(timestamp)
+            self.parent = _parent(
+                self.reader, timestamp, self.state, self.owner, self.first, self.last
+            )
+        return self.state, self.parent, self.high
 
 
 def _parent(reader, timestamp, state, owner, first, last):
@@ -83,13 +106,33 @@ class _Human:
 
 
 def _observed(cells, human, digest):
+    values_text = lru_cache(maxsize=128, typed=True)(_cell_values)
+    previous_parent = previous_state = object()
+    pending = []
     digest.update(b"[")
     for cell in cells:
         human.add(cell)
-        digest.update(repr(cell).encode())
-        digest.update(b"\0")
+        low, high, values, state, parent = cell
+        if parent is not previous_parent or state != previous_state:
+            suffix = repr((state, parent))[1:]
+            previous_parent, previous_state = parent, state
+        # Equal signed zeros have different text and must not share a cache key.
+        text = (
+            repr(cell) if 0 in values else f"({low!r}, {high!r}, {values_text(*values)}, {suffix}"
+        )
+        pending.append(text)
+        if len(pending) == 256:
+            digest.update(("\0".join(pending) + "\0").encode())
+            pending.clear()
         yield cell
+    if pending:
+        digest.update(("\0".join(pending) + "\0").encode())
     digest.update(b"]")
+
+
+def _cell_values(*values):
+    # Typed arguments distinguish integer and float reading representations.
+    return repr(values)
 
 
 class _Run:
@@ -152,12 +195,16 @@ def _auto_parents(runs, owner):
 def _source_evidence(cells, runs, owner, keys):
     from .quality_evidence import AutomaticEpisode, Overlap, _intersections
 
+    if not runs:
+        deque(cells, maxlen=0)
+        return (), ()
     parents = dict(zip(runs, _auto_parents(runs, owner), strict=True))
     automatic, overlaps = {}, {}
+    positions = tuple(HISTORY_KEYS.index(key) for key in keys)
     usable = (
         (a, b, parent if state in LABELS else state)
         for a, b, values, state, parent in cells
-        if any(values[HISTORY_KEYS.index(key)] is not None for key in keys)
+        if any(values[position] is not None for position in positions)
     )
     for low, high, human, run in _intersections(usable, runs):
         confidence = guesses.confidence(run[3])

@@ -1,9 +1,15 @@
 """Label-independent per-day energy buckets with bounded position masks."""
 
 import struct
+import sys
 from array import array
 from bisect import bisect_left
+from collections import defaultdict
 from dataclasses import dataclass
+from operator import lt
+
+_POSITION_BYTES = b"".join(bytes((128 | (i & 127), 128 | (i >> 7))) for i in range(16384))
+_MATCH_TABLES = tuple(bytes(255 if v == e else 0 for v in range(256)) for e in range(101))
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,10 +41,34 @@ class EnergyIndex:
 
 
 def _column(column):
-    result = {}
+    energies = {energy for energy in set(column) if energy <= 100}
+    if len(column) <= 16384 and len(energies) <= 12:
+        return _compact_positions(column, energies)
+    result = defaultdict(list)
     for position, energy in enumerate(column):
         if energy <= 100:
-            result.setdefault(energy, array("H")).append(position)
+            result[energy].append(position)
+    return {energy: array("H", positions) for energy, positions in result.items()}
+
+
+def _compact_positions(column, energies):
+    n = len(column)
+    doubled = bytearray(n * 2)
+    doubled[::2] = doubled[1::2] = column
+    positions = int.from_bytes(_POSITION_BYTES[: n * 2], "little")
+    low = int.from_bytes(b"\x7f\x00" * n, "little")
+    result = {}
+    for energy in energies:
+        selected = positions & int.from_bytes(doubled.translate(_MATCH_TABLES[energy]), "little")
+        packed = selected.to_bytes(n * 2, "little").translate(None, b"\x00")
+        # Nonzero base-128 digits let translate delete unselected positions in C.
+        # Remove their marker bits and move the high digit down one bit to uint16.
+        bits = int.from_bytes(packed, "little")
+        raw = ((bits & low) | ((bits & (low << 8)) >> 1)).to_bytes(len(packed), "little")
+        values = array("H", raw)
+        if sys.byteorder != "little":
+            values.byteswap()
+        result[energy] = values
     return result
 
 
@@ -58,7 +88,10 @@ def write_index(stream, index):
         stream.write(struct.pack("<B", len(buckets)))
         for energy, positions in sorted(buckets.items()):
             stream.write(struct.pack("<BH", energy, len(positions)))
-            stream.write(struct.pack("<" + "H" * len(positions), *positions))
+            if sys.byteorder != "little":
+                positions = array("H", positions)
+                positions.byteswap()
+            stream.write(positions.tobytes())
 
 
 def read_index(stream, n):
@@ -77,10 +110,12 @@ def _read_column(stream, n):
         raise ValueError("Invalid energy buckets")
     for _ in range(size):
         energy, count = struct.unpack("<BH", _read(stream, 3))
-        positions = array("H", struct.unpack("<" + "H" * count, _read(stream, 2 * count)))
-        if energy > 100 or energy in result or any(p >= n for p in positions):
+        positions = array("H", _read(stream, 2 * count))
+        if sys.byteorder != "little":
+            positions.byteswap()
+        if energy > 100 or energy in result or (positions[-1] if positions else -1) >= n:
             raise ValueError("Invalid energy positions")
-        if any(a >= b for a, b in zip(positions, positions[1:], strict=False)):
+        if not all(map(lt, positions, positions[1:])):
             raise ValueError("Unordered energy positions")
         result[energy] = positions
     return result

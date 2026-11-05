@@ -10,6 +10,47 @@ from tuner_under_test.engine.hybrid.digest import fold_day
 from tuner_under_test.engine.hybrid.types import RowBlock
 
 
+def test_full_cells_are_folded_in_column_batches(monkeypatch):
+    from tuner_under_test.engine.hybrid import digest
+
+    rows = [(i * 6, (i + 1) * 6, [i % 101] * 18) for i in range(1000)]
+    rows[10:11] = [(60, 60.125, [90] * 18), (60.125, 66, [30] * 18)]
+    rows[200] = (rows[200][0], rows[200][1], [255] * 18)
+    calls = []
+    original = digest._Folder.row
+
+    def counted(folder, *args):
+        calls.append(1)
+        return original(folder, *args)
+
+    monkeypatch.setattr(digest._Folder, "row", counted)
+    result = fold_day([block(rows[:400]), block(rows[400:])], 0, 6000, tuple(range(18)))
+    expected = bytearray(i % 101 for i in range(1000))
+    expected[10], expected[199] = 90, 255
+    assert result.channels == (bytes(expected),) * 18
+    assert result.cov == bytes([1]) * 199 + b"\x00" + bytes([1]) * 800
+    assert len(calls) <= 2
+
+
+def test_contiguous_coverage_is_marked_in_bulk():
+    from tuner_under_test.engine.hybrid import digest
+
+    class Coverage(bytearray):
+        writes = 0
+
+        def __setitem__(self, key, value):
+            self.writes += 1
+            super().__setitem__(key, value)
+
+    folder = digest._Folder(0, 86400, (0,))
+    folder.cov = Coverage(14400)
+    folder.coverage(0.125, 86399.875)
+    folder.flush()
+    assert folder.cov == b"\x02" + b"\x01" * 14398 + b"\x02"
+    assert dict(folder.partial) == {0: ((0.125, 6),), 14399: ((86394, 86399.875),)}
+    assert folder.cov.writes <= 3
+
+
 def block(rows):
     return RowBlock(
         array("d", (r[0] for r in rows)),
@@ -100,3 +141,35 @@ def test_partial_coverage_spills_without_filling_gaps():
 def test_invalid_fold_request(start, end, channels):
     with pytest.raises(ValueError):
         fold_day([], start, end, channels)
+
+
+@pytest.mark.parametrize("first,after", [(0, 10000), (1, 9999), (2000, 2001)])
+def test_contiguous_batches_find_gaps_without_per_row_python_steps(first, after):
+    import sys
+
+    from tuner_under_test.engine.hybrid import digest
+
+    rows = [(i * 6, (i + 1) * 6, [20] * 18) for i in range(10000)]
+    rows[2500] = (15001, 15006, [20] * 18)
+    rows[7500] = (45000, 45005, [20] * 18)
+    source = block(rows)
+    expected, start = [], first
+    for i in range(first + 1, after):
+        if source.times[i] != source.ends[i - 1]:
+            expected.append((start, i))
+            start = i
+    expected.append((start, after))
+    steps = []
+
+    def trace(frame, event, _argument):
+        if frame.f_code is digest._contiguous.__code__ and event == "line":
+            steps.append(1)
+        return trace
+
+    sys.settrace(trace)
+    try:
+        actual = list(digest._contiguous(source, first, after))
+    finally:
+        sys.settrace(None)
+    assert actual == expected
+    assert len(steps) < 100
