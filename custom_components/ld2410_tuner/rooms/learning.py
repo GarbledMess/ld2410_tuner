@@ -11,10 +11,9 @@ from ..history import pace
 from ..runtime.tasks import finish_task
 from . import adaptive, fitting, groups, jobs, truth
 
-# A fit scores the last ``LEARNING_DAYS`` of history. Attribution uses a recent quiet
+# Fits use retained history, bounded by the engine evidence policy. Attribution uses a quiet
 # baseline: seven days preserved all measured accuracy metrics on the real-data harness
 # and shortened linked learning. Set ``ATTRIBUTION_DAYS`` to None for full-history exactness.
-LEARNING_DAYS = 7
 ATTRIBUTION_DAYS = 7
 
 CHANGED = "Zone labels, settings or membership changed; learn again"
@@ -106,7 +105,7 @@ async def _run(runtime, set_id, chosen, report):
                 members,
                 _fit_set,
                 members,
-                end - LEARNING_DAYS * 86400,
+                0,
                 end,
                 rooms,
                 settings.automatic_weight(runtime.data),
