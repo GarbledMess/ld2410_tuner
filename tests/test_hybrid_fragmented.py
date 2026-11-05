@@ -147,6 +147,9 @@ def test_diagnostics_bytes_match_original(tmp_path, monkeypatch):
     plan = ScorePlan("exact", (), 248, 2)
     current = diagnostics.diagnostics(p, {"r": {0: 40}}, plan)
     monkeypatch.setattr(diagnostics, "_pieces", legacy_pieces)
+    monkeypatch.setattr(diagnostics, "_radar", reference_radar)
+    monkeypatch.setattr(diagnostics, "_append_session", reference_append_session)
+    monkeypatch.setattr(diagnostics, "_totals", reference_totals)
     assert wire(current) == wire(diagnostics.diagnostics(p, {"r": {0: 40}}, plan))
 
 
@@ -170,6 +173,9 @@ def test_fit_thresholds_diagnostics_and_report_bytes_match_original(tmp_path, mo
     fits.clear()
     monkeypatch.setattr(search, "_removed_rows", legacy_removed_rows)
     monkeypatch.setattr(diagnostics, "_pieces", legacy_pieces)
+    monkeypatch.setattr(diagnostics, "_radar", reference_radar)
+    monkeypatch.setattr(diagnostics, "_append_session", reference_append_session)
+    monkeypatch.setattr(diagnostics, "_totals", reference_totals)
     assert wire(facade.fit(view, "r", ["g0_move"], {"g0_move": 90}, None, 0.0)) == current
     assert fits == current_fits
 
@@ -185,6 +191,9 @@ def test_masked_fit_and_report_bytes_match_original(monkeypatch):
     current_report = wire(facade._device_report(p, current, audit))
     monkeypatch.setattr(search, "_removed_rows", legacy_removed_rows)
     monkeypatch.setattr(diagnostics, "_pieces", legacy_pieces)
+    monkeypatch.setattr(diagnostics, "_radar", reference_radar)
+    monkeypatch.setattr(diagnostics, "_append_session", reference_append_session)
+    monkeypatch.setattr(diagnostics, "_totals", reference_totals)
     previous = engine.fit(p)
     assert wire(asdict(current)) == wire(asdict(previous))
     assert current_report == wire(facade._device_report(p, previous, audit))
@@ -210,3 +219,226 @@ def test_piece_merge_preserves_gaps_overrides_missing_and_crossing_rows(bounds):
     assert wire(list(diagnostics._pieces(p, "r", truth))) == wire(
         list(legacy_pieces(p, "r", truth))
     )
+
+
+def test_diagnostics_reuses_repeated_gate_classification(monkeypatch):
+    from test_hybrid_reports import problem
+
+    p = problem(split=200)
+    calls = 0
+    original = diagnostics._error_gates
+
+    def counted(*args):
+        nonlocal calls
+        calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(diagnostics, "_error_gates", counted)
+    diagnostics.diagnostics(p, {"r": {0: 40}}, ScorePlan("exact", (), 800, 2))
+    assert calls <= 4
+
+
+def test_totals_does_not_decode_gate_vectors(monkeypatch):
+    p = problem(split=200)
+    calls = 0
+    original = diagnostics._block_pieces
+
+    def counted(*args):
+        nonlocal calls
+        calls += 1
+        yield from original(*args)
+
+    monkeypatch.setattr(diagnostics, "_block_pieces", counted)
+    assert diagnostics._totals(p, "r", p.zones[0].truth) == {"present": 120.0, "not_present": 120.0}
+    assert calls == 0
+
+
+def test_review_does_not_sort_unchanged_gates(monkeypatch):
+    from builtins import sorted as original
+
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(diagnostics, "sorted", counted, raising=False)
+    p = problem(split=200)
+    diagnostics.diagnostics(p, {"r": {0: 40}}, ScorePlan("exact", (), 800, 2))
+    assert calls <= 10
+
+
+def reference_radar(problem, device_id, pattern, truth):
+    channels = problem.radars[device_id].channels
+    totals = diagnostics._totals(problem, device_id, truth)
+    remaining = {s: 0.8 * totals[s] for s in diagnostics.STATES}
+    cutoffs, histograms = {}, diagnostics._histograms(channels)
+    samples = {s: diagnostics.deque(maxlen=5000) for s in diagnostics.STATES}
+    counts = dict.fromkeys(diagnostics.STATES, 0)
+    review = diagnostics._Review()
+    for a, b, span, values in diagnostics._pieces(problem, device_id, truth):
+        if b <= a:
+            continue
+        state = span.state
+        if state not in cutoffs and remaining[state] < b - a:
+            cutoffs[state] = a + remaining[state]
+        remaining[state] = max(0, remaining[state] - (b - a))
+        diagnostics._add_histograms(histograms, channels, values, span, b - a)
+        diagnostics._samples(samples, counts, a, b, span, channels, values)
+        hit = any(v > pattern[device_id][c] for c, v in zip(channels, values, strict=True))
+        errors = (b - a) * (hit != (state == "present"))
+        review.add(
+            a,
+            b,
+            span,
+            errors,
+            diagnostics._error_gates(channels, values, pattern[device_id], state),
+        )
+    return {
+        "samples": {s: diagnostics.SampleSlots(channels, v) for s, v in samples.items()},
+        "sample_counts": counts,
+        "histograms": histograms,
+        "recent_cutoffs": cutoffs,
+        "review": review.result(),
+        "observed_seconds": totals,
+    }
+
+
+def test_diagnostics_bulk_constant_runs(monkeypatch):
+    from array import array
+
+    from tuner_under_test.engine.hybrid.types import RowBlock
+
+    class ConstantRows:
+        def blocks(self, lo, hi):
+            yield RowBlock(
+                array("d", range(int(lo), int(hi), 6)),
+                array("d", range(int(lo) + 6, int(hi) + 6, 6)),
+                (bytes([70]) * int((hi - lo) / 6),) + (bytes([255]) * int((hi - lo) / 6),) * 17,
+            )
+
+    p = replace(problem(), rows={"r": ConstantRows()})
+    calls = 0
+    original = diagnostics._Review.add
+
+    def counted(self, *args):
+        nonlocal calls
+        calls += 1
+        return original(self, *args)
+
+    monkeypatch.setattr(diagnostics._Review, "add", counted)
+    current = diagnostics.diagnostics(p, {"r": {0: 40}}, ScorePlan("exact", (), 40, 2))
+    assert calls <= 4
+    monkeypatch.setattr(diagnostics, "_radar", reference_radar)
+    monkeypatch.setattr(diagnostics, "_append_session", reference_append_session)
+    monkeypatch.setattr(diagnostics, "_totals", reference_totals)
+    assert wire(current) == wire(
+        diagnostics.diagnostics(p, {"r": {0: 40}}, ScorePlan("exact", (), 40, 2))
+    )
+
+
+def reference_append_session(pending, a, b, span, errors, gates):
+    identity = (span.state, span.source, span.episode_id)
+    if pending and pending[0] == identity and pending[1]["end"] == a:
+        row = pending[1]
+        row["gates"] = sorted(set(row["gates"]) | set(gates))
+        row["end"] = b
+        row["samples"] += (b - a) / 6
+        row["errors"] += errors / 6
+        row["observed_span_seconds"] += b - a
+        row["short_burst"] = row["observed_span_seconds"] < 6
+        return pending, None
+    row = diagnostics._session(a, b, span, errors)
+    row["gates"] = gates
+    return (identity, row), pending
+
+
+def reference_totals(problem, device_id, truth):
+    totals = dict.fromkeys(diagnostics.STATES, 0.0)
+    for a, b, span, _ in legacy_pieces(problem, device_id, truth):
+        totals[span.state] += b - a
+    return totals
+
+
+@pytest.mark.parametrize("fractional", [False, True])
+def test_multichannel_run_bytes_match_reference(fractional, monkeypatch):
+    from array import array
+
+    from tuner_under_test.engine.hybrid.types import RowBlock
+
+    class ColumnRows:
+        def blocks(self, lo, hi):
+            offset = 0.25 if fractional else 0
+            times = [i * 6 + offset for i in range(12000)]
+            selected = [i for i, t in enumerate(times) if t < hi and t + 6 > lo]
+            yield RowBlock(
+                array("d", (max(lo, times[i]) for i in selected)),
+                array("d", (min(hi, times[i] + 6) for i in selected)),
+                tuple(
+                    bytes(255 if i % 997 == 0 else (i // 100 + c) % 101 for i in selected)
+                    for c in range(18)
+                ),
+            )
+
+    p = problem()
+    truth = tuple(
+        replace(span, start=span.start * 300, end=span.end * 300) for span in p.zones[0].truth
+    )
+    p = replace(
+        p,
+        end=72000,
+        rows={"r": ColumnRows()},
+        radars={"r": replace(p.radars["r"], channels=tuple(range(18)))},
+        zones=(replace(p.zones[0], truth=truth),),
+    )
+    plan = ScorePlan("exact", (), 12000, 2)
+    pattern = {"r": dict.fromkeys(range(18), 40)}
+    current = wire(diagnostics.diagnostics(p, pattern, plan))
+    monkeypatch.setattr(diagnostics, "_radar", reference_radar)
+    monkeypatch.setattr(diagnostics, "_append_session", reference_append_session)
+    monkeypatch.setattr(diagnostics, "_totals", reference_totals)
+    assert current == wire(diagnostics.diagnostics(p, pattern, plan))
+
+
+def test_diagnostic_gate_lists_are_owned_by_each_report():
+    p = problem(split=10)
+    pattern = {"r": {0: 40}}
+    plan = ScorePlan("exact", (), 40, 2)
+    first = diagnostics.diagnostics(p, pattern, plan)
+    expected = wire(first)
+    for row in first["radars"]["r"]["review"]["sessions"]:
+        row["gates"].append("changed_by_caller")
+    assert wire(diagnostics.diagnostics(p, pattern, plan)) == expected
+
+
+def test_sample_run_encodes_values_once(monkeypatch):
+    from collections import deque
+
+    calls = 0
+    original = bytes
+
+    def counted(*args):
+        nonlocal calls
+        calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(diagnostics, "bytes", counted, raising=False)
+    samples = {s: deque(maxlen=5000) for s in diagnostics.STATES}
+    counts = dict.fromkeys(diagnostics.STATES, 0)
+    span = problem().zones[0].truth[0]
+    diagnostics._samples(samples, counts, 0, 120000, span, (0,), (70,))
+    assert counts["present"] == 20000
+    assert len(samples["present"]) == 5000
+    assert calls == 1
+
+
+def test_empty_channel_diagnostics_match_original(monkeypatch):
+    p = problem()
+    p = replace(p, radars={"r": replace(p.radars["r"], channels=(), domains={}, current={})})
+    plan = ScorePlan("exact", (), 4, 2)
+    current = wire(diagnostics.diagnostics(p, {"r": {}}, plan))
+    monkeypatch.setattr(diagnostics, "_radar", reference_radar)
+    monkeypatch.setattr(diagnostics, "_append_session", reference_append_session)
+    monkeypatch.setattr(diagnostics, "_totals", reference_totals)
+    assert current == wire(diagnostics.diagnostics(p, {"r": {}}, plan))

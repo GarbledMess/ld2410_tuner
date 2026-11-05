@@ -9,7 +9,9 @@ the same ScorePlan, and put those aggregates in FitResult.diagnostics.
 from array import array
 from collections import deque
 from collections.abc import Sequence
+from functools import lru_cache
 from heapq import heappush, heapreplace
+from itertools import groupby, repeat
 from math import ceil
 
 from ...const import HISTORY_KEYS
@@ -36,11 +38,63 @@ def _pieces(problem, device_id, truth):
 
 
 def _block_pieces(block, channels, pieces):
-    for i, a in enumerate(block.times):
-        values = tuple(block.columns[c][i] for c in channels)
+    vectors = (
+        zip(*(block.columns[c] for c in channels), strict=True)
+        if channels
+        else repeat((), len(block.times))
+    )
+    for i, (a, values) in enumerate(zip(block.times, vectors, strict=True)):
         if 255 not in values:
             for lo, hi, span in pieces.between(a, block.ends[i]):
                 yield lo, hi, span, values
+
+
+def _runs(problem, device_id, truth, compact=True):
+    labels = [
+        (max(lo, problem.start), min(hi, problem.end), span)
+        for lo, hi, span in _labels(truth)
+        if lo < problem.end and hi > problem.start
+    ]
+    if not labels:
+        return
+    if not compact or any(a % 6 or b % 6 for a, b, _ in labels):
+        for piece in _pieces(problem, device_id, truth):
+            yield (*piece, False)
+        return
+    pieces = _LabelPieces(labels)
+    channels = problem.radars[device_id].channels
+    for block in problem.rows[device_id].blocks(labels[0][0], labels[-1][1]):
+        pace.rest()
+        yield from _block_runs(block, channels, pieces)
+
+
+def _block_runs(block, channels, pieces):
+    vectors = (
+        zip(*(block.columns[c] for c in channels), strict=True)
+        if channels
+        else repeat((), len(block.times))
+    )
+    for values, rows in groupby(enumerate(vectors), lambda item: item[1]):
+        indexes = [i for i, _ in rows]
+        if 255 not in values:
+            yield from _run_pieces(block, indexes, values, pieces)
+
+
+def _run_pieces(block, indexes, values, pieces):
+    first, last = indexes[0], indexes[-1]
+    contiguous = block.times[first] % 6 == 0 and all(
+        block.ends[i] - block.times[i] == 6
+        and block.times[i] == block.times[first] + (i - first) * 6
+        for i in indexes
+    )
+    ranges = (
+        [(block.times[first], block.ends[last])]
+        if contiguous
+        else [(block.times[i], block.ends[i]) for i in indexes]
+    )
+    for a, b in ranges:
+        for lo, hi, span in pieces.between(a, b):
+            yield lo, hi, span, values, contiguous and hi - lo > 6
 
 
 class _LabelPieces:
@@ -61,11 +115,39 @@ class _LabelPieces:
             self.piece = next(self.labels, None)
 
 
-def _totals(problem, device_id, truth):
+def _valid_rows(block, channels):
+    table = bytes([0] * 255 + [1])
+    missing = 0
+    for c in channels:
+        missing |= int.from_bytes(block.columns[c].translate(table), "little")
+    return missing.to_bytes(len(block.times), "little")
+
+
+def _totals(problem, device_id, truth, regular=None):
     totals = dict.fromkeys(STATES, 0.0)
-    for a, b, span, _ in _pieces(problem, device_id, truth):
-        totals[span.state] += b - a
+    labels = [
+        (max(lo, problem.start), min(hi, problem.end), span)
+        for lo, hi, span in _labels(truth)
+        if lo < problem.end and hi > problem.start
+    ]
+    if not labels:
+        return totals
+    pieces = _LabelPieces(labels)
+    channels = problem.radars[device_id].channels
+    for block in problem.rows[device_id].blocks(labels[0][0], labels[-1][1]):
+        pace.rest()
+        _block_totals(totals, block, channels, pieces, regular)
     return totals
+
+
+def _block_totals(totals, block, channels, pieces, regular):
+    valid = _valid_rows(block, channels)
+    for i, a in enumerate(block.times):
+        if regular and (a % 6 or block.ends[i] - a != 6):
+            regular[0] = False
+        if not valid[i]:
+            for lo, hi, span in pieces.between(a, block.ends[i]):
+                totals[span.state] += hi - lo
 
 
 def _keep(heap, value, serial, measure="samples"):
@@ -103,11 +185,16 @@ def _session(a, b, span, errors):
     }
 
 
+@lru_cache(maxsize=4096)
+def _merged_gates(left, right):
+    return tuple(sorted(set(left) | set(right)))
+
+
 def _append_session(pending, a, b, span, errors, gates):
     identity = (span.state, span.source, span.episode_id)
     if pending and pending[0] == identity and pending[1]["end"] == a:
         row = pending[1]
-        row["gates"] = sorted(set(row["gates"]) | set(gates))
+        row["gates"] = list(_merged_gates(tuple(row["gates"]), tuple(gates)))
         row["end"] = b
         row["samples"] += (b - a) / 6
         row["errors"] += errors / 6
@@ -124,8 +211,9 @@ def _samples(samples, counts, a, b, span, channels, values):
     first, stop = ceil(a / 6), ceil(b / 6)
     count = max(0, stop - first)
     counts[span.state] += count
+    payload = bytes(values)
     for k in range(max(first, stop - 5000), stop):
-        samples[span.state].append((k * 6, span.source, bytes(values)))
+        samples[span.state].append((k * 6, span.source, payload))
 
 
 class SampleSlots(Sequence):
@@ -178,13 +266,21 @@ def _error_gates(channels, values, thresholds, state):
 
 def _radar(problem, device_id, pattern, truth):
     channels = problem.radars[device_id].channels
-    totals = _totals(problem, device_id, truth)
+    regular = [True]
+    totals = _totals(problem, device_id, truth, regular)
     remaining = {s: 0.8 * totals[s] for s in STATES}
     cutoffs, histograms = {}, _histograms(channels)
     samples = {s: deque(maxlen=5000) for s in STATES}
     counts = dict.fromkeys(STATES, 0)
     review = _Review()
-    for a, b, span, values in _pieces(problem, device_id, truth):
+
+    @lru_cache(maxsize=4096)
+    def classify(values, state):
+        thresholds = pattern[device_id]
+        hit = any(v > thresholds[c] for c, v in zip(channels, values, strict=True))
+        return hit != (state == "present"), _error_gates(channels, values, thresholds, state)
+
+    for a, b, span, values, merged in _runs(problem, device_id, truth, compact=regular[0]):
         if b <= a:
             continue
         state = span.state
@@ -193,9 +289,13 @@ def _radar(problem, device_id, pattern, truth):
         remaining[state] = max(0, remaining[state] - (b - a))
         _add_histograms(histograms, channels, values, span, b - a)
         _samples(samples, counts, a, b, span, channels, values)
-        hit = any(v > pattern[device_id][c] for c, v in zip(channels, values, strict=True))
-        errors = (b - a) * (hit != (state == "present"))
-        review.add(a, b, span, errors, _error_gates(channels, values, pattern[device_id], state))
+        error, gates = classify(values, state)
+        errors = (b - a) * error
+        if merged:
+            gates = list(_merged_gates(tuple(gates), tuple(gates)))
+        review.add(a, b, span, errors, gates)
+        if merged:
+            _float_durations(review)
     return {
         "samples": {s: SampleSlots(channels, v) for s, v in samples.items()},
         "sample_counts": counts,
@@ -204,6 +304,14 @@ def _radar(problem, device_id, pattern, truth):
         "review": review.result(),
         "observed_seconds": totals,
     }
+
+
+def _float_durations(review):
+    # A merged six-second run replaces additions of physical float durations.
+    for pending in (review.session, review.period):
+        if pending is not None:
+            row = pending[1]
+            row["observed_span_seconds"] = float(row["observed_span_seconds"])
 
 
 class _Review:
