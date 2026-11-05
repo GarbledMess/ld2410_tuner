@@ -269,12 +269,67 @@ class ControlledProcess:
         return self.returncode
 
 
-@pytest.mark.parametrize("problem", ["ignores_term", "unkillable", "open_pipes"])
+def test_open_pipes_after_confirmed_exit_do_not_stop_later_work(script, monkeypatch, caplog):
+    """One slow pipe on a busy host must not end recording until Home Assistant restarts."""
+
+    async def run():
+        finished = ControlledProcess()
+        finished.returncode = 0
+        children = [ControlledProcess(open_pipes=True), finished]
+
+        async def spawn(*args, **kwargs):
+            return children.pop(0)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(supervisor, "_POSIX", False)
+        worker = supervisor.Supervisor(script, deadline=0.01, grace=0.01)
+        with pytest.raises(TimeoutError):
+            await worker.run(prepare("hang"))
+        worker.deadline = 30  # The first job proved the deadline; this one just has to finish.
+        assert await worker.run(prepare("ok")) == b""
+        await worker.aclose()
+
+    asyncio.run(run())
+    assert "output pipes" in caplog.text
+
+
+def test_a_late_event_loop_cannot_quarantine_finished_drains(script, monkeypatch, caplog):
+    """The timer can fire in the same loop step the drains finish; nothing is wrong then."""
+
+    async def run():
+        finished = ControlledProcess()
+        finished.returncode = 0
+
+        async def spawn(*args, **kwargs):
+            return finished
+
+        async def late(awaitable, timeout):
+            await awaitable
+            raise TimeoutError
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(supervisor, "_POSIX", False)
+        worker = supervisor.Supervisor(script, deadline=30, grace=30)
+        real = asyncio.wait_for
+
+        async def selective(awaitable, timeout):
+            if type(awaitable).__name__ == "_GatheringFuture":
+                return await late(awaitable, timeout)
+            return await real(awaitable, timeout)
+
+        monkeypatch.setattr(asyncio, "wait_for", selective)
+        assert await worker.run(prepare("ok")) == b""
+        assert not worker.diagnostics()["closed"]
+        await worker.aclose()
+
+    asyncio.run(run())
+    assert "output pipes" not in caplog.text
+
+
+@pytest.mark.parametrize("problem", ["ignores_term", "unkillable"])
 def test_escalation_and_quarantine_at_os_boundary(script, monkeypatch, problem):
     async def run():
-        child = ControlledProcess(
-            unkillable=problem == "unkillable", open_pipes=problem == "open_pipes"
-        )
+        child = ControlledProcess(unkillable=problem == "unkillable")
 
         async def spawn(*args, **kwargs):
             return child
@@ -451,15 +506,10 @@ def test_os_cleanup_failure_quarantines_and_shutdown_reports_it(script, monkeypa
 
             child.wait = wait_failed
         else:
-            reads = 0
             child.returncode = 0
 
             async def read_failed(_count):
-                nonlocal reads
-                reads += 1
-                if reads > 1:
-                    raise OSError("synthetic drain failure")
-                return b""
+                raise OSError("synthetic drain failure")
 
             child.stdout.read = read_failed
 
@@ -657,6 +707,8 @@ def test_supervisor_diagnostics_report_active_and_waiting_age(script, monkeypatc
         await asyncio.sleep(0)
         clock[0] += 75
         assert worker.diagnostics() == {
+            "closed": False,
+            "failure": None,
             "active": {"background": True, "running_seconds": 75},
             "foreground": 1,
             "background": 1,

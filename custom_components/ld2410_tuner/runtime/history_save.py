@@ -41,22 +41,41 @@ def completed(runtime, *, now=None):
     if getattr(runtime, "_history_stall_warned", False):
         _LOGGER.warning("Recorded history saving resumed after %s min", int((now - waiting) // 60))
     runtime._history_stall_warned = False
+    runtime._history_flush_error = None
     runtime._history_saved_at = now
     runtime._history_waiting_since = (
         now if runtime._days is not None and flushing._pending(runtime._days) else None
     )
 
 
+def failed(runtime, error):
+    """A flush that fails is retried on the next sample; say so once per distinct failure."""
+    message = repr(error)
+    if getattr(runtime, "_history_flush_error", None) != message:
+        runtime._history_flush_error = message
+        _LOGGER.warning("Recorded history could not be saved; retrying", exc_info=error)
+
+
 def _bounded(value, limit):
     return value.encode("utf-8", errors="replace")[:limit].decode("utf-8", errors="ignore")
+
+
+def _awaited_frames(task):
+    """A suspended task's stack is only its outermost frame; follow what each one awaits."""
+    frames, coroutine = [], task.get_coro()
+    while coroutine is not None and len(frames) < 16:
+        frame = getattr(coroutine, "cr_frame", None) or getattr(coroutine, "gi_frame", None)
+        if frame is not None:
+            frames.append(frame)
+        coroutine = getattr(coroutine, "cr_await", None) or getattr(coroutine, "gi_yieldfrom", None)
+    return frames
 
 
 def _task_details(task):
     if task is None:
         return "flush task: absent"
     state = "cancelled" if task.cancelled() else "done" if task.done() else "pending"
-    frames = task.get_stack(limit=16)
-    stack = "".join(_frame(frame) for frame in frames)
+    stack = "".join(_frame(frame) for frame in _awaited_frames(task))
     return _bounded(f"flush task: {state} {task.get_name()}\n{stack}", 4096)
 
 
@@ -86,7 +105,10 @@ def diagnostics(runtime):
         service = getattr(runtime, name, None)
         state = None if service is None else service.diagnostics()
         services.append(f"worker {name}: {state}")
+    lock = "held" if runtime._storage_lock.locked() else "free"
+    error = getattr(runtime, "_history_flush_error", None)
+    states = [f"storage lock: {lock}", f"last flush error: {error}"]
     return _bounded(
-        "\n".join(services + [_task_details(runtime._flush_task), _threads()]),
+        "\n".join(services + states + [_task_details(runtime._flush_task), _threads()]),
         DIAGNOSTIC_BYTES,
     )
