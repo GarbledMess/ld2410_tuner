@@ -336,6 +336,77 @@ def test_fit_with_coarse_radar_steps_returns_only_supported_thresholds():
     assert got.thresholds["a"][0] in domain
 
 
+def test_one_noisy_gate_does_not_stop_a_quiet_gate_being_lowered():
+    from tuner_under_test.engine.hybrid.engine import fit
+
+    rows, spans = [], []
+    for i in range(40):
+        present = i % 2 == 0
+        start = i * 600
+        for k in range(100):
+            quiet = present and k % 12 == 5
+            if quiet:
+                values = [34, 5]
+            elif present:
+                values = [65, 65]
+            else:
+                values = [6, 28 + k % 3]
+            rows.append((start + 6 * k, start + 6 * (k + 1), values + [255] * 16))
+        state = "present" if present else "not_present"
+        spans.append(truth(start, start + 600, state, episode=f"{state}{i}"))
+    radar = RadarSpec("a", (0, 1), {c: tuple(range(101)) for c in (0, 1)}, {0: 90, 1: 90}, {})
+    problem = FitProblem(
+        {"a": radar},
+        (ZoneSpec("z", ("a",), tuple(spans)),),
+        0,
+        rows[-1][1],
+        Days({"a": rows}),
+        {"a": Rows(rows)},
+        EvidencePolicy(0, False, {}),
+    )
+    got = fit(problem)
+    assert got.thresholds["a"][0] < 34
+    assert got.thresholds["a"][1] > 30
+    assert got.after["false_active_seconds"] == 0
+
+
+def test_presence_walk_lowers_the_quiet_gate_when_lowering_both_falls_off_a_cliff(monkeypatch):
+    from types import SimpleNamespace
+
+    from tuner_under_test.engine.hybrid import engine
+
+    def scored(_state, patterns, zones=None, keep=1):
+        rows = [p["a"] for p in patterns]
+        scores = [
+            {
+                **result(0.0),
+                "false_active_seconds": 100_000.0 if row[1] < 30 else 0.0,
+                "false_triggers": 0,
+                "sufficient_statistics": {
+                    "present/human": [1000.0, 0.0 if row[0] <= 30 else 100.0]
+                },
+            }
+            for row in rows
+        ]
+        return list(range(len(rows))), scores, [{} for _ in rows]
+
+    monkeypatch.setattr(engine, "score", scored)
+    domain = tuple(range(0, 101, 10))
+    radar = RadarSpec("a", (0, 1), {0: domain, 1: domain}, {0: 40, 1: 30}, {})
+    state = SimpleNamespace(problem=SimpleNamespace(radars={"a": radar}))
+    current, found = engine._presence_walk(state, {"a": {0: 40, 1: 30}}, None)
+    assert current == {"a": {0: 30, 1: 30}}
+    assert found is not None
+
+
+def test_gate_steps_move_one_channel_one_supported_step():
+    from tuner_under_test.engine.hybrid.engine import _gate_steps
+
+    radar = RadarSpec("a", (0, 1), {0: (10, 20, 30), 1: (20, 30)}, {0: 30, 1: 20}, {})
+    pattern = {"a": {0: 30, 1: 20}}
+    assert list(_gate_steps(pattern, {"a": radar})) == [{"a": {0: 20, 1: 20}}]
+
+
 def test_fit_does_not_lower_thresholds_into_a_false_cliff():
     from tuner_under_test.engine.hybrid.engine import fit
 

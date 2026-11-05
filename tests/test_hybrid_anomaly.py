@@ -568,6 +568,7 @@ def test_masked_audit_never_repeats_coordinate_search(monkeypatch):
     from tuner_under_test.engine.hybrid import engine, replay, search
 
     monkeypatch.setattr(engine, "PRESENCE_SHIFTS", ())  # This counts the audit's own replays.
+    monkeypatch.setattr(engine, "PRESENCE_ROUNDS", 0)
     rows, truth = phone_case()
     runs, original_run, original_replay = [], search._Search.run, replay.replay
     audited = []
@@ -601,7 +602,7 @@ def test_masked_audit_never_repeats_coordinate_search(monkeypatch):
 
 def test_presence_shift_adds_only_its_own_replays_to_the_masked_audit(monkeypatch):
     from tuner_under_test.engine.hybrid import engine, replay
-    from tuner_under_test.engine.hybrid.constants import PRESENCE_SHIFTS
+    from tuner_under_test.engine.hybrid.constants import PRESENCE_ROUNDS, PRESENCE_SHIFTS
 
     rows, truth = phone_case()
     runs, audited = [], []
@@ -620,7 +621,11 @@ def test_presence_shift_adds_only_its_own_replays_to_the_masked_audit(monkeypatc
     assert engine.PRESENCE_SHIFTS == PRESENCE_SHIFTS
     _, report = fit(rows, truth)
     assert report.diagnostics["anomaly"]["status"] == "discarded"
-    assert sum(n for after, n in runs if after) <= 4 + 2 * len(PRESENCE_SHIFTS)
+    # Each pattern replays with its quiet pass: every shift once, then one gate step per round.
+    channels = len(next(iter(rows.values()))[0][2]) if isinstance(rows, dict) else 18
+    assert sum(n for after, n in runs if after) <= 4 + 2 * (
+        len(PRESENCE_SHIFTS) + PRESENCE_ROUNDS * channels
+    )
 
 
 def test_hardware_speed_never_changes_anomaly_choice(monkeypatch):
