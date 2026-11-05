@@ -23,7 +23,7 @@ from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from io import BytesIO
 from itertools import accumulate, compress, count, islice, repeat
-from operator import add, eq, lt, sub, truediv
+from operator import add, eq, lt, ne, sub, truediv
 
 from .constants import MISSING, SPILL_BYTES
 
@@ -35,6 +35,7 @@ _MAGIC = b"PRB1"
 _DAY = struct.Struct("<4sII")
 _BLOCK = struct.Struct("<IBIIdddd")
 _USABLE = bytes(0 if v == MISSING else 1 for v in range(256))
+_NONZERO = bytes(bool(v) for v in range(256))
 _TOKENS = count()
 _DECODED = OrderedDict()
 _DECODED_BYTES = [0]
@@ -461,18 +462,26 @@ class PhysicalBuilder:
             del column[:rows]
 
     def _coalesce(self, times, ends, selected):
-        vectors = list(zip(*selected, strict=True))
         previous = self._last()
-        new = [previous is None or times[0] != previous[0] or vectors[0] != previous[1]]
-        new.extend(map(_fresh, times[1:], ends[:-1], vectors[1:], vectors[:-1]))
-        starts = list(compress(range(len(new)), new))
+        first = (
+            previous is None
+            or times[0] != previous[0]
+            or tuple(c[0] for c in selected) != previous[1]
+        )
+        change = int.from_bytes(bytes(map(ne, ends[:-1], times[1:])), "little")
+        for column in selected:
+            value = int.from_bytes(column, "little")
+            change |= value ^ (value >> 8)
+        new = bytes([first]) + change.to_bytes(len(times), "little")[:-1].translate(_NONZERO)
+        stops = bytearray(new[1:] + b"\x01")
         if not new[0]:
-            self.ends[-1] = ends[starts[0] - 1] if starts else ends[-1]
-        stops = [*starts[1:], len(times)] if starts else []
-        self.times.extend(times[i] for i in starts)
-        self.ends.extend(ends[i - 1] for i in stops)
+            stop = new.find(b"\x01")
+            self.ends[-1] = ends[stop - 1] if stop >= 0 else ends[-1]
+            stops[stop - 1 if stop >= 0 else -1] = 0
+        self.times.extend(compress(times, new))
+        self.ends.extend(compress(ends, stops))
         for c, column in zip(self.channels, selected, strict=True):
-            self.columns[c].extend(column[i] for i in starts)
+            self.columns[c].extend(compress(column, new))
 
     def _last(self):
         if not self.times:
