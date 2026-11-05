@@ -13,6 +13,7 @@ from ...history import pace
 from .candidates import candidate_values, channel_statistics, preferred
 from .constants import CELL_SECONDS, MASK_CACHE_BYTES, SHORTLIST, SWEEPS
 from .domains import normalize_pattern
+from .evidence import _Coverage
 from .search_data import collect_training
 from .search_scores import conditional_costs, coordinate_costs
 
@@ -543,11 +544,15 @@ def _removed_rows(store, zone, mask):
     start, stop = min(a for a, _b in mask), max(b for _a, b in mask)
     rows = store._database.execute(
         "SELECT state,source,vector,t,n FROM search_pure WHERE zone=? AND t<? "
-        "AND t>=?-(SELECT max_n-1 FROM search_bounds WHERE zone=?)*? AND t+(n-1)*?>=?",
+        "AND t>=?-(SELECT max_n-1 FROM search_bounds WHERE zone=?)*? AND t+(n-1)*?>=? "
+        "ORDER BY t",
         (zone.group_id, stop, start, zone.group_id, CELL_SECONDS, CELL_SECONDS, start),
     )
+    # Audit masks are disjoint intervals. Merge them with chronological pure runs
+    # instead of visiting every mask again for each run.
+    coverage = _Coverage(sorted(mask))
     for state, source, vector, t, n in rows:
-        removed = masked_cells(t, n, mask)
+        removed = masked_cells(t, n, coverage.between(t, t + n * CELL_SECONDS))
         if removed:
             yield state, source, vector, removed
 

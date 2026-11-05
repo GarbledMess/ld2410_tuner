@@ -21,15 +21,44 @@ STATES = ("present", "not_present")
 
 
 def _pieces(problem, device_id, truth):
-    radar = problem.radars[device_id]
-    for lo, hi, span in _labels(truth):
-        lo, hi = max(lo, problem.start), min(hi, problem.end)
-        for block in problem.rows[device_id].blocks(lo, hi):
-            pace.rest()
-            for i, a in enumerate(block.times):
-                values = tuple(block.columns[c][i] for c in radar.channels)
-                if 255 not in values:
-                    yield max(lo, a), min(hi, block.ends[i]), span, values
+    labels = [
+        (max(lo, problem.start), min(hi, problem.end), span)
+        for lo, hi, span in _labels(truth)
+        if lo < problem.end and hi > problem.start
+    ]
+    if not labels:
+        return
+    pieces = _LabelPieces(labels)
+    channels = problem.radars[device_id].channels
+    for block in problem.rows[device_id].blocks(labels[0][0], labels[-1][1]):
+        pace.rest()
+        yield from _block_pieces(block, channels, pieces)
+
+
+def _block_pieces(block, channels, pieces):
+    for i, a in enumerate(block.times):
+        values = tuple(block.columns[c][i] for c in channels)
+        if 255 not in values:
+            for lo, hi, span in pieces.between(a, block.ends[i]):
+                yield lo, hi, span, values
+
+
+class _LabelPieces:
+    """Resolved labels walked once beside the chronological physical row stream."""
+
+    def __init__(self, labels):
+        self.labels = iter(labels)
+        self.piece = next(self.labels, None)
+
+    def between(self, lo, hi):
+        while self.piece is not None and self.piece[1] <= lo:
+            self.piece = next(self.labels, None)
+        while self.piece is not None and self.piece[0] < hi:
+            a, b, span = self.piece
+            yield max(a, lo), min(b, hi), span
+            if b > hi:
+                break
+            self.piece = next(self.labels, None)
 
 
 def _totals(problem, device_id, truth):
