@@ -4,6 +4,7 @@ import asyncio
 import copy
 import datetime
 import json
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -11,6 +12,8 @@ from pathlib import Path
 from ..history import dayfile, summary_cache
 from ..history.daystore import DayStore, date_of
 from . import codec, startup
+
+_LOGGER = logging.getLogger(__name__)
 
 ROLLOVER_DAYS = 16
 MAX_RECORDS = 131072
@@ -594,6 +597,19 @@ async def _drain(runtime):
         await asyncio.sleep(0)
 
 
+async def _durable_drain(runtime):
+    """Recordings outlive a quarantined worker, using the direct route shutdown relies on."""
+    from .supervisor import Closed
+
+    try:
+        return await _drain(runtime)
+    except Closed:
+        if getattr(runtime, "_worker_closed", False):
+            raise
+    _LOGGER.warning("Worker service is closed; saving recorded history directly")
+    return await runtime.hass.async_add_executor_job(runtime._days.flush, time.time())
+
+
 async def flush(runtime, *, locked=False):
     """Production flush route; callers already owning storage may retain that lock."""
     from ..runtime import history_save
@@ -602,10 +618,10 @@ async def flush(runtime, *, locked=False):
         history_save.completed(runtime)
         return 0
     if locked:
-        written = await _drain(runtime)
+        written = await _durable_drain(runtime)
     else:
         async with runtime._storage_lock:
-            written = await _drain(runtime) if _pending(runtime._days) else 0
+            written = await _durable_drain(runtime) if _pending(runtime._days) else 0
     history_save.completed(runtime)
     return written
 
