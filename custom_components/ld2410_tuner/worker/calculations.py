@@ -137,6 +137,34 @@ class ReadOnlyDays:
         late = tuple(tuple(span) for span in entry["late"])
         return path, (*expected[2:], late)
 
+    def cell_identity(self, device_id, date):
+        """Also cache copied live cells within this immutable private worker job."""
+        persistent = self.result_identity(device_id, date)
+        if persistent is not None:
+            return persistent
+        if not hasattr(self.entries, "path"):
+            return None
+        entry = self.entries.get((device_id, date))
+        if entry is None or entry["path"] is None:
+            return None
+        path = Path(entry["path"]).resolve()
+        if path.parent != self.entries.path.parent:
+            return None
+        expected = tuple(map(int, entry["identity"]))
+        try:
+            if history._identity(path.stat()) != expected:
+                return None
+        except OSError:
+            return None
+        late = tuple(tuple(span) for span in entry["late"])
+        return path, (*expected[2:], late)
+
+    def cell_cache_root(self, path):
+        """Prune private sidecars only inside their owning job directory."""
+        if hasattr(self.entries, "path") and path.parent == self.entries.path.parent:
+            return path.parent
+        return path.parent.parent
+
     def day(self, device_id, date, until=None):
         key = device_id, date
         entry = self.entries.get(key)

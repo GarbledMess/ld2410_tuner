@@ -98,6 +98,36 @@ def _load(stream, size, identity, channels):
     return DayDigest(CELL_SECONDS, k0, n, columns, cov, partial, index, physical)
 
 
+def _load_physical(stream, size, identity, channels):
+    """Read replay rows without rebuilding the unrelated energy-position index."""
+    expected = struct.unpack("<I", _read_at(stream, size - 4, 4))[0]
+    if _checksum(stream, size - 4) != expected:
+        raise ValueError("Corrupt cell checksum")
+    stream.seek(0)
+    _, n = _header(stream, identity, channels)
+    offset = stream.tell() + 19 * n  # 18 energy columns and coverage.
+    if offset > size - 4:
+        raise ValueError("Truncated cell cache")
+    stream.seek(offset)
+    _skip_index(stream, n)
+    return _physical(stream, size - 4, channels)
+
+
+def _skip_index(stream, n):
+    """Advance over validated-length index fields not needed for row replay."""
+    if _read(stream, 1)[0] != 18:
+        raise ValueError("Invalid energy index channels")
+    for _ in range(18):
+        buckets = _read(stream, 1)[0]
+        if buckets > 101:
+            raise ValueError("Invalid energy buckets")
+        for _ in range(buckets):
+            energy, count = struct.unpack("<BH", _read(stream, 3))
+            if energy > 100 or count > n:
+                raise ValueError("Invalid energy bucket")
+            _read(stream, 2 * count)
+
+
 def _physical(stream, finish, channels):
     """Physical rows stay compressed until exact replay or a row budget reads them."""
     length = _SIZE.unpack(_read(stream, _SIZE.size))[0]
@@ -131,6 +161,26 @@ def load(path, identity, channels):
         pass
     if result is not None:
         result.partial.close()
+    return None
+
+
+def load_physical(path, identity, channels):
+    """Load only the CRC-checked physical section for exact row replay."""
+    summary_cache.worker_only()
+    path = Path(path)
+    try:
+        if not _identity(path, identity):
+            return None
+        cache = path.with_suffix(".cell")
+        size = cache.stat().st_size
+        if not _HEADER.size + 4 <= size <= CELL_CACHE_DISK_BYTES:
+            return None
+        with cache.open("rb") as stream:
+            result = _load_physical(stream, size, identity, channels)
+        if _identity(path, identity):
+            return result
+    except (OSError, ValueError, struct.error):
+        pass
     return None
 
 

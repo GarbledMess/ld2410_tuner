@@ -27,6 +27,32 @@ def test_finished_day_cache_survives_worker_restart(tmp_path):
     assert list(a.segments()) == list(b.segments())
 
 
+def test_physical_rows_reuse_sidecar_without_decoding_energy_index(tmp_path, monkeypatch):
+    fit, days, path = fitting(tmp_path)
+    original = fit.digest("synthetic", DAY, (0,))
+    expected = original.physical.window(0, 86400)
+
+    def forbidden(*_args):
+        raise AssertionError("physical replay decoded the energy index")
+
+    monkeypatch.setattr(cell_cache, "read_index", forbidden)
+    with patch.object(days, "open_columns", side_effect=AssertionError("decoded warm rows")):
+        actual = FittingDays(fit.view).physical("synthetic", DAY, (0,))
+    assert actual.window(0, 86400) == expected
+    assert path.with_suffix(".cell").exists()
+
+
+def test_physical_replay_rebuilds_corrupt_sidecar(tmp_path):
+    fit, days, path = fitting(tmp_path)
+    expected = fit.digest("synthetic", DAY, (0,)).physical.window(0, 86400)
+    path.with_suffix(".cell").write_bytes(b"corrupt")
+    with patch.object(days, "open_columns", wraps=days.open_columns) as reads:
+        actual = FittingDays(fit.view).physical("synthetic", DAY, (0,))
+    assert actual.window(0, 86400) == expected
+    assert reads.call_count == 1
+    assert path.with_suffix(".cell").read_bytes().startswith(b"LD24CELL1")
+
+
 def test_live_day_is_folded_on_every_request(tmp_path):
     fit, days, path = fitting(tmp_path)
     days.entries[("synthetic", DAY)]["persistent"] = False

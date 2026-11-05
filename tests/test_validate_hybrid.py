@@ -20,7 +20,16 @@ def cli():
     spec = importlib.util.spec_from_file_location("validate_hybrid_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Synthetic contract tests must not inherit the pytest process's RSS peak.
+    # Resource-failure tests override this boundary explicitly below.
+    module._rss = lambda: 64 * 1024**2
     return module
+
+
+def test_synthetic_validator_uses_stable_rss_fixture():
+    # The real RSS API reports this pytest process's lifetime peak, including
+    # unrelated capacity tests that ran before this module.
+    assert cli()._rss() == 64 * 1024**2
 
 
 def synthetic(tmp_path, episodes=4):
