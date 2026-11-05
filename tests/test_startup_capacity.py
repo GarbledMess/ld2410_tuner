@@ -104,9 +104,13 @@ def _installed_budget(mode):
     return json.loads(result.stdout)
 
 
-@pytest.mark.parametrize("mode,expected", [("storage", 192), ("numerical", 128)])
-def test_child_file_limit_matches_storage_handoff_without_changing_cpu_or_memory(mode, expected):
-    assert _installed_budget(mode) == [512 * 1024**2, 120, expected * 1024**2]
+@pytest.mark.parametrize("mode,cpu,files", [("storage", 120, 192), ("numerical", 900, 128)])
+def test_child_budgets_let_fits_run_long_and_keep_storage_short(mode, cpu, files):
+    assert _installed_budget(mode) == [512 * 1024**2, cpu, files * 1024**2]
+
+
+def test_display_child_stays_short_because_someone_is_waiting_for_it():
+    assert _installed_budget("display")[1] == 120
 
 
 @pytest.mark.parametrize("mode", ["numerical", "display"])

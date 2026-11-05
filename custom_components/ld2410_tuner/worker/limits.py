@@ -7,6 +7,7 @@ Budgets are explicit; this module does not select production job allowances.
 
 import ctypes
 import os
+import platform
 import signal
 import sys
 from dataclasses import dataclass
@@ -19,6 +20,21 @@ class IsolationUnavailable(RuntimeError):
 
 class CpuBudgetExceeded(RuntimeError):
     """The worker exhausted its CPU allowance before the uncatchable hard limit."""
+
+
+IOPRIO_SET = {"aarch64": 30, "x86_64": 251}
+
+
+def idle_disk_priority(libc=None):
+    """Best effort: a fit reads disk only when nothing else wants it (Linux only)."""
+    number = IOPRIO_SET.get(platform.machine())
+    if number is None:
+        return
+    if libc is None:
+        if sys.platform != "linux":
+            return
+        libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall(number, 1, 0, 3 << 13)  # IOPRIO_WHO_PROCESS, this process, IOPRIO_CLASS_IDLE
 
 
 def _cpu_exhausted(_signal, _frame):

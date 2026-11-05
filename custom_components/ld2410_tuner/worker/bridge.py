@@ -10,6 +10,8 @@ from ..const import TRAINING_FIELDS
 from . import priority, protocol
 from .supervisor import Closed, Supervisor, owned_preparation
 
+SHORT_DEADLINE = 180  # Someone is waiting: a chart or a save.
+FIT_DEADLINE = 3600  # A fit runs at the lowest priority, so a busy host stretches it.
 METADATA_BYTES = 1024 * 1024
 METADATA_NODES = 150_000  # Each of: all radars' metadata, and shared room inputs.
 
@@ -47,17 +49,29 @@ def preflight(runtime):
 DISPLAY = frozenset({"charts", "recording_rows"})
 
 
-def _service(runtime, operation=None):
+def _lane(runtime, name, deadline):
     if getattr(runtime, "_worker_closed", False):
         raise Closed("Tuner numerical workers are stopped")
-    name = "_display_service" if operation in DISPLAY else "_worker_service"
     service = getattr(runtime, name, None)
     if service is None:
         service = Supervisor(
-            Path(__file__).with_name("entrypoint.py"), deadline=180, stdout_bytes=METADATA_BYTES
+            Path(__file__).with_name("entrypoint.py"),
+            deadline=deadline,
+            stdout_bytes=METADATA_BYTES,
         )
         setattr(runtime, name, service)
     return service
+
+
+def _storage_service(runtime):
+    """Flushing recordings has its own lane: a fit can run for many minutes."""
+    return _lane(runtime, "_storage_service", SHORT_DEADLINE)
+
+
+def _service(runtime, operation=None):
+    if operation in DISPLAY:
+        return _lane(runtime, "_display_service", SHORT_DEADLINE)
+    return _lane(runtime, "_worker_service", FIT_DEADLINE)
 
 
 def _build(holder, operation, prepared):
@@ -115,7 +129,8 @@ async def calculate(runtime, operation, prepare):
 async def stop(runtime):
     """Close admission and reap children before releasing the integration runtime."""
     runtime._worker_closed = True
-    services = [getattr(runtime, name, None) for name in ("_display_service", "_worker_service")]
+    names = ("_display_service", "_worker_service", "_storage_service")
+    services = [getattr(runtime, name, None) for name in names]
     await asyncio.gather(*(service.aclose() for service in services if service is not None))
 
 

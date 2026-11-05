@@ -144,13 +144,18 @@ def _prepare(holder, root, operation, data, now, snapshot, fs_lock):
     return str(path), str(os.getpid()), "storage"
 
 
+def _lane(runtime, operation):
+    """Flushes only append, which a running fit tolerates, so they never wait behind one.
+    Trim and cleanup rewrite days, so they stay in line with fits and label recounts."""
+    final = getattr(runtime, "_final_storage_service", None)
+    if final is not None:
+        return final
+    return bridge._storage_service(runtime) if operation == "flush" else bridge._service(runtime)
+
+
 async def run(runtime, operation, data, accept, *, snapshot=None):
     """Hold shared admission through private preparation, child, acceptance and cleanup."""
-    service = (
-        runtime._final_storage_service
-        if getattr(runtime, "_final_storage_service", None) is not None
-        else bridge._service(runtime)
-    )
+    service = _lane(runtime, operation)
     holder = {}
 
     async def prepare():

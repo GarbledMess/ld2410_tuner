@@ -1,5 +1,6 @@
 """Finished-day retention removes elapsed ranges without bridging their gaps."""
 
+import asyncio
 import bisect
 import datetime
 import unittest
@@ -238,6 +239,8 @@ class TestDayStorage(unittest.IsolatedAsyncioTestCase):
         await self.runtime.label_history_range("a", START, START + 121, "present")
         self.runtime.data["storage_settings"] = {**policy.DEFAULTS, "automatic_days": 8}
         await self.runtime.trim_storage()
+        # A flush no longer queues behind the label recount, so wait for it explicitly.
+        await asyncio.gather(*self.runtime._label_rebuilds.values())
         self.runtime._label_counts.clear()
         assert self.device["histograms"] == labels._rebuild_histograms(self.runtime, self.device)
         values = [
