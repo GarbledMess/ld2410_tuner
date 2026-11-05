@@ -67,6 +67,7 @@ async def save_directly(runtime):
 
 
 async def _persist(runtime, *, values=None, clean=False, target=None, persist=True):
+    from ..worker.supervisor import WorkerFailed
     from . import live
 
     live.settle(runtime)  # Saved references include the evidence waiting for its batch.
@@ -78,21 +79,44 @@ async def _persist(runtime, *, values=None, clean=False, target=None, persist=Tr
         runtime._storage_status["busy"] = True
         try:
             return await _prepare_and_save(runtime, values, clean, target, persist)
-        except ValueError as error:
-            runtime._storage_status.update(
-                error=str(error),
-                blocked=isinstance(error, budget.BudgetExceeded)
-                and values is None
-                and target is None,
-            )
-            _LOGGER.warning("Storage maintenance could not finish: %s", error)
+        except (ValueError, OSError, WorkerFailed, TimeoutError) as error:
+            if not clean and values is None and target is None:
+                await retry_failure(runtime)
+            _failed_status(runtime, error, values, target)
             raise
         finally:
             runtime._storage_status["busy"] = False
 
 
 async def _prepare_and_save(runtime, values, clean, target, persist=True):
+    if not clean and values is None and target is None:
+        candidate = budget.copy_data(runtime.data)
+        report = await runtime.hass.async_add_executor_job(
+            _routine_report, runtime._days, candidate
+        )
+        if report is not None:
+            if persist:
+                await runtime.store.async_save(candidate)
+            runtime._storage_status.pop("error", None)
+            runtime._storage_status.pop("blocked", None)
+            runtime._storage_status.update(report)
+            return report
+        if time.time() < runtime.data.get("maintenance_retry", {}).get("after", 0):
+            raise budget.BudgetExceeded(
+                "Storage maintenance is in failure backoff; Trim retries now"
+            )
     return await _save_days(runtime, values, clean, target, persist)
+
+
+def _routine_report(store, candidate):
+    from ..worker import storage_values
+
+    storage_values.validate(candidate)
+    used = (0 if store is None else store.size()) + budget.storage_bytes(candidate)
+    ceiling = int(policy.settings(candidate)["max_mib"] * policy.MIB)
+    if used <= ceiling:
+        return budget._report(used, used, ceiling, time.time(), 0.0, 0.0)
+    return None
 
 
 @pace.background
@@ -125,6 +149,29 @@ def _prepare_save(store, candidate, now, clean, target):
     return prepared, changes, report, store.stage(changes, encoded)
 
 
+def _batched(store, candidate):
+    if candidate.get("maintenance_progress"):
+        return True
+    size = store.size()
+    ceiling = int(policy.settings(candidate)["max_mib"] * policy.MIB)
+    return (
+        8 * policy.MIB <= size <= ceiling - budget.storage_bytes(candidate)
+        and sum(len(store.days(key)) for key in candidate["devices"]) > 4
+    )
+
+
+def _snapshot_days(runtime, candidate, clean, target, values):
+    from ..worker import retention
+
+    def snapshot(directory):
+        extra = {"clean": clean, "target": target, "live": _live_metadata(runtime._days)}
+        if clean and values is None and target is None and _batched(runtime._days, candidate):
+            extra.update(retention.snapshot(runtime._days, candidate, time.time()))
+        return extra
+
+    return snapshot
+
+
 async def _save_days(runtime, values, clean, target, persist=True):
     from ..worker import transactions
 
@@ -134,8 +181,7 @@ async def _save_days(runtime, values, clean, target, persist=True):
         marks = {key: _observation_mark(runtime, key) for key in original["devices"]}
         candidate = original if values is None else {**original, "storage_settings": values}
 
-        def snapshot(directory):
-            return {"clean": clean, "target": target, "live": _live_metadata(runtime._days)}
+        snapshot = _snapshot_days(runtime, candidate, clean, target, values)
 
         accept = _accept_worker(runtime, original, marks, values, clean, persist)
 
@@ -185,9 +231,9 @@ def _accept_labels(runtime, prepared, keys):
 def _record_maintenance(runtime, prepared, report, clean):
     if clean:
         for key, device in prepared["devices"].items():
-            if key in runtime.data["devices"]:
+            if key in runtime.data["devices"] and "history_cleanup" in device:
                 runtime.data["devices"][key]["history_cleanup"] = deepcopy(
-                    device["history_cleanup"]
+                    device.get("history_cleanup", {})
                 )
     runtime._storage_status.pop("error", None)
     runtime._storage_status.pop("blocked", None)
@@ -212,13 +258,13 @@ def _observation_mark(runtime, key):
     return runtime._days.mark(key), runtime._days.seen(key)
 
 
-def _accept_days(runtime, prepared, changes, values):
+def _accept_days(runtime, prepared, changes, values, metadata_keys=()):
     if values is not None:
         runtime.data["storage_settings"] = dict(values)
-    for key in {key for key, _date, _day in changes}:
+    for key in {key for key, _date, _day in changes} | set(metadata_keys):
         device = runtime.data["devices"][key]
-        device["label_revision"] = prepared["devices"][key]["label_revision"]
-        device["histograms"] = deepcopy(prepared["devices"][key]["histograms"])
+        device["label_revision"] = prepared["devices"][key].get("label_revision", 0)
+        device["histograms"] = deepcopy(prepared["devices"][key].get("histograms", {}))
         device.pop("last_learning", None)
         runtime._label_counts.pop(key, None)
     if changes or values is not None:
@@ -238,15 +284,18 @@ def _accept_worker(runtime, original, marks, values, clean, persist):
             runtime.hass.async_add_executor_job(maintenance.load, result, directory)
         )
         relabelled = _relabelled(original, prepared)
-        touched = {key for key, _date, _day in changes} | relabelled
+        touched = (
+            {key for key, _date, _day in changes} | relabelled | set(result.get("guard_keys", ()))
+        )
 
         def valid():
             return _days_unchanged(runtime, original, marks, touched)
 
         def install():
-            _accept_days(runtime, prepared, changes, values)
+            _accept_days(runtime, prepared, changes, values, result.get("metadata_keys", ()))
             _accept_labels(runtime, prepared, relabelled)
             _record_maintenance(runtime, prepared, report, clean)
+            _accept_progress(runtime, prepared, result, clean)
 
         if result.get("prune"):
             await owned_preparation(
@@ -256,8 +305,42 @@ def _accept_worker(runtime, original, marks, values, clean, persist):
             return None
         for key, counted in result.get("counts", {}).items():
             label_counts.adopt(runtime, key, counted)  # Published: the days it counted.
-        if persist:
+        if persist or "guard_keys" in result:
             await runtime.store.async_save(prepared)
         return report
 
     return accept
+
+
+def _accept_progress(runtime, prepared, result, clean):
+    if clean:
+        runtime.data.pop("maintenance_retry", None)
+        prepared.pop("maintenance_retry", None)
+    if "guard_keys" not in result:
+        if clean:
+            runtime.data.pop("maintenance_progress", None)
+            prepared.pop("maintenance_progress", None)
+        return
+    progress = prepared.get("maintenance_progress")
+    if progress is None:
+        runtime.data.pop("maintenance_progress", None)
+    else:
+        runtime.data["maintenance_progress"] = deepcopy(progress)
+
+
+async def retry_failure(runtime):
+    """Persist the claim while the caller owns the storage lock."""
+    saved = runtime.data.get("maintenance_retry", {})
+    if time.time() < saved.get("after", 0):
+        return
+    delay = min(7 * policy.DAY, saved.get("delay", policy.DAY // 2) * 2)
+    runtime.data["maintenance_retry"] = {"delay": delay, "after": time.time() + delay}
+    await runtime.store.async_save(budget.copy_data(runtime.data))
+
+
+def _failed_status(runtime, error, values, target):
+    runtime._storage_status.update(
+        error=str(error),
+        blocked=isinstance(error, budget.BudgetExceeded) and values is None and target is None,
+    )
+    _LOGGER.warning("Storage maintenance could not finish: %s", error)

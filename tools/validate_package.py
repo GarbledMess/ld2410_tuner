@@ -23,6 +23,7 @@ RUNTIME_FILES = (
     "worker/startup.py",
     "worker/recompaction.py",
     "worker/maintenance.py",
+    "worker/retention.py",
     "worker/flushing.py",
     "worker/bridge.py",
     "worker/manifest.py",
