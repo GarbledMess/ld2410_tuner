@@ -48,6 +48,10 @@ def _enforce_history_retention(runtime, *_args) -> None:
 
 
 async def _retain(runtime):
+    from ..rooms import room_labels
+
+    if room_labels.expire_sensor(runtime, time.time()):
+        runtime._schedule_save()
     if time.time() < runtime.data.get("maintenance_retry", {}).get("after", 0):
         return
     if _cleanup_due(runtime, time.time()):
