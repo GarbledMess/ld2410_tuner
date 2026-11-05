@@ -10,6 +10,8 @@ block of plain rows per day resident, however many rows the day has. A small
 index of each block's first and last start and end answers row counts without
 decoding interior blocks; windows decode only the blocks they overlap, through
 one process-wide decoded-block cache bounded by ``DECODED_BLOCK_BYTES``.
+Validated native buffers also have a compressed ``SPILL_BYTES`` cache, so plain
+block eviction need not repeat delta decoding or geometry validation.
 """
 
 import struct
@@ -19,10 +21,11 @@ import zlib
 from array import array
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
+from io import BytesIO
 from itertools import accumulate, compress, count, islice, repeat
 from operator import add, eq, lt, sub, truediv
 
-from .constants import MISSING
+from .constants import MISSING, SPILL_BYTES
 
 PHYSICAL_BLOCK_ROWS = 16384
 DECODED_BLOCK_BYTES = 16 * 1024**2
@@ -35,6 +38,45 @@ _USABLE = bytes(0 if v == MISSING else 1 for v in range(256))
 _TOKENS = count()
 _DECODED = OrderedDict()
 _DECODED_BYTES = [0]
+
+
+class _CompiledBlocks:
+    """Compressed native buffers of validated blocks, bounded independently of rows."""
+
+    def __init__(self):
+        self.entries, self.size = OrderedDict(), 0
+
+    def get(self, key, channels):
+        found = self.entries.get(key)
+        if found is None:
+            return None
+        self.entries.move_to_end(key)
+        rows, encoded, _size = found
+        raw = zlib.decompress(encoded)
+        geometry = bytearray(16 * rows)
+        for k in range(8):
+            geometry[k::8] = raw[k * 2 * rows : (k + 1) * 2 * rows]
+        times = array("d", geometry[: 8 * rows])
+        ends = array("d", geometry[8 * rows :])
+        columns = {c: raw[(16 + i) * rows : (17 + i) * rows] for i, c in enumerate(channels)}
+        return times, ends, columns
+
+    def put(self, key, value):
+        times, ends, columns = value
+        geometry = times.tobytes() + ends.tobytes()
+        raw = b"".join(geometry[k::8] for k in range(8)) + b"".join(columns.values())
+        encoded = zlib.compress(raw, 1)
+        size = len(encoded) + 512
+        if size > SPILL_BYTES:
+            return
+        while self.entries and self.size + size > SPILL_BYTES:
+            _, (_, _, removed) = self.entries.popitem(last=False)
+            self.size -= removed
+        self.entries[key] = len(times), encoded, size
+        self.size += size
+
+
+_COMPILED = _CompiledBlocks()
 
 
 def _native(values):
@@ -136,12 +178,17 @@ class PhysicalRows:
         if key in _DECODED:
             _DECODED.move_to_end(key)
             return _DECODED[key][0]
+        value = _COMPILED.get(key, self.channels)
+        if value is not None:
+            _remember(key, value, len(value[0]) * (16 + len(self.channels)) + 256)
+            return value
         offset, rows, *bounds = self._blocks()[k]
         self._spool.seek(offset)
         head = self._spool.read(_BLOCK.size)
         _, milliseconds, geometry, energy, *_ = _BLOCK.unpack(head)
         payload = self._spool.read(geometry + energy)
         value = _decode_block(self.channels, rows, milliseconds, geometry, payload, bounds)
+        _COMPILED.put(key, value)
         _remember(key, value, rows * (16 + len(self.channels)) + 256)
         return value
 
@@ -204,6 +251,20 @@ class PhysicalRows:
 
     def encoded_size(self):
         return _DAY.size + self._size
+
+    def snapshot(self):
+        """Immutable compressed storage and block identity for independent readers."""
+        blocks = tuple(self._blocks())
+        self._spool.seek(0)
+        return self.channels, self.count, blocks, self._spool.read(self._size), self._token
+
+    @classmethod
+    def from_snapshot(cls, snapshot):
+        rows = cls.__new__(cls)
+        rows.channels, rows.count, blocks, data, rows._token = snapshot
+        rows._index, rows._size = list(blocks), len(data)
+        rows._spool = BytesIO(data)
+        return rows
 
     def encode(self):
         out = _Bytes(b"")
