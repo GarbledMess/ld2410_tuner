@@ -317,3 +317,11 @@ in-flight write guards use this same resolver. Explicit overrides take precedenc
 over the global default, while the global overnight schedule and recording guards
 still apply. Snapshots and exports expose the override, global default and effective
 mode; device controls use the admin-only `configure_device_auto_apply` route.
+
+Room and linked-set fits use retained shared history from the worker views, just
+as device fits do, with `EvidencePolicy` selecting automatic evidence from the
+last 28 days and human labels newest first up to 400 labelled hours (the crossing
+label is kept whole). Manual Learn and overnight learning use the same room job.
+`ATTRIBUTION_DAYS = 7` remains a separate quiet-baseline choice; it does not bound
+captured recordings or the fit evidence. Saved-result signatures and staleness
+checks do not include the fit window, so existing seven-day results still load.

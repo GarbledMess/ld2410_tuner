@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Learn together and overnight room fits now use retained shared recordings with
+  the device learner's evidence limits, including human labels older than a week.
+  Automatic evidence remains limited to 28 days and human evidence to the newest
+  400 labelled hours, keeping the crossing label whole.
+
 - Replace threshold fitting with the hybrid histogram and physical-replay engine.
   Learning reports episode-level errors, timing fidelity and suspicious label
   sub-stretches, with deterministic work limits and guarded recommendations.

@@ -207,8 +207,10 @@ integration restart cancels unfinished jobs, which can be requested again.
 
 ### Learning sets
 
-**Learn together** fits all radars of a learning set against the last seven days of
-shared recordings. A set is a group of linked zones (its `set_id` is the sorted
+**Learn together** fits all radars of a learning set against retained shared
+recordings, using the same evidence limits as device Learn: automatic evidence from
+the last 28 days and human labels newest first up to 400 labelled hours (keeping
+the label crossing that cap whole). A set is a group of linked zones (its `set_id` is the sorted
 group ids joined with `+`; a single-group set is just that group). Radars shared
 between zones get one threshold value. Zones that cannot be scored are skipped and
 reported. Device Learn, set-level jobs, Apply and overnight learning operate on
