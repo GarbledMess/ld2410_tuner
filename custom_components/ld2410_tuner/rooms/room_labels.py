@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from ..calibration.constants import SAMPLE_SECONDS
-from ..history import guesses, recording
+from ..history import guesses, policy, recording
 from ..history.labels import (
     apply_range,
     compact_labels,
@@ -228,6 +228,21 @@ def write_sensor_range(runtime, group_id, start, end, state, confidence, bump=Tr
     if bump:
         bump_sensor_revision(runtime, group_id)
     runtime._schedule_save()
+
+
+def expire_sensor(runtime, now) -> bool:
+    """Drop sensor labels ended before retention, whose readings are going too; manual ones stay.
+    Bermuda writes hundreds of labels a day, and saved metadata has a fixed budget."""
+    settings = policy.settings(runtime.data)
+    cutoff = now - max(settings["human_days"], settings["automatic_days"]) * policy.DAY
+    changed = False
+    for group_id, labels in runtime.data.get("room_labels", {}).items():
+        kept = [x for x in labels if x.get("source") != "sensor" or float(x["end"]) >= cutoff]
+        if len(kept) != len(labels):
+            runtime.data["room_labels"][group_id] = kept
+            bump_sensor_revision(runtime, group_id)
+            changed = True
+    return changed
 
 
 def bump_sensor_revision(runtime, group_id) -> None:

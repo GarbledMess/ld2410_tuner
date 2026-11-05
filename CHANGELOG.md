@@ -26,6 +26,9 @@
 
 ## 1.32.1 - unreleased
 
+- Graphs, Learn and room assessments no longer fail with "Metadata node budget exceeded".
+  Automatic room labels from Bermuda and other sensors pushed saved data over a fixed limit;
+  the limit is higher, and those labels now expire with the recordings they describe.
 - Home Assistant no longer reports "Something is blocking Home Assistant from wrapping up
   the start up phase" because of this integration. Seen by refreshes, the delayed save,
   overnight learning, room assessments and label timers now run as background work that
