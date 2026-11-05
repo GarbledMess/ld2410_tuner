@@ -138,7 +138,7 @@ def test_storage_waits_for_bounded_busy_admission_without_dropping_pending_flush
         owner = SimpleNamespace(
             data={},
             _days=SimpleNamespace(root=tmp_path / "history"),
-            _worker_service=service,
+            _storage_service=service,
             hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
         )
 

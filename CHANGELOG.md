@@ -26,6 +26,14 @@
 
 ## 1.32.1 - unreleased
 
+## 1.32.2 - 2026-11-05
+
+- Learn no longer stops after two minutes of CPU on slower hardware. Fits may now use up to
+  15 minutes of CPU at the lowest processor and disk priority, and saving recordings has its
+  own queue, so a long fit cannot hold up a save or a graph.
+
+## 1.32.1 - 2026-11-05
+
 - Graphs, Learn and room assessments no longer fail with "Metadata node budget exceeded".
   Automatic room labels from Bermuda and other sensors pushed saved data over a fixed limit;
   the limit is higher, and those labels now expire with the recordings they describe.
@@ -48,6 +56,10 @@
   retries after failures. Routine saves no longer start a worker or copy any history.
 - The Bermuda section now names rooms it can't use and why: recording is off for the
   room's radar, or no radar is assigned to that Home Assistant area.
+- Radar and room status charts now show labelled Human, Entity / sensor and Guessed
+  evidence lanes. Each kind can be hidden with a remembered viewer preference. Room
+  guesses stay separate per radar. Rendering clips and merges periods and batches
+  SVG paths by state; toggling uses the loaded data without another request.
 
 ## 1.32.0 - 2026-10-27
 
