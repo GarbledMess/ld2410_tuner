@@ -237,6 +237,16 @@ async def _stop_workers(runtime):
     return True
 
 
+async def _save_settings_directly(runtime):
+    from .history import storage
+
+    try:
+        async with asyncio.timeout(FINAL_HISTORY_SAVE_TIMEOUT):
+            await storage.save_directly(runtime)
+    except Exception:
+        _LOGGER.warning("Direct settings save failed during shutdown", exc_info=True)
+
+
 async def _final_history_save(runtime, *, worker_stopped=True):
     """Recover buffered history even when shutdown's worker transaction fails."""
     from .worker import flushing, transactions
@@ -249,6 +259,8 @@ async def _final_history_save(runtime, *, worker_stopped=True):
         except Exception:
             failed = True
             _LOGGER.exception("Final recorded history save failed during shutdown")
+    if failed:
+        await _save_settings_directly(runtime)
     store = runtime._days
     if store is None or not (failed or flushing._pending(store)):
         return

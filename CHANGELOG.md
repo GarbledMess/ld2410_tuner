@@ -7,6 +7,8 @@
   memory. Saves now continue, directly if the service really has to close.
 - A recorded history save that fails is now logged, and the stall warning names a closed
   worker, the storage lock and what the save is waiting on.
+- Labels and settings are no longer lost when storage maintenance fails or runs out of
+  time, whether during normal use or at shutdown. They are now saved without it.
 
 ## 1.32.0 - 2026-10-27
 
