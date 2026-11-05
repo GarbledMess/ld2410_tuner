@@ -98,6 +98,7 @@ def replay_consumers():
         "engine.hybrid.replay",
         "engine.hybrid.domains",
         "engine.hybrid.search_timing",
+        "engine.hybrid.fixed",
         "engine.hybrid.timing",
     }
 
