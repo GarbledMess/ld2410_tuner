@@ -8,7 +8,7 @@ import test_tuner as harness
 from tuner_under_test.history import dayfile
 from tuner_under_test.history.daystore import bounds, date_of
 from tuner_under_test.worker import flushing, transactions
-from tuner_under_test.worker.supervisor import CleanupFailed
+from tuner_under_test.worker.supervisor import CleanupFailed, Closed, WorkerFailed
 
 mod = harness.mod
 
@@ -125,3 +125,95 @@ class ShutdownHistoryTests(unittest.IsolatedAsyncioTestCase):
         final_save.assert_not_awaited()
         self.assertIn("synthetic cleanup failure", "\n".join(logs.output))
         self.assertIn("direct", "\n".join(logs.output))
+
+    def changed_setting(self):
+        self.runtime.data["devices"]["a"] = {"recording_enabled": True}
+        self.runtime.store.async_save.reset_mock()
+
+    def assert_setting_saved(self):
+        saved = self.runtime.store.async_save.await_args.args[0]
+        self.assertTrue(saved["devices"]["a"]["recording_enabled"])
+        self.assertIsNot(saved, self.runtime.data)
+
+    async def test_worker_cleanup_failure_still_saves_labels_and_settings(self):
+        self.buffered()
+        self.changed_setting()
+        with (
+            patch.object(mod.bridge, "stop", side_effect=CleanupFailed("synthetic")),
+            self.assertLogs(mod.__name__, level="WARNING"),
+        ):
+            await self.unload()
+        self.assert_setting_saved()
+
+    async def test_failed_final_save_still_saves_labels_and_settings(self):
+        self.buffered()
+        self.changed_setting()
+        with (
+            patch.object(transactions, "final_save", side_effect=OSError("synthetic")),
+            self.assertLogs(mod.__name__, level="WARNING"),
+        ):
+            await self.unload()
+        self.assert_setting_saved()
+
+    async def test_hung_final_save_still_saves_labels_and_settings(self):
+        self.buffered()
+        self.changed_setting()
+
+        async def hang(runtime):
+            await asyncio.Event().wait()
+
+        with (
+            patch.object(transactions, "final_save", hang),
+            patch.object(mod, "FINAL_SAVE_TIMEOUT", 0.01),
+            self.assertLogs(mod.__name__, level="WARNING"),
+        ):
+            await self.unload()
+        self.assert_setting_saved()
+
+    async def test_a_failing_direct_settings_save_does_not_stop_the_history_save(self):
+        record = self.buffered()
+        self.changed_setting()
+        self.runtime.store.async_save.side_effect = OSError("store unavailable")
+        with (
+            patch.object(transactions, "final_save", side_effect=OSError("synthetic")),
+            self.assertLogs(mod.__name__, level="WARNING") as logs,
+        ):
+            await self.unload()
+        self.assert_saved(record)
+        self.assertIn("store unavailable", "\n".join(logs.output))
+
+    async def test_successful_final_save_does_not_write_settings_twice(self):
+        self.buffered()
+        self.changed_setting()
+        with patch.object(transactions, "final_save", new=AsyncMock()):
+            await self.unload()
+        self.runtime.store.async_save.assert_not_awaited()
+
+    async def delayed_save_failing_with(self, error):
+        self.changed_setting()
+        with (
+            patch.object(self.runtime, "async_save", side_effect=error),
+            patch("tuner_under_test.runtime.coordinator.STORE_DELAY", 0),
+            self.assertLogs(mod.__name__, level="WARNING") as logs,
+        ):
+            self.runtime._save_dirty = True
+            await self.runtime._delayed_save()
+        return "\n".join(logs.output)
+
+    async def test_labels_and_settings_are_saved_when_the_worker_exceeds_its_budget(self):
+        output = await self.delayed_save_failing_with(WorkerFailed(1, b"CpuBudgetExceeded"))
+        self.assert_setting_saved()
+        self.assertIn("CpuBudgetExceeded", output)
+
+    async def test_labels_and_settings_are_saved_while_the_worker_is_quarantined(self):
+        await self.delayed_save_failing_with(Closed("Worker supervisor is closed"))
+        self.assert_setting_saved()
+
+    async def test_labels_and_settings_are_saved_when_maintenance_is_refused(self):
+        await self.delayed_save_failing_with(ValueError("Storage maintenance refused"))
+        self.assert_setting_saved()
+
+    async def test_a_failing_direct_save_is_reported_and_ends_the_delayed_save(self):
+        self.runtime.store.async_save.side_effect = OSError("store unavailable")
+        output = await self.delayed_save_failing_with(WorkerFailed(1, b"synthetic"))
+        self.assertIn("store unavailable", output)

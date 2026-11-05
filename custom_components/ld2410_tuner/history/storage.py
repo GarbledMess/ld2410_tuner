@@ -60,6 +60,12 @@ async def async_save(runtime):
     return await _persist(runtime)
 
 
+async def save_directly(runtime):
+    """Labels and settings need no worker; only the day files' cleanup does, and that can wait."""
+    async with runtime._storage_lock:
+        await runtime.store.async_save(budget.copy_data(runtime.data))
+
+
 async def _persist(runtime, *, values=None, clean=False, target=None, persist=True):
     from . import live
 
