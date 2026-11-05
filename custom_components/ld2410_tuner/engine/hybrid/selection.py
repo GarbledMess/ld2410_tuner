@@ -11,8 +11,10 @@ cost and candidate order. The quiet prior never enters a reported error cost.
 """
 
 from .constants import (
+    FALSE_TRIGGER_SECONDS,
     MISSED_WEIGHT,
     PRESENCE_FLOOR,
+    PRESENCE_PRICE,
     QUIET_CAP,
     QUIET_SECONDS,
     QUIET_SLACK,
@@ -87,6 +89,27 @@ def _allowed(scores):
             for g in GUARDS
         )
     ]
+
+
+def _presence_price(score):
+    """Priced missed human presence plus false time and triggers; None without human presence."""
+    total, found = 0.0, False
+    for metrics in _zones(score).values():
+        values = metrics["sufficient_statistics"].get("present/human")
+        if values and values[0]:
+            found = True
+            total += PRESENCE_PRICE * values[1]
+        total += metrics["false_active_seconds"]
+        total += FALSE_TRIGGER_SECONDS * metrics["false_triggers"]
+    return total if found else None
+
+
+def presence_shift(scores):
+    """Index of the cheapest lowering of ``scores[0]``; ties keep the higher thresholds."""
+    prices = [_presence_price(score) for score in scores]
+    if prices[0] is None:
+        return 0
+    return min(_allowed(scores), key=lambda i: (prices[i], i))
 
 
 def _human_recall(metrics):

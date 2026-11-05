@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import anomaly, selection
-from .constants import ROBUST_SEARCH_MIN_WEIGHT, ROBUST_SHORTLIST, ROBUST_SWEEPS
+from .constants import PRESENCE_SHIFTS, ROBUST_SEARCH_MIN_WEIGHT, ROBUST_SHORTLIST, ROBUST_SWEEPS
 from .domains import normalize_pattern
 from .evaluate import Evaluators, evaluate_patterns, plan_scores, score_regions
 from .evidence import evidence_horizon
@@ -179,6 +179,27 @@ def first_fit(state):
     return pick, info, []
 
 
+def _lowered(pattern, amount):
+    return {rid: {c: max(0, t - amount) for c, t in row.items()} for rid, row in pattern.items()}
+
+
+def presence_shift(state, pick, info, zones=None):
+    """Spend false-active time on presence the cost-ranked candidates leave behind."""
+    base = state.compared[pick]
+    patterns = _dedupe([base, *(_lowered(base, k) for k in PRESENCE_SHIFTS)])
+    _, scores, quiet = score(state, patterns, zones=zones, keep=len(patterns))
+    chosen = selection.presence_shift(scores)
+    info["presence_shift"] = max(
+        base[rid][c] - patterns[chosen][rid][c] for rid in base for c in base[rid]
+    )
+    if chosen == 0:
+        return pick
+    state.compared.append(patterns[chosen])
+    state.scores.append(scores[chosen])
+    state.quiet.append(quiet[chosen])
+    return len(state.compared) - 1
+
+
 def _defer_attribution(state):
     return any(len(zone.members) > 1 for zone in state.problem.zones)
 
@@ -264,19 +285,20 @@ def _gain(second, pick, first):
     return costs[at][0] - costs[pick][0]
 
 
-def audited(state, first, pick):
+def audited(state, first, unshifted):
     """Fit 1 unless masking audited suspects improves selection beyond the band."""
     found = anomaly.audit(state.problem, state.training)
     if not found.accepted:
         first.diagnostics["anomaly"] = anomaly.report(found, "clean")
         return first
-    second, work, choice, info = _masked_fit(state, found, first.thresholds)
+    # Against the unshifted choice: the shift's false time must not make masking look better.
+    second, work, choice, info = _masked_fit(state, found, unshifted)
     if second is None:
         status = "kept: not tested (operation budget)"
         first.diagnostics["anomaly"] = anomaly.report(found, status, work=work)
         return first
     totals = _totals(second.scores[0])
-    gain = _gain(second, choice, first.thresholds)
+    gain = _gain(second, choice, unshifted)
     margin = anomaly.masked_margin(second.scores[0])
     measured = {"gain": round(gain, 6), "margin": round(margin, 6), "work": work}
     if totals["occupied_seconds"] and totals["empty_seconds"] and gain > margin:
@@ -292,6 +314,7 @@ def audited(state, first, pick):
             gid: [list(span) for span in spans] for gid, spans in found.masks.items()
         }
         extra = {"anomaly": report, "first_fit": summary}
+        choice = presence_shift(second, choice, info, second.problem.zones)
         return result(second, choice, info, [], extra)
     first.diagnostics["anomaly"] = anomaly.report(found, "kept: no influence", **measured)
     return first
@@ -312,10 +335,11 @@ def fit(problem, *, audit=True):
             state = FitState(problem, training, directory, normalize_pattern(problem.radars))
             try:
                 pick, info, missing = first_fit(state)
-                first = result(state, pick, info, missing)
-                if missing or not audit:
-                    return first
-                return audited(state, first, pick)
+                if missing:
+                    return result(state, pick, info, missing)
+                unshifted = state.compared[pick]
+                first = result(state, presence_shift(state, pick, info), info, missing)
+                return audited(state, first, unshifted) if audit else first
             finally:
                 if state.evaluators is not None:
                     state.evaluators.close()

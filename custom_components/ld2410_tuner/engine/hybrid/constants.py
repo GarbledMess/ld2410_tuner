@@ -29,6 +29,13 @@ QUIET_SLACK = 0.10
 QUIET_CAP = 100.0
 # A candidate may not detect this much less training presence than the best allowed one.
 PRESENCE_FLOOR = 0.005
+# Lowering every chosen threshold together: the amounts tried, and the false-active seconds
+# worth paying per second of human presence caught. Before trigger pricing, prices 50 and 100
+# chose alike and 20 lost one fold (2026-11-05,
+# tuned on the same folds, so optimistic); the cost-ranked search alone left this presence.
+PRESENCE_SHIFTS = (1, 2, 3, 4, 6, 8, 12)
+PRESENCE_PRICE = 50.0
+FALSE_TRIGGER_SECONDS = 30.0  # A trigger costs more than its seconds: it can wake a room.
 ROBUST_SHORTLIST = 6
 ROBUST_SWEEPS = 1
 ROBUST_SEARCH_MIN_WEIGHT = 0.05

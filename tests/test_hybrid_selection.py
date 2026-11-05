@@ -237,6 +237,94 @@ def test_presence_floor_ignores_automatic_presence():
     assert choose(problem, pats, base, None, stats)[0] == 1
 
 
+def _shifted(missed, false, guard=0, present=1000.0, triggers=0):
+    return {
+        **result(0.0, active=guard),
+        "false_active_seconds": false,
+        "false_triggers": triggers,
+        "sufficient_statistics": {"present/human": [present, missed]},
+    }
+
+
+def test_lowering_is_chosen_when_presence_is_worth_its_false_time():
+    from tuner_under_test.engine.hybrid.selection import presence_shift
+
+    assert presence_shift([_shifted(100, 0), _shifted(10, 4000), _shifted(9, 9000)]) == 1
+
+
+def test_lowering_is_refused_above_the_price_of_presence():
+    from tuner_under_test.engine.hybrid.selection import presence_shift
+
+    assert presence_shift([_shifted(100, 0), _shifted(99, 51)]) == 0
+    assert presence_shift([_shifted(100, 0), _shifted(99, 49)]) == 1
+
+
+def test_lowering_pays_for_each_false_trigger_as_well_as_its_seconds():
+    from tuner_under_test.engine.hybrid.selection import presence_shift
+
+    # 30 s of presence is worth 1500 false seconds: 300 s across 50 triggers is too many.
+    assert presence_shift([_shifted(30, 0), _shifted(0, 300, triggers=50)]) == 0
+    assert presence_shift([_shifted(30, 0), _shifted(0, 300, triggers=10)]) == 1
+
+
+def test_lowering_cannot_add_a_guard_failure():
+    from tuner_under_test.engine.hybrid.selection import presence_shift
+
+    assert presence_shift([_shifted(100, 0), _shifted(0, 10, guard=1)]) == 0
+
+
+def test_lowering_ties_keep_the_higher_thresholds():
+    from tuner_under_test.engine.hybrid.selection import presence_shift
+
+    assert presence_shift([_shifted(0, 0), _shifted(0, 0)]) == 0
+
+
+def test_lowering_needs_human_presence():
+    from tuner_under_test.engine.hybrid.selection import presence_shift
+
+    automatic = {
+        **result(0.0),
+        "false_active_seconds": 0.0,
+        "false_triggers": 0,
+        "sufficient_statistics": {"present/automatic": [1000.0, 500.0]},
+    }
+    assert presence_shift([automatic, _shifted(0, 0)]) == 0
+
+
+def test_lowering_prices_every_zone():
+    from tuner_under_test.engine.hybrid.selection import presence_shift
+
+    def zones(a, b):
+        return {"zones": {"a": _shifted(*a), "b": _shifted(*b)}}
+
+    assert presence_shift([zones((10, 0), (10, 0)), zones((0, 0), (10, 400))]) == 1
+    assert presence_shift([zones((10, 0), (10, 0)), zones((0, 0), (10, 600))]) == 0
+
+
+def test_fit_lowers_thresholds_for_quiet_presence_the_cost_leaves_behind():
+    from tuner_under_test.engine.hybrid.engine import fit
+
+    rows, spans = episodes(40, seconds=600, present=(60, 70), empty=(4, 9))
+    quiet = {i for i, row in enumerate(rows) if row[0] % 7200 == 1200 and row[2][0] >= 60}
+    rows = [(a, b, [34] + v[1:]) if i in quiet else (a, b, v) for i, (a, b, v) in enumerate(rows)]
+    got = fit(fit_problem(rows, spans))
+    assert got.diagnostics["decision"]["presence_shift"] > 0
+    assert got.thresholds["a"][0] < 34
+    assert got.after["false_active_seconds"] == 0
+
+
+def test_fit_does_not_lower_thresholds_into_a_false_cliff():
+    from tuner_under_test.engine.hybrid.engine import fit
+
+    rows, spans = episodes(40, seconds=600, present=(60, 70), empty=(4, 9))
+    rows = [
+        (a, b, [v[0] if v[0] > 9 else 30] + v[1:]) if a % 7200 < 4800 else (a, b, v)
+        for a, b, v in rows
+    ]
+    got = fit(fit_problem(rows, spans))
+    assert got.thresholds["a"][0] >= 30
+
+
 def test_zero_class_time_keeps_current_without_proposals():
     from tuner_under_test.engine.hybrid.engine import fit
 
