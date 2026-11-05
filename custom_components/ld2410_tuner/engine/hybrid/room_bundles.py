@@ -5,6 +5,8 @@ scores, the untimed human score, and per member its own score against the zone
 truth, by source, plus its missed time inside Seen-by attributed presence.
 """
 
+from copy import deepcopy
+
 from . import fixed
 from .types import ZoneSpec
 
@@ -62,8 +64,8 @@ def bundles(scores, zone, patterns, seen):
     """Per pattern ``(bundle, zone metrics)`` scored together at one fidelity."""
     base, members = variants(zone, seen)
     every = [*base.values(), *(z for found in members.values() for z in found.values())]
-    timed = scores.scores(patterns, every)
-    raw = scores.scores(patterns, [base["human"]], raw=True)
+    timed = _scores(scores, patterns, every)
+    raw = _raw(scores, patterns, timed, base["human"])
     result = []
     for found, untimed in zip(timed, raw, strict=True):
         whole = found[zone.group_id]
@@ -75,3 +77,27 @@ def bundles(scores, zone, patterns, seen):
         }
         result.append((bundle, whole))
     return result
+
+
+def _raw(scores, patterns, timed, human):
+    if all(not radar.timing for radar in scores.problem.radars.values()):
+        return [{human.group_id: deepcopy(found[human.group_id])} for found in timed]
+    return scores.scores(patterns, [human], raw=True)
+
+
+def _scores(scores, patterns, zones):
+    overrides = scores.problem.policy.quality.get("zones", {})
+    unique, aliases = {}, {}
+    for zone in zones:
+        # A named quality override can change cost even for identical truth.
+        key = zone.members, zone.truth, zone.group_id if zone.group_id in overrides else None
+        original = unique.setdefault(key, zone)
+        aliases[zone.group_id] = original.group_id
+    found = scores.scores(patterns, list(unique.values()))
+    return [
+        {
+            name: value[source] if name == source else deepcopy(value[source])
+            for name, source in aliases.items()
+        }
+        for value in found
+    ]
