@@ -294,7 +294,8 @@ def run_suite(base, arguments, timeout, *, stop_at_first=True):
         "-p",
         "no:cacheprovider",
         "--basetemp",
-        str(base / "pytest-tmp"),
+        # Outside the copy: the validator tool refuses output inside its own repository.
+        str(base.parent / f"{base.name}-pytest"),
         "-m",
         "not scaling",
         # It checks the patches apply, so it would "catch" each of them.
@@ -349,7 +350,7 @@ def _confirmed_run(base, path, original, patched_text, arguments, timeout):
         if not _fails_without_the_bug(base, path, original, patched_text, test_id, timeout):
             return False, failure, seconds, flaky
         flaky.append(test_id)
-    return True, None, seconds, flaky
+    return None, None, seconds, flaky  # Undecided: too much failed without the bug as well.
 
 
 def check_bug(bug, suite, work, arguments, timeout):
@@ -367,13 +368,14 @@ def check_bug(bug, suite, work, arguments, timeout):
         return {
             "bug": bug.name,
             "description": bug.description,
-            "caught": not passed,
+            "caught": None if passed is None else not passed,
             "first_failure": failure,
             "set_aside_as_flaky": flaky,
             "seconds": round(seconds, 1),
         }
     finally:
         shutil.rmtree(base, ignore_errors=True)
+        shutil.rmtree(base.parent / f"{base.name}-pytest", ignore_errors=True)
 
 
 def baseline(suite, work, arguments, timeout):
@@ -385,6 +387,7 @@ def baseline(suite, work, arguments, timeout):
         return {"passed": passed, "first_failure": failure, "seconds": round(seconds, 1)}
     finally:
         shutil.rmtree(base, ignore_errors=True)
+        shutil.rmtree(base.parent / f"{base.name}-pytest", ignore_errors=True)
 
 
 def _options(argv):
@@ -418,7 +421,7 @@ def main(argv=None):
 
     with ThreadPoolExecutor(options.jobs) as pool:
         report["bugs"] = list(pool.map(one, chosen))
-    report["caught"] = sum(item["caught"] for item in report["bugs"])
+    report["caught"] = sum(item["caught"] is True for item in report["bugs"])
     report["total"] = len(report["bugs"])
     print(f"caught {report['caught']} of {report['total']}", flush=True)
     if options.output:
