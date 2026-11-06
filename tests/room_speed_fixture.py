@@ -9,6 +9,7 @@ radars' own recorded guesses and one open partial day. ``request`` captures it a
 receives it, so the production ``room_fit`` path reads production files.
 """
 
+import json
 import random
 from array import array
 from itertools import accumulate
@@ -35,6 +36,7 @@ DURATIONS = (
 )
 GAP_SHARE = 0.001
 MISSING_SHARE = 0.002
+GUESS_LEVEL = 18  # Confidence 0.9, which automatic evidence admits.
 
 
 def _sensor_labels(index, rng):
@@ -130,7 +132,7 @@ def _guesses(labels, stop):
     runs = []
     for label in labels[::6]:
         if label["start"] < min(label["end"], stop):
-            runs.append((label["start"], min(label["end"], stop), label["state"], 80, 0))
+            runs.append((label["start"], min(label["end"], stop), label["state"], GUESS_LEVEL, 0))
     return runs
 
 
@@ -189,6 +191,23 @@ def build(root, days=60, *, open_seconds=10800, sensor_days=10):
     return SimpleNamespace(
         store=store, days=days, until=until, labels=[*sensor, *_human_labels(days)]
     )
+
+
+def stored(root, days=44, *, open_seconds=10800, sensor_days=10):
+    """``build`` once under ``root``, then the same store as a later process finds it."""
+    from tuner_under_test.history import daystore
+
+    root = Path(root)
+    saved = root / "room.json"
+    if not saved.exists():
+        fixture = build(root, days, open_seconds=open_seconds, sensor_days=sensor_days)
+        fixture.store.flush(fixture.until)
+        meta = {"days": days, "until": fixture.until, "labels": fixture.labels}
+        saved.write_text(json.dumps(meta), encoding="utf8", newline="\n")
+    meta = json.loads(saved.read_text(encoding="utf8"))
+    store = daystore.DayStore(root / "history", cache_bytes=0)
+    store.open(meta["until"])
+    return SimpleNamespace(store=store, **meta)
 
 
 def _snapshot(fixture, rid):

@@ -287,6 +287,15 @@ def _outside_unknown(runs, reader):
     )
 
 
+def _clipped_runs(view, device_id, start, end, reader):
+    clipped = [
+        (max(start, r[0]), min(end, r[1]), *r[2:])
+        for r in guesses.of(view, device_id, start).runs
+        if r[0] < end and r[1] > start and r[1] > r[0]
+    ]
+    return _outside_unknown(clipped, reader)
+
+
 def collect(view, device_id, keys, start, end, human_reader, owner):
     from .quality_evidence import QualityContext, _independent_reader
 
@@ -297,12 +306,7 @@ def collect(view, device_id, keys, start, end, human_reader, owner):
     first, last = spans.bounds(view, device_id, start, end)
     physical = spans.events(view, device_id, start=start, end=end)
     cells = _cells(physical, reader, owner, start, end, first, last)
-    clipped = [
-        (max(start, r[0]), min(end, r[1]), *r[2:])
-        for r in guesses.of(view, device_id, start).runs
-        if r[0] < end and r[1] > start and r[1] > r[0]
-    ]
-    runs = _outside_unknown(clipped, reader)
+    runs = _clipped_runs(view, device_id, start, end, reader)
     accumulator, digest = _Human(keys), sha256()
     automatic, overlaps = _source_evidence(_observed(cells, accumulator, digest), runs, owner, keys)
     human, presence, empty, densities = accumulator.result()
