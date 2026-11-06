@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import repeat
 from math import ceil, floor, isfinite
-from operator import eq, ge, le, lt, mod, sub
+from operator import add, eq, ge, le, lt, mod, mul, sub
 from re import finditer
 
 from .constants import CELL_SECONDS, CHANNELS, MISSING
@@ -180,18 +180,29 @@ def _clipped_rows(folder, block, start, end, first, after):
             folder.row(lo, hi, values)
 
 
+def _cell_rows(block, first, after, cells):
+    """Each cell's rows of a contiguous range, as slices; no Python step per row."""
+    edges = list(map(mul, cells, repeat(CELL_SECONDS)))
+    starts = map(bisect_right, repeat(block.ends), edges, repeat(first), repeat(after))
+    edges = map(add, edges, repeat(CELL_SECONDS))
+    stops = map(bisect_left, repeat(block.times), edges, repeat(first), repeat(after))
+    return list(map(slice, starts, stops))
+
+
 def _reduce_cells(folder, block, first, after):
     """Reduce contiguous usable rows in C, including bursts and offset cells."""
     lo, hi = block.times[first], block.ends[after - 1]
     folder.coverage(lo, hi)
-    for k in range(cell_floor(lo, CELL_SECONDS), cell_ceil(hi, CELL_SECONDS)):
-        a = bisect_right(block.ends, k * CELL_SECONDS, first, after)
-        b = bisect_left(block.times, (k + 1) * CELL_SECONDS, a, after)
-        cell = k - folder.k0
-        for c in folder.selected:
-            value = max(block.columns[c][a:b])
-            old = folder.columns[c][cell]
-            folder.columns[c][cell] = value if old == MISSING else max(old, value)
+    cells = range(cell_floor(lo, CELL_SECONDS), cell_ceil(hi, CELL_SECONDS))
+    rows = _cell_rows(block, first, after, cells)
+    start, stop = cells.start - folder.k0, cells.stop - folder.k0
+    missing = bytes([MISSING]) * len(rows)
+    for c in folder.selected:
+        values = bytes(map(max, map(block.columns[c].__getitem__, rows)))
+        old = folder.columns[c][start:stop]
+        if old != missing:
+            values = bytes(map(max, old.translate(_ZERO_MISSING), values))
+        folder.columns[c][start:stop] = values
 
 
 def _full_batches(block, start, end, selected):

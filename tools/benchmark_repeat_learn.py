@@ -31,16 +31,16 @@ def _forget_results(root):
             path.unlink()
 
 
-def _change_label(view):
+def _change_label(view, seconds):
     """The newest label, the usual correction: training fits before the cut are unaffected."""
-    view.data["devices"]["r"]["history_labels"][-1]["end"] -= CHANGED_LABEL_SECONDS
+    view.data["devices"]["r"]["history_labels"][-1]["end"] -= seconds
 
 
 def _learn(args):
     """One Learn in this process, as a worker job: its own view, no state from another Learn."""
     view = recorded_view(args.root, args.rows)
     if args.learn == "repeat":
-        _change_label(view)
+        _change_label(view, args.change)
     keys = list(HISTORY_KEYS)
     profiler = cProfile.Profile() if args.profile else None
     if profiler:
@@ -50,14 +50,16 @@ def _learn(args):
     seconds = process_time() - start
     if profiler:
         profiler.disable()
-        pstats.Stats(profiler, stream=sys.stderr).sort_stats("cumtime").print_stats(args.profile)
+        stats = pstats.Stats(profiler, stream=sys.stderr)
+        stats.sort_stats("cumtime").print_stats(args.profile)
+        stats.sort_stats("tottime").print_stats(args.profile // 2)
     thresholds = {key: value["threshold"] for key, value in report["proposals"].items()}
     print(json.dumps({"seconds": round(seconds, 2), "thresholds": thresholds}))
 
 
 def _job(args, learn):
     command = [sys.executable, __file__, str(args.root), "--rows", str(args.rows)]
-    command += ["--learn", learn, "--profile", str(args.profile)]
+    command += ["--learn", learn, "--profile", str(args.profile), "--change", str(args.change)]
     done = subprocess.run(command, capture_output=True, check=False, text=True)  # nosec B603
     sys.stderr.write(done.stderr)
     if done.returncode:
@@ -71,6 +73,7 @@ def main():
     parser.add_argument("--rows", type=int, default=ROWS)
     parser.add_argument("--learn", choices=("cold", "repeat"))
     parser.add_argument("--profile", type=int, default=0, help="Print this many profile lines")
+    parser.add_argument("--change", type=int, default=CHANGED_LABEL_SECONDS, help="Seconds to cut")
     args = parser.parse_args()
     if args.learn:
         _learn(args)

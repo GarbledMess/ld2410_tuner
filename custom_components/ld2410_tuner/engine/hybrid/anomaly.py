@@ -31,7 +31,7 @@ from array import array
 from bisect import bisect_left, bisect_right
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field, replace
-from itertools import accumulate, compress, repeat
+from itertools import accumulate, chain, compress, repeat
 from math import ceil
 from operator import ge, itemgetter, le, mul, sub
 
@@ -56,7 +56,7 @@ from .constants import (
 )
 from .domains import evidence_margin
 from .evidence import _labels
-from .replay import _RUN, TABLES
+from .replay import TABLES
 from .scoring import _union, masked
 from .search import channel_views, class_bins, repair
 
@@ -268,6 +268,11 @@ class _RunColumn:
             bins[value] = seconds
         return bins
 
+    def cells(self, ranges):
+        """One value per cell of the sorted disjoint cell ``ranges``."""
+        cells = self.values if self.unit else _per_cell(self.values, self.lengths, self.ends)
+        return b"".join(cells[lo:hi] for lo, hi in ranges)
+
     def translate(self, table):
         values = self.values.translate(table)
         if self.decisions is not None:
@@ -333,15 +338,14 @@ class _RunAbove:
         return selected
 
     def _expanded(self):
-        size = self.ends[-1] if self.ends else 0
-        if size == len(self.values):
-            return self.values
-        above = bytearray(size)
-        for match in _RUN.finditer(self.values):
-            a, b = match.span()
-            lo, hi = self.ends[a - 1] if a else 0, self.ends[b - 1]
-            above[lo:hi] = b"\1" * (hi - lo)
-        return above
+        return _per_cell(self.values, self.lengths, self.ends)
+
+
+def _per_cell(values, lengths, ends):
+    """``values`` repeated by ``lengths``; most runs are one cell long."""
+    if (ends[-1] if ends else 0) == len(values):
+        return values
+    return bytes(chain.from_iterable(map(repeat, values, lengths)))
 
 
 def _subset_selection(previous, decisions, windows):
@@ -577,8 +581,10 @@ def _dropped(columns, flagged):
     counts = (Counter(), Counter())
     for side in (0, 1):
         ranges = _union((lo, hi) for s, lo, hi, _, _ in flagged if s == side)
-        for lo, hi in ranges:
-            counts[side].update(columns[side][lo:hi])
+        if ranges:
+            counts[side].update(columns[side].cells(ranges))
+            for value in [v for v in counts[side] if v > 100]:
+                del counts[side][value]
     return counts
 
 

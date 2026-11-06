@@ -40,6 +40,15 @@ def test_a_fold_clipped_by_a_training_cutoff_is_never_kept_as_the_whole_day(tmp_
     assert rows.window(0, 86400) == expected
 
 
+def test_a_day_read_to_its_last_row_keeps_its_sidecar_before_the_day_ends(tmp_path):
+    fit, _, path = fitting(tmp_path)
+    expected = fit.digest("synthetic", DAY, (0,)).physical.window(0, 86400)
+    path.with_suffix(".cell").unlink()
+    fit.view._history_until = expected[1][-1]
+    assert fit.physical("synthetic", DAY, (0,)).window(0, 86400) == expected
+    assert path.with_suffix(".cell").exists()
+
+
 def test_physical_rows_reuse_sidecar_without_reading_the_day_file(tmp_path):
     fit, days, path = fitting(tmp_path)
     original = fit.digest("synthetic", DAY, (0,))

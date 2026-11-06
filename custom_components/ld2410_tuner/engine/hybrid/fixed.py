@@ -120,6 +120,10 @@ class FixedScores:
             else self._timed
         )
 
+    def replay(self, patterns):
+        """Replay patterns about to be scored together, so rows are read once for them."""
+        self._timed.get(self.mode).replay(patterns)
+
     def scores(self, patterns, zones, *, raw=False):
         """Per pattern ``{zone id: metrics}`` for every zone in ``zones``."""
         evaluators = self._raw if raw else self._timed

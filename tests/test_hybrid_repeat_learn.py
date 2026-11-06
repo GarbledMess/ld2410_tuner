@@ -80,6 +80,14 @@ def test_repeat_learn_reads_cached_rows_without_compressing_or_validating_them(
     assert all(len(call[2][0]) < physical_index.PHYSICAL_BLOCK_ROWS for call in compiled)
 
 
+def test_repeat_learn_folds_the_open_day_at_most_once_for_each_cutoff_inside_it(
+    learned, monkeypatch
+):
+    folds = _counted(monkeypatch, FittingDays, "_fold")
+    _repeat(learned)
+    assert len(folds) <= 2
+
+
 def test_a_damaged_cached_block_rebuilds_its_day_once(learned, monkeypatch):
     view = recorded_view(learned, ROWS)
     rows = CapturedRowSource(view, "r", tuple(range(18)))

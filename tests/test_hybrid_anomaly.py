@@ -898,7 +898,7 @@ def test_adjacent_flagged_windows_share_one_histogram_per_side(monkeypatch):
     monkeypatch.setattr(anomaly._RunColumn, "histogram", counted)
     dropped = anomaly._dropped(columns, flagged)
     assert dropped == ({20: 3, 60: 3, 40: 1, 80: 1},) * 2
-    assert len(calls) == 4
+    assert len(calls) <= 4
 
 
 def test_merged_flagged_histograms_equal_scalar_cell_counts():

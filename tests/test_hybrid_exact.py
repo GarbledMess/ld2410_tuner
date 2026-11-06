@@ -1105,29 +1105,15 @@ def test_fold_masks_ignores_gate_without_any_contested_detection():
     assert Column.translations == 2
 
 
-def test_replay_hit_gather_does_not_allocate_intermediate_boundary_pairs(monkeypatch):
+def test_replay_hit_gather_needs_no_match_per_run(monkeypatch):
+    from array import array
+
     from tuner_under_test.engine.hybrid import replay
 
-    class Match:
-        pairs = 0
-
-        def __init__(self, first, stop):
-            self.first, self.stop = first, stop
-
-        def span(self):
-            type(self).pairs += 1
-            return self.first, self.stop
-
-        def start(self):
-            return self.first
-
-        def end(self):
-            return self.stop
-
-    monkeypatch.setattr(replay, "re", SimpleNamespace(Match=Match))
-    matches = (Match(a, b) for a, b in ((0, 2), (3, 4)))
-    assert replay._gather_hits(matches, [0, 1, 2, 3], [1, 2, 3, 4]) == [(0, 2), (3, 4)]
-    assert Match.pairs == 0
+    monkeypatch.setattr(replay, "re", None)
+    times, ends = array("d", (0, 1, 2, 3)), array("d", (1, 2, 3, 4))
+    mask = int.from_bytes(bytes((1, 1, 0, 1)), "little")
+    assert replay.hits(mask, times, ends, []) == [(0, 2), (3, 4)]
 
 
 def test_replay_records_index_shared_interval_objects_once(tmp_path):

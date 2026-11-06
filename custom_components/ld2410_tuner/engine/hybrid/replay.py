@@ -17,7 +17,7 @@ import sys
 import tempfile
 from array import array
 from bisect import bisect_right
-from itertools import chain, repeat
+from itertools import chain, compress, repeat
 from operator import le, ne, sub
 
 from ...calibration.event_replay import _timing
@@ -28,7 +28,6 @@ from .scoring import Disjoint
 from .timing import TimingStream
 
 TABLES = tuple(bytes(1 if t < v != MISSING else 0 for v in range(256)) for t in range(101))
-_RUN = re.compile(rb"\x01+")
 _BREAK = re.compile(rb"\x01")
 _CUT = re.compile(rb"\x00")
 _STEP = struct.Struct("<ddIII")
@@ -132,25 +131,30 @@ def segments(times, ends):
 
 
 def hits(mask, times, ends, gaps):
-    """Detected runs as intervals, split at physical gaps."""
+    """Detected runs as intervals, split at physical gaps; ``mask`` has one 0 or 1 byte a row.
+
+    A run starts on a detecting row whose predecessor does not detect or lies across a gap,
+    and stops on one whose successor does not or does. Finding those rows on the whole mask
+    costs no Python step per run, and a real row shape has thousands of runs a chunk.
+    """
     if not mask:
         return []
-    if not gaps:
-        return _gapless_hits(mask, times, ends)
-    data = mask.to_bytes(len(times), "little")
-    cuts = (0, *gaps, len(times))
-    matches = chain.from_iterable(
-        _RUN.finditer(data, first, stop) for first, stop in zip(cuts, cuts[1:], strict=False)
-    )
-    return _gather_hits(matches, times, ends)
+    before, after = mask << 8, mask >> 8
+    if gaps:
+        cut = int.from_bytes(bytes(_gap_flags(gaps, len(times))), "little")
+        before &= ~cut
+        after &= ~(cut >> 8)
+    n = len(times)
+    starts = compress(times, (mask & ~before).to_bytes(n, "little"))
+    stops = compress(ends, (mask & ~after).to_bytes(n, "little"))
+    return list(zip(starts, stops, strict=True))
 
 
-def _gapless_hits(mask, times, ends):
-    return _gather_hits(_RUN.finditer(mask.to_bytes(len(times), "little")), times, ends)
-
-
-def _gather_hits(matches, times, ends):
-    return [(times[match.start()], ends[match.end() - 1]) for match in matches]
+def _gap_flags(gaps, n):
+    flags = bytearray(n)
+    for gap in gaps:
+        flags[gap] = 1
+    return flags
 
 
 def _joinable(close, segment, previous):

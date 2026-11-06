@@ -226,10 +226,21 @@ def _judged(problem, result):
     return replace(problem, zones=zones)
 
 
+def _reported_patterns(problem, pattern, audit):
+    """Every pattern a device report scores, replayed in one pass over the rows."""
+    found = [pattern, _current(problem)]
+    if audit["cutoff"] is not None:
+        device_id = next(iter(problem.radars))
+        earlier = audit["candidates"][audit["selected"]]["thresholds"]
+        found.append(_pattern(problem, {device_id: earlier}))
+    return found
+
+
 def _device_report(problem, result, audit):
     problem = _judged(engine.with_horizon(problem), result)
     pattern = result.thresholds
     with fixed.FixedScores(problem, 3) as scores:
+        scores.replay(_reported_patterns(problem, pattern, audit))
         collected, review = diagnostics_pair(problem, pattern, scores.plan)
         bundle, after = _device_bundle(scores, problem, pattern, audit, review)
         before = scores.scores([_current(problem)], [problem.zones[0]])[0]
