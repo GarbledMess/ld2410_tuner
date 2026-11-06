@@ -264,7 +264,7 @@ def _error_gates(channels, values, thresholds, state):
     ]
 
 
-def _radar(problem, device_id, pattern, truth):
+def _scalar_radar(problem, device_id, pattern, truth):
     channels = problem.radars[device_id].channels
     regular = [True]
     totals = _totals(problem, device_id, truth, regular)
@@ -304,6 +304,14 @@ def _radar(problem, device_id, pattern, truth):
         "review": review.result(),
         "observed_seconds": totals,
     }
+
+
+def _radar(problem, device_id, pattern, truth):
+    import sys
+
+    from .diagnostic_columns import collect
+
+    return collect(problem, device_id, pattern, truth, sys.modules[__name__])
 
 
 def _float_durations(review):
@@ -376,6 +384,10 @@ def diagnostics(problem: FitProblem, pattern: Pattern, plan: ScorePlan) -> dict:
         if len(zones) != 1:
             raise ValueError("Collect diagnostics on one zone at a time for shared radars")
         radars[device_id] = _radar(problem, device_id, pattern, zones[0].truth)
+    return _diagnostic_result(problem, plan, radars)
+
+
+def _diagnostic_result(problem, plan, radars):
     return {
         "radars": radars,
         "evidence_budget": {
@@ -388,3 +400,16 @@ def diagnostics(problem: FitProblem, pattern: Pattern, plan: ScorePlan) -> dict:
             "basis": "six_second_cells" if plan.mode == "cells" else "physical_interval_time",
         },
     }
+
+
+def diagnostics_pair(problem, pattern, plan):
+    """Full-report and human review diagnostics from one physical column pass."""
+    import sys
+
+    from .diagnostic_columns import collect
+
+    device_id = next(iter(problem.radars))
+    full, human = collect(
+        problem, device_id, pattern, problem.zones[0].truth, sys.modules[__name__], human=True
+    )
+    return _diagnostic_result(problem, plan, {device_id: full}), human

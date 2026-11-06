@@ -19,7 +19,9 @@ def _events(truth):
     for i, span in enumerate(truth):
         if span.end <= span.start:
             continue
-        span = replace(span, dependencies=tuple(dict.fromkeys(span.dependencies)))
+        dependencies = span.dependencies
+        if type(dependencies) is not tuple or len(set(dependencies)) != len(dependencies):
+            span = replace(span, dependencies=tuple(dict.fromkeys(dependencies)))
         events.extend(((span.start, i, span), (span.end, i, None)))
     return sorted(events, key=lambda event: (event[0], event[1]))
 

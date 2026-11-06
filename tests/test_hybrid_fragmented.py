@@ -599,7 +599,24 @@ def test_finished_physical_cache_ignores_later_cutoff_and_labels(tmp_path, monke
     assert len(calls) == before
 
 
-def test_native_cells_match_original_without_span_allocations(tmp_path, monkeypatch):
+def _legacy_intervals(source, reader, owner, start, end, densities, digest):
+    """The per-cell collector the columnar interval pass replaced."""
+    from hashlib import sha256
+
+    from tuner_under_test.calibration import event_quality as eq
+    from tuner_under_test.const import HISTORY_KEYS
+    from tuner_under_test.engine.hybrid import quality
+
+    physical = quality._physical(source, start, end)
+    cells = eq._cells(physical, reader, owner, start, end, start, end)
+    observed = eq._observed(cells, densities, sha256(), integer_values=True)
+    positions = tuple(HISTORY_KEYS.index(key) for key in densities.keys)
+    return eq._usable_intervals(observed, positions)
+
+
+def test_native_intervals_match_original_without_span_allocations(tmp_path, monkeypatch):
+    from hashlib import sha256
+
     from tuner_under_test.calibration import event_quality as eq
     from tuner_under_test.engine.hybrid import quality
     from tuner_under_test.history.fit_rows import CapturedRowSource
@@ -611,7 +628,12 @@ def test_native_cells_match_original_without_span_allocations(tmp_path, monkeypa
         ([0.0, 3.125, 12, 19.5, 30], ["present", None, "unknown", "not_present", "present"])
     )
     bounds = (1.0, 35.5)
-    expected = list(eq._cells(quality._physical(source, *bounds), reader, ("r",), *bounds, *bounds))
+    keys = ["g0_move"]
+    runs = ((1.0, 20.0, "present", 18, 1), (20.0, 35.5, "not_present", 18, 2))
+    legacy = quality._Densities(keys)
+    intervals = _legacy_intervals(source, reader, ("r",), *bounds, legacy, None)
+    expected = eq._interval_evidence(intervals, runs, ("r",), keys)
+    legacy.finish()
     original, calls = quality.spans.Span, []
 
     def counted(*args):
@@ -619,7 +641,12 @@ def test_native_cells_match_original_without_span_allocations(tmp_path, monkeypa
         return original(*args)
 
     monkeypatch.setattr(quality.spans, "Span", counted)
-    assert wire(list(quality._native_cells(source, reader, ("r",), *bounds))) == wire(expected)
+    found = quality._Densities(keys)
+    intervals = quality._native_intervals(source, reader, ("r",), *bounds, found, sha256())
+    assert wire(eq._interval_evidence(intervals, runs, ("r",), keys)) == wire(expected)
+    found.finish()
+    assert found.sums == legacy.sums
+    assert found.counts == legacy.counts
     assert calls == []
 
 
@@ -685,7 +712,6 @@ def test_source_interval_bytes_match_seeded_scalar_oracle(epoch):
 
 def test_quality_thresholds_and_full_report_bytes_match_original_collectors(tmp_path, monkeypatch):
     from test_hybrid_facade import device_fit
-    from tuner_under_test.calibration import event_quality as eq
     from tuner_under_test.engine.hybrid import adapters, digest, quality
     from tuner_under_test.history import dayfile
     from tuner_under_test.worker import history
@@ -706,24 +732,26 @@ def test_quality_thresholds_and_full_report_bytes_match_original_collectors(tmp_
 
     def recorded(*args, **kwargs):
         result = original(*args, **kwargs)
-        contexts.append(wire(result))
+        # The fingerprint now hashes columns rather than each cell's text; it is compared
+        # only for equality with itself, so everything else must match the old collector.
+        contexts.append(wire(replace(result, fingerprint="")))
         return result
 
+    def report():
+        found = json.loads(wire(device_fit(view, weight=0.5)))
+        policy = found["adaptive_policy"]
+        for model in (policy["model"], policy["training_model"]):
+            assert len(model.pop("fingerprint")) == 64
+        return found
+
     monkeypatch.setattr(adapters, "collect_quality", recorded)
-    current = wire(device_fit(view, weight=0.5))
+    current = report()
     current_contexts = list(contexts)
     assert current_contexts
     contexts.clear()
     monkeypatch.setattr(digest, "_fold_rows", legacy_fold_rows)
-    monkeypatch.setattr(eq, "_source_evidence", legacy_source_evidence)
-    monkeypatch.setattr(
-        quality,
-        "_native_cells",
-        lambda source, reader, owner, start, end: eq._cells(
-            quality._physical(source, start, end), reader, owner, start, end, start, end
-        ),
-    )
-    assert wire(device_fit(view, weight=0.5)) == current
+    monkeypatch.setattr(quality, "_native_intervals", _legacy_intervals)
+    assert report() == current
     assert contexts == current_contexts
 
 
@@ -754,15 +782,25 @@ def test_source_interval_accumulation_uses_bulk_arithmetic():
     assert len(steps) < 100
 
 
-def test_native_cells_reuse_repeated_quantized_vectors(tmp_path):
+def test_labelled_rows_reuse_repeated_quantized_vectors(tmp_path, monkeypatch):
+    from hashlib import sha256
+
     from tuner_under_test.engine.hybrid import quality
     from tuner_under_test.history.fit_rows import CapturedRowSource
     from tuner_under_test.history.label_lookup import index_reader
 
     view = worker_view(tmp_path, "r", [10, 20, 30] * 1000)
     source = CapturedRowSource(view, "r", (0,))
-    reader = index_reader(([], []))
-    cells = list(quality._native_cells(source, reader, ("r",), 0, 18000))
+    reader = index_reader(([0.0, 18000.0], ["present", None]))
+    cells, original = [], quality._Densities.add
+
+    def counted(self, cell):
+        cells.append(cell)
+        return original(self, cell)
+
+    monkeypatch.setattr(quality._Densities, "add", counted)
+    found = quality._Densities(["g0_move"])
+    list(quality._native_intervals(source, reader, ("r",), 0, 18000, found, sha256()))
     assert len(cells) == 3000
     assert {cell[2][0] for cell in cells} == {10, 20, 30}
     assert len({id(cell[2]) for cell in cells}) == 3
@@ -795,3 +833,79 @@ def test_bulk_fold_excludes_zero_and_reversed_duration_rows():
     result = digest.fold_day([source], 0, 6, (0,))
     assert result.channels[0] == bytes([30])
     assert result.cov == b"\x01"
+
+
+def test_changing_fractional_diagnostics_review_work_follows_decisions(tmp_path, monkeypatch):
+    from array import array
+
+    from tuner_under_test.engine.hybrid.types import RowBlock
+
+    class ChangingRows:
+        def blocks(self, lo, hi):
+            times = [i * 6.0 for i in range(14400)]
+            selected = [i for i, t in enumerate(times) if t < hi and t + 6 > lo]
+            yield RowBlock(
+                array("d", (max(lo, times[i]) for i in selected)),
+                array("d", (min(hi, times[i] + 6) for i in selected)),
+                tuple(
+                    bytes((50 if i // 58 % 2 == 0 else 5) + (i * (c + 3)) % 19 for i in selected)
+                    for c in range(18)
+                ),
+            )
+
+    p = problem()
+    truth = tuple(
+        TruthSpan(
+            i * 348 + 0.125,
+            (i + 1) * 348 + 0.125,
+            "present" if i % 2 == 0 else "not_present",
+            "human" if i % 11 == 0 else "entity",
+            0.9,
+            str(i),
+            (),
+        )
+        for i in range(248)
+    )
+    p = replace(
+        p,
+        end=86400,
+        rows={"r": ChangingRows()},
+        radars={"r": replace(p.radars["r"], channels=tuple(range(18)))},
+        zones=(replace(p.zones[0], truth=truth),),
+    )
+    pattern = {"r": dict.fromkeys(range(18), 40)}
+    plan = ScorePlan("exact", (), 14400, 2)
+    with monkeypatch.context() as old:
+        old.setattr(diagnostics, "_radar", reference_radar)
+        expected = wire(diagnostics.diagnostics(p, pattern, plan))
+    calls, original = [], diagnostics._Review.add
+
+    def counted(self, *args):
+        calls.append(1)
+        return original(self, *args)
+
+    monkeypatch.setattr(diagnostics._Review, "add", counted)
+    assert wire(diagnostics.diagnostics(p, pattern, plan)) == expected
+    assert len(calls) < 4 * len(truth)
+
+
+def test_full_and_human_diagnostics_share_one_physical_pass(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import fixed
+
+    p = fragmented_problem(tmp_path)
+    pattern, plan = {"r": {0: 40}}, ScorePlan("exact", (), 248, 2)
+    full = diagnostics.diagnostics(p, pattern, plan)
+    human_problem = replace(p, zones=(fixed.source(p.zones[0], "human"),))
+    human = diagnostics.diagnostics(human_problem, pattern, plan)["radars"]["r"]
+    calls, original = [], p.rows["r"].blocks
+
+    def counted(*args):
+        calls.append(1)
+        yield from original(*args)
+
+    monkeypatch.setattr(p.rows["r"], "blocks", counted)
+    collected, review = diagnostics.diagnostics_pair(p, pattern, plan)
+    assert wire(collected) == wire(full)
+    assert wire(review["review"]) == wire(human["review"])
+    assert review["recent_cutoffs"] == human["recent_cutoffs"]
+    assert calls == [1]
