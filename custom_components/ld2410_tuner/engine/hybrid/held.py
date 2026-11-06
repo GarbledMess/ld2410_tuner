@@ -92,12 +92,12 @@ def held_score(metrics):
     return score
 
 
-def score_candidates(problem, cutoff, candidates, named):
+def score_candidates(problem, cutoff, candidates, named, session=None):
     """``(reports, empties)``: each policy's thresholds, held score and empty harms."""
     problem = engine.with_horizon(problem)
     held, empty = _held_zones(problem, cutoff)
     patterns = _unique(candidates.values())
-    with fixed.FixedScores(problem, len(patterns)) as scores:
+    with fixed.FixedScores(problem, len(patterns), session=session) as scores:
         found = scores.scores(patterns, [*held, *empty])
     reports, empties = {}, []
     for policy, pattern in candidates.items():

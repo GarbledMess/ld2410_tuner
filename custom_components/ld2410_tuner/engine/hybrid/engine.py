@@ -97,16 +97,16 @@ class FitSession:
 
     def __exit__(self, *_):
         try:
-            self._release()
+            if self._evaluators is not None:
+                self._evaluators.close()
+            self._release_store()
         finally:
             self._temp.cleanup()
 
-    def _release(self):
-        if self._evaluators is not None:
-            self._evaluators.close()
+    def _release_store(self):
         if self._store is not None:
             self._store.close()
-        self._store, self._evaluators = None, None
+        self._store = None
 
     def training(self, problem):
         """Training rows of ``problem``, compiled unless the last fit's rows are the same."""
@@ -115,7 +115,7 @@ class FitSession:
             self._store.__dict__.clear()
             self._store.__dict__.update(self._clean)
             return self._store
-        self._release()
+        self._release_store()
         self._store = TrainingStore(self.directory)
         collect_training(problem, self._store)
         self._compiled, self._clean = compiled, dict(self._store.__dict__)
@@ -125,12 +125,24 @@ class FitSession:
         """Evaluators of ``plan`` for ``problem``, with records already made over its regions."""
         found = self._evaluators
         if found is not None and found.plan.regions == plan.regions:
-            found.adopt(problem, plan)
-            return found
+            if _detects_alike(found.problem, problem):
+                found.adopt(problem, plan)
+                return found
         if found is not None:
             found.close()
         self._evaluators = Evaluators(problem, plan, directory=self.directory)
         return self._evaluators
+
+
+def _detects_alike(one, other):
+    """Whether replay records of ``one`` are true of ``other``: same rows, settings and support."""
+    if one.radars != other.radars:
+        return False
+    models, others = (item.policy.quality.get("models", {}) for item in (one, other))
+    return all(
+        one.rows.get(rid) is other.rows.get(rid) and models.get(rid) is others.get(rid)
+        for rid in one.radars
+    )
 
 
 def _channels(problem):
