@@ -80,13 +80,70 @@ def prepared(problem):
     return replace(problem, days=LabelDays(problem.days, regions))
 
 
+class FitSession:
+    """What fits of one problem share when only their evidence policy differs.
+
+    A policy changes what a label costs, never which rows a label covers or what a threshold
+    detects: compiled training rows and replay records stay true across policies. Everything a
+    search leaves on the training store is dropped between fits, policy-keyed or not.
+    """
+
+    def __enter__(self):
+        self._temp = tempfile.TemporaryDirectory(prefix="hybrid-fit-")
+        self.directory = Path(self._temp.name)
+        self._store, self._compiled, self._clean = None, None, None
+        self._evaluators = None
+        return self
+
+    def __exit__(self, *_):
+        try:
+            self._release()
+        finally:
+            self._temp.cleanup()
+
+    def _release(self):
+        if self._evaluators is not None:
+            self._evaluators.close()
+        if self._store is not None:
+            self._store.close()
+        self._store, self._evaluators = None, None
+
+    def training(self, problem):
+        """Training rows of ``problem``, compiled unless the last fit's rows are the same."""
+        compiled = problem.start, problem.end, problem.zones, id(problem.rows), _channels(problem)
+        if compiled == self._compiled:
+            self._store.__dict__.clear()
+            self._store.__dict__.update(self._clean)
+            return self._store
+        self._release()
+        self._store = TrainingStore(self.directory)
+        collect_training(problem, self._store)
+        self._compiled, self._clean = compiled, dict(self._store.__dict__)
+        return self._store
+
+    def evaluators(self, problem, plan):
+        """Evaluators of ``plan`` for ``problem``, with records already made over its regions."""
+        found = self._evaluators
+        if found is not None and found.plan.regions == plan.regions:
+            found.adopt(problem, plan)
+            return found
+        if found is not None:
+            found.close()
+        self._evaluators = Evaluators(problem, plan, directory=self.directory)
+        return self._evaluators
+
+
+def _channels(problem):
+    return tuple((rid, radar.channels) for rid, radar in sorted(problem.radars.items()))
+
+
 @dataclass
 class FitState:
     """Everything a later masked re-score reuses: candidates, plan and records."""
 
     problem: object
     training: object
-    directory: Path
+    session: FitSession
     start: dict
     engine: object = None
     patterns: list = field(default_factory=list)
@@ -169,7 +226,7 @@ def first_fit(state):
     """Search, plan once for every compared pattern, score, and select."""
     state.patterns = search_candidates(state)
     state.plan = plan_scores(state.problem, len(state.patterns), quiet=True)
-    state.evaluators = Evaluators(state.problem, state.plan, directory=state.directory)
+    state.evaluators = state.session.evaluators(state.problem, state.plan)
     indexes, state.scores, state.quiet = score(state, state.patterns)
     state.compared = [state.patterns[i] for i in indexes]
     totals = _totals(state.scores[0])
@@ -361,26 +418,27 @@ def audited(state, first, unshifted):
     return first
 
 
-def fit(problem, *, audit=True):
+def fit(problem, *, audit=True, session=None):
     """Fit one shared threshold vector per radar for every zone of ``problem``.
 
     With ``audit`` (the production default) suspect label stretches are masked
     and fit 1's candidates re-scored; the masked choice replaces fit 1 only when
     its selection gain on the retained labels exceeds their evidence band.
+    A ``session`` lets fits of the same rows under another policy reuse their work.
     """
     problem = prepared(problem)
-    with tempfile.TemporaryDirectory(prefix="hybrid-fit-") as directory:
-        directory = Path(directory)
-        with TrainingStore(directory) as training:
-            collect_training(problem, training)
-            state = FitState(problem, training, directory, normalize_pattern(problem.radars))
-            try:
-                pick, info, missing = first_fit(state)
-                if missing:
-                    return result(state, pick, info, missing)
-                unshifted = state.compared[pick]
-                first = result(state, presence_shift(state, pick, info), info, missing)
-                return audited(state, first, unshifted) if audit else first
-            finally:
-                if state.evaluators is not None:
-                    state.evaluators.close()
+    if session is not None:
+        return _fit(problem, audit, session)
+    with FitSession() as own:
+        return _fit(problem, audit, own)
+
+
+def _fit(problem, audit, session):
+    training = session.training(problem)
+    state = FitState(problem, training, session, normalize_pattern(problem.radars))
+    pick, info, missing = first_fit(state)
+    if missing:
+        return result(state, pick, info, missing)
+    unshifted = state.compared[pick]
+    first = result(state, presence_shift(state, pick, info), info, missing)
+    return audited(state, first, unshifted) if audit else first

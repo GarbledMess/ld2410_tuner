@@ -236,7 +236,7 @@ def store(path, root, identity, channels, digest):
                 size = stream.tell()
             if size <= CELL_CACHE_DISK_BYTES and _identity(path, identity):
                 os.replace(temporary, path.with_suffix(".cell"))
-            summary_cache.prune(root)
+                summary_cache.prune_after(root, path.with_suffix(".cell"))
     except (OSError, ValueError, struct.error):
         pass
     finally:

@@ -258,6 +258,12 @@ class Evaluators:
         self.problem, self.plan, self.directory = problem, plan, directory
         self._made = {}
 
+    def adopt(self, problem, plan):
+        """Score ``problem`` from now on, keeping the records of the same regions and models."""
+        self.problem, self.plan = problem, plan
+        for evaluator in self._made.values():
+            evaluator.problem = problem
+
     def get(self, mode):
         if mode not in self._made:
             kind = CellEvaluator if mode == "cells" else Evaluator
