@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 import test_tuner  # noqa: F401
 from room_speed_fixture import build, request
-from test_evidence_quality import view
+from small_views import view
 from tuner_under_test.calibration import event_quality
 from tuner_under_test.const import HISTORY_KEYS
 from tuner_under_test.engine.hybrid import quality
