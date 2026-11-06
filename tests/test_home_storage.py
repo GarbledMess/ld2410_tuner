@@ -1,12 +1,15 @@
 """Trim and day-long retention cleanup on the real-shaped home: batches, and what must survive."""
 
+import asyncio
 import datetime
 import json
+from unittest.mock import patch
 
 import pytest
 import real_shape
 from real_home import WebsocketError
 from real_shape import DAY, RETAINED_DAYS, TODAY
+from tuner_under_test.history import recording
 
 RADAR = "office_1"
 
@@ -33,13 +36,17 @@ async def _rows_within(home, start, end):
     return found
 
 
-async def _clean_until_done(home):
-    """The hourly cleanup's loop, without its minute's rest between durable batches."""
-    runtime, batches = home.runtime, 1
-    while runtime.data.get("maintenance_progress"):
-        await runtime.async_clean_history()
-        batches += 1
-    return batches
+async def _cleanup_comes_due(home):
+    """The startup cleanup's turn comes, without its minute's rest between durable batches."""
+    real_sleep = asyncio.sleep
+
+    async def no_rest(seconds):
+        await real_sleep(0 if seconds == 60 else seconds)
+
+    home.hass.maintenance_due.set()
+    with patch.object(recording.asyncio, "sleep", no_rest):
+        await home.runtime._cleanup_task
+    return sum(request.get("operation") == "maintenance" for request in home.transport.requests)
 
 
 def _only_some_history(home, days):
@@ -79,8 +86,7 @@ def test_retention_cleanup_works_through_the_days_in_batches_and_keeps_human_lab
         assert labelled_before > 100
         automatic_label_count = len(runtime.data["room_labels"]["area:office"])
 
-        await runtime.async_clean_history()
-        batches = await _clean_until_done(home)
+        batches = await _cleanup_comes_due(home)
         assert batches > 1, "A day-long cleanup must give the worker back between batches"
         assert not runtime.data.get("maintenance_progress")
 
@@ -117,10 +123,10 @@ def test_trim_to_a_size_removes_unguessed_time_oldest_first_and_saves_human_labe
         assert await home.hass.async_add_executor_job(runtime._days.size) <= target * 1024 * 1024
         assert await _rows_within(home, label["start"], label["end"]) == labelled_before
         # What went first was the oldest.
-        assert (await _rows(home, 1)) >= (await _rows(home, 3))
-        assert (await _rows(home, 3)) < real_shape.rows_on(RADAR, 3)
+        assert (await _rows(home, 1)) >= (await _rows(home, 12))
+        assert (await _rows(home, 12)) < real_shape.rows_on(RADAR, 12)
 
-    play(scenario, prepare=lambda home: _only_some_history(home, range(1, 4)))
+    play(scenario, prepare=lambda home: _only_some_history(home, range(1, 13)))
 
 
 def test_an_impossible_storage_setting_is_refused_and_changes_nothing(play):

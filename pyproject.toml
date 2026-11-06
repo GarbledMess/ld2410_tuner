@@ -11,6 +11,7 @@ addopts = "-n 6"
 
 [tool.coverage.run]
 source = ["custom_components/ld2410_tuner", "tools"]
+core = "sysmon"  # Far cheaper than tracing a home's worth of Learn.
 
 [tool.coverage.report]
 fail_under = 85
