@@ -67,11 +67,11 @@ BUGS = (
         'DISPLAY = frozenset({"recording_rows"})',
     ),
     Bug(
-        "flush-in-foreground-lane",
-        "Routine day-log flushes queue as interactive work ahead of what the user asked for",
-        "runtime/coordinator.py",
-        "    @priority.background\n    async def _delayed_flush(self) -> None:",
-        "    async def _delayed_flush(self) -> None:",
+        "flush-in-fit-lane",
+        "Saving recordings queues behind a long fit instead of using its own lane",
+        "worker/transactions.py",
+        'return bridge._storage_service(runtime) if operation == "flush" else bridge._service(runtime)',
+        "return bridge._service(runtime)",
     ),
     Bug(
         "threshold-outside-radar-range",
@@ -187,8 +187,9 @@ BUGS = (
         "Editing a saved label does not invalidate what was learned from it",
         "history/labels.py",
         '    device["label_revision"] = device.get("label_revision", 0) + 1\n'
+        "    _human_edit(device)\n"
         "    runtime._compact_history_labels(device)",
-        "    runtime._compact_history_labels(device)",
+        "    _human_edit(device)\n    runtime._compact_history_labels(device)",
     ),
     Bug(
         "recording-off-ignored",

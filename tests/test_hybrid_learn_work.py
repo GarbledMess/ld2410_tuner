@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 import test_tuner  # noqa: F401
 from hybrid_real_shape import recorded
+from test_hybrid_evidence import truth
 from test_hybrid_fragmented import fragmented_problem, reference_radar, wire
-from test_hybrid_search_columns import problem as search_problem
-from test_hybrid_search_columns import truth
+from test_hybrid_search import problem as search_problem
 from tuner_under_test.calibration import event_quality
 from tuner_under_test.const import HISTORY_KEYS
 from tuner_under_test.engine.hybrid import (
