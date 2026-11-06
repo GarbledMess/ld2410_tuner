@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Overnight learning skips a radar or learning set only when nothing it learns from has
+  changed since its last good Learn, and shows "Nothing new" for it. A restart during the
+  night continues the remaining Learns about five minutes later the same day, the ones with
+  changes you made run first, and a Learn you start goes ahead of the rest of the night.
+
 - Learn together and overnight room fits now use retained shared recordings with
   the device learner's evidence limits, including human labels older than a week.
   Automatic evidence remains limited to 28 days and human evidence to the newest

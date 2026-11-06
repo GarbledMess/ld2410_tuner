@@ -109,6 +109,16 @@ def history_mark(runtime, device_id):
     return None if days is None else days.mark(device_id)
 
 
+def evidence_mark(runtime, device_id):
+    """When ``device_id`` was last observed and its newest recorded day. Unlike ``history_mark``
+    it survives a restart (revisions start over), so it can be stored to compare overnight."""
+    days = getattr(runtime, "_days", None)
+    if days is None:
+        return None
+    dates = days.days(device_id)
+    return days.seen(device_id), dates[-1].isoformat() if dates else None
+
+
 def has_history(runtime, device_id):
     """Whether anything is recorded for ``device_id``."""
     days = getattr(runtime, "_days", None)

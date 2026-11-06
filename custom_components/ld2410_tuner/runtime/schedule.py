@@ -12,11 +12,17 @@ from homeassistant.util import dt as dt_util
 
 from ..calibration import automatic
 from ..calibration.service import LearningEvidenceChanged
+from ..history import storage
 from ..presence import rebuilds
 from ..worker import priority
+from . import overnight
 
 _LOGGER = logging.getLogger(__name__)
 _DISPATCH_GRACE = timedelta(minutes=15)
+# After a restart the radars need time to come back, or the next Learn only records that.
+_RESUME_SETTLE = timedelta(minutes=5)
+# An item is started again once after a restart; one that keeps dying must not loop.
+_MAX_STARTS = 2
 
 
 def settings(runtime):
@@ -58,8 +64,10 @@ def tick(runtime, now):
     """Once per local day at the schedule time: the learning pass (which refreshes stale
     references first) when enabled, otherwise a references-only refresh."""
     config = settings(runtime)
+    if config["running"] or _resume(runtime, config, now):
+        return
     day = _due_day(config, now)
-    if day is None or config["running"]:
+    if day is None:
         return
     if config["enabled"]:
         _start_learning(runtime, config, day)
@@ -67,12 +75,36 @@ def tick(runtime, now):
         _refresh_references(runtime, day)
 
 
-def _due_day(config, now):
-    """Learning starts near its scheduled time, never as an afternoon catch-up."""
+def _resume(runtime, config, now):
+    """Continue a night a restart cut short, the same local day; True while one is held.
+    ``last_day`` is already claimed, so this is the only way that day's items run again."""
+    saved = runtime.data.get("learning_schedule", {})
+    queue = saved.get("queue")
+    if not queue:
+        return False
+    if not config["enabled"] or queue["day"] != _local(config, now).date().isoformat():
+        saved.pop("queue")
+        runtime._nightly_resume_at = None
+        runtime._schedule_save()
+        return False
+    if runtime._nightly_resume_at is None:
+        runtime._nightly_resume_at = now + _RESUME_SETTLE
+    if now >= runtime._nightly_resume_at:
+        runtime._nightly_resume_at = None
+        _launch(runtime, queue["day"])
+    return True
+
+
+def _local(config, now):
     zone = dt_util.get_time_zone(config["timezone"])
     if zone is None:
         raise ZoneInfoNotFoundError(f"No time zone found with key {config['timezone']}")
-    local = now.astimezone(zone)
+    return now.astimezone(zone)
+
+
+def _due_day(config, now):
+    """Learning starts near its scheduled time, never as an afternoon catch-up."""
+    local = _local(config, now)
     if not config["enabled"]:
         # Reference maintenance remains a once-daily refresh after missed schedules.
         return local.date().isoformat() if local.strftime("%H:%M") >= config["time"] else None
@@ -108,6 +140,10 @@ def _start_learning(runtime, config, day):
     if config["last_day"] == day:
         return
     runtime.data.setdefault("learning_schedule", {})["last_day"] = day
+    _launch(runtime, day)
+
+
+def _launch(runtime, day):
     runtime._nightly_task = runtime.hass.async_create_background_task(
         _run(runtime, day), "ld2410_tuner overnight learning"
     )
@@ -126,23 +162,118 @@ def _refresh_references(runtime, day):
 
 @priority.background
 async def _run(runtime, day):
-    # Persist the claim before starting: restarts and repeated DST hours do not rerun it.
-    await runtime.async_save()
-    # Out-of-date references rebuild here, before learning, rather than at each edit.
-    await rebuilds.refresh(runtime, reason="overnight")
+    saved = runtime.data.setdefault("learning_schedule", {})
     # Learning yields to discovery/removal; retain this run's starting membership.
-    devices = list(runtime.data["devices"].items())
-    for device_id, device, members in _plan(runtime, devices):
-        if not settings(runtime)["enabled"]:
-            break
-        await _learn_device(runtime, device_id, device, day)
-        _share_attempt(runtime, device["nightly_learning"], members)
-    await runtime.async_save()
+    plan = _queued(runtime, saved, list(runtime.data["devices"].items()), day)
+    try:
+        # Persist the claim and queue first: restarts and repeated DST hours do not rerun it.
+        await runtime.async_save()
+        # Out-of-date references rebuild here, before learning, rather than at each edit.
+        await rebuilds.refresh(runtime, reason="overnight")
+        for item in plan:
+            if not settings(runtime)["enabled"]:
+                break
+            await _advance(runtime, saved["queue"], item, day)
+        saved.pop("queue", None)
+        await runtime.async_save()
+    except Exception:
+        # Only a shutdown leaves a queue: a pass that failed must not restart every minute.
+        saved.pop("queue", None)
+        raise
+
+
+def _queued(runtime, saved, devices, day):
+    """Tonight's items in order: what is left of a saved queue, otherwise a new one."""
+    plan = _plan(runtime, devices)
+    queue = saved.get("queue")
+    if queue and queue.get("day") == day:
+        return _still_queued(plan, queue["items"])
+    plan.sort(key=lambda item: overnight.priority(item, overnight.read(runtime, item)))
+    saved["queue"] = {"day": day, "items": [item.lead for item in plan], "started": {}}
+    return plan
+
+
+def _still_queued(plan, leads):
+    """Membership may have changed over the restart: a set stays queued through any member."""
+    position = {key: index for index, key in enumerate(leads)}
+    found = {}
+    for item in plan:
+        places = [position[key] for key in (item.lead, *item.members) if key in position]
+        if places:
+            found[min(places)] = item
+    return [found[place] for place in sorted(found)]
+
+
+async def _advance(runtime, queue, item, day):
+    await _yield_to_user_learning(runtime)
+    before = overnight.read(runtime, item)
+    if overnight.unchanged(runtime, item, before):
+        _record_unchanged(runtime, item, day)
+    elif _claim(queue, item):
+        await _checkpoint(runtime)  # The start counts even if this Learn stops Home Assistant.
+        await _learn_device(runtime, item.lead, item.device, day)
+        _share_attempt(runtime, item.device["nightly_learning"], item.members)
+        overnight.remember(runtime, item, before, day)
+    queue["items"] = [key for key in queue["items"] if key not in (item.lead, *item.members)]
+    await _checkpoint(runtime)
+
+
+async def _yield_to_user_learning(runtime):
+    """The worker already prefers a user's fit, but one still preparing has not queued yet."""
+    while waiting := _user_learning(runtime):
+        await asyncio.wait(waiting)
+
+
+def _user_learning(runtime):
+    devices = runtime.data["devices"]
+    return {
+        task
+        for key, task in runtime._learning_jobs.items()
+        if not task.done()
+        and "user" in devices.get(key, {}).get("learning_job", {}).get("sources", ())
+    }
+
+
+def _claim(queue, item):
+    starts = queue["started"].get(item.lead, 0)
+    if starts >= _MAX_STARTS:
+        _LOGGER.warning("Scheduled learning gave up on %s after repeated restarts", item.lead)
+        return False
+    queue["started"][item.lead] = starts + 1
+    return True
+
+
+async def _checkpoint(runtime):
+    """Between items, without the cleanup a full save may run; a failure costs at most a repeat."""
+    try:
+        await storage.save_directly(runtime)
+    except Exception as error:
+        _LOGGER.warning("Scheduled learning could not save its progress: %s", error)
+
+
+def _record_unchanged(runtime, item, day):
+    """Nothing to learn from: keep the result and say so; nothing is applied."""
+    stamp = datetime.now(UTC).timestamp()
+    learned_day = item.device[overnight.BASELINE]["day"]
+    for key in item.members or [item.lead]:
+        device = runtime.data["devices"][key]
+        kept = device["nightly_learning"]
+        device["nightly_learning"] = {
+            "day": day,
+            "status": "unchanged",
+            "started_at": stamp,
+            "finished_at": stamp,
+            "learned_day": learned_day,
+            "result_id": kept["result_id"],
+            "timing": kept.get("timing"),
+            "assessment": kept.get("assessment"),
+        }
+    runtime._schedule_save()
 
 
 def _plan(runtime, devices):
-    """``(device_id, device, members)``: each learning set once, through its first eligible
-    member, then every radar in no learning set. ``members`` share the set's outcome."""
+    """Each learning set once, through its first eligible member, then every radar in no
+    learning set. An item's ``members`` share the set's outcome."""
     from ..rooms import groups
 
     eligible = {
@@ -161,8 +292,13 @@ def _plan(runtime, devices):
         members = [key for key in item["device_ids"] if key in eligible]
         covered.update(item["device_ids"])
         if members:
-            plan.append((members[0], eligible[members[0]], members))
-    plan.extend((key, device, []) for key, device in eligible.items() if key not in covered)
+            lead = members[0]
+            plan.append(overnight.Item(lead, eligible[lead], members, item["group_ids"]))
+    plan.extend(
+        overnight.Item(key, device, [], [])
+        for key, device in eligible.items()
+        if key not in covered
+    )
     return plan
 
 
