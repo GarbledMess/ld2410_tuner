@@ -10,10 +10,12 @@ Missing aggregates are errors, never fabricated reports of zero error.
 
 from copy import deepcopy
 from dataclasses import replace
+from functools import lru_cache
+from itertools import compress
 
 from ...calibration.constants import METHOD, MIN_RECALL, ROOM_METHOD, ROOM_SCORER_VERSION
 from ...const import HISTORY_KEYS
-from .diagnostics import diagnostics
+from .diagnostics import SampleSlots, diagnostics
 from .types import FitProblem, FitResult
 
 TARGETS = {
@@ -210,14 +212,41 @@ def _only_gate(energies, thresholds, key):
 
 
 def _exclusive_rows(diag, key, threshold):
-    for row in diag["samples"]["present"]:
-        energies = row["energies"]
-        if energies.get(key, 0) > threshold and _only_gate(energies, diag["thresholds"], key):
-            yield energies[key]
+    samples = diag["samples"]["present"]
+    if isinstance(samples, SampleSlots):
+        return _exclusive_slots(samples, key, threshold, diag["thresholds"])
+    return [
+        row["energies"][key]
+        for row in samples
+        if row["energies"].get(key, 0) > threshold
+        and _only_gate(row["energies"], diag["thresholds"], key)
+    ]
+
+
+def _exclusive_slots(samples, key, threshold, thresholds):
+    """The readings of ``key``'s rows that it alone detects, read from whole columns."""
+    columns = {HISTORY_KEYS[c]: v for c, v in zip(samples.channels, samples.columns, strict=True)}
+    if key not in columns or key not in thresholds:
+        return b""
+    others = 0
+    for gate, limit in thresholds.items():
+        if gate != key and gate in columns:
+            others |= _above(columns[gate], limit)
+    keep = _above(columns[key], threshold) & _above(columns[key], thresholds[key]) & ~others
+    return bytes(compress(columns[key], keep.to_bytes(len(samples), "little")))
+
+
+def _above(column, threshold):
+    return int.from_bytes(column.translate(_above_table(threshold)), "little")
+
+
+@lru_cache(maxsize=128)
+def _above_table(threshold):
+    return bytes(value > threshold for value in range(256))
 
 
 def _exclusive(diag, key, threshold):
-    return sum(1 for _ in _exclusive_rows(diag, key, threshold))
+    return len(_exclusive_rows(diag, key, threshold))
 
 
 def _weakest(diag, key, threshold):

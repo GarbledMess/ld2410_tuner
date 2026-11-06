@@ -14,6 +14,7 @@ from .evidence import _labels
 _CHANGED = re.compile(rb"[^\x00]+")
 _COVERED = bytes(value == 1 for value in range(256))
 RAW_ENERGY_BYTES = 8 * 1024**2
+_LABEL_BATCH = 256
 
 
 def _schema(store):
@@ -291,35 +292,42 @@ def _compile_single(problem, db, zone, rid, shard_cells):
             "INSERT INTO search_single VALUES (?,?,?,?,?)",
             (zone.group_id, rid, lo, hi, _single_start(db, rid, lo, lookback)),
         )
+    db.execute("""CREATE TEMP TABLE IF NOT EXISTS search_windows
+        (state TEXT,source TEXT,parent TEXT,confidence REAL,lo REAL,hi REAL,earliest REAL)""")
+    pending = []
     for a, b, span in _labels(zone.truth):
         lo = cell_ceil(max(a, problem.start), CELL_SECONDS) * CELL_SECONDS
         hi = cell_floor(min(b, problem.end), CELL_SECONDS) * CELL_SECONDS
         for start, stop in _windows(lo, hi, shard_cells):
-            _single_label(db, zone.group_id, rid, span, start, stop, lookback)
+            pending.append(_label_window(span, start, stop, lookback))
+        if len(pending) >= _LABEL_BATCH:
+            _single_labels(db, zone.group_id, rid, pending)
+    _single_labels(db, zone.group_id, rid, pending)
 
 
-def _single_label(db, group, rid, span, lo, hi, lookback):
+def _label_window(span, lo, hi, lookback):
+    earliest = nextafter(lo - lookback, float("-inf"))
+    return span.state, span.source, span.episode_id, span.confidence, lo, hi, earliest
+
+
+def _single_labels(db, group, rid, pending):
+    """One statement per batch of label windows, keeping their order and each one's rows in time."""
     pace.rest()
+    db.execute("DELETE FROM search_windows")
+    db.executemany("INSERT INTO search_windows VALUES (?,?,?,?,?,?,?)", pending)
     db.execute(
-        "INSERT INTO search_pure SELECT ?,?,?,?,?,vector,max(t,?),"
-        "CAST((min(stop,?)-max(t,?))/? AS INTEGER) FROM search_raw "
-        "WHERE radar=? AND t>=? AND t<? AND stop>? ORDER BY t",
-        (
-            group,
-            span.state,
-            span.source,
-            span.episode_id,
-            span.confidence,
-            lo,
-            hi,
-            lo,
-            CELL_SECONDS,
-            rid,
-            _single_start(db, rid, lo, lookback),
-            hi,
-            lo,
-        ),
+        """INSERT INTO search_pure
+        SELECT ?1,w.state,w.source,w.parent,w.confidence,r.vector,max(r.t,w.lo),
+               CAST((min(r.stop,w.hi)-max(r.t,w.lo))/?2 AS INTEGER)
+        FROM search_windows w CROSS JOIN search_raw r
+        WHERE r.radar=?3 AND r.t<w.hi AND r.stop>w.lo AND r.t>=coalesce(
+            (SELECT s.t FROM search_raw s
+             WHERE s.radar=?3 AND s.t>=w.earliest AND s.t<=w.lo AND s.stop>w.lo
+             ORDER BY s.t LIMIT 1), w.lo)
+        ORDER BY w.rowid,r.t""",
+        (group, CELL_SECONDS, rid),
     )
+    pending.clear()
 
 
 def _pure_runs(labels, label, group_id, lo, hi, vector, pure):

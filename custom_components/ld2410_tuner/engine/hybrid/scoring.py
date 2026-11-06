@@ -511,7 +511,10 @@ class SliceScorer:
         stats = self._stats.setdefault(state + "/" + source, [0.0] * 4)
         stats[0] += mass * span.confidence
         stats[1] += error * span.confidence
-        triggers = sum(bisect_left(starts, b) - bisect_left(starts, a) for a, b in observed)
+        triggers = 0
+        if starts:
+            for a, b in observed:
+                triggers += bisect_left(starts, b) - bisect_left(starts, a)
         self._episode(span, slot, source, mass, scored, triggers)
         if state == "present":
             self._longest.observe(observed, physical)
@@ -594,8 +597,11 @@ class SliceScorer:
             stats[2] += confidence
             stats[3] += confidence * bad
             self._count(counts, state, mass, seen, triggers, bad)
-            own = by_source.setdefault((state, source), dict.fromkeys(counts, 0))
-            self._count(own, state, mass, seen, triggers, bad)
+            own = by_source.setdefault((state, source), dict.fromkeys(GUARD_FIELDS, 0))
+            if state == "present":
+                own["mostly_missed_episodes"] += bad
+            else:
+                own["empty_periods_mostly_false_active"] += seen > 0.5 * mass
         counts["guard_counts"] = _guard_counts(self._stats, self.policy, by_source)
         return counts
 

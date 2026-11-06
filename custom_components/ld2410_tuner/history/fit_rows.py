@@ -40,15 +40,26 @@ class CapturedRowSource:
 
     def blocks(self, lo, hi):
         for date, start, end in self._windows(lo, hi):
-            cached = self._cached_columns(date, start, end)
-            if cached is not None:
-                yield from cached
-                # As closing the day file would: rows from a replaced source are rejected.
-                self.view._days.identity(self.device_id, date)
-            else:
-                with self._columns(date) as columns:
-                    if columns is not None:
-                        yield from columns.blocks(start, end, self.channels)
+            yield from self._day_blocks(date, start, end)
+
+    def _day_blocks(self, date, start, end):
+        cached = self._cached_columns(date, start, end)
+        if cached is not None:
+            yield from cached
+            # As closing the day file would: rows from a replaced source are rejected.
+            self.view._days.identity(self.device_id, date)
+        else:
+            with self._columns(date) as columns:
+                if columns is not None:
+                    yield from columns.blocks(start, end, self.channels)
+
+    def rows_after_cutoff(self, date):
+        """Whether this view's cutoff hides any of the day's recorded rows."""
+        start, end = daystore.bounds(date)
+        until = getattr(self.view, "_history_until", inf)
+        if until >= end:
+            return False
+        return any(self._day_blocks(date, max(start, until), end))
 
     def _cached_columns(self, date, start, end):
         from .fit_days import _cache_root, _result_identity

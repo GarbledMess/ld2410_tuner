@@ -292,6 +292,13 @@ class Evaluator:
             out[i] = {**out[i], "quiet": extra}
         return out
 
+    def replay(self, patterns):
+        """Record ``patterns`` now, so later ``scores`` of them reads no rows."""
+        patterns = list(patterns)
+        for pattern in patterns:
+            validate(self.problem, pattern)
+        self._ensure([(pattern, "base") for pattern in patterns])
+
     def providers(self):
         """Rewind the same disk-backed windows for every chronological replay run."""
         if not self._providers:

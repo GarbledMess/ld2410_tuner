@@ -2,7 +2,6 @@
 
 from array import array
 from collections import OrderedDict
-from math import inf
 
 from ..engine.hybrid.constants import SPILL_BYTES
 from ..engine.hybrid.digest import fold_day
@@ -107,8 +106,7 @@ class FittingDays:
         rows = CapturedRowSource(self.view, device_id, channels)
         digest = fold_day(rows.blocks(start, end), start, end, channels)
         # A training view stops at its cutoff: that fold is not the day a later Learn must read.
-        whole_day = getattr(self.view, "_history_until", inf) >= end
-        if persistent is not None and whole_day:
+        if persistent is not None and not rows.rows_after_cutoff(date):
             path, identity = persistent
             cell_cache.store(path, _cache_root(self.view._days, path), identity, channels, digest)
         return digest
