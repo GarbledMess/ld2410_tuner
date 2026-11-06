@@ -180,6 +180,7 @@ RUNTIME_FILES = (
     "rooms/seen_by.py",
     "rooms/sets.py",
     "rooms/truth.py",
+    "rooms/stream_attribution.py",
     "services.yaml",
     "static/ld2410-tuner-panel.js",
     "static/panel/activity.js",
