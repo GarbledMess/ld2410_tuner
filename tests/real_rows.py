@@ -11,9 +11,12 @@ labels overlay them.
 Run ``python tests/real_rows.py`` to print the fixture's shape and diagnostics CPU seconds.
 """
 
+import datetime
+import json
 import random
 from array import array
 from bisect import bisect_left, bisect_right
+from types import SimpleNamespace
 
 import test_tuner  # noqa: F401
 from tuner_under_test.engine.hybrid.types import (
@@ -184,6 +187,101 @@ def real_problem(
 
 def plan(rows):
     return ScorePlan("exact", (), rows, 2)
+
+
+DAY = 86400
+GUESS_LEVEL = 18
+
+
+def _day_rows(blocks, start, end):
+    """One day's rows at the millisecond resolution a day file keeps."""
+    times, ends = array("d"), array("d")
+    columns = [bytearray() for _ in range(ALL_CHANNELS)]
+    for block in RealRows(blocks).blocks(start, end):
+        times.extend(round(value, 3) for value in block.times)
+        ends.extend(round(value, 3) for value in block.ends)
+        for column, part in zip(columns, block.columns, strict=True):
+            column += part
+    return times, ends, [bytes(column) for column in columns]
+
+
+def _day_guesses(truth, start, end):
+    return [
+        (max(s.start, start), min(s.end, end), s.state, GUESS_LEVEL, 0)
+        for s in truth
+        if s.source != "human" and s.start < end and s.end > start
+    ]
+
+
+def _write_days(folder, problem):
+    from tuner_under_test.history import dayfile
+
+    blocks, truth = problem.rows["r"].stored, problem.zones[0].truth
+    first = int(problem.start // DAY)
+    last = int(problem.end // DAY)
+    for day in range(first, last + 1):
+        start, end = day * DAY, (day + 1) * DAY
+        times, ends, columns = _day_rows(blocks, start, end)
+        physical = dayfile.Day(start, end, times, ends, columns, _day_guesses(truth, start, end))
+        (folder / f"{day}.day").write_bytes(dayfile.encode_day(physical))
+    return first, last
+
+
+def _human_rows(problem):
+    return [
+        {"start": s.start, "end": s.end, "state": s.state}
+        for s in problem.zones[0].truth
+        if s.source == "human"
+    ]
+
+
+def _write_recording(folder, rows):
+    folder.mkdir(parents=True, exist_ok=True)
+    problem, _ = real_problem(rows)
+    first, last = _write_days(folder, problem)
+    meta = {"first": first, "last": last, "until": problem.end, "labels": _human_rows(problem)}
+    (folder / "recording.json").write_text(json.dumps(meta), encoding="utf8", newline="\n")
+    return meta
+
+
+def _day_entry(folder, day, last):
+    from tuner_under_test.worker import history
+
+    path = folder / f"{day}.day"
+    return {
+        "device_id": "r",
+        "date": str(datetime.date(1970, 1, 1) + datetime.timedelta(days=day)),
+        "path": str(path),
+        "identity": history._identity(path.stat()),
+        "late": [],
+        "persistent": day < last,
+    }
+
+
+def recorded_view(root, rows=ROWS):
+    """A worker view of this shape's rows as day files under ``root``, the newest day open."""
+    from tuner_under_test.worker.calculations import ReadOnlyDays
+
+    folder = root / "r"
+    saved = folder / "recording.json"
+    if saved.exists():
+        meta = json.loads(saved.read_text(encoding="utf8"))
+    else:
+        meta = _write_recording(folder, rows)
+    entries = [
+        _day_entry(folder, day, meta["last"]) for day in range(meta["first"], meta["last"] + 1)
+    ]
+    budgets = {"max_file_bytes": None, "max_raw_bytes": 1 << 34, "max_rows": None}
+    return SimpleNamespace(
+        data={
+            "devices": {"r": {"history_labels": meta["labels"], "training_state": "unknown"}},
+            "room_snapshot": None,
+        },
+        hass=None,
+        _days=ReadOnlyDays({"days": entries, "budgets": {**budgets, "max_guesses": None}}),
+        _history_until=meta["until"],
+        _attribution_until=meta["until"],
+    )
 
 
 def shape(problem):
