@@ -1,12 +1,11 @@
 """Stream finished-day cached digests and refold every live snapshot."""
 
-import zlib
 from array import array
 from collections import OrderedDict
 
 from ..engine.hybrid.constants import SPILL_BYTES
 from ..engine.hybrid.digest import fold_day
-from ..engine.hybrid.physical_index import PhysicalRows, _decoded_geometry, _encode_geometry
+from ..engine.hybrid.physical_index import PhysicalRows
 from . import cell_cache, daystore
 from .fit_rows import CapturedRowSource
 
@@ -46,39 +45,14 @@ class _PhysicalCache:
         self.size += size
 
 
-class _GeometryCache:
-    """Job-owned compressed row times of each day: row budgets count many windows many times,
-    which needs no reading and so no decoding, however large a day's readings are."""
-
-    def __init__(self, limit=SPILL_BYTES):
-        self.entries, self.size, self.limit = OrderedDict(), 0, limit
-
-    def get(self, key):
-        found = self.entries.get(key)
-        if found is None:
-            return None
-        self.entries.move_to_end(key)
-        return _decoded_geometry(zlib.decompress(found[1]), found[0])[:2]
-
-    def put(self, key, times, ends):
-        milliseconds, raw = _encode_geometry(times, ends)
-        encoded = zlib.compress(raw, 1)
-        if len(encoded) > self.limit:
-            return
-        while self.entries and self.size + len(encoded) > self.limit:
-            _, (_, removed) = self.entries.popitem(last=False)
-            self.size -= len(removed)
-        self.entries[key] = milliseconds, encoded
-        self.size += len(encoded)
-
-
-def _geometry_cache(days):
+def _row_counts(days):
+    """The job's answers per day and window: budgets ask the same windows plan after plan."""
     shared = getattr(days, "shared", None)
     if shared is None:
         return None
-    if not hasattr(shared, "_fit_geometry"):
-        shared._fit_geometry = _GeometryCache()
-    return shared._fit_geometry
+    if not hasattr(shared, "_fit_row_counts"):
+        shared._fit_row_counts = {}
+    return shared._fit_row_counts
 
 
 def _physical_cache(days):
@@ -145,19 +119,18 @@ class FittingDays:
             min(daystore.bounds(date)[1], getattr(self.view, "_history_until", float("inf"))),
         )
 
-    def geometry(self, device_id, date, channels, read):
-        """``(times, ends)`` of one day's usable rows, its readings decoded (``read``: the day's
-        rows, as the caller holds them) at most once a job."""
-        cache = _geometry_cache(self.view._days)
-        persistent = _result_identity(self.view._days, device_id, date)
-        key = self._key(persistent, date, channels)
-        kept = None if cache is None or key is None else cache.get(key)
-        if kept is not None:
-            return kept
-        times, ends = read(date).geometry()
-        if cache is not None and key is not None:
-            cache.put(key, times, ends)
-        return times, ends
+    def rows_in(self, device_id, date, channels, lo, hi, read):
+        """One day's rows overlapping ``[lo, hi)``; ``read`` gives the day's rows, as the caller
+        holds them, the first time a job asks for this window (never when it can reuse one)."""
+        counts = _row_counts(self.view._days)
+        key = self._key(_result_identity(self.view._days, device_id, date), date, channels)
+        if counts is None or key is None:
+            return read(date).rows_in(lo, hi)
+        window = key, lo, hi
+        found = counts.get(window)
+        if found is None:
+            found = counts[window] = read(date).rows_in(lo, hi)
+        return found
 
     def physical(self, device_id, date, channels):
         """One day's usable rows; an unreadable cached section is rebuilt once."""

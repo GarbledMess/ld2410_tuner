@@ -34,7 +34,7 @@ def brute_rows_in(rows, lo, hi):
 def views(tmp_path_factory, monkeypatch_module):
     monkeypatch_module.setattr(worker_snapshot, "_executor_only", lambda: None)
     root = tmp_path_factory.mktemp("rows")
-    fixture = build(root, days=4, open_cells=600, sensor_days=2)
+    fixture = build(root, days=4, open_seconds=3600, sensor_days=2)
     captured = request(fixture, root / "job", window_days=3, attribution_days=2)
     from tuner_under_test.worker.manifest import expand
 
@@ -62,15 +62,15 @@ def _windows(seed):
 
 
 def test_count_equals_the_row_walk_on_every_window(views):
-    source = CapturedRowSource(views["radar_a"], "radar_a", (0, 1, 5, 17))
-    checked = CapturedRowSource(views["radar_a"], "radar_a", (0, 1, 5, 17))
+    source = CapturedRowSource(views["radar_a"], "radar_a", (0, 1, 5, 9))
+    checked = CapturedRowSource(views["radar_a"], "radar_a", (0, 1, 5, 9))
     for lo, hi in _windows(1):
         assert source.rows_in(lo, hi) == legacy_rows_in(checked, lo, hi)
 
 
 def test_count_equals_the_row_walk_through_a_clipped_source(views):
     view = views["radar_b"]
-    source = CapturedRowSource(view, "radar_b", (2, 3))
+    source = CapturedRowSource(view, "radar_b", (0, 1))
     clipped = _WindowRows(source, START + 7.5, START + 3 * DAY + 11)
     for lo, hi in _windows(2):
         a, b = max(lo, clipped.start), min(hi, clipped.end)
@@ -87,7 +87,8 @@ def test_many_windows_read_each_day_once_across_passes(views, monkeypatch):
 
     monkeypatch.setattr(fit_days.FittingDays, "physical", counted)
     channels = (0, 4, 9)  # Not used by another test: nothing of this geometry is kept yet.
-    windows = _windows(3)
+    # Disjoint and in order, as a plan's regions are; many in each day.
+    windows = [(START + 1000.5 * at, START + 1000.5 * at + 400.25) for at in range(340)]
     for _ in range(3):  # Each plan builds its own source over the job's history.
         source = CapturedRowSource(views["radar_a"], "radar_a", channels)
         for lo, hi in windows:
@@ -95,23 +96,27 @@ def test_many_windows_read_each_day_once_across_passes(views, monkeypatch):
     assert len(calls) == len(set(calls)) <= 4
 
 
-def test_kept_geometry_is_bounded_and_evicts_oldest():
-    kept = fit_days._GeometryCache(limit=64 * 1024)
-    rng = random.Random(4)
-    for number in range(40):
-        times = array("d", (rng.random() + at for at in range(2000)))
-        ends = array("d", (at + 0.5 for at in times))
-        kept.put(number, times, ends)
-    assert kept.size <= 64 * 1024
-    assert kept.get(0) is None
-    stored = kept.get(39)
-    assert stored == (times, ends)
+def test_one_job_counts_are_not_shared_with_another_channel_set(views):
+    wide = CapturedRowSource(views["radar_a"], "radar_a", (0, 1))
+    narrow = CapturedRowSource(views["radar_a"], "radar_a", (0, 1, 2, 3, 4, 5, 6, 7, 8, 9))
+    window = START + 6, START + 3600
+    assert wide.rows_in(*window) == legacy_rows_in(wide, *window)
+    assert narrow.rows_in(*window) == legacy_rows_in(narrow, *window)
+    assert wide.rows_in(*window) != 0
 
 
-def test_geometry_bigger_than_the_limit_is_not_kept():
-    kept = fit_days._GeometryCache(limit=8)
-    kept.put("day", array("d", (1.0, 2.0)), array("d", (2.0, 3.0)))
-    assert kept.get("day") is None and kept.size == 0
+def test_an_earlier_view_does_not_reuse_a_later_cut_of_the_same_day(views):
+    from copy import copy
+
+    view = views["radar_a"]
+    later = CapturedRowSource(view, "radar_a", (0, 1, 2))
+    window = START + 6, START + 4 * DAY
+    assert later.rows_in(*window) == legacy_rows_in(later, *window)
+    earlier_view = copy(view)
+    earlier_view._history_until = START + 3 * DAY + 600
+    earlier = CapturedRowSource(earlier_view, "radar_a", (0, 1, 2))
+    assert earlier.rows_in(*window) == legacy_rows_in(earlier, *window)
+    assert earlier.rows_in(*window) < later.rows_in(*window)
 
 
 def test_rows_geometry_spans_blocks_and_agrees_with_rows_in():

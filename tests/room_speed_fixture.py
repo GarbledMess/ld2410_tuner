@@ -1,25 +1,40 @@
 """A synthetic room with the shape of a real long-running store; nothing recorded is used.
 
-Two radars, retained days of six-second cells whose readings change in most cells, about 248
-automatic sensor labels a day with edges off the six-second grid, a few long human labels, the
+The shape was measured on a real store through the production reader (anonymous statistics
+only): about 48,000 rows a radar-day, almost none on a six-second clock, 99.9% contiguous, half
+under half a second, a quarter about a second, the rest two to many seconds; 30% of rows repeat
+the last on a ten-channel radar and 80% on a two-channel one; 0.2% miss a channel. Added to that:
+about 248 automatic sensor labels a day with edges off any clock, a few long human labels, the
 radars' own recorded guesses and one open partial day. ``request`` captures it as the worker
 receives it, so the production ``room_fit`` path reads production files.
 """
 
 import random
 from array import array
+from itertools import accumulate
 from pathlib import Path
 from types import SimpleNamespace
 
 DAY = 86400
 START = 1_790_000_000 // DAY * DAY
-CELLS = DAY // 6
 GATES = 18
-RADARS = ("radar_a", "radar_b")
+RADARS = {"radar_a": (10, 0.30), "radar_b": (2, 0.80)}  # Channels read, share of repeated rows.
 GROUP = "room"
 LABELS_PER_DAY = 248
 QUIET = bytes(4 + value % 14 for value in range(256))
 BUSY = bytes(38 + value % 40 for value in range(256))
+MISSING = 255
+# (milliseconds low, high, weight) of a row's duration.
+DURATIONS = (
+    (40, 499, 50),
+    (900, 1100, 25),
+    (1900, 2100, 6),
+    (5900, 6100, 10),
+    (6900, 7100, 3),
+    (8000, 20000, 6),
+)
+GAP_SHARE = 0.001
+MISSING_SHARE = 0.002
 
 
 def _sensor_labels(index, rng):
@@ -55,22 +70,59 @@ def _pick(busy, high, low):
     return high if busy else low
 
 
-def _column(rng, count, gate, busy, radar):
-    """One gate's readings: occupied cells read high on the radar's nearer gates."""
-    noise = rng.randbytes(count)
+def _column(rng, sources, gate, busy, radar):
+    """One channel's readings: occupied rows read high on the radar's nearer channels; a row
+    that repeats the last (``sources``: the row each takes its vector from) reads as it did."""
+    noise = rng.randbytes(len(sources))
     if gate % (radar + 2) == 0:
-        return bytes(map(_pick, busy, noise.translate(BUSY), noise.translate(QUIET)))
-    return noise.translate(QUIET)
+        fresh = bytes(map(_pick, busy, noise.translate(BUSY), noise.translate(QUIET)))
+    else:
+        fresh = noise.translate(QUIET)
+    return bytes(map(fresh.__getitem__, sources))
 
 
-def _occupied(labels, day_start, count):
-    busy = bytearray(count)
-    for label in labels:
-        if label["state"] == "present":
-            first = int((label["start"] - day_start) // 6)
-            stop = min(count, int((label["end"] - day_start) // 6) + 1)
-            if first < stop:
-                busy[first:stop] = b"\x01" * (stop - first)
+def _columns(rng, rows, channels, repeated, busy, radar):
+    flags = rng.choices((0, 1), (1 - repeated, repeated), k=rows)
+    sources = list(accumulate(range(rows), lambda last, at: last if flags[at] else at))
+    read = [_column(rng, sources, gate, busy, radar) for gate in range(channels)]
+    missing = bytes(MISSING for _ in range(rows))
+    columns = [*read, *(missing for _ in range(GATES - channels))]
+    return _with_missing(rng, columns, channels, rows)
+
+
+def _with_missing(rng, columns, channels, rows):
+    holes = rng.sample(range(rows), int(rows * MISSING_SHARE))
+    edited = [bytearray(column) for column in columns[:channels]]
+    for row in holes:
+        edited[row % channels][row] = MISSING
+    return [*map(bytes, edited), *columns[channels:]]
+
+
+def _rows(start, seconds, rng):
+    """Row times and ends in whole milliseconds, off any clock, nearly always contiguous."""
+    weights = [item[2] for item in DURATIONS]
+    times, ends = array("d"), array("d")
+    at, stop = 0, seconds * 1000
+    while at < stop:
+        low, high, _ = rng.choices(DURATIONS, weights)[0]
+        finish = min(stop, at + rng.randrange(low, high))
+        times.append(start + at / 1000)
+        ends.append(start + finish / 1000)
+        at = finish + (rng.randrange(1000, 30000) if rng.random() < GAP_SHARE else 0)
+    return times, ends
+
+
+def _occupied(labels, times):
+    """Per row whether a Present label holds at its start."""
+    busy = bytearray(len(times))
+    present = sorted(
+        (label["start"], label["end"]) for label in labels if label["state"] == "present"
+    )
+    at = 0
+    for row, time in enumerate(times):
+        while at < len(present) and present[at][1] <= time:
+            at += 1
+        busy[row] = at < len(present) and present[at][0] <= time
     return bytes(busy)
 
 
@@ -82,46 +134,35 @@ def _guesses(labels, stop):
     return runs
 
 
-def _grid(start, cadence, rng):
-    """Contiguous rows ``cadence`` seconds apart; below six seconds their times are irregular
-    milliseconds, as a radar's changes arrive."""
-    count = DAY // cadence
-    if cadence == 6:
-        times = array("d", range(start, start + DAY, 6))
-    else:
-        offsets = rng.randbytes(count)
-        times = array(
-            "d",
-            (start + at * cadence + (offsets[at] % 200) / 1000 * (at > 0) for at in range(count)),
-        )
-    return times, array("d", (*times[1:], start + DAY))
-
-
-def _finished(radar, index, labels, rng, cadence):
+def _finished(radar, index, labels, rng, shape):
     from tuner_under_test.history import dayfile
 
     start = START + index * DAY
-    times, ends = _grid(start, cadence, rng)
-    busy = _occupied(labels, start, CELLS)
-    busy = bytes(busy[int(at - start) // 6] for at in times) if cadence != 6 else busy
-    columns = [_column(rng, len(times), gate, busy, radar) for gate in range(GATES)]
+    times, ends = _rows(start, DAY, rng)
+    busy = _occupied(labels, times)
+    columns = _columns(rng, len(times), *shape, busy, radar)
     return dayfile.Day(start, start + DAY, times, ends, columns, _guesses(labels, start + DAY))
 
 
-def _open_day(store, rid, radar, index, labels, rng, cells):
+def _open_day(store, rid, radar, index, labels, rng, shape, seconds):
     from tuner_under_test.history import dayfile
 
     start = START + index * DAY
-    busy = _occupied(labels, start, cells)
-    columns = [_column(rng, cells, gate, busy, radar) for gate in range(GATES)]
-    for cell in range(cells):
-        values = {gate: columns[gate][cell] for gate in range(GATES)}
-        store.append(rid, dayfile.Change(start + cell * 6, values))
-    store.append(rid, dayfile.End(start + cells * 6))
+    times, ends = _rows(start, seconds, rng)
+    columns = _columns(rng, len(times), *shape, _occupied(labels, times), radar)
+    for row, (time, end) in enumerate(zip(times, ends, strict=True)):
+        values = {
+            gate: None if column[row] == MISSING else column[row]
+            for gate, column in enumerate(columns)
+        }
+        store.append(rid, dayfile.Change(time, values))
+        if row + 1 == len(times) or times[row + 1] != end:
+            store.append(rid, dayfile.End(end))
+    return ends[-1]
 
 
-def build(root, days=60, *, open_cells=1800, sensor_days=10, cadence=6):
-    """Write ``days`` retained days per radar (the last one open, ``open_cells`` long).
+def build(root, days=60, *, open_seconds=10800, sensor_days=10):
+    """Write ``days`` retained days per radar (the last one open, ``open_seconds`` long).
 
     Saved metadata has a fixed node budget, so only the newest ``sensor_days`` keep their
     sensor labels, as ``room_labels.expire_sensor`` keeps a real store within it; recorded
@@ -132,19 +173,19 @@ def build(root, days=60, *, open_cells=1800, sensor_days=10, cadence=6):
     store = daystore.DayStore(Path(root) / "history", cache_bytes=0)
     label_rng = random.Random(2410)
     per_day = [_sensor_labels(index, label_rng) for index in range(days)]
-    until = START + (days - 1) * DAY + open_cells * 6
+    until = START + (days - 1) * DAY + open_seconds
     sensor = [
         {**label, "end": min(label["end"], until)}
         for labels in per_day[-sensor_days:]
         for label in labels
         if label["start"] < until
     ]
-    for radar, rid in enumerate(RADARS):
+    for radar, (rid, shape) in enumerate(RADARS.items()):
         rng = random.Random(7000 + radar)
         for index in range(days - 1):
-            day = _finished(radar, index, per_day[index], rng, cadence)
+            day = _finished(radar, index, per_day[index], rng, shape)
             store.replace(rid, daystore.date_of(day.start), day)
-        _open_day(store, rid, radar, days - 1, per_day[-1], rng, open_cells)
+        _open_day(store, rid, radar, days - 1, per_day[-1], rng, shape, open_seconds)
     return SimpleNamespace(
         store=store, days=days, until=until, labels=[*sensor, *_human_labels(days)]
     )
@@ -184,7 +225,11 @@ def request(fixture, directory, *, window_days=28, attribution_days=7, weight=0.
     with manifest.Writer(directory / "history.sqlite") as writer:
         capture.prepare_multi(views, directory, sink=writer)
     members = {
-        rid: {"view_key": rid, "thresholds": dict.fromkeys(HISTORY_KEYS, 50), "timing": {}}
+        rid: {
+            "view_key": rid,
+            "thresholds": dict.fromkeys(HISTORY_KEYS[: RADARS[rid][0]], 50),
+            "timing": {},
+        }
         for rid in RADARS
     }
     room = {"group_id": GROUP, "groups": {}, "room_labels": {GROUP: fixture.labels}}
