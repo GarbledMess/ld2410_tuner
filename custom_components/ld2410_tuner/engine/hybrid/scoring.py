@@ -46,6 +46,40 @@ class EpisodeLabels:
                 self.names.append(key[:2])
             found.append(slot)
         self.slots = found
+        self.ends = [hi for _lo, hi, _span in self.pieces]
+        self._labelled = {}
+
+    def observed(self, coverage, lo, hi, cache):
+        """``(span, slot, observed, mass)`` of the labels covered within one slice."""
+        key = "labels", id(self), id(coverage), lo, hi
+        found = cache.get(key)
+        if found is not None and found[0] is coverage:
+            return found[1]
+        rows = self._clipped(coverage, lo, hi)
+        _cache_value(cache, key, (coverage, rows), 256 * len(rows) + 512)
+        return rows
+
+    def _clipped(self, coverage, lo, hi):
+        rows, pieces, slots = [], self.pieces, self.slots
+        for at in range(bisect_right(self.ends, lo), len(pieces)):
+            a, b, span = pieces[at]
+            if a >= hi:
+                break
+            observed = coverage.clip(max(a, lo), min(b, hi))
+            mass = _seconds(observed)
+            if mass:
+                rows.append((span, slots[at], observed, mass))
+        return rows
+
+    def labelled(self, window):
+        """Labelled seconds inside ``window``, whether or not they were recorded."""
+        total = self._labelled.get(window)
+        if total is None:
+            total = 0.0
+            for lo, hi, _span in self.pieces:
+                total += max(0, min(hi, window[1]) - max(lo, window[0]))
+            self._labelled[window] = total
+        return total
 
 
 class Disjoint(list):
@@ -420,12 +454,8 @@ class SliceScorer:
         self.zone, self.policy, self.window = zone, policy, window
         self.attribution = attribution
         labels = EpisodeLabels(_labels(zone.truth)) if labels is None else labels
-        self._labels = iter(labels.pieces)
-        self._slots = iter(labels.slots)
+        self._labels = labels
         self._names = labels.names
-        self._slot = None
-        self._labelled = 0.0
-        self._label = self._next_label()
         self._end = self._active_end = None
         self._longest = _LongestMiss()
         self._stats = {}
@@ -463,23 +493,11 @@ class SliceScorer:
             if self.attribution
             else {}
         )
-        self._consume_labels(a, b, shared, signals, starts, members)
+        cache = {} if cache is None else cache
+        for span, slot, observed, mass in self._labels.observed(shared, a, b, cache):
+            self._observe(span, slot, observed, mass, signals, starts, members)
 
-    def _consume_labels(self, lo, hi, coverage, signals, starts, members):
-        while self._label is not None and self._label[1] <= lo:
-            self._label = self._next_label()
-        while self._label is not None and self._label[0] < hi:
-            a, b, span = self._label
-            observed = coverage.clip(max(a, lo), min(b, hi))
-            self._observe(span, observed, signals, starts, members)
-            if b > hi:
-                break
-            self._label = self._next_label()
-
-    def _observe(self, span, observed, signals, starts, members):
-        mass = _seconds(observed)
-        if not mass:
-            return
+    def _observe(self, span, slot, observed, mass, signals, starts, members):
         physical, raw, supported = signals
         state = span.state
         source = "human" if span.source == "human" else "automatic"
@@ -494,17 +512,17 @@ class SliceScorer:
         stats[0] += mass * span.confidence
         stats[1] += error * span.confidence
         triggers = sum(bisect_left(starts, b) - bisect_left(starts, a) for a, b in observed)
-        self._episode(span, source, mass, scored, triggers)
+        self._episode(span, slot, source, mass, scored, triggers)
         if state == "present":
             self._longest.observe(observed, physical)
             self._attribute(observed, members, physical, seen)
 
-    def _episode(self, span, source, mass, seen, triggers):
+    def _episode(self, span, slot, source, mass, seen, triggers):
         totals = self._episodes
         if totals is None:
             self._disk_episode(span, source, mass, seen, triggers)
             return
-        at = self._slot * 4
+        at = slot * 4
         totals[at] += mass
         totals[at + 1] += mass * span.confidence
         totals[at + 2] += seen
@@ -551,14 +569,6 @@ class SliceScorer:
             at = i * 4
             if totals[at]:
                 yield state, source, totals[at], totals[at + 1], totals[at + 2], int(totals[at + 3])
-
-    def _next_label(self):
-        label = next(self._labels, None)
-        if label is not None:
-            self._slot = next(self._slots)
-            lo, hi, _ = label
-            self._labelled += max(0, min(hi, self.window[1]) - max(lo, self.window[0]))
-        return label
 
     def _attribute(self, observed, exclusive, physical, seen):
         for member, pieces in exclusive.items():
@@ -616,8 +626,6 @@ class SliceScorer:
         if self._result is not None:
             return self._result
         try:
-            while self._next_label() is not None:
-                pace.rest()
             counts = self._settle()
             self._result = {
                 **cost_from_statistics(self._stats, self.policy),
@@ -625,7 +633,9 @@ class SliceScorer:
                 **self._measures(self._seen),
                 "sufficient_statistics": self._stats,
                 "longest_miss_seconds": self._longest.longest,
-                "uncovered_label_seconds": max(0.0, self._labelled - sum(self._totals.values())),
+                "uncovered_label_seconds": max(
+                    0.0, self._labels.labelled(self.window) - sum(self._totals.values())
+                ),
                 "covered_seconds": self._covered,
                 "raw": self._measures(self._raw),
                 "exclusive_seconds": self._exclusive,
