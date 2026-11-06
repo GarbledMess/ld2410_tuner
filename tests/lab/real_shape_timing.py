@@ -104,6 +104,7 @@ def main(argv=None):
         found["build_seconds"] = round(time.perf_counter() - started, 2)
         home = real_home.open_home(template, Path(folder) / "config")
         _run(home, found, options.quick)
+    Path(options.output).parent.mkdir(parents=True, exist_ok=True)
     Path(options.output).write_text(json.dumps(found, indent=2) + "\n", encoding="utf8")
     failed = [
         name
