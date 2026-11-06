@@ -55,6 +55,7 @@ class TunerRuntime:
         self._engineering_attempts = {}
         self.unsub_nightly = None
         self._nightly_task = None
+        self._nightly_resume_at = None
         self.data.setdefault("devices", {})
         self.data.setdefault("bermuda", {"devices": [], "max_distance": None, "rooms": {}})
         for device in self.data["devices"].values():

@@ -715,7 +715,9 @@ class StaleReferenceTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(schedule, "_learn_device", side_effect=learn),
-            patch.object(schedule, "_plan", return_value=[("b", self.b, [])]),
+            patch.object(
+                schedule, "_plan", return_value=[schedule.overnight.Item("b", self.b, [], [])]
+            ),
         ):
             await schedule._run(self.runtime, "2026-10-10")
         assert seen == [("b", False, {"present"})]
@@ -812,7 +814,7 @@ class DailyReferenceRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         for name, value in (
             ("_learn_device", learn),
-            ("_plan", lambda runtime, devices: [("b", self.b, [])]),
+            ("_plan", lambda runtime, devices: [schedule.overnight.Item("b", self.b, [], [])]),
         ):
             patcher = patch.object(schedule, name, side_effect=value)
             patcher.start()

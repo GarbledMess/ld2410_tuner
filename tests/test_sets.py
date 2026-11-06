@@ -128,7 +128,7 @@ class RuntimeSetTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.data["devices"]["c"] = dict(self.device)
         self.runtime.data["devices"]["paused"] = {**self.device, "recording_enabled": False}
         devices = list(self.runtime.data["devices"].items())
-        plan = [(key, members) for key, _device, members in schedule._plan(self.runtime, devices)]
+        plan = [(item.lead, item.members) for item in schedule._plan(self.runtime, devices)]
         assert plan == [("a", ["a", "b"]), ("c", [])]
 
     def test_snapshot_lists_learning_sets(self):
