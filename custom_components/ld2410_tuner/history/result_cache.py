@@ -43,6 +43,7 @@ PRODUCER_SOURCES = (
     "history/fit_days.py",
     "history/fit_rows.py",
     "history/result_cache.py",
+    "rooms/attribution_cells.py",
     "rooms/attribution_days.py",
     "rooms/event_attribution.py",
 )
