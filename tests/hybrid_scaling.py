@@ -225,6 +225,9 @@ async def _run_fixture(fixture, root, days, warm, trace, *, pause_at_spill=False
         path = await owned_preparation(asyncio.to_thread(_request, fixture, Path(temporary), days))
         signal = Path(temporary) / "spill-ready" if pause_at_spill else None
         cold = await _launch(path, trace if not warm else False, signal)
+        if warm:  # Whole fits are remembered: the warm job measures the day caches beneath them.
+            for memory in root.rglob("*.fit"):
+                memory.unlink()
         result = await _launch(path, trace) if warm else cold
         result.update(
             mode="warm" if warm else "cold",
