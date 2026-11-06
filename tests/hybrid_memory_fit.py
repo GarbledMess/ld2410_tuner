@@ -103,7 +103,7 @@ class Days:
             lo, hi = max(0, ceil(a / 6) - k0), min(len(cov), floor(b / 6) - k0)
             if hi > lo:
                 cells = tuple(c[:lo] + bytes(hi - lo) + c[hi:] for c in cells)
-        return DayDigest(6, k0, len(cov), cells, cov, {}, None, physical)
+        return DayDigest(6, k0, len(cov), cells, cov, {}, physical=physical)
 
 
 class Rows:

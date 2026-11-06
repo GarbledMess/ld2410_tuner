@@ -7,11 +7,10 @@ the same ScorePlan, and put those aggregates in FitResult.diagnostics.
 """
 
 from array import array
-from collections import deque
 from collections.abc import Sequence
 from functools import lru_cache
 from heapq import heappush, heapreplace
-from itertools import groupby, repeat
+from itertools import repeat
 from math import ceil
 
 from ...const import HISTORY_KEYS
@@ -47,54 +46,6 @@ def _block_pieces(block, channels, pieces):
         if 255 not in values:
             for lo, hi, span in pieces.between(a, block.ends[i]):
                 yield lo, hi, span, values
-
-
-def _runs(problem, device_id, truth, compact=True):
-    labels = [
-        (max(lo, problem.start), min(hi, problem.end), span)
-        for lo, hi, span in _labels(truth)
-        if lo < problem.end and hi > problem.start
-    ]
-    if not labels:
-        return
-    if not compact or any(a % 6 or b % 6 for a, b, _ in labels):
-        for piece in _pieces(problem, device_id, truth):
-            yield (*piece, False)
-        return
-    pieces = _LabelPieces(labels)
-    channels = problem.radars[device_id].channels
-    for block in problem.rows[device_id].blocks(labels[0][0], labels[-1][1]):
-        pace.rest()
-        yield from _block_runs(block, channels, pieces)
-
-
-def _block_runs(block, channels, pieces):
-    vectors = (
-        zip(*(block.columns[c] for c in channels), strict=True)
-        if channels
-        else repeat((), len(block.times))
-    )
-    for values, rows in groupby(enumerate(vectors), lambda item: item[1]):
-        indexes = [i for i, _ in rows]
-        if 255 not in values:
-            yield from _run_pieces(block, indexes, values, pieces)
-
-
-def _run_pieces(block, indexes, values, pieces):
-    first, last = indexes[0], indexes[-1]
-    contiguous = block.times[first] % 6 == 0 and all(
-        block.ends[i] - block.times[i] == 6
-        and block.times[i] == block.times[first] + (i - first) * 6
-        for i in indexes
-    )
-    ranges = (
-        [(block.times[first], block.ends[last])]
-        if contiguous
-        else [(block.times[i], block.ends[i]) for i in indexes]
-    )
-    for a, b in ranges:
-        for lo, hi, span in pieces.between(a, b):
-            yield lo, hi, span, values, contiguous and hi - lo > 6
 
 
 class _LabelPieces:
@@ -264,62 +215,12 @@ def _error_gates(channels, values, thresholds, state):
     ]
 
 
-def _scalar_radar(problem, device_id, pattern, truth):
-    channels = problem.radars[device_id].channels
-    regular = [True]
-    totals = _totals(problem, device_id, truth, regular)
-    remaining = {s: 0.8 * totals[s] for s in STATES}
-    cutoffs, histograms = {}, _histograms(channels)
-    samples = {s: deque(maxlen=5000) for s in STATES}
-    counts = dict.fromkeys(STATES, 0)
-    review = _Review()
-
-    @lru_cache(maxsize=4096)
-    def classify(values, state):
-        thresholds = pattern[device_id]
-        hit = any(v > thresholds[c] for c, v in zip(channels, values, strict=True))
-        return hit != (state == "present"), _error_gates(channels, values, thresholds, state)
-
-    for a, b, span, values, merged in _runs(problem, device_id, truth, compact=regular[0]):
-        if b <= a:
-            continue
-        state = span.state
-        if state not in cutoffs and remaining[state] < b - a:
-            cutoffs[state] = a + remaining[state]
-        remaining[state] = max(0, remaining[state] - (b - a))
-        _add_histograms(histograms, channels, values, span, b - a)
-        _samples(samples, counts, a, b, span, channels, values)
-        error, gates = classify(values, state)
-        errors = (b - a) * error
-        if merged:
-            gates = list(_merged_gates(tuple(gates), tuple(gates)))
-        review.add(a, b, span, errors, gates)
-        if merged:
-            _float_durations(review)
-    return {
-        "samples": {s: SampleSlots(channels, v) for s, v in samples.items()},
-        "sample_counts": counts,
-        "histograms": histograms,
-        "recent_cutoffs": cutoffs,
-        "review": review.result(),
-        "observed_seconds": totals,
-    }
-
-
 def _radar(problem, device_id, pattern, truth):
     import sys
 
     from .diagnostic_columns import collect
 
     return collect(problem, device_id, pattern, truth, sys.modules[__name__])
-
-
-def _float_durations(review):
-    # A merged six-second run replaces additions of physical float durations.
-    for pending in (review.session, review.period):
-        if pending is not None:
-            row = pending[1]
-            row["observed_span_seconds"] = float(row["observed_span_seconds"])
 
 
 class _Review:
