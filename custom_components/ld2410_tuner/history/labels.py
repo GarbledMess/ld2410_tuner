@@ -133,6 +133,11 @@ def _prepare_history_edit(runtime, device):
         device["training_label_start"] = now
 
 
+def _human_edit(device):
+    """Retention also bumps ``label_revision``; overnight ordering needs a person's edits."""
+    device["human_label_revision"] = device.get("human_label_revision", 0) + 1
+
+
 def _save_history_edit(runtime, device_id, device, labels, ranges):
     device["history_labels"] = labels
     if spans.has_events(runtime, device_id):
@@ -142,6 +147,7 @@ def _save_history_edit(runtime, device_id, device, labels, ranges):
     reference_training.correct(runtime, device, ranges)
     device.pop("last_learning", None)
     device["label_revision"] = device.get("label_revision", 0) + 1
+    _human_edit(device)
     runtime._compact_history_labels(device)
     runtime._schedule_save()
 
@@ -237,6 +243,7 @@ def _change_training_state(runtime, device_id, state, timeout_seconds):
     runtime._close_training_interval(device, now)
     device["training_state"] = state
     device["label_revision"] = device.get("label_revision", 0) + 1
+    _human_edit(device)
     if state in {"present", "not_present"}:
         device["training_label_start"] = now
     if state in {"present", "not_present"} and timeout_seconds:
@@ -358,6 +365,7 @@ def clear_samples(runtime, device_id: str) -> None:
         runtime.data["devices"][device_id]["label_revision"] = (
             runtime.data["devices"][device_id].get("label_revision", 0) + 1
         )
+        _human_edit(runtime.data["devices"][device_id])
         runtime.data["devices"][device_id]["histograms"] = {}
         runtime.data["devices"][device_id].pop("auto", None)
         runtime.data["devices"][device_id].pop("reference_profile", None)
