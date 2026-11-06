@@ -37,11 +37,12 @@ def training_fits(training, weight, fit=None):
     """``{policy: pattern}``, searching once per distinct evidence policy."""
     fit = engine.fit if fit is None else fit
     searched, found = {}, {}
-    for policy in POLICIES:
-        flag = reference_flag(policy, weight)
-        if flag not in searched:
-            searched[flag] = fit(with_reference(training, flag)).thresholds
-        found[policy] = searched[flag]
+    with engine.FitSession() as session:
+        for policy in POLICIES:
+            flag = reference_flag(policy, weight)
+            if flag not in searched:
+                searched[flag] = fit(with_reference(training, flag), session=session).thresholds
+            found[policy] = searched[flag]
     return found
 
 

@@ -162,7 +162,7 @@ def store(path, root, identity, blocks):
                 size = stream.tell()
             if size <= CELL_CACHE_DISK_BYTES and summary_cache.stamp(path) == tuple(identity[:2]):
                 os.replace(temporary, path.with_suffix(".cols"))
-            summary_cache.prune(root)
+                summary_cache.prune_after(root, path.with_suffix(".cols"))
     except (OSError, ValueError, struct.error):
         pass
     finally:

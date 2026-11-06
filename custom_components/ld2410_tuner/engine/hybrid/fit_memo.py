@@ -135,7 +135,7 @@ def _remember(path, root, encode):
                 temporary = Path(stream.name)
                 stream.write(raw)
             os.replace(temporary, path)
-            summary_cache.prune(root)
+            summary_cache.prune_after(root, path)
     except (OSError, ValueError, TypeError):
         pass
     finally:
@@ -146,16 +146,16 @@ def _remember(path, root, encode):
 def _fitter(place):
     """``engine.fit``, remembered at ``place``; without one, a plain search."""
 
-    def fit(problem):
+    def fit(problem, **options):
         if place is None:
-            return engine.fit(problem)
+            return engine.fit(problem, **options)
         summary_cache.worker_only()
         folder, root = place
         path = folder / (_key(problem) + _SUFFIX)
         found = _recall(path, lambda raw: _decoded(raw, problem))
         if found is not None:
             return found
-        result = engine.fit(problem)
+        result = engine.fit(problem, **options)
         _remember(path, root, lambda: _encoded(result))
         return result
 

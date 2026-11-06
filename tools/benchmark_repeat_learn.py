@@ -94,12 +94,12 @@ def _comparable(value):
     return value
 
 
-def _changed_room(fixture):
-    """The newest human label ten minutes shorter."""
+def _changed_room(fixture, seconds):
+    """The newest human label ``seconds`` shorter."""
     labels = [dict(label) for label in fixture.labels]
     manual = (label for label in labels if label["source"] == "manual")
     newest = max(manual, key=lambda label: label["start"])
-    newest["end"] -= CHANGED_LABEL_SECONDS
+    newest["end"] -= seconds
     fixture.labels = labels
 
 
@@ -107,7 +107,7 @@ def _room_learn(args):
     worker_snapshot._executor_only = lambda: None
     fixture = stored(args.root, ROOM_DAYS, sensor_days=args.sensor_days)
     if args.learn == "changed":
-        _changed_room(fixture)
+        _changed_room(fixture, args.change)
     with tempfile.TemporaryDirectory(prefix="room-job-") as folder:
         job = request(
             fixture,

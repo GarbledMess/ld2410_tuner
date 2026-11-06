@@ -1,6 +1,7 @@
 """Synthetic-only in-memory summaries and legacy sidecar cleanup."""
 
 import asyncio
+import os
 from unittest.mock import patch
 
 import pytest
@@ -190,3 +191,48 @@ def test_startup_removes_legacy_summaries_without_a_result_write(tmp_path):
 def test_missing_day_has_no_summary(tmp_path):
     store, date = installed(tmp_path)
     assert store.summary("absent", date) is None
+
+
+def _sidecar(root, name, size):
+    path = root / name
+    path.write_bytes(bytes(size))
+    return path
+
+
+def test_writing_sidecars_walks_the_folder_once_while_under_budget(tmp_path):
+    walks, plain = [], summary_cache._cache_files
+
+    def counted(root):
+        walks.append(root)
+        return plain(root)
+
+    with patch.object(summary_cache, "_cache_files", counted):
+        for number in range(8):
+            summary_cache.prune_after(tmp_path, _sidecar(tmp_path, f"{number}.cols", 10))
+    assert len(walks) == 1
+    assert len(list(tmp_path.glob("*.cols"))) == 8
+
+
+@pytest.mark.parametrize("kind", [".cols", ".cell"])
+def test_a_sidecar_passing_the_budget_prunes_the_oldest(tmp_path, kind):
+    from tuner_under_test.engine.hybrid import constants
+
+    with patch.object(constants, "CELL_CACHE_DISK_BYTES", 25):
+        for number in range(6):
+            path = _sidecar(tmp_path, f"{number}{kind}", 10)
+            os.utime(path, ns=(number + 1, number + 1))
+            summary_cache.prune_after(tmp_path, path)
+            assert sum(p.stat().st_size for p in tmp_path.iterdir()) <= 25
+    assert (tmp_path / f"5{kind}").exists()
+    assert not (tmp_path / f"0{kind}").exists()
+
+
+def test_a_result_memory_counts_against_the_result_budget(tmp_path):
+    from tuner_under_test.history import result_cache
+
+    with patch.object(result_cache, "MAX_DISK_BYTES", 15):
+        for number in range(3):
+            path = _sidecar(tmp_path, f"{number}.fit", 10)
+            os.utime(path, ns=(number + 1, number + 1))
+            summary_cache.prune_after(tmp_path, path)
+    assert [path.name for path in tmp_path.iterdir()] == ["2.fit"]
