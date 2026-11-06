@@ -9,13 +9,16 @@
   },
   "source_paths": [
     "custom_components",
-    "tests/hybrid_scaling.py",
-    "tests/lab/hybrid_capacity_checks.py"
+    "tests/ha_boundary.py",
+    "tests/real_home.py",
+    "tests/real_shape.py",
+    "tests/worker_transport.py",
+    "tests/lab/real_shape_timing.py"
   ],
   "domains": ["ld2410_tuner"],
   "command_timeout": 3600,
   "commands": {
     "limits": "chroot /work/os docker exec ha-lab python3 /lab/scripts/limits_check.py",
-    "hybrid_capacity": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/hybrid_capacity_checks.py --output /config/lab-reports/hybrid-capacity.json"
+    "hybrid_capacity": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/real_shape_timing.py --output /config/lab-reports/real-shape-timing.json"
   }
 }

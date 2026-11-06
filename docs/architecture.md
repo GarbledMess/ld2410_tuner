@@ -198,15 +198,16 @@ file descriptors before numerical imports. Supervisor ownership covers success,
 failure and cancellation. Unsupported isolation fails explicitly. These hard
 limits are separate from the stricter desktop performance acceptance targets.
 
-`tests/hybrid_scaling.py` builds deterministic raw disk history before job timers,
-then measures fresh cold and warm worker children through production capture and
-execution. `tests/lab/hybrid_capacity_checks.py` reports the full-size and memory
-matrix, legal thresholds, cache reads, spill cleanup and Linux kernel probes.
-CPU and traced-memory cases run separately. The dedicated CI capacity job preserves
-incremental evidence and fails missed gates. The low-share shared lab configuration
-is `tools/ha_lab_hybrid_capacity.json`; its x86 CPU quota limits scheduling share,
-not instructions per CPU-second, so it does not emulate a Green's processor speed.
-Measured capacity failures remain explicit and are not accuracy failures or passes.
+`tests/real_shape.py` builds one synthetic home the shape of a real install: twelve
+radars, sixty retained days, sensor labels off the six-second grid and tens of thousands of
+saved metadata items. `tests/real_home.py` runs it through `async_setup_entry`, the
+websocket commands and the worker protocol, and the `tests/test_home_*.py` suite acts on it as
+a user would. `tests/lab/real_shape_timing.py` reports what its heaviest jobs cost on the whole
+history, in the production child under its Linux limits; the dedicated CI job keeps that report
+and fails if a two-day job is refused. `tools/mutation_check.py` injects realistic bugs to show
+what a suite catches. The low-share shared lab configuration is
+`tools/ha_lab_hybrid_capacity.json`; its x86 CPU quota limits scheduling share, not
+instructions per CPU-second, so it does not emulate a Green's processor speed.
 
 `tools/validate_hybrid.py` validates private exports offline under `exp2-cv-v2`,
 using held-out folds and the independent `tests/hybrid_referee.py` oracle. See the

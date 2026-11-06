@@ -1,108 +1,19 @@
-"""Run from the repository root with: python3 tests/test_tuner.py.
-
-HA adapters are stubbed at the boundary; no live HA installation or radar required.
-"""
+"""The small-fixture harness (a runtime on one radar) and what is still best tested on it:
+label semantics, apply safety, and learning on hand-written scenes."""
 
 import asyncio
-import importlib.util
 import shutil
 import sys
 import tempfile
 import time
 import types
 import unittest
-from functools import cache
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "ld2410_tuner"
+import ha_boundary
 
-
-def load_runtime():
-    modules = [
-        "voluptuous",
-        "homeassistant",
-        "homeassistant.components",
-        "homeassistant.components.websocket_api",
-        "homeassistant.components.frontend",
-        "homeassistant.components.http",
-        "homeassistant.config_entries",
-        "homeassistant.core",
-        "homeassistant.helpers",
-        "homeassistant.helpers.entity_registry",
-        "homeassistant.helpers.device_registry",
-        "homeassistant.helpers.area_registry",
-        "homeassistant.helpers.event",
-        "homeassistant.helpers.storage",
-        "homeassistant.util",
-        "homeassistant.util.dt",
-        "homeassistant.components.http.auth",
-        "aiohttp",
-        "aiohttp.web",
-    ]
-    for name in modules:
-        sys.modules[name] = types.ModuleType(name)
-    sys.modules["homeassistant.components.http"].StaticPathConfig = object
-    sys.modules["homeassistant.components.http"].HomeAssistantView = type(
-        "HomeAssistantView", (), {}
-    )
-    sys.modules["homeassistant.components.http.auth"].async_sign_path = (
-        lambda hass, path, expiration, **kwargs: (
-            f"{path}?authSig=signed-{expiration.total_seconds():g}"
-        )
-    )
-    web = sys.modules["aiohttp"].web = sys.modules["aiohttp.web"]
-
-    class FileResponse:
-        def __init__(self, path, *, headers=None, **kwargs):
-            self.path, self.headers = Path(path), dict(headers or {})
-
-    web.FileResponse = FileResponse
-    web.HTTPNotFound = type("HTTPNotFound", (Exception,), {"status": 404})
-    web.HTTPForbidden = type("HTTPForbidden", (Exception,), {"status": 403})
-    sys.modules["homeassistant.config_entries"].ConfigEntry = object
-    core = sys.modules["homeassistant.core"]
-    core.HomeAssistant = object
-
-    def callback(fn):
-        # Like HA: only marked callables run on the event loop; others go to an executor.
-        fn._hass_callback = True
-        return fn
-
-    core.callback = callback
-    sys.modules["homeassistant.helpers.entity_registry"].EVENT_ENTITY_REGISTRY_UPDATED = "registry"
-    sys.modules["homeassistant.helpers.area_registry"].async_get = lambda hass: (
-        types.SimpleNamespace(async_list_areas=lambda: [])
-    )
-    sys.modules["homeassistant.helpers.device_registry"].async_get = lambda hass: (
-        types.SimpleNamespace(async_get=lambda key: None)
-    )
-    events = sys.modules["homeassistant.helpers.event"]
-    events.async_track_state_change_event = lambda *a: lambda: None
-    events.async_track_time_interval = lambda *a: lambda: None
-    sys.modules["homeassistant.helpers.storage"].Store = object
-
-    @cache
-    def get_time_zone(name):
-        try:
-            return ZoneInfo(name)
-        except (ZoneInfoNotFoundError, ValueError):
-            return None
-
-    sys.modules["homeassistant.util.dt"].get_time_zone = get_time_zone
-    spec = importlib.util.spec_from_file_location(
-        "tuner_under_test", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)]
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-mod = load_runtime()
-# Tests run background work unthrottled; tests/test_pace.py checks the throttle itself.
-sys.modules["tuner_under_test.history.pace"].SHARE = 1.0
+mod = ha_boundary.load_runtime()
 constants = sys.modules["tuner_under_test.const"]
 calibration_constants = sys.modules["tuner_under_test.calibration.constants"]
 training = sys.modules["tuner_under_test.history.labels"]
@@ -406,28 +317,6 @@ class LearningTests(unittest.TestCase):
         self.assertTrue(all(p["sensitivity"] == 1 for p in result["proposals"].values()))
         self.assertTrue(all(p["false_positives"] == 0 for p in result["proposals"].values()))
 
-    def test_many_guesses_cannot_overrule_a_few_human_labels(self):
-        rows = [(0, {"g0_still": 14}, "present"), (6, {"g0_still": 10}, "not_present")]
-        guesses = [
-            (
-                12 + i * 6,
-                {"g0_still": 10 if i % 2 else 14},
-                "present" if i % 2 else "not_present",
-                0.99,
-            )
-            for i in range(10000)
-        ]
-        # Start at the human-supported gap. Automatic volume cannot pull the
-        # setting away from it; nonzero observed class time is sufficient.
-        result = fit(
-            rows, ["g0_still"], current={"g0_still": 12}, automatic=guesses, automatic_weight=0.2
-        )
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["training"]["sensitivity"], 1)
-        self.assertEqual(result["training"]["false_positive_rate"], 0)
-        self.assertTrue(result["automatic_evidence"]["used"])
-        self.assertIsNone(result["validation"])
-
     def test_refit_learns_a_location_first_seen_in_recent_labels(self):
         rows = episode_samples({"g0_move": 30, "g1_still": 5}, {"g0_move": 5, "g1_still": 5})
         rows[179] = (179, {"g0_move": 5, "g1_still": 6}, "present")
@@ -616,190 +505,6 @@ class LearningTests(unittest.TestCase):
         self.assertLessEqual(result["validation"]["false_positive_rate"], 0.005)
         self.assertGreater(result["validation"]["false_trigger_bursts_per_hour"], 1)
         self.assertEqual(result["status"], "tradeoff")
-
-
-class WebsocketTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self.commands = {}
-        ws.vol.Required = lambda key, **kwargs: key
-        ws.vol.Optional = lambda key, **kwargs: key
-        ws.vol.In = lambda values: values
-        ws.vol.Any = lambda *values: values
-        ws.vol.All = lambda *values: values
-        ws.vol.Coerce = lambda value: value
-        ws.vol.Range = lambda **kwargs: kwargs
-
-        def schema(value):
-            def decorate(function):
-                function.schema = value
-                return function
-
-            return decorate
-
-        def admin(function):
-            function.admin_only = True
-            return function
-
-        ws.websocket_api.require_admin = admin
-        ws.websocket_api.websocket_command = schema
-        ws.websocket_api.async_response = lambda function: function
-        ws.websocket_api.async_register_command = lambda hass, function: self.commands.update(
-            {function.schema["type"]: function}
-        )
-        self.runtime = types.SimpleNamespace(
-            snapshot=lambda: {"devices": {"new": {}}},
-            async_learn=AsyncMock(return_value={"status": "ok"}),
-            start_learning=unittest.mock.Mock(return_value={"status": "running", "id": "job"}),
-            set_training_state=unittest.mock.Mock(),
-            apply=AsyncMock(return_value={"applied": {}}),
-        )
-        self.hass = types.SimpleNamespace(data={mod.DOMAIN: self.runtime})
-        self.connection = types.SimpleNamespace(
-            send_result=unittest.mock.Mock(), send_error=unittest.mock.Mock()
-        )
-        mod._register_websocket_commands(self.hass)
-
-    async def call(self, name, **fields):
-        await self.commands[f"{mod.DOMAIN}/{name}"](self.hass, self.connection, {"id": 7, **fields})
-
-    async def test_commands_remain_admin_only_and_lookup_live_runtime(self):
-        # 29 before learning sets, plus learn_set and apply_set, plus refresh_references (P1),
-        # plus configure_automatic_weight (P2b), less the learn_room and apply_room aliases (P5).
-        # Recording inventory, raw day pages, and room charts add three read-only commands; the
-        # JSON export's file download adds one.
-        self.assertEqual(len(self.commands), 37)  # + Bermuda discovery and configuration.
-        self.assertIn(f"{mod.DOMAIN}/room_series", self.commands)
-        self.assertTrue(all(command.admin_only for command in self.commands.values()))
-        self.hass.data[mod.DOMAIN] = types.SimpleNamespace(snapshot=lambda: {"reloaded": True})
-        await self.call("snapshot")
-        self.connection.send_result.assert_called_once_with(7, {"reloaded": True})
-
-    async def test_bermuda_commands_discover_configure_and_report_validation(self):
-        self.runtime.bermuda_devices = unittest.mock.Mock(
-            return_value=[{"entity_id": "sensor.phone_area"}]
-        )
-        self.runtime.configure_bermuda = unittest.mock.Mock(
-            return_value={"devices": [], "max_distance": None, "rooms": {}}
-        )
-        await self.call("bermuda_devices")
-        self.connection.send_result.assert_called_with(7, [{"entity_id": "sensor.phone_area"}])
-        await self.call(
-            "configure_bermuda", settings={"devices": [], "max_distance": None, "rooms": {}}
-        )
-        self.runtime.configure_bermuda.assert_called_once_with(
-            {"devices": [], "max_distance": None, "rooms": {}}
-        )
-        self.connection.send_result.assert_called_with(
-            7, {"devices": [], "max_distance": None, "rooms": {}}
-        )
-        self.runtime.configure_bermuda.side_effect = ValueError("Unknown room")
-        await self.call(
-            "configure_bermuda", settings={"devices": [], "max_distance": None, "rooms": {}}
-        )
-        self.connection.send_error.assert_called_with(7, "invalid_request", "Unknown room")
-
-    async def test_automatic_weight_command_configures_and_reports_invalid_values(self):
-        settings = sys.modules["tuner_under_test.calibration.settings"]
-        runtime = types.SimpleNamespace(data={}, _schedule_save=unittest.mock.Mock())
-        runtime.configure_automatic_weight = lambda weight: settings.configure(runtime, weight)
-        self.hass.data[mod.DOMAIN] = runtime
-        await self.call("configure_automatic_weight", weight=0.4)
-        self.connection.send_result.assert_called_with(
-            7,
-            {
-                "automatic_weight": 0.4,
-                "default_automatic_weight": settings.DEFAULT_AUTOMATIC_WEIGHT,
-            },
-        )
-        await self.call("configure_automatic_weight", weight=1.5)
-        self.connection.send_error.assert_called_with(
-            7, "invalid_request", "Automatic evidence weight must be a number from 0 to 1"
-        )
-        self.assertEqual(runtime.data["learning_schedule"]["automatic_weight"], 0.4)
-
-    async def test_learning_set_commands_learn_and_apply_the_whole_set(self):
-        self.runtime.learn_set = unittest.mock.Mock(return_value={"status": "running"})
-        self.runtime.apply_set = AsyncMock(return_value={"applied": {}, "skipped": {}})
-        await self.call("learn_set", set_id="zone:a+zone:b")
-        self.runtime.learn_set.assert_called_once_with("zone:a+zone:b")
-        self.connection.send_result.assert_called_with(7, {"status": "running"})
-        await self.call("apply_set", set_id="zone:a+zone:b", result_id="r1", source="user")
-        self.runtime.apply_set.assert_awaited_once_with("zone:a+zone:b", "r1", "user")
-        self.connection.send_result.assert_called_with(7, {"applied": {}, "skipped": {}})
-        self.runtime.learn_set.side_effect = ValueError("This zone no longer exists")
-        await self.call("learn_set", set_id="gone")
-        self.connection.send_error.assert_called_with(
-            7, "invalid_request", "This zone no longer exists"
-        )
-
-    async def test_refresh_references_command_targets_one_radar_or_every_stale_one(self):
-        self.runtime.refresh_references = AsyncMock(return_value={"queued": ["a"]})
-        await self.call("refresh_references", device_id="a")
-        self.runtime.refresh_references.assert_awaited_once_with("a")
-        self.connection.send_result.assert_called_with(7, {"queued": ["a"]})
-        await self.call("refresh_references")
-        self.runtime.refresh_references.assert_awaited_with(None)
-        self.runtime.refresh_references.side_effect = ValueError("Unknown device")
-        await self.call("refresh_references", device_id="gone")
-        self.connection.send_error.assert_called_with(7, "invalid_request", "Unknown device")
-
-    async def test_start_learning_acknowledges_without_waiting_or_applying(self):
-        await self.call("start_learning", device_id="a")
-        self.runtime.start_learning.assert_called_once_with("a")
-        self.connection.send_result.assert_called_once_with(7, {"status": "running", "id": "job"})
-        self.runtime.async_learn.assert_not_awaited()
-        self.runtime.apply.assert_not_awaited()
-
-    async def test_learning_and_applying_require_separate_explicit_commands(self):
-        await self.call("learn", device_id="a")
-        self.runtime.async_learn.assert_awaited_once_with("a")
-        self.runtime.apply.assert_not_awaited()
-        await self.call("apply", device_id="a")
-        self.runtime.apply.assert_awaited_once_with("a", None, None, None)
-
-    async def test_missing_runtime_and_invalid_device_preserve_error_contract(self):
-        self.runtime.async_learn.side_effect = ValueError("Unknown device")
-        await self.call("learn", device_id="missing")
-        self.connection.send_error.assert_called_with(7, "invalid_device", "Unknown device")
-        self.hass.data.clear()
-        for name in self.commands:
-            await self.commands[name](self.hass, self.connection, {"id": 7})
-        self.connection.send_error.assert_called_with(7, "not_loaded", "LD2410 Tuner is not loaded")
-
-    async def test_room_label_commands_report_invalid_request(self):
-        self.runtime.label_room_range = unittest.mock.Mock(side_effect=ValueError("Bad group"))
-        await self.call("label_room_range", group_id="zone:x", start=1.0, end=2.0, state="present")
-        self.runtime.label_room_range.assert_called_once_with("zone:x", 1.0, 2.0, "present")
-        self.connection.send_error.assert_called_with(7, "invalid_request", "Bad group")
-        self.runtime.edit_room_label = unittest.mock.Mock(return_value={"ok": True})
-        fields = {
-            "label_start": 1.0,
-            "label_end": 2.0,
-            "start": 1.0,
-            "end": 3.0,
-            "state": "unlabelled",
-        }
-        await self.call("edit_room_label", group_id="zone:x", revision=4, **fields)
-        self.runtime.edit_room_label.assert_called_once_with(
-            "zone:x", 1.0, 2.0, 1.0, 3.0, "unlabelled", 4
-        )
-
-    async def test_room_estimate_feedback_command_reports_invalid_request(self):
-        self.runtime.room_estimate_feedback = unittest.mock.Mock(side_effect=ValueError("No"))
-        await self.call("room_estimate_feedback", group_id="zone:x", correct=True)
-        self.runtime.room_estimate_feedback.assert_called_once_with("zone:x", True)
-        self.connection.send_error.assert_called_with(7, "invalid_request", "No")
-
-    async def test_configure_room_sources_command_reports_invalid_request(self):
-        self.runtime.configure_room_sources = unittest.mock.Mock(side_effect=ValueError("Bad"))
-        await self.call("configure_room_sources", group_id="zone:x", settings={"sources": []})
-        self.runtime.configure_room_sources.assert_called_once_with("zone:x", {"sources": []})
-        self.connection.send_error.assert_called_with(7, "invalid_request", "Bad")
-
-    async def test_zero_timeout_still_means_no_timeout(self):
-        await self.call("set_training_state", device_id="a", state="present", timeout_seconds=0)
-        self.runtime.set_training_state.assert_called_once_with("a", "present", None)
-        self.connection.send_result.assert_called_once_with(7, {"ok": True})
 
 
 class InferenceTests(unittest.TestCase):
@@ -1037,45 +742,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(time, "time", return_value=timestamp):
             self.runtime.sample_devices()
 
-    def test_windows_share_end_and_preserve_sample_extrema(self):
-        for i in range(360):
-            self.runtime._record_history_sample(
-                "a", {"g0_move": 95 if i == 190 else i % 20}, self.now - 21600 + i * 60
-            )
-        six = self.runtime.history_series_multi("a", ["g0_move"], 6, 400, self.now)
-        day = self.runtime.history_series_multi("a", ["g0_move"], 24, 400, self.now)
-        self.assertEqual(six["end"], day["end"])
-        for result in (six, day):
-            series = result["series"]["g0_move"]
-            self.assertAlmostEqual(series["sample_count"], 21600 / 6, places=3)  # Duration.
-            self.assertEqual(max(p["max"] for p in series["points"]), 95)
-            self.assertEqual(min(p["min"] for p in series["points"]), 0)
-        again = self.runtime.history_series_multi("a", ["g0_move"], 6, 400, self.now)
-        self.assertEqual(six, again)
-
-    async def test_same_chart_request_is_shared_and_label_changes_invalidate_cache(self):
-        self.sample(self.now - 6)
-        calls = []
-
-        async def execute(request):
-            if request["operation"] == "charts":  # Not the label's background recount.
-                calls.append(request["operation"])
-            await asyncio.sleep(0.01)
-
-        self.worker_transport.before = execute
-        args = ("a", ["g0_move"], 6, 400, self.now)
-        first, second = await asyncio.gather(
-            self.runtime.async_history_series(*args), self.runtime.async_history_series(*args)
-        )
-        self.assertEqual(first, second)
-        self.assertEqual(len(calls), 1)
-        await self.runtime.async_history_series(*args)
-        self.assertEqual(len(calls), 1)
-        await self.runtime.label_history_range("a", self.now - 10, self.now, "present")
-        updated = await self.runtime.async_history_series(*args)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(updated["labels"][0]["state"], "present")
-
     def test_fast_label_reader_matches_priority_and_boundaries(self):
         self.device["history_labels"] = [
             {"start": 0, "end": 30, "state": "present"},
@@ -1098,17 +764,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "labels changed"):
             await self.runtime.apply("a")
 
-    def test_native_rebuild_never_readds_preconversion_histogram_mass(self):
-        histogram = [0] * 101
-        histogram[10] = 40
-        self.device["histograms"] = {"g0_move": {"present": histogram, "not_present": [0] * 101}}
-        self.device.update(training_state="present", training_label_start=self.now - 12)
-        for timestamp in (self.now - 12, self.now - 6, self.now):
-            self.sample(timestamp)
-        with patch.object(time, "time", return_value=self.now):
-            rebuilt = training._rebuild_histograms(self.runtime, self.device)
-        self.assertAlmostEqual(sum(rebuilt["g0_move"]["present"]), 2, places=2)
-
     def test_constant_signal_is_counted_without_state_events(self):
         self.device.update(training_state="present", training_label_start=self.now - 1)
         for i in range(3):
@@ -1125,14 +780,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         start = cells[0][0]
         self.assertEqual([value for _a, _b, value in cells], [10, None])
         self.assertAlmostEqual(cells[0][1] - start, 6, places=2)
-
-    def test_buffered_history_visible_immediately(self):
-        self.sample(self.now - 2)
-        with patch.object(time, "time", return_value=self.now):
-            result = self.runtime.history_series_multi("a", ["g0_move"], 1)
-        self.assertAlmostEqual(result["series"]["g0_move"]["sample_count"], 2 / 6, places=2)
-        self.assertEqual(max(p["max"] for p in result["series"]["g0_move"]["points"]), 10)
-        self.assertEqual(self.device.get("history", []), [])
 
     async def test_relabel_is_idempotent_and_does_not_duplicate_initial_training(self):
         self.device.update(training_state="present", training_label_start=self.now - 20)
@@ -1157,10 +804,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         hist = self.device["histograms"]["g0_move"]
         self.assertAlmostEqual(sum(hist["present"]), 1, places=2)  # [-6, 0) s stays present.
 
-    def test_empty_auto_training_is_unknown(self):
-        result = self.runtime._classify_auto(self.device, {"g0_move": 50})
-        self.assertEqual(result["label"], "unknown")
-
     def test_clear_invalidates_learned_and_stops_training(self):
         self.device.update(
             training_state="present",
@@ -1172,11 +815,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("last_learning", self.device)
         self.assertEqual(self.device["training_state"], "unknown")
         self.assertEqual(list(spans.events(self.runtime, "a")), [])
-
-    def test_unknown_device_training_rejected(self):
-        with self.assertRaises(ValueError):
-            self.runtime.set_training_state("bogus", "present")
-        self.assertNotIn("bogus", self.runtime.data["devices"])
 
     def test_far_apart_readings_keep_their_exact_times_across_days(self):
         self.runtime._record_history_sample("a", {"g0_move": 10}, self.now - 70000)
@@ -1206,6 +844,22 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.runtime._close_training_interval(self.device, self.now)
         self.assertEqual(self.device["history_labels"][0]["end"], self.now - 20)
+
+    def labelled(self):
+        self.configuration()
+        # Every configured gate is recorded: a gate without readings leaves no coverage.
+        quiet = [0] * 5 + [255] * 12
+        row = {40: bytes([40, *quiet, 0, 0]), 5: bytes([5, *quiet, 0, 0])}
+        # 100 present and 100 empty samples, each six seconds of recording.
+        start = self.now - 1300
+        record_rows(
+            self.runtime, "a", [(start + i * 6, row[40 if i < 100 else 5]) for i in range(200)]
+        )
+        self.device["history_labels"] = [
+            {"start": start, "end": start + 600, "state": "present"},
+            {"start": start + 600, "end": start + 1200, "state": "not_present"},
+        ]
+        return self.runtime._threshold_configuration("a")
 
     def configuration(self):
         for i in range(3):
@@ -1300,87 +954,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "Enable all active"):
             self.runtime._threshold_configuration("a")
 
-    async def test_chart_executor_includes_pending_data(self):
-        self.sample(self.now - 2)
-        with patch.object(time, "time", return_value=self.now):
-            result = await self.runtime.async_history_series("a", ["g0_move"], 1, 400)
-        points = result["series"]["g0_move"]["points"]
-        self.assertAlmostEqual(points[-1]["end"] - points[0]["start"], 2, places=1)
-
-    async def test_learning_executor_does_not_use_unlabelled_auto_samples(self):
-        self.configuration()
-        result = await self.runtime.async_learn("a")
-        self.assertEqual(result["status"], "insufficient")
-        self.assertEqual(result["counts"], {"present": 0, "not_present": 0})
-
-    async def test_complete_runtime_learning_and_apply(self):
-        self.configuration()
-        keys = list(self.device["last_learning"]["entities"])
-        samples = []
-        start = self.now - 1200
-        for i in range(200):
-            values = dict.fromkeys(keys, 5)
-            if i < 100:
-                values["g0_move" if i % 2 else "g2_still"] = 30
-            row = bytes(values.get(key, 255) for key in constants.HISTORY_KEYS)
-            samples.append((start + i * 6, row))
-        record_rows(self.runtime, "a", samples)
-        self.device["history_labels"] = [
-            {"start": start, "end": start + 600, "state": "present"},
-            {"start": start + 600, "end": self.now, "state": "not_present"},
-        ]
-        learned = await self.runtime.async_learn("a")
-        self.assertEqual(learned["status"], "ok")
-        # One occupied then one empty episode cannot provide both classes before
-        # and after a chronological cut; do not certify a random within-episode split.
-        self.assertIsNone(learned["validation"])
-        self.assertFalse(learned["adaptive_policy"]["validated"])
-        result = await self.runtime.apply("a")
-        self.assertEqual(set(result["applied"]), set(keys))
-        self.assertEqual(result["skipped"], {})
-
-    async def test_device_learn_job_reads_float_threshold_states(self):
-        self.configuration()
-        for state in self.states.values():
-            state.state = f"{float(state.state)}"
-        keys = list(self.device["last_learning"]["entities"])
-        samples = []
-        start = self.now - 1200
-        for i in range(200):
-            values = dict.fromkeys(keys, 5)
-            if i < 100:
-                values["g0_move" if i % 2 else "g2_still"] = 30
-            row = bytes(values.get(key, 255) for key in constants.HISTORY_KEYS)
-            samples.append((start + i * 6, row))
-        record_rows(self.runtime, "a", samples)
-        self.device["history_labels"] = [
-            {"start": start, "end": start + 600, "state": "present"},
-            {"start": start + 600, "end": self.now, "state": "not_present"},
-        ]
-        self.device.pop("last_learning")
-        report = self.runtime.start_learning("a")
-        assert report["status"] == "running"
-        saved = await self.runtime._learning_jobs["a"]
-        job = self.device["learning_job"]
-        assert job["status"] == "completed", job.get("error")
-        learned = saved["user"]
-        assert learned["status"] == "ok"
-        assert all(type(value) is int for value in learned["configuration"].values())
-        result = await self.runtime.apply("a", "user", learned["id"], learned["configuration"])
-        assert set(result["applied"]) == set(keys)
-        assert result["skipped"] == {}
-
-    async def test_changed_labels_discard_inflight_learning(self):
-        self.configuration()
-
-        async def execute(request):
-            self.runtime.clear_samples("a")
-
-        self.worker_transport.before = execute
-        with self.assertRaisesRegex(ValueError, "labels changed"):
-            await self.runtime.async_learn("a")
-        self.assertNotIn("last_learning", self.device)
-
     async def test_concurrent_apply_is_rejected(self):
         self.configuration()
         entered, release = asyncio.Event(), asyncio.Event()
@@ -1399,17 +972,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await first
         self.assertEqual(self.runtime._applying, set())
 
-    def test_bootstrap_guesses_without_human_labels(self):
-        for i in range(45):
-            self.sample(self.now + i * 2, 5)
-        self.assertEqual(self.device["auto"]["last_classification"]["state"], "unknown")
-        for i in range(45, 55):
-            self.sample(self.now + i * 2, 30)
-        last = self.device["auto"]["last_classification"]
-        self.assertEqual(last["state"], "present")
-        self.assertEqual(last["confidence"], 0.65)
-        self.assertEqual(last["basis"], "bootstrap")
-
     def test_short_spike_cannot_confirm_entry_from_filter_memory(self):
         for i in range(45):
             self.sample(self.now + i * 2, 5)
@@ -1418,16 +980,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.sample(self.now + i * 2, 30 if i < 47 else 5)
             states.append(self.device["auto"]["last_classification"]["state"])
         self.assertNotIn("present", states)
-
-    def test_a_guess_is_recorded_as_a_quantised_run(self):
-        self.device["auto"] = {
-            "last_classification": {"state": "present", "confidence": 0.73, "timestamp": self.now}
-        }
-        self.runtime._record_history_sample("a", {"g0_move": 20}, self.now)
-        # 73 % is stored in steps of 5 %: 15 steps.
-        known = guesses.of(self.runtime, "a")
-        self.assertEqual(known.runs[0][2:], ("present", 15, guesses.REFERENCE))
-        self.assertEqual(known.sample_guess(known.runs[0][0]), ("present", "automatic", 0.75))
 
     async def test_manual_corrections_and_explicit_unknown_override_guesses(self):
         self.now = round(self.now, 3)
@@ -1447,58 +999,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(result["counts"]["not_present"], 0.5, places=4)
         self.assertEqual(result["automatic_evidence"]["samples"]["present"], 0)
 
-    def test_ungrouped_radar_evidence_is_its_own_labels_only(self):
-        # An ungrouped radar's labelled evidence is its own labels only, whatever room
-        # attribution exists elsewhere: no room snapshot travels with its views.
-        from tuner_under_test.engine.hybrid.adapters import device_problem
-
-        row = {40: bytes([40] + [255] * 17), 5: bytes([5] + [255] * 17)}
-        start = round(self.now - 1300, 3)
-        record_rows(
-            self.runtime, "a", [(start + i * 6, row[40 if i < 100 else 5]) for i in range(200)]
-        )
-        self.device["history_labels"] = [
-            {"start": start, "end": start + 600, "state": "present"},
-            {"start": start + 600, "end": start + 1200, "state": "not_present"},
-        ]
-        view = self.runtime._history_view("a")
-        self.assertIsNone(view.data["room_snapshot"])
-        problem = device_problem(
-            view, "a", ["g0_move"], {"g0_move": 20}, {}, 0.0, None, start, start + 1200
-        )
-        truth = problem.zones[0].truth
-        found = {(span.state, span.source) for span in truth}
-        self.assertEqual(found, {("present", "human"), ("not_present", "human")})
-        present = sum(span.end - span.start for span in truth if span.state == "present")
-        self.assertAlmostEqual(present, 600)
-
-    async def test_persisted_guesses_reach_learner_with_confidence(self):
-        self.now = round(self.now, 3)
-        self.configuration()
-        keys = list(self.device["last_learning"]["entities"])
-        samples = []
-        for i in range(200):
-            values = dict.fromkeys(keys, 5)
-            if i < 100:
-                values["g0_move"] = 30
-            row = bytes(values.get(key, 255) for key in constants.HISTORY_KEYS)
-            samples.append((self.now - 1200 + i * 6, row + bytes((1 if i < 100 else 2, 100))))
-        record_rows(self.runtime, "a", samples)
-        result = await self.runtime.async_learn("a")
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["evidence_basis"], "automatic")
-        self.assertEqual(
-            # Six-second units of recorded time; the recording's last reading holds half a sample.
-            result["automatic_evidence"]["samples"],
-            {"present": 100, "not_present": 99.5},
-        )
-        self.assertAlmostEqual(
-            result["automatic_evidence"]["mean_confidence"]["present"],
-            0.75,  # Recorded confidence 1.0 times the learner's unvalidated prior.
-        )
-        applied = await self.runtime.apply("a")
-        self.assertEqual(set(applied["applied"]), set(keys))
-
     async def test_previous_95_percent_model_cannot_be_applied(self):
         self.configuration()
         for previous in ("joint_labelled_v1", "human_priority_v3"):
@@ -1506,32 +1006,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await self.runtime.apply("a")
         self.hass.services.async_call.assert_not_awaited()
-
-    async def test_format_cleanup_preserves_current_model_recommendation(self):
-        self.sample(self.now - 10)
-        self.device["last_learning"] = {
-            "method": sys.modules["tuner_under_test.calibration.constants"].METHOD,
-            "status": "ok",
-        }
-        saved = self.device["last_learning"]
-        await self.runtime.async_clean_history(persist=False)
-        self.assertIs(self.device["last_learning"], saved)
-        self.assertIn("history_cleanup", self.device)
-
-    async def test_invalid_history_cleanup_invalidates_recommendation(self):
-        from tuner_under_test.history import convert
-
-        self.device["history"] = [{"data": "corrupt"}]
-        self.device["last_learning"] = {
-            "method": sys.modules["tuner_under_test.calibration.constants"].METHOD,
-            "status": "ok",
-        }
-        convert.run(self.runtime.data, self.runtime._days, self.now)
-        self.assertEqual(self.device["history_cleanup"]["invalid_blocks"], 1)
-        await self.runtime.async_clean_history(persist=False)
-        self.assertNotIn("last_learning", self.device)
-        self.assertNotIn("history", self.device)
-        self.assertEqual(list(spans.events(self.runtime, "a")), [])
 
     async def test_a_reading_recorded_during_cleanup_is_kept(self):
         self.sample(self.now - 10)
@@ -1547,17 +1021,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             values = [c.values[0] for c in spans.events(self.runtime, "a")]
         self.assertEqual(values[0], 10)
         self.assertEqual(values[-1], 30)
-
-    async def test_unload_ends_coverage_and_writes_the_day_files(self):
-        self.sample(self.now - 2)
-        self.hass.data = {mod.DOMAIN: self.runtime}
-        mod.frontend.async_panel_exists = lambda *a: False
-        with patch.object(time, "time", return_value=self.now):
-            await mod.async_unload_entry(self.hass, None)
-        self.assertIsNone(self.runtime._days.current("a"))
-        self.assertTrue(any(self.runtime._days.folder("a").glob("*.log")))
-        self.runtime.store.async_save.assert_awaited_once()
-        self.assertNotIn("history", self.device)
 
 
 if __name__ == "__main__":
