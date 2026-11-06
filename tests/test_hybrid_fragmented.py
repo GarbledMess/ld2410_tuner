@@ -12,7 +12,7 @@ import pytest
 import test_tuner  # noqa: F401
 from test_hybrid_facade import alternating, worker_view
 from test_hybrid_reports import problem
-from tuner_under_test.engine.hybrid import diagnostics, engine, facade, search
+from tuner_under_test.engine.hybrid import diagnostics, engine, facade, reports, search
 from tuner_under_test.engine.hybrid.evidence import _labels
 from tuner_under_test.engine.hybrid.types import ScorePlan, TruthSpan
 
@@ -906,7 +906,15 @@ def test_full_and_human_diagnostics_share_one_physical_pass(tmp_path, monkeypatc
 
     monkeypatch.setattr(p.rows["r"], "blocks", counted)
     collected, review = diagnostics.diagnostics_pair(p, pattern, plan)
-    assert wire(collected) == wire(full)
+    report, whole = collected["radars"]["r"], full["radars"]["r"]
+    assert wire(collected["evidence_budget"]) == wire(full["evidence_budget"])
+    assert wire(report["review"]) == wire(whole["review"])
+    assert wire(report["samples"]["present"]) == wire(whole["samples"]["present"])
+    # The report reads no automatic histogram of a class that has human time.
+    for state in diagnostics.STATES:
+        assert wire(reports._gate_hist(report["histograms"][0], state)) == wire(
+            reports._gate_hist(whole["histograms"][0], state)
+        )
     assert wire(review["review"]) == wire(human["review"])
     assert review["recent_cutoffs"] == human["recent_cutoffs"]
     assert calls == [1]
