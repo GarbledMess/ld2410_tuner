@@ -25,6 +25,8 @@ STATES = ("present", "not_present")
 GUARD_FIELDS = ("mostly_missed_episodes", "empty_periods_mostly_false_active")
 OVERLAP_CACHE_BYTES = 8 * 1024**2
 
+_EPISODE_BATCH = 512
+
 
 class Disjoint(list):
     """Replay-owned sorted, disjoint, positive-duration intervals of one chunk."""
@@ -369,7 +371,16 @@ class SliceScorer:
     """
 
     def __init__(
-        self, zone, policy, window, directory: Path, mask=(), store=None, *, attribution=True
+        self,
+        zone,
+        policy,
+        window,
+        directory: Path,
+        mask=(),
+        store=None,
+        *,
+        attribution=True,
+        labels=None,
     ):
         zone = masked(zone, mask)
         # Fixed report variants retain their base zone before the NUL tag.
@@ -379,7 +390,7 @@ class SliceScorer:
             policy = replace(policy, quality={**policy.quality, **support})
         self.zone, self.policy, self.window = zone, policy, window
         self.attribution = attribution
-        self._labels = iter(_labels(zone.truth))
+        self._labels = iter(_labels(zone.truth) if labels is None else labels)
         self._labelled = 0.0
         self._label = self._next_label()
         self._end = self._active_end = None
@@ -395,6 +406,7 @@ class SliceScorer:
         self._store = ScoreStore(directory) if store is None else store
         self._db = self._store.db
         self._id = self._store.allocate()
+        self._pending = []
 
     def consume(self, lo, hi, coverage, raw, active, supported, *, cache=None):
         if self._db is None:
@@ -454,22 +466,29 @@ class SliceScorer:
             self._attribute(observed, members, physical, seen)
 
     def _episode(self, span, source, mass, seen, triggers):
-        self._db.execute(
+        pending = self._pending
+        if pending and pending[-1][1:4] == [span.state, source, span.episode_id]:
+            row = pending[-1]
+            row[4] += mass
+            row[5] += mass * span.confidence
+            row[6] += seen
+            row[7] += triggers
+            return
+        row = [self._id, span.state, source, span.episode_id, mass]
+        row.extend((mass * span.confidence, seen, triggers))
+        pending.append(row)
+        if len(pending) >= _EPISODE_BATCH:
+            self._flush_episodes()
+
+    def _flush_episodes(self):
+        self._db.executemany(
             """INSERT INTO episodes VALUES (?,?,?,?,?,?,?,?)
             ON CONFLICT(scorer,state,source,parent) DO UPDATE SET
             observed=observed+excluded.observed, weighted=weighted+excluded.weighted,
             seen=seen+excluded.seen, triggers=triggers+excluded.triggers""",
-            (
-                self._id,
-                span.state,
-                source,
-                span.episode_id,
-                mass,
-                mass * span.confidence,
-                seen,
-                triggers,
-            ),
+            self._pending,
         )
+        self._pending.clear()
 
     def _next_label(self):
         label = next(self._labels, None)
@@ -494,6 +513,7 @@ class SliceScorer:
             "false_triggers": 0,
         }
         by_source = {}
+        self._flush_episodes()
         rows = self._db.execute(
             """SELECT state,source,observed,weighted,seen,triggers FROM episodes
             WHERE scorer=? ORDER BY rowid""",

@@ -197,16 +197,22 @@ def _auto_parents(runs, owner):
 
 
 def _source_evidence(cells, runs, owner, keys):
+    positions = tuple(HISTORY_KEYS.index(key) for key in keys)
+    intervals = _usable_intervals(cells, positions) if keys and runs else cells
+    return _interval_evidence(intervals, runs, owner, keys)
+
+
+def _interval_evidence(intervals, runs, owner, keys):
+    """Automatic episodes and overlaps from ``(low, high, (label, times, ends))`` intervals."""
     from .quality_evidence import AutomaticEpisode, Overlap, _intersections
 
     if not runs or not keys:
-        deque(cells, maxlen=0)
+        deque(intervals, maxlen=0)
         return (), ()
     parents = dict(zip(runs, _auto_parents(runs, owner), strict=True))
     automatic, overlaps = {}, {}
-    positions = tuple(HISTORY_KEYS.index(key) for key in keys)
     confidence_by_run = {run: guesses.confidence(run[3]) for run in runs}
-    for low, high, interval, run in _intersections(_usable_intervals(cells, positions), runs):
+    for low, high, interval, run in _intersections(intervals, runs):
         human, times, ends = interval
         confidence = confidence_by_run[run]
         if not MIN_AUTO_CONFIDENCE <= confidence <= 1:

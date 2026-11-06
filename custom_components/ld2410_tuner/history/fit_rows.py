@@ -5,7 +5,7 @@ from bisect import bisect_left, bisect_right
 from contextlib import nullcontext
 from math import ceil, inf, isfinite
 
-from . import daystore, pace
+from . import column_cache, daystore, pace
 
 
 class CapturedRowSource:
@@ -40,9 +40,38 @@ class CapturedRowSource:
 
     def blocks(self, lo, hi):
         for date, start, end in self._windows(lo, hi):
+            cached = self._cached_columns(date, start, end)
+            if cached is not None:
+                yield from cached
+                # As closing the day file would: rows from a replaced source are rejected.
+                self.view._days.identity(self.device_id, date)
+            else:
+                with self._columns(date) as columns:
+                    if columns is not None:
+                        yield from columns.blocks(start, end, self.channels)
+
+    def _cached_columns(self, date, start, end):
+        from .fit_days import _cache_root, _result_identity
+
+        days = self.view._days
+        persistent = _result_identity(days, self.device_id, date)
+        if persistent is None:
+            return None
+        path, identity = persistent
+        found = column_cache.load(path, identity, start, end, self.channels)
+        if found is None:
+            lo, hi = daystore.bounds(date)
             with self._columns(date) as columns:
-                if columns is not None:
-                    yield from columns.blocks(start, end, self.channels)
+                if columns is None:
+                    return None
+                column_cache.store(
+                    path,
+                    _cache_root(days, path),
+                    identity,
+                    columns.blocks(lo, hi, tuple(range(18))),
+                )
+            found = column_cache.load(path, identity, start, end, self.channels)
+        return found
 
     def _physical(self, date):
         if self._day is None or self._day[0] != date:

@@ -144,10 +144,22 @@ def test_physical_replay_rebuilds_corrupt_sidecar(tmp_path):
     fit, days, path = fitting(tmp_path)
     expected = fit.digest("synthetic", DAY, (0,)).physical.window(0, 86400)
     path.with_suffix(".cell").write_bytes(b"corrupt")
+    path.with_suffix(".cols").unlink()
     with patch.object(days, "open_columns", wraps=days.open_columns) as reads:
         actual = FittingDays(fit.view).physical("synthetic", DAY, (0,))
     assert actual.window(0, 86400) == expected
     assert reads.call_count == 1
+    assert path.with_suffix(".cell").read_bytes().startswith(b"LD24CELL1")
+
+
+def test_physical_replay_rebuilds_from_finished_columns_without_the_day_file(tmp_path):
+    fit, days, path = fitting(tmp_path)
+    expected = fit.digest("synthetic", DAY, (0,)).physical.window(0, 86400)
+    path.with_suffix(".cell").write_bytes(b"corrupt")
+    with patch.object(days, "open_columns", wraps=days.open_columns) as reads:
+        actual = FittingDays(fit.view).physical("synthetic", DAY, (0,))
+    assert actual.window(0, 86400) == expected
+    assert reads.call_count == 0
     assert path.with_suffix(".cell").read_bytes().startswith(b"LD24CELL1")
 
 
@@ -221,14 +233,20 @@ def test_trim_clear_and_disk_accounting_include_cells(tmp_path):
     fit, _, path = fitting(tmp_path)
     fit.digest("synthetic", DAY, (0,))
     cache = path.with_suffix(".cell")
-    assert summary_cache.disk_bytes(tmp_path) == cache.stat().st_size
+    columns = path.with_suffix(".cols")
+    assert summary_cache.disk_bytes(tmp_path) == cache.stat().st_size + columns.stat().st_size
     orphan = tmp_path / "orphan.celltmp"
     orphan.write_bytes(b"partial")
+    leftover = tmp_path / "orphan.colstmp"
+    leftover.write_bytes(b"partial")
     summary_cache.prune(tmp_path)
     assert not orphan.exists()
+    assert not leftover.exists()
     assert cache.exists()
+    assert columns.exists()
     summary_cache.invalidate(path)
     assert not cache.exists()
+    assert not columns.exists()
 
 
 def test_cell_budget_is_independent_of_result_budget(tmp_path):

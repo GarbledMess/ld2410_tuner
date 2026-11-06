@@ -5,9 +5,13 @@ each episode closes gives exactly the existing mean-density formula without
 retaining an episode by gate matrix of 101-bin histograms.
 """
 
+import re
+from array import array
+from bisect import bisect_left
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
+from operator import eq, lt
 
 from ...calibration import event_quality
 from ...calibration.quality import QualityModel, learn
@@ -15,7 +19,7 @@ from ...calibration.quality_evidence import QualityContext, _independent_reader
 from ...const import HISTORY_KEYS
 from ...history import guesses, pace, spans
 from ...history.fit_rows import CapturedRowSource
-from .types import EvidencePolicy
+from .types import EvidencePolicy, RowBlock
 
 AUTOMATIC_HORIZON_DAYS = EvidencePolicy(0, False, {}).automatic_horizon_days
 
@@ -94,6 +98,10 @@ class _Densities:
 
 
 _PHYSICAL_VALUES = (*range(255), None)
+_MISSING = bytes(value == 255 for value in range(256))
+_NOT = bytes(value == 0 for value in range(256))
+_READABLE = re.compile(rb"\x01+")
+_SEPARATED = re.compile(rb"\x00")
 
 
 def _physical(source, start, end):
@@ -107,19 +115,102 @@ def _physical(source, start, end):
             yield spans.Span(lo, hi, row, "event")
 
 
-def _native_cells(source, reader, owner, start, end):
-    """Resolve labels directly over captured columns, without allocating physical spans."""
+def _native_intervals(source, reader, owner, start, end, densities, digest):
+    """Usable label intervals over captured columns, in chronological order.
+
+    Only rows inside an explicit label are visited one at a time (their densities need
+    them); every other row is geometry, read from the columns as whole ranges.
+    """
     labels = event_quality._LabelCells(reader, owner, start, end)
     vector = _vector_reader(source.channels)
     low = max(start, getattr(source.view, "_physical_history_start", float("-inf")))
     for block in source.blocks(low, end):
         pace.rest()
-        values = _block_vectors(block, source.channels, vector)
-        for lo, hi, row in zip(block.times, block.ends, values, strict=True):
-            if start < lo < hi < end and labels.low <= lo and hi <= labels.high:
-                yield lo, hi, row, labels.state, labels.parent
-            else:
-                yield from _split_cell(labels, max(start, lo), min(end, hi), row)
+        digest.update(block.times.tobytes() + block.ends.tobytes())
+        digest.update(b"".join(block.columns[c] for c in source.channels))
+        readable = _readable(block, source.channels)
+        for piece in _label_pieces(block, labels, start, end):
+            digest.update(repr((piece[2], piece[3])).encode())
+            if piece[3] is not None:
+                _add_densities(densities, block, piece, source.channels, vector)
+            yield from _piece_intervals(block, piece, readable)
+
+
+def _readable(block, channels):
+    """One byte per row: 1 when any selected gate has a reading."""
+    missing = -1
+    for c in channels:
+        missing &= int.from_bytes(block.columns[c].translate(_MISSING), "little")
+    n = len(block.times)
+    if not channels:
+        return bytes(n)
+    return missing.to_bytes(n, "little").translate(_NOT)
+
+
+def _label_pieces(block, labels, start, end):
+    """``(first, stop, state, parent, low, high)``: rows under one label, whole or clipped."""
+    times, ends = block.times, block.ends
+    at, n = 0, len(times)
+    whole = all(map(lt, times, ends))  # An empty or reversed row has no duration to share.
+    cursor = start
+    while at < n:
+        low, high = max(cursor, times[at]), min(end, ends[at])
+        if low >= high:
+            at += 1
+            continue
+        state, parent, edge = labels.at(low)
+        stop = bisect_left(ends, min(edge, end), at, n) if whole else at
+        if stop > at and times[at] >= cursor:
+            yield at, stop, state, parent, None, None
+            at = stop
+            continue
+        cursor = min(high, edge)
+        yield at, at + 1, state, parent, low, cursor
+        at += cursor >= high
+
+
+def _add_densities(densities, block, piece, channels, vector):
+    first, stop, state, parent, low, high = piece
+    part = _slice(block, first, stop)
+    values = _block_vectors(part, channels, vector)
+    if low is not None:
+        densities.add((low, high, next(values), state, parent))
+        return
+    for lo, hi, row in zip(part.times, part.ends, values, strict=True):
+        densities.add((lo, hi, row, state, parent))
+
+
+def _piece_intervals(block, piece, readable):
+    first, stop, state, parent, low, high = piece
+    human = parent if state in event_quality.LABELS else state
+    if low is not None:
+        if readable[first]:
+            yield low, high, (human, array("d", (low,)), array("d", (high,)))
+        return
+    times, ends = block.times, block.ends
+    for match in _READABLE.finditer(readable, first, stop):
+        a, b = match.span()
+        for lo, hi in _joined_rows(times, ends, a, b):
+            yield times[lo], ends[hi - 1], (human, times[lo:hi], ends[lo:hi])
+
+
+def _joined_rows(times, ends, first, stop):
+    """Ranges of rows each starting exactly where the row before it ended."""
+    offset = first + 1
+    joined = bytes(map(eq, times[offset:stop], ends[first : stop - 1]))
+    for match in _SEPARATED.finditer(joined):
+        cut = offset + match.start()
+        yield first, cut
+        first = cut
+    yield first, stop
+
+
+def _slice(block, first, stop):
+    return RowBlock(
+        block.times[first:stop],
+        block.ends[first:stop],
+        tuple(column[first:stop] for column in block.columns),
+    )
 
 
 def _vector_reader(channels):
@@ -139,14 +230,6 @@ def _block_vectors(block, channels, vector):
     return zip(
         *(map(_PHYSICAL_VALUES.__getitem__, column) for column in block.columns), strict=True
     )
-
-
-def _split_cell(labels, low, high, values):
-    while low < high:
-        state, parent, edge = labels.at(low)
-        stop = min(high, edge)
-        yield low, stop, values, state, parent
-        low = stop
 
 
 def _runs(view, device_id, start, end, reader):
@@ -196,9 +279,8 @@ def collect_quality(
     )
     runs = _runs(view, device_id, auto_start, end, reader)
     densities, digest = _Densities(keys), sha256()
-    cells = _native_cells(source, reader, owner, start, end)
-    observed = event_quality._observed(cells, densities, digest, integer_values=True)
-    automatic, overlaps = event_quality._source_evidence(observed, runs, owner, keys)
+    intervals = _native_intervals(source, reader, owner, start, end, densities, digest)
+    automatic, overlaps = event_quality._interval_evidence(intervals, runs, owner, keys)
     densities.finish()
     digest = event_quality._fingerprint(
         (),

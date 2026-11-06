@@ -22,7 +22,7 @@ from ...const import HISTORY_KEYS
 from ...history import spans
 from ...rooms import adaptive, attribution, roles
 from . import adapters, engine, fixed, held, reports, room_bundles
-from .diagnostics import diagnostics
+from .diagnostics import diagnostics, diagnostics_pair
 from .scoring import masked
 from .types import FitResult
 
@@ -189,12 +189,13 @@ def _validation(scores, problem, human, audit):
     }
 
 
-def _device_bundle(scores, problem, pattern, audit):
+def _device_bundle(scores, problem, pattern, audit, review=None):
     zones = _source_zones(problem.zones[0])
     human = zones["human"]
     device_id = next(iter(problem.radars))
-    review = diagnostics(replace(problem, zones=(human,)), pattern, scores.plan)
-    review = review["radars"][device_id]
+    if review is None:
+        review = diagnostics(replace(problem, zones=(human,)), pattern, scores.plan)
+        review = review["radars"][device_id]
     zones["recent"] = fixed.since(human, "recent", review["recent_cutoffs"])
     periods, without = _influence_zones(human, review["review"])
     found = scores.scores([pattern], [*zones.values(), *without])[0]
@@ -229,13 +230,14 @@ def _device_report(problem, result, audit):
     problem = _judged(engine.with_horizon(problem), result)
     pattern = result.thresholds
     with fixed.FixedScores(problem, 3) as scores:
-        bundle, after = _device_bundle(scores, problem, pattern, audit)
+        collected, review = diagnostics_pair(problem, pattern, scores.plan)
+        bundle, after = _device_bundle(scores, problem, pattern, audit, review)
         before = scores.scores([_current(problem)], [problem.zones[0]])[0]
         values = {
             "scoring_mode": scores.mode,
             "score_plan": scores.plan,
             "measurements": bundle,
-            "raw_diagnostics": diagnostics(problem, pattern, scores.plan),
+            "raw_diagnostics": collected,
             "quiet_cost": result.diagnostics["quiet_cost"],
             "selection_cost": result.diagnostics["selection_cost"],
         }
