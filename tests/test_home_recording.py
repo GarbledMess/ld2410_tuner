@@ -73,7 +73,8 @@ def test_a_crash_keeps_what_was_flushed_and_ends_coverage_there(play, tmp_path):
     async def record_then_crash(home):
         home.clock.moved(30)
         delivered.extend(_deliver(home, "office_1", [61, 62, 63]))
-        await home.poll()
+        # The flush timer fires with nothing else recorded: the last reading is its last record.
+        home.runtime._schedule_flush()
         await home.flushed()
         # The power goes: the disk as it is now is all the next start has.
         real_shape.open_copy(home.config, crashed)
