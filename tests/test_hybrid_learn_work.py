@@ -423,6 +423,28 @@ def test_scorers_of_one_zone_write_no_episode_rows_within_budget(tmp_path, monke
     assert calls == []
 
 
+def test_scorers_of_one_zone_clip_each_label_once_per_chunk(tmp_path, monkeypatch):
+    problem = fragmented_problem(tmp_path)
+    region = exact.regions(problem.zones[0].truth)
+
+    def clips(patterns):
+        calls, original = [], scoring._Overlap.clip
+
+        def counted(self, lo, hi):
+            calls.append(1)
+            return original(self, lo, hi)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(scoring._Overlap, "clip", counted)
+            with exact.Evaluator(problem, region) as evaluator:
+                evaluator.scores(patterns, zones=problem.zones)
+        return len(calls)
+
+    one = clips([{"r": {0: 40}}])
+    assert one > 0
+    assert clips([{"r": {0: threshold}} for threshold in (40, 50, 60, 70)]) == one
+
+
 def test_scorers_of_one_zone_share_its_resolved_labels(tmp_path, monkeypatch):
     problem = fragmented_problem(tmp_path)
     calls, original = [], exact._labels
