@@ -54,7 +54,7 @@ def test_startup_recovers_from_what_a_crash_leaves_on_disk(play):
         assert day.ends[-1] == day.times[-1]
         # Today's log kept every whole record and now ends coverage at the last of them.
         page = await home.ws("recording_rows", device_id=RADAR, date=_date(0).isoformat(), limit=1)
-        assert page["total"] == (real_shape.NOW - TODAY) // real_shape.PARTIAL_SECONDS
+        assert page["total"] == real_shape.rows_today(RADAR)
         last = await home.ws(
             "recording_rows",
             device_id=RADAR,

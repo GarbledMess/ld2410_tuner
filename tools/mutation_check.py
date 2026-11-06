@@ -5,10 +5,11 @@ Run from the repository root::
 
     python tools/mutation_check.py --suite-from HEAD --jobs 4 --output report.json
 
-Each bug is a small source patch, applied to a private copy of the package, tools and the suite
-under test; the suite then runs in that copy and stops at its first failure. ``--suite-from``
+Each bug is a small source patch, applied to a private copy of the repository's tracked files and
+the suite under test; the suite then runs in that copy and stops at its first failure. ``--suite-from``
 takes the tests from any git revision, so the old and new suites face the same bugs with the
-same source. A green unpatched run comes first: without it a "caught" means nothing.
+same source. An unpatched run comes first and each catch is confirmed: the failing test must pass
+on the unpatched source, or it is set aside as flaky and the suite runs again without it.
 
 The private ``tests/data`` folder is never copied, read or listed: suites come out of git or from
 the tracked files of the working tree, and it is not tracked.
@@ -29,7 +30,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "custom_components/ld2410_tuner/"
-COPIED = ("custom_components", "tools", "pyproject.toml", "requirements-dev.txt", ".github")
+CATALOGUE_TEST = "tests/test_tools.py::MutationCatalogueTests"
+MAX_FLAKY = 5
 
 
 @dataclass(frozen=True)
@@ -234,22 +236,16 @@ def patched(text, bug):
     return text.replace(bug.old, bug.new)
 
 
-def _tracked_paths(revision=None):
-    command = ["git", "-C", str(ROOT), "ls-files"]
-    if revision is not None:
-        command = ["git", "-C", str(ROOT), "ls-tree", "-r", "--name-only", revision]
+def _tracked_paths():
     # A list of arguments and a fixed program: no shell involved.
-    listed = subprocess.run(command, check=True, capture_output=True, text=True)  # nosec B603 B607
-    return [line for line in listed.stdout.splitlines() if line.startswith("tests/")]
+    listed = subprocess.run(  # nosec B603 B607
+        ["git", "-C", str(ROOT), "ls-files"], check=True, capture_output=True, text=True
+    )
+    return listed.stdout.splitlines()
 
 
-def _copy_working_suite(target):
-    known = _tracked_paths() + [
-        str(path.relative_to(ROOT)).replace(os.sep, "/")
-        for name in ("test_*.py", "*.py")
-        for path in (ROOT / "tests").glob(name)
-    ]
-    for relative in sorted(set(known)):
+def _copy_paths(paths, target):
+    for relative in paths:
         source = ROOT / relative
         if source.is_file():
             destination = target / relative
@@ -270,18 +266,13 @@ def _extract_suite(revision, target):
 
 
 def _prepare(base, suite):
-    """The package and tools of this checkout, and ``suite``'s tests, in ``base``."""
-    for name in COPIED:
-        source = ROOT / name
-        if source.is_dir():
-            ignored = shutil.ignore_patterns("__pycache__", "*.pyc")
-            shutil.copytree(source, base / name, ignore=ignored)
-        elif source.exists():
-            shutil.copy2(source, base / name)
+    """This checkout's tracked files, with ``suite``'s tests when one is named, in ``base``."""
+    tracked = _tracked_paths()
     if suite is None:
-        _copy_working_suite(base)
-    else:
-        _extract_suite(suite, base)
+        _copy_paths(tracked, base)
+        return
+    _copy_paths([path for path in tracked if not path.startswith("tests/")], base)
+    _extract_suite(suite, base)
 
 
 def _first_failure(output):
@@ -291,20 +282,23 @@ def _first_failure(output):
     return None
 
 
-def run_suite(base, arguments, timeout):
+def run_suite(base, arguments, timeout, *, stop_at_first=True):
     """``(passed, first failing test, seconds)`` of the suite in ``base``."""
     command = [
         sys.executable,
         "-m",
         "pytest",
         "-q",
-        "-x",
+        *(("-x",) if stop_at_first else ()),
         "-p",
         "no:cacheprovider",
         "--basetemp",
         str(base / "pytest-tmp"),
         "-m",
         "not scaling",
+        # It checks the patches apply, so it would "catch" each of them.
+        "--deselect",
+        CATALOGUE_TEST,
         *arguments,
     ]
     started = time.perf_counter()
@@ -326,21 +320,55 @@ def run_suite(base, arguments, timeout):
     return done.returncode == 0, _first_failure(done.stdout), seconds
 
 
+def _test_id(failure):
+    return failure.split(" ", 1)[1] if failure and " " in failure else None
+
+
+def _fails_without_the_bug(base, path, original, patched_text, test_id, timeout):
+    """Whether ``test_id`` also fails on the unpatched source: then it says nothing of the bug."""
+    path.write_text(original, encoding="utf8", newline="\n")
+    try:
+        passed, _failure, _seconds = run_suite(base, ["-n", "0", test_id], timeout)
+    finally:
+        path.write_text(patched_text, encoding="utf8", newline="\n")
+    return not passed
+
+
+def _confirmed_run(base, path, original, patched_text, arguments, timeout):
+    """The suite against the bug, setting aside any failure that the unpatched source shares
+    (a test flaking on a loaded machine must not count as catching a bug)."""
+    flaky, seconds = [], 0.0
+    while len(flaky) < MAX_FLAKY:
+        deselected = [item for test in flaky for item in ("--deselect", test)]
+        passed, failure, spent = run_suite(base, [*arguments, *deselected], timeout)
+        seconds += spent
+        test_id = _test_id(failure)
+        if passed or test_id is None:
+            return passed, failure, seconds, flaky
+        if not _fails_without_the_bug(base, path, original, patched_text, test_id, timeout):
+            return False, failure, seconds, flaky
+        flaky.append(test_id)
+    return True, None, seconds, flaky
+
+
 def check_bug(bug, suite, work, arguments, timeout):
     """One bug against one suite, in a private copy of everything."""
     base = Path(tempfile.mkdtemp(prefix=f"{bug.name[:20]}-", dir=work))
     try:
         _prepare(base, suite)
         path = base / PACKAGE / bug.path
-        path.write_text(
-            patched(path.read_text(encoding="utf8"), bug), encoding="utf8", newline="\n"
+        original = path.read_text(encoding="utf8")
+        text = patched(original, bug)
+        path.write_text(text, encoding="utf8", newline="\n")
+        passed, failure, seconds, flaky = _confirmed_run(
+            base, path, original, text, arguments, timeout
         )
-        passed, failure, seconds = run_suite(base, arguments, timeout)
         return {
             "bug": bug.name,
             "description": bug.description,
             "caught": not passed,
             "first_failure": failure,
+            "set_aside_as_flaky": flaky,
             "seconds": round(seconds, 1),
         }
     finally:
@@ -348,10 +376,11 @@ def check_bug(bug, suite, work, arguments, timeout):
 
 
 def baseline(suite, work, arguments, timeout):
+    """The unpatched suite, run to the end: everything failing here is listed."""
     base = Path(tempfile.mkdtemp(prefix="baseline-", dir=work))
     try:
         _prepare(base, suite)
-        passed, failure, seconds = run_suite(base, arguments, timeout)
+        passed, failure, seconds = run_suite(base, arguments, timeout, stop_at_first=False)
         return {"passed": passed, "first_failure": failure, "seconds": round(seconds, 1)}
     finally:
         shutil.rmtree(base, ignore_errors=True)

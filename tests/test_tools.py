@@ -289,3 +289,22 @@ class TransportTests(unittest.TestCase):
             release.main()
             build.assert_not_called()
             publish.assert_not_called()
+
+
+class MutationCatalogueTests(unittest.TestCase):
+    def test_every_injected_bug_still_applies_to_exactly_one_place(self):
+        tool = importlib.import_module("mutation_check")
+        self.assertGreaterEqual(len(tool.BUGS), 25)
+        self.assertEqual(len({bug.name for bug in tool.BUGS}), len(tool.BUGS))
+        for bug in tool.BUGS:
+            source = (ROOT / tool.PACKAGE / bug.path).read_text(encoding="utf8")
+            self.assertNotEqual(tool.patched(source, bug), source, bug.name)
+
+    def test_a_target_that_moved_is_reported_and_the_first_failure_is_found(self):
+        tool = importlib.import_module("mutation_check")
+        bug = tool.Bug("moved", "", "x.py", "gone", "new")
+        with self.assertRaisesRegex(ValueError, "occurs 0 times"):
+            tool.patched("text", bug)
+        output = "..\nFAILED tests/test_a.py::test_b - boom\nFAILED tests/test_c.py::test_d\n"
+        self.assertEqual(tool._first_failure(output), "FAILED tests/test_a.py::test_b")
+        self.assertIsNone(tool._first_failure("3 passed"))

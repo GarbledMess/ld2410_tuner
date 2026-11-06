@@ -168,7 +168,8 @@ def _add_radar(hass, radar, room):
     for kind in ("move", "still"):
         entity_id = f"number.{radar}_max_{kind}_distance_gate"
         registry.add(entity_id, radar)
-        values[entity_id] = plain(state="8", attributes={})
+        limit = "4" if radar in real_shape.TEN_CHANNEL_RADARS else "8"
+        values[entity_id] = plain(state=limit, attributes={})
     registry.add(f"switch.{radar}_engineering_mode", radar)
     values[f"switch.{radar}_engineering_mode"] = plain(state="on", attributes={})
     hass.devices[radar] = plain(
@@ -297,7 +298,7 @@ class Home:
     def thresholds(self, radar):
         return {
             name: float(self.hass.values[f"number.{radar}_g{name[1]}_{name[3:]}_threshold"].state)
-            for name in HISTORY_KEYS
+            for name in real_shape.channels(radar)
         }
 
     async def learn(self, radar):

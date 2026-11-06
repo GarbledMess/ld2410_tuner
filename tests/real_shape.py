@@ -1,9 +1,14 @@
 """One realistic synthetic home, the shape of a real install but entirely made up.
 
-Twelve radars in two-radar and one-radar rooms; sixty retained days of day files of about
-0.4 MB each, whose readings change in most six-second cells except for quiet overnight sleepers
-and a pet that wanders by; about 248 automatic sensor labels a day with edges off the six-second
-grid; a handful of long human labels and a few short ones; manual room labels covering several
+Twelve radars of 18, 10 and 2 configured channels in two-radar and one-radar rooms; sixty retained
+days of day files of about 0.4 MB each. Rows are irregular events, not six-second cells: about
+half last under half a second, a quarter about a second, the rest up to many seconds, and almost
+none falls on a six-second clock. They are contiguous but for 0.1%, 0.2% have a missing channel,
+and on 10-channel radars 30% (80% on 2-channel) repeat the configured channels of the row before. The radars a
+Learn runs on have the measured rate of about 48,000 rows a day; the long-history ones, which are
+mostly read rather than fitted, about 28,000, by resting longer between bursts. Overnight sleepers
+are quiet and a pet wanders by; about 248 automatic sensor labels a day have edges off any grid;
+a handful of long human labels and a few short ones; manual room labels covering several
 radars; one open partial day; tens of thousands of metadata items in the saved JSON.
 
 ``build(folder)`` builds it once (seeded, so byte-identical every time). ``open_copy`` gives a
@@ -18,9 +23,11 @@ import random
 import shutil
 import zlib
 from array import array
+from bisect import bisect_left
 from concurrent.futures import ThreadPoolExecutor
-from itertools import chain, compress, repeat
-from operator import add, mul, sub
+from functools import lru_cache
+from itertools import accumulate, chain, repeat
+from operator import itemgetter, sub
 from pathlib import Path
 
 import ha_boundary
@@ -39,12 +46,15 @@ RETAINED_DAYS = 60
 SENSOR_LABELS_PER_DAY = 248
 SENSOR_LABEL_DAYS = 15  # Bermuda was added two weeks ago; older days have no sensor labels.
 SENSOR_ROOMS = ("living_room", "kitchen", "main_bedroom", "office")
-ROW_SECONDS = 3  # Engineering-mode readings arrive about this often when anything changes.
-ROWS = DAY // ROW_SECONDS
-PARTIAL_SECONDS = 6
+PARTIAL_SECONDS = int(NOW - TODAY)
+STORE_FOLDER = "storage"  # The test Home Assistant keeps its store in this folder of its config.
 DISTINCT_DAYS = {"living_room", "office", "kitchen", "hall"}
 # Radars added lately: everything else has the whole retained history.
-INSTALLED_DAYS = {"kitchen": 2, "hall": 2, "garage": 2}
+INSTALLED_DAYS = {"kitchen": 2, "hall": 2, "garage": 2, "bathroom": 2}
+# Configured channels: the distance gates of a 10-channel radar stop at 4; a 2-channel radar's
+# thresholds matter on one gate only, though every gate reports. Everything else has all 18.
+TEN_CHANNEL_RADARS = {"hall_1", "kitchen_2", "guest_room_1"}
+TWO_CHANNEL_RADARS = {"bathroom_1"}
 STORE_FOLDER = "storage"  # The test Home Assistant keeps its store in this folder of its config.
 
 ROOMS = {
@@ -80,8 +90,9 @@ SETTINGS = {
 def set_now(now):
     """Build the home around another moment (a report on real child processes, which read the
     real clock). Tests use the fixed one."""
-    global NOW, TODAY
+    global NOW, PARTIAL_SECONDS, TODAY
     NOW, TODAY = now, now - now % DAY
+    PARTIAL_SECONDS = int(NOW - TODAY)
 
 
 def radars():
@@ -131,30 +142,102 @@ def _radar_gates(radar):
     return {position + 1, position + 2}
 
 
-def _fill(column, stretches, table):
+def channels(radar):
+    """The channels this radar is configured to learn on."""
+    if radar in TWO_CHANNEL_RADARS:
+        return ["g1_move", "g1_still"]
+    if radar in TEN_CHANNEL_RADARS:
+        return [name for name in HISTORY_KEYS if int(name[1]) <= 4]
+    return list(HISTORY_KEYS)
+
+
+def _durations(rest_low, rest_high):
+    """Row durations in ms, one per byte value: half under 0.5 s, a quarter about 1 s, 6% about
+    2 s, 10% about 6 s, 3% about 7 s, and 6% resting longer."""
+    table = [60 + index * 7 // 2 for index in range(128)]
+    table += [900 + index * 3 for index in range(64)]
+    table += [1950 + index * 7 for index in range(15)]
+    table += [5920 + index * 7 for index in range(26)]
+    table += [6950 + index * 13 for index in range(8)]
+    table += [rest_low + index * (rest_high - rest_low) // 15 for index in range(15)]
+    return tuple(table)
+
+
+FULL_RATE = _durations(7000, 9000)  # About 1.8 s a row: the measured 48,000 rows a day.
+LOW_RATE = _durations(20000, 36000)  # About 3 s a row.
+
+
+def _full_rate(room):
+    return recorded_days(room) < RETAINED_DAYS
+
+
+@lru_cache(maxsize=64)
+def _arrivals(radar, room, number, length=DAY):
+    """When ``radar``'s rows of a day start, in ms, for ``length`` seconds of it."""
+    rng = random.Random(f"{radar} {number} arrivals")
+    table = FULL_RATE if _full_rate(room) else LOW_RATE
+    first = rng.randrange(40, 900)
+    # A row a second at the least: more than the fastest day needs.
+    steps = map(table.__getitem__, rng.randbytes(length + 200))
+    starts = array("i", accumulate(steps, initial=first))
+    starts = starts[: bisect_left(starts, length * 1000)]
+    if room in SLEEPERS:  # Overnight a sleeper's radar has little to report.
+        night = bisect_left(starts, min(6 * 3600, length) * 1000)
+        starts = array("i", chain(starts[0:night:16], starts[night:]))
+    return starts
+
+
+def rows_on(radar, ago):
+    """How many rows the radar's finished day ``ago`` days back holds."""
+    room = radars()[radar]
+    return len(_arrivals(radar, room, _pattern_number(room, int(TODAY // DAY) - ago)))
+
+
+def rows_today(radar):
+    """How many rows the radar's open partial day holds."""
+    room = radars()[radar]
+    return len(_arrivals(radar, room, int(TODAY // DAY), PARTIAL_SECONDS))
+
+
+def _fill(column, starts, stretches, table):
     for start, end in stretches:
-        low, high = start // ROW_SECONDS, end // ROW_SECONDS
+        low, high = bisect_left(starts, start * 1000), bisect_left(starts, end * 1000)
         column[low:high] = column[low:high].translate(table)
 
 
-def _column(rng, radar, room, name, busy, pets):
+def _column(rng, radar, room, name, starts, busy, pets):
     gate, kind = int(name[1]), name[3:]
-    column = bytearray(rng.randbytes(ROWS).translate(QUIET))
+    column = bytearray(rng.randbytes(len(starts)).translate(QUIET))
     if gate in _radar_gates(radar):
-        _fill(column, busy, MOVE_PRESENT if kind == "move" else STILL_PRESENT)
+        _fill(column, starts, busy, MOVE_PRESENT if kind == "move" else STILL_PRESENT)
         if room in SLEEPERS:
-            _fill(column, [(0, 6 * 3600)], SLEEPER_STILL if kind == "still" else SLEEPER_MOVE)
+            night = [(0, 6 * 3600)]
+            _fill(column, starts, night, SLEEPER_STILL if kind == "still" else SLEEPER_MOVE)
     if gate == 5 and kind == "move":
-        _fill(column, pets, PET_MOVE)
+        _fill(column, starts, pets, PET_MOVE)
     return column
 
 
-def _row_filter(room):
-    """Overnight a sleeper's radar reports only every few cells: nothing changes between."""
-    if room not in SLEEPERS:
-        return None
-    night = 6 * 3600 // ROW_SECONDS
-    return [index % 16 == 0 for index in range(night)] + [True] * (ROWS - night)
+def _held(rng, radar, count):
+    """Each row's source row: 30% (80% on 2-channel radars) repeat the configured channels. Such
+    a row exists because a channel outside them changed; with all 18 configured, none does."""
+    chance = 204 if radar in TWO_CHANNEL_RADARS else 77 if radar in TEN_CHANNEL_RADARS else 0
+    held = rng.randbytes(count)
+    return accumulate(range(count), lambda last, row: last if held[row] < chance else row)
+
+
+def _readings(rng, radar, room, starts, busy, pets):
+    count, configured = len(starts), set(channels(radar))
+    source = itemgetter(*_held(rng, radar, count))
+    columns = []
+    for name in HISTORY_KEYS:
+        column = _column(rng, radar, room, name, starts, busy, pets)
+        columns.append(bytearray(source(column)) if name in configured else column)
+    # A channel's reading is missing from one row in five hundred.
+    positions = [HISTORY_KEYS.index(name) for name in configured]
+    for row in rng.sample(range(count), count // 500):
+        columns[rng.choice(positions)][row] = dayfile.MISSING
+    return columns
 
 
 def _guess_runs(start, busy):
@@ -176,19 +259,16 @@ def _body(radar, room, number):
     """A finished day file's contents after its header: nothing in them depends on the date."""
     rng = random.Random(f"{radar} {number}")
     busy, pets = occupied(room, number), pet_visits(room, number)
-    columns = [_column(rng, radar, room, name, busy, pets) for name in HISTORY_KEYS]
-    # Readings arrive off the grid, by up to three quarters of a second.
-    starts = map(
-        add, range(0, DAY * 1000, ROW_SECONDS * 1000), map(mul, rng.randbytes(ROWS), repeat(3))
-    )
-    selected = _row_filter(room)
-    if selected is not None:
-        starts, columns = compress(starts, selected), [compress(c, selected) for c in columns]
-    starts = array("i", starts)
+    starts = _arrivals(radar, room, number)
+    columns = _readings(rng, radar, room, starts, busy, pets)
     steps = array("i", map(sub, starts, chain((0,), starts)))
-    # A row lasts until the next one; the last row until midnight.
+    # A row lasts until the next one, the last until midnight; coverage stops early on one in a
+    # thousand, always where the next row was seconds away.
     ends = array("i", repeat(0, len(starts) - 1))
     ends.append(DAY * 1000 - starts[-1])
+    for row in rng.sample(range(1, len(starts)), len(starts) // 200):
+        if steps[row] >= 5000:
+            ends[row - 1] = -(steps[row] // 2)
     runs = b"".join(
         dayfile.RUN.pack(
             round(low * 1000), round(high * 1000), dayfile.STATES.index(state), level, basis
@@ -244,20 +324,17 @@ def _write_days(history, radar, room):
 def _partial_day(history, radar, room):
     """Today so far: an append-only log, coverage left open as a crash or restart leaves it."""
     rng = random.Random(f"{radar} {TODAY} partial")
-    cells = int(NOW - TODAY) // PARTIAL_SECONDS
-    columns = [
-        rng.randbytes(cells).translate(
-            SLEEPER_STILL if room in SLEEPERS and name.endswith("still") else QUIET
-        )
-        for name in HISTORY_KEYS
-    ]
-    jitter = rng.randbytes(cells)
+    starts = _arrivals(radar, room, int(TODAY // DAY), PARTIAL_SECONDS)
+    columns = _readings(rng, radar, room, starts, [], [])
     records = [
         dayfile.Change(
-            TODAY + cell * PARTIAL_SECONDS + jitter[cell] * 0.003,
-            {gate: column[cell] for gate, column in enumerate(columns)},
+            TODAY + start / 1000,
+            {
+                gate: None if column[row] == dayfile.MISSING else column[row]
+                for gate, column in enumerate(columns)
+            },
         )
-        for cell in range(cells)
+        for row, start in enumerate(starts)
     ]
     path = history / daystore._folder_name(radar) / f"{daystore.date_of(TODAY).isoformat()}.log"
     path.write_bytes(dayfile.encode_records(records, TODAY))
