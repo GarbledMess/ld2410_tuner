@@ -673,7 +673,7 @@ def fit_set(
     rooms = rooms or {}
     problem = _room_problem(groups, start, end, rooms, automatic_weight, quality_contexts)
     room = _Room(groups, rooms, problem)
-    # The whole window's patterns replay once, whichever of these asks for them first.
+    # Between searches the whole window's patterns replay once, whichever pass asks first.
     with engine.FitSession() as session:
         fitted, skipped, anomaly = _fitted_set(
             room, problem, automatic_weight, quality_contexts is not None, session
@@ -694,10 +694,12 @@ def _fitted_set(room, problem, weight, adaptive_policy, session):
     audit = None
     policy = "corrected_positive"
     remembered = fit_memo.room_fitter(groups)
+    session.release_records()
     if adaptive_policy:
         kept = {gid: groups[gid] for gid in groups if gid not in skipped}
         policy, audit = _room_policy(scorable, kept, rooms, weight, remembered, session)
     reference = held.reference_flag(policy, weight)
+    session.release_records()
     result = remembered(held.with_reference(scorable, reference), session=session)
     # Judge before and after with the selected evidence policy and the fit's masks.
     room.problem = _judged(held.with_reference(room.problem, reference), result)

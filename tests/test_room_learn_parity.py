@@ -186,20 +186,28 @@ def test_room_learn_walks_no_span_for_attribution(tmp_path, monkeypatch):
     _learn(job)
 
 
-def test_room_learn_replays_a_pattern_once_over_the_whole_window(tmp_path, monkeypatch):
+def test_room_learn_replays_a_pattern_once_between_searches(tmp_path, monkeypatch):
     job = _scenario(
         tmp_path, monkeypatch, days=7, window_days=6, attribution_days_kept=3, sensor_days=4
     )
     _cold(tmp_path)
-    replayed, plain = [], exact.replay
+    replayed, searches = [], [0]
+    plain, fit = exact.replay, engine.fit
 
     def counted(problem, providers, regions, wanted, *rest):
-        replayed.extend((regions, rid, key) for rid, keys in wanted.items() for key in keys)
+        for rid, keys in wanted.items():
+            replayed.extend((searches[0], regions, rid, key) for key in keys)
         return plain(problem, providers, regions, wanted, *rest)
 
+    def searched(*args, **kwargs):
+        searches[0] += 1
+        return fit(*args, **kwargs)
+
     monkeypatch.setattr(exact, "replay", counted)
+    monkeypatch.setattr(engine, "fit", searched)
     report = codec.unpack_result(_learn(job))
     assert report["automatic_evidence"]["selection"]["cutoff"] is not None
+    assert searches[0] == 3
     assert len(set(replayed)) == len(replayed)
 
 

@@ -81,11 +81,12 @@ def prepared(problem):
 
 
 class FitSession:
-    """What fits of one problem share when only their evidence policy differs.
+    """What the passes over one problem share when only their evidence policy differs.
 
     A policy changes what a label costs, never which rows a label covers or what a threshold
     detects: compiled training rows and replay records stay true across policies. Everything a
-    search leaves on the training store is dropped between fits, policy-keyed or not.
+    search leaves on the training store is dropped between fits, policy-keyed or not, and a
+    caller frees the records before starting another search.
     """
 
     def __enter__(self):
@@ -97,11 +98,16 @@ class FitSession:
 
     def __exit__(self, *_):
         try:
-            if self._evaluators is not None:
-                self._evaluators.close()
+            self.release_records()
             self._release_store()
         finally:
             self._temp.cleanup()
+
+    def release_records(self):
+        """Free every replay record: a search never starts with another's files open."""
+        if self._evaluators is not None:
+            self._evaluators.close()
+        self._evaluators = None
 
     def _release_store(self):
         if self._store is not None:
@@ -128,8 +134,7 @@ class FitSession:
             if _detects_alike(found.problem, problem):
                 found.adopt(problem, plan)
                 return found
-        if found is not None:
-            found.close()
+        self.release_records()
         self._evaluators = Evaluators(problem, plan, directory=self.directory)
         return self._evaluators
 
