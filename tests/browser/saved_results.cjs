@@ -115,6 +115,28 @@ module.exports = async function testSavedResults(page, screenshotDir) {
     delete fixture.learning_schedule.running;
     return panel._load();
   });
+  await page.evaluate(() => {
+    fixture.devices.a.nightly_learning.status = "unchanged";
+    return panel._load();
+  });
+  assert.match(
+    await card.locator(".nightly-marker").innerText(),
+    /Nothing new · kept last result/,
+  );
+  assert.equal(await card.locator(".nightly-marker.warn").count(), 0);
+  assert.equal(await card.locator(".nightly-marker.caution").count(), 0);
+  assert.match(
+    await card.locator(".nightly-report").innerText(),
+    /Nothing new to learn from/,
+  );
+  assert.doesNotMatch(
+    await card.locator(".nightly-report").innerText(),
+    /unchanged/,
+  );
+  await page.evaluate(() => {
+    fixture.devices.a.nightly_learning.status = "unsafe";
+    return panel._load();
+  });
   for (const [error, readable] of [
     [
       "Maximum distance gate is unavailable or outside 2–8",

@@ -261,6 +261,20 @@ class AutomaticApplyTests(unittest.IsolatedAsyncioTestCase):
             assert not self.runtime._applying
         self.hass.services.async_call.assert_not_awaited()
 
+    async def test_thresholds_it_applied_do_not_force_a_second_learn(self):
+        self.runtime._learn_once = AsyncMock(return_value=deepcopy(self.learned))
+        self.hass.config = types.SimpleNamespace(time_zone="UTC", path=self.hass.config.path)
+        self.runtime.data.setdefault("learning_schedule", {}).update(enabled=True)
+        await schedule._run(self.runtime, "2026-09-30")
+        assert self.device["nightly_learning"]["automatic_apply"]["status"] == "applied"
+        writes = self.hass.services.async_call.await_count
+        assert writes
+        await schedule._run(self.runtime, "2026-10-01")
+        self.runtime._learn_once.assert_awaited_once()
+        assert self.device["nightly_learning"]["status"] == "unchanged"
+        assert "automatic_apply" not in self.device["nightly_learning"]
+        assert self.hass.services.async_call.await_count == writes
+
     async def test_overnight_applies_but_manual_learning_does_not(self):
         self.runtime._learn_once = AsyncMock(return_value=deepcopy(self.learned))
         await self.runtime.async_learn("a")

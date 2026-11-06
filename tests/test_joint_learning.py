@@ -1136,6 +1136,42 @@ class SetRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.data["learning_schedule"] = {"enabled": True, "auto_apply": False}
         self.runtime.async_save = AsyncMock()
 
+    async def test_overnight_set_is_skipped_only_while_nothing_it_learns_from_changed(self):
+        from tuner_under_test.runtime import schedule
+
+        set_id = self.linked()
+        self.overnight_ready()
+        first, second = self.learning_patches()
+        with first, second, patch.object(fitting, "fit_set", wraps=fitting.fit_set) as fit:
+            await schedule._run(self.runtime, "2026-10-10")
+            assert fit.call_count == 1
+            learned = self.runtime.data["room_learning"][set_id]["slots"]["automatic"]
+            await schedule._run(self.runtime, "2026-10-11")
+            assert fit.call_count == 1
+            for key in "abc":
+                attempt = self.runtime.data["devices"][key]["nightly_learning"]
+                assert attempt["status"] == "unchanged"
+                assert attempt["result_id"] == learned["id"]
+                assert attempt["day"] == "2026-10-11"
+            # Evidence on any member, however automatic, is a reason to learn.
+            rooms = self.runtime.data.setdefault("room_sensor_revision", {})
+            rooms[self.ids["Sofa"]] = rooms.get(self.ids["Sofa"], 0) + 1
+            await schedule._run(self.runtime, "2026-10-12")
+            assert fit.call_count == 2
+            await schedule._run(self.runtime, "2026-10-13")
+            assert fit.call_count == 2
+            # And so is a manual room label.
+            revisions = self.runtime.data.setdefault("room_label_revision", {})
+            revisions[self.ids["Desk"]] = revisions.get(self.ids["Desk"], 0) + 1
+            await schedule._run(self.runtime, "2026-10-14")
+            assert fit.call_count == 3
+            await schedule._run(self.runtime, "2026-10-15")
+            assert fit.call_count == 3
+            # A failure on one member is not hidden by the others' good results.
+            self.runtime.data["devices"]["c"]["nightly_learning"]["status"] = "error"
+            await schedule._run(self.runtime, "2026-10-16")
+            assert fit.call_count == 4
+
     async def test_overnight_skips_a_set_with_no_learnable_member_and_runs_the_rest(self):
         from tuner_under_test.runtime import schedule
 

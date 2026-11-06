@@ -124,6 +124,8 @@ export const panelSavedResults = {
         "Completed, but one class has no observed labelled time. Record both occupied and empty periods, then learn again.",
       interrupted:
         "Learning stopped when the integration restarted. Learn again, or wait for the next scheduled run.",
+      unchanged:
+        "Nothing new to learn from: no new recordings, labels or settings since the last Learn, so its result was kept and nothing was applied.",
       error: this._nightlyErrorText(run.error),
     };
     const date = new Date(
@@ -220,6 +222,7 @@ export const panelSavedResults = {
       uncertain: "Completed · review result",
       error: "Failed",
       interrupted: "Interrupted",
+      unchanged: "Nothing new · kept last result",
     };
     const timing = this._nightlyTiming(d);
     const note = this._timingPolicyNote(timing);
@@ -258,6 +261,7 @@ export const panelSavedResults = {
 
   _nightlyStyle(run, timing, note) {
     if (run.status === "running") return "is-busy";
+    if (run.status === "unchanged") return "";
     if (
       ["error", "unsafe"].includes(run.status) ||
       ["partial", "error"].includes(run.automatic_apply?.status)
