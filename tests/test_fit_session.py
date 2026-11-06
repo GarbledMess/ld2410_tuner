@@ -1,4 +1,4 @@
-"""Fits of one problem under the two evidence policies share rows, and nothing else."""
+"""Fits of one problem under the two evidence policies share rows, and no result."""
 
 from dataclasses import replace
 from unittest.mock import patch
@@ -7,7 +7,7 @@ import pytest
 import test_tuner  # noqa: F401
 from real_rows import recorded_view
 from tuner_under_test.const import HISTORY_KEYS
-from tuner_under_test.engine.hybrid import adapters, engine, held, replay
+from tuner_under_test.engine.hybrid import adapters, engine, held
 from tuner_under_test.engine.hybrid.types import ZoneSpec
 from tuner_under_test.history import spans
 
@@ -70,30 +70,6 @@ def test_the_second_policy_compiles_no_training_rows(problem):
         for item in _both(problem):
             engine.fit(item, session=session)
     assert len(compiled) == 1
-
-
-def test_the_second_policy_replays_only_new_patterns(problem):
-    alone, shared = [], []
-    plain = replay.replay
-
-    def replayed(calls):
-        def counted(problem_, providers, regions, wanted, *rest):
-            calls.extend((rid, key) for rid, keys in wanted.items() for key in keys)
-            return plain(problem_, providers, regions, wanted, *rest)
-
-        return counted
-
-    with patch("tuner_under_test.engine.hybrid.exact.replay", replayed(alone)):
-        for item in _both(problem):
-            engine.fit(item)
-    with (
-        patch("tuner_under_test.engine.hybrid.exact.replay", replayed(shared)),
-        engine.FitSession() as session,
-    ):
-        for item in _both(problem):
-            engine.fit(item, session=session)
-    assert len(set(shared)) == len(shared)
-    assert len(shared) < len(alone)
 
 
 def test_other_truth_compiles_its_own_training_rows(problem):

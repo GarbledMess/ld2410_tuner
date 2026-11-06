@@ -41,6 +41,7 @@ def training_fits(training, weight, fit=None):
         for policy in POLICIES:
             flag = reference_flag(policy, weight)
             if flag not in searched:
+                session.release_records()
                 searched[flag] = fit(with_reference(training, flag), session=session).thresholds
             found[policy] = searched[flag]
     return found
