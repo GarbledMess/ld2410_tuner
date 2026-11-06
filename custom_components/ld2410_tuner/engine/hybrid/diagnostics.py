@@ -307,10 +307,10 @@ def diagnostics_pair(problem, pattern, plan):
     """Full-report and human review diagnostics from one physical column pass."""
     import sys
 
-    from .diagnostic_columns import collect
+    from .diagnostic_columns import collect_pair
 
     device_id = next(iter(problem.radars))
-    full, human = collect(
-        problem, device_id, pattern, problem.zones[0].truth, sys.modules[__name__], human=True
+    full, human = collect_pair(
+        problem, device_id, pattern, problem.zones[0].truth, sys.modules[__name__]
     )
     return _diagnostic_result(problem, plan, {device_id: full}), human
