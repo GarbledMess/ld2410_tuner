@@ -55,6 +55,39 @@ def _row_counts(days):
     return shared._fit_row_counts
 
 
+def _physical_places(days):
+    """Where this job found each finished day's checked rows: a few numbers a day."""
+    shared = getattr(days, "shared", None)
+    if shared is None:
+        return None
+    if not hasattr(shared, "_fit_places"):
+        shared._fit_places = {}
+    return shared._fit_places
+
+
+def _placed_physical(days, persistent, channels):
+    """A day's rows checked once by this job, read from their sidecar as blocks are needed."""
+    places = _physical_places(days)
+    if persistent is None or places is None:
+        return None
+    path, identity = persistent
+    key = str(path), tuple(identity[:2]), tuple(sorted(channels))
+    found = places.get(key)
+    if found is None:
+        found = cell_cache.physical_place(path, identity, channels)
+        if found is None:
+            return None
+        places[key] = found
+    return PhysicalRows.at_place(found[0], found[1], key)
+
+
+def _forget_placed(days, persistent, channels):
+    places = _physical_places(days)
+    if persistent is not None and places is not None:
+        path, identity = persistent
+        places.pop((str(path), tuple(identity[:2]), tuple(sorted(channels))), None)
+
+
 def _physical_cache(days):
     shared = getattr(days, "shared", None)
     if shared is None:
@@ -141,6 +174,9 @@ class FittingDays:
         if date not in self.view._days.days(device_id):
             return PhysicalRows(channels, array("d"), array("d"), dict.fromkeys(channels, b""))
         persistent = _result_identity(self.view._days, device_id, date)
+        placed = _placed_physical(self.view._days, persistent, channels)
+        if placed is not None:
+            return placed
         cache = _physical_cache(self.view._days)
         key = self._key(persistent, date, channels)
         if key is not None:
@@ -157,6 +193,7 @@ class FittingDays:
     def rebuilt_physical(self, device_id, date, channels):
         """One day's rows folded again from its source, replacing an unreadable cached section."""
         persistent = _result_identity(self.view._days, device_id, date)
+        _forget_placed(self.view._days, persistent, channels)
         digest = self._fold(device_id, date, channels, persistent)
         digest.partial.close()
         physical = digest.physical

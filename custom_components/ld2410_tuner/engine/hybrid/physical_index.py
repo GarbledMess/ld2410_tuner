@@ -88,6 +88,29 @@ def _native(values):
     return values
 
 
+class _FileSection:
+    """A read-only part of a file, opened only for each read: no handle outlives a call."""
+
+    def __init__(self, path, base):
+        self.path, self.base, self.at = path, base, 0
+
+    def seek(self, at, _whence=0):
+        self.at = at
+
+    def read(self, size):
+        try:
+            with open(self.path, "rb") as stream:
+                stream.seek(self.base + self.at)
+                data = stream.read(size)
+        except OSError as error:
+            raise ValueError("Unreadable physical rows") from error
+        self.at += len(data)
+        return data
+
+    def close(self):
+        """Nothing stays open."""
+
+
 class PhysicalRows:
     """One day's usable physical rows as indexed compressed blocks.
 
@@ -148,6 +171,19 @@ class PhysicalRows:
         rows._size, rows._index = length - _DAY.size, None
         if magic != _MAGIC:
             rows._index = ValueError("Invalid physical rows header")
+        return rows
+
+    def place(self, path, offset):
+        """What ``at_place`` needs to read these rows again where ``read`` found them."""
+        return str(path), offset + _DAY.size, self.channels, self.count, tuple(self._blocks())
+
+    @classmethod
+    def at_place(cls, place, size, token):
+        """These rows from their file, copying nothing until a block is asked for."""
+        rows = cls.__new__(cls)
+        path, base, rows.channels, rows.count, blocks = place
+        rows._index, rows._size, rows._token = list(blocks), size - _DAY.size, token
+        rows._spool = _FileSection(path, base)
         return rows
 
     @property

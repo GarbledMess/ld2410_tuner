@@ -4,9 +4,12 @@ import datetime
 import json
 import sqlite3
 import stat
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
+
+_RECENT_DAYS = 1024  # Descriptors kept per view, far beyond one radar's recorded days.
 
 
 def _json(value):
@@ -87,6 +90,8 @@ class DayEntries(_Reader):
     def __init__(self, descriptor):
         super().__init__(descriptor["database"])
         self.view = descriptor["view"]
+        self._dates = {}
+        self._recent = OrderedDict()
 
     def __len__(self):
         return self._query("SELECT count(*) FROM days WHERE view=?", (self.view,))[0][0]
@@ -98,6 +103,10 @@ class DayEntries(_Reader):
             yield device, datetime.date.fromisoformat(date)
 
     def __getitem__(self, key):
+        found = self._recent.get(key)
+        if found is not None:
+            self._recent.move_to_end(key)
+            return found
         device, date = key
         rows = self._query(
             "SELECT metadata FROM days WHERE view=? AND device=? AND date=?",
@@ -105,15 +114,23 @@ class DayEntries(_Reader):
         )
         if not rows:
             raise KeyError(key)
-        return json.loads(rows[0][0])
+        found = self._recent[key] = json.loads(rows[0][0])
+        if len(self._recent) > _RECENT_DAYS:
+            self._recent.popitem(last=False)
+        return found
 
     def dates(self, device):
-        return [
-            datetime.date.fromisoformat(date)
-            for (date,) in self._query(
-                "SELECT date FROM days WHERE view=? AND device=? ORDER BY date", (self.view, device)
-            )
-        ]
+        """A job's manifest never changes, and a Learn asks this for every row window."""
+        found = self._dates.get(device)
+        if found is None:
+            found = self._dates[device] = [
+                datetime.date.fromisoformat(date)
+                for (date,) in self._query(
+                    "SELECT date FROM days WHERE view=? AND device=? ORDER BY date",
+                    (self.view, device),
+                )
+            ]
+        return found
 
 
 def expand(request):
