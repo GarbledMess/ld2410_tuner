@@ -28,16 +28,16 @@ class RawLearningAttributionTests(unittest.IsolatedAsyncioTestCase):
             if until is not None:
                 view._attribution_until = until
             found = []
-            real = spans.events
+            real = spans.event_columns
 
             def events(*args, **kwargs):
-                items = list(real(*args, **kwargs))
-                found.extend(items)
+                items = real(*args, **kwargs)
+                found.extend(items[0])
                 return items
 
-            with patch.object(attribution_days.spans, "events", side_effect=events):
+            with patch.object(attribution_days.spans, "event_columns", side_effect=events):
                 attribution.radar_attribution(view, "a", view.data["room_snapshot"])
-            return [item.start for item in found]
+            return found
 
         full, cutoff = read(), start + 30
         self.assertEqual(read(cutoff), [t for t in full if t < cutoff])

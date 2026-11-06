@@ -161,6 +161,7 @@ RUNTIME_FILES = (
     "rooms/adaptive.py",
     "rooms/assessment.py",
     "rooms/attribution.py",
+    "rooms/attribution_cells.py",
     "rooms/attribution_days.py",
     "rooms/application.py",
     "rooms/fitting.py",

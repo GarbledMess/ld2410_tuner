@@ -17,9 +17,7 @@ decide the episode they make, with durations taken between the cells' own times 
 import re
 from array import array
 from bisect import bisect_left, bisect_right
-from itertools import accumulate
-from math import ceil, inf
-from operator import neg
+from math import inf
 
 from ..calibration.constants import (
     ATTRIBUTION_MARGIN,
@@ -27,8 +25,9 @@ from ..calibration.constants import (
     SAMPLE_SECONDS,
 )
 from ..const import HISTORY_KEYS
-from ..history import day_results, daystore, spans
+from ..history import day_results, daystore, pace, spans
 from ..presence.inference import MIN_REFERENCE
+from . import attribution_cells
 
 NAME = "attribution"
 VERSION = 1
@@ -109,37 +108,35 @@ def _plain(answer):
 
 def _measure(runtime, device_id, low, high, edges, reads, own):
     """One day's part: its quiet readings per gate, and per group its runs of Present cells."""
-    from . import attribution, event_attribution
+    from . import attribution
 
-    physical = spans.events(runtime, device_id, start=low, end=high)
-    cells = list(event_attribution._cells(physical, edges))
-    places = event_attribution._places(cells, edges)
-    quiet = event_attribution._read_cells(attribution.quiet_reader(own, reads), cells, places)
-    bins = [[0.0] * 101 for _ in HISTORY_KEYS]
-    for (start, end, values), still in zip(cells, quiet, strict=True):
-        if still:
-            event_attribution._add_readings(bins, values, end - start)
-    owned = event_attribution._read_cells(own, cells, places)
+    times, ends, columns, named = spans.event_columns(runtime, device_id, start=low, end=high)
+    times, ends, columns = attribution_cells.cut(times, ends, columns, edges)
+    if not times:
+        return {}, tuple(() for _ in reads)
+    cells = attribution_cells.Cells(times, ends, columns, edges, named)
+    kept = cells.quiet_bins(cells.read(attribution.quiet_reader(own, reads)))
+    owned = cells.read(own)
     runs = tuple(
         tuple(
-            _run(cells[first:stop], owned[first:stop])
-            for first, stop in event_attribution._episodes(
-                cells, event_attribution._read_cells(read, cells, places)
-            )
+            _run(cells, first, stop, cells.between(owned, first, stop))
+            for first, stop in cells.episodes(cells.read(read))
         )
         for read in reads.values()
     )
-    kept = {gate: array("d", histogram) for gate, histogram in enumerate(bins) if any(histogram)}
     return kept, runs
 
 
-def _run(cells, owned):
+def _run(cells, first, stop, owned):
     """``(start, end, own Present, own Empty, gates)`` of one run of Present cells, the
     gates' profiles packed into one array (``_packed``) so a busy day's part stays small."""
-    starts, ends = [cell[0] for cell in cells], [cell[1] for cell in cells]
-    columns = zip(*(cell[2] for cell in cells), strict=True)
-    gates = [_gate(_levels(column), starts, ends) for column in columns]
-    return cells[0][0], cells[-1][1], "present" in owned, "not_present" in owned, _packed(gates)
+    pace.rest()
+    starts, ends = cells.times[first:stop], cells.ends[first:stop]
+    gates = [
+        _gate(column[first:stop].translate(_ZERO_MISSING), starts, ends) for column in cells.columns
+    ]
+    start, end = cells.named.get(starts[0], starts[0]), cells.named.get(ends[-1], ends[-1])
+    return start, end, "present" in owned, "not_present" in owned, _packed(gates)
 
 
 def _packed(gates):
@@ -177,23 +174,15 @@ def _gate(levels, starts, ends):
     return min(levels), leading, trailing, _threshold(levels, starts, ends)
 
 
-def _levels(column):
-    """A gate's readings as bytes of ceilings (0 for no reading, which is above no ceiling)."""
-    try:
-        return bytes(column)  # Whole readings, as recorded.
-    except (TypeError, ValueError):
-        return bytes(0 if value is None else max(0, ceil(value)) for value in column)
-
-
 def _minima(levels, ends, position, starts=None):
     """``((level, time), ...)``: the running minimum of ``levels`` above ``FLOOR`` and the
     farthest time it reaches at each (``ends``; ``starts`` for the trailing side, ``levels``
     reversed): the stretch from the run's edge above a ceiling ``c`` reaches the time of the
-    last pair whose level is above ``c``. The minimum is run in C and bisected per level."""
-    running = list(accumulate(levels, min))
-    found, index = [], 0
-    while index < len(running) and (level := running[index]) > FLOOR:
-        index = bisect_right(running, -level, key=neg)  # Past the last reading at this level.
+    last pair whose level is above ``c``. Each drop of the minimum is one search in C."""
+    found, index, count = [], 0, len(levels)
+    while index < count and (level := levels[index]) > FLOOR:
+        drop = _BELOW[level].search(levels, index)  # Past the last reading at this level.
+        index = count if drop is None else drop.start()
         last = position(index - 1)
         found.append((level, ends[last] if starts is None else starts[last]))
     return tuple(found)
@@ -202,7 +191,9 @@ def _minima(levels, ends, position, starts=None):
 def _threshold(levels, starts, ends):
     """The highest ceiling some stretch of the run stays above for the sustain time (-1 for
     none at or above ``FLOOR``): stretches shrink as the ceiling rises, so it is bisected."""
-    low, high = FLOOR + 1, LEVELS - 1  # Levels: every reading at or above the level.
+    if ends[-1] - starts[0] < ATTRIBUTION_SUSTAIN_SECONDS:
+        return -1  # The whole run is too short for any stretch of it.
+    low, high = FLOOR + 1, min(LEVELS - 1, max(levels))  # Levels: every reading at or above.
     best = -1
     while low <= high:
         level = (low + high) // 2
@@ -222,6 +213,9 @@ def _sustained(levels, starts, ends, level):
 
 # Stretches of readings at or above each level.
 _AT_OR_ABOVE = [re.compile(rb"[\x%02x-\xff]+" % level) for level in range(LEVELS)]
+# The first reading below each level (level 0 has none and is never searched).
+_BELOW = [None, *(re.compile(rb"[\x00-\x%02x]" % (level - 1)) for level in range(1, 256))]
+_ZERO_MISSING = bytes(range(255)) + b"\x00"  # A gate that did not read is above no ceiling.
 
 
 def _chains(parts, position):
