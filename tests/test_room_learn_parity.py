@@ -8,7 +8,7 @@ from room_speed_fixture import build, request
 from test_room_learn_attribution_columns import legacy_measure
 from test_room_learn_row_counts import legacy_rows_in
 from tuner_under_test.calibration import event_quality
-from tuner_under_test.engine.hybrid import engine, exact, held
+from tuner_under_test.engine.hybrid import engine, evaluate, exact, held
 from tuner_under_test.history import day_results, fit_days, result_cache, spans, worker_snapshot
 from tuner_under_test.history.fit_rows import CapturedRowSource
 from tuner_under_test.rooms import adaptive, attribution_days
@@ -51,12 +51,21 @@ def _separate_training_fits(training, weight, fit=None):
     return found
 
 
+def _fresh_evaluators(session, problem, plan):
+    """Every pass replaying for itself, as each did."""
+    if session._evaluators is not None:
+        session._evaluators.close()
+    session._evaluators = evaluate.Evaluators(problem, plan, directory=session.directory)
+    return session._evaluators
+
+
 def _legacy(monkeypatch):
     monkeypatch.setattr(attribution_days, "_measure", legacy_measure)
     monkeypatch.setattr(CapturedRowSource, "rows_in", legacy_rows_in)
     monkeypatch.setattr(adaptive, "collect", _walked_context)
     monkeypatch.setattr(exact.Evaluator, "alike", lambda _self, _rid, key: key)
     monkeypatch.setattr(held, "training_fits", _separate_training_fits)
+    monkeypatch.setattr(engine.FitSession, "evaluators", _fresh_evaluators)
 
 
 def _without_fingerprints(value):
@@ -114,11 +123,12 @@ def _assert_identical(tmp_path, monkeypatch, job):
 
 def test_room_learn_bytes_match_the_old_path(tmp_path, monkeypatch):
     job = _scenario(
-        tmp_path, monkeypatch, days=5, window_days=4, attribution_days_kept=3, sensor_days=4
+        tmp_path, monkeypatch, days=7, window_days=6, attribution_days_kept=3, sensor_days=4
     )
     result = _assert_identical(tmp_path, monkeypatch, job)
     assert set(result["thresholds"]) == {"radar_a", "radar_b"}
     assert result["thresholds"]["radar_a"]
+    assert result["automatic_evidence"]["selection"]["cutoff"] is not None
 
 
 def test_room_learn_reads_each_day_for_counting_once(tmp_path, monkeypatch):
@@ -174,6 +184,23 @@ def test_room_learn_walks_no_span_for_attribution(tmp_path, monkeypatch):
 
     monkeypatch.setattr(attribution_days, "_measure", measured)
     _learn(job)
+
+
+def test_room_learn_replays_a_pattern_once_over_the_whole_window(tmp_path, monkeypatch):
+    job = _scenario(
+        tmp_path, monkeypatch, days=7, window_days=6, attribution_days_kept=3, sensor_days=4
+    )
+    _cold(tmp_path)
+    replayed, plain = [], exact.replay
+
+    def counted(problem, providers, regions, wanted, *rest):
+        replayed.extend((regions, rid, key) for rid, keys in wanted.items() for key in keys)
+        return plain(problem, providers, regions, wanted, *rest)
+
+    monkeypatch.setattr(exact, "replay", counted)
+    report = codec.unpack_result(_learn(job))
+    assert report["automatic_evidence"]["selection"]["cutoff"] is not None
+    assert len(set(replayed)) == len(replayed)
 
 
 @pytest.mark.scaling
