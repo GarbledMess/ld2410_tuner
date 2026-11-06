@@ -115,7 +115,7 @@ def search_candidates(state):
     return patterns
 
 
-def score(state, patterns, *, zones=None, keep=1):
+def score(state, patterns, *, zones=None, keep=1, quiet=True):
     """Common-fidelity base and quiet scores; returns (indexes, base, quiet)."""
     problem = state.problem
 
@@ -126,7 +126,7 @@ def score(state, patterns, *, zones=None, keep=1):
         problem,
         patterns,
         state.plan,
-        quiet=True,
+        quiet=quiet,
         rank=rank,
         evaluators=state.evaluators,
         zones=zones,
@@ -134,7 +134,7 @@ def score(state, patterns, *, zones=None, keep=1):
         attribution=not _defer_attribution(state),
     )
     base = [{k: v for k, v in s.items() if k != "quiet"} for s in scores]
-    return [s["pattern_index"] for s in scores], base, [s["quiet"] for s in scores]
+    return [s["pattern_index"] for s in scores], base, [s.get("quiet") for s in scores]
 
 
 def _totals(metrics):
@@ -210,18 +210,22 @@ def _gate_steps(pattern, radars):
 
 def _presence_walk(state, base, zones):
     """Lower thresholds while presence is worth the false time: all together first, because
-    that step is cheap to test, then one gate at a time, so a noisy gate stops only itself."""
+    that step is cheap to test, then one gate at a time, so a noisy gate stops only itself.
+
+    The walk compares base scores alone, so only the pattern it ends on is priced for quiet."""
     radars = state.problem.radars
     current, found = base, None
     moves = [_lowered(base, k, radars) for k in PRESENCE_SHIFTS]
     for _ in range(PRESENCE_ROUNDS):
         patterns = _dedupe([current, *moves, *_gate_steps(current, radars)])
-        _, scores, quiet = score(state, patterns, zones=zones, keep=len(patterns))
+        _, scores, _ = score(state, patterns, zones=zones, keep=len(patterns), quiet=False)
         chosen = selection.presence_shift(scores)
         if chosen == 0:
             break
-        current, found, moves = patterns[chosen], (scores[chosen], quiet[chosen]), []
-    return current, found
+        current, found, moves = patterns[chosen], scores[chosen], []
+    if found is None:
+        return current, None
+    return current, (found, score(state, [current], zones=zones)[2][0])
 
 
 def presence_shift(state, pick, info, zones=None):

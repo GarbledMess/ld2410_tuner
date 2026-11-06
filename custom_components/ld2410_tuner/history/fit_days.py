@@ -2,6 +2,7 @@
 
 from array import array
 from collections import OrderedDict
+from math import inf
 
 from ..engine.hybrid.constants import SPILL_BYTES
 from ..engine.hybrid.digest import fold_day
@@ -65,13 +66,15 @@ def _physical_cache(days):
 
 
 def _cached_physical(persistent, channels):
+    """A day's CRC-checked rows; each block is validated when it is decoded."""
     if persistent is None:
         return None
     path, identity = persistent
     physical = cell_cache.load_physical(path, identity, channels)
     if physical is not None:
         try:
-            physical.validate()
+            physical._blocks()
+            physical.share_decoded((str(path), tuple(identity[:2]), physical.channels))
             return physical
         except ValueError:
             physical.close()
@@ -103,7 +106,9 @@ class FittingDays:
         start, end = daystore.bounds(date)
         rows = CapturedRowSource(self.view, device_id, channels)
         digest = fold_day(rows.blocks(start, end), start, end, channels)
-        if persistent is not None:
+        # A training view stops at its cutoff: that fold is not the day a later Learn must read.
+        whole_day = getattr(self.view, "_history_until", inf) >= end
+        if persistent is not None and whole_day:
             path, identity = persistent
             cell_cache.store(path, _cache_root(self.view._days, path), identity, channels, digest)
         return digest
@@ -120,16 +125,17 @@ class FittingDays:
         )
 
     def rows_in(self, device_id, date, channels, lo, hi, read):
-        """One day's rows overlapping ``[lo, hi)``; ``read`` gives the day's rows, as the caller
-        holds them, the first time a job asks for this window (never when it can reuse one)."""
+        """One day's rows overlapping ``[lo, hi)``; ``read`` counts them from the rows as the
+        caller holds them, the first time a job asks for this window (never when it can reuse
+        one)."""
         counts = _row_counts(self.view._days)
         key = self._key(_result_identity(self.view._days, device_id, date), date, channels)
         if counts is None or key is None:
-            return read(date).rows_in(lo, hi)
+            return read(date, lo, hi)
         window = key, lo, hi
         found = counts.get(window)
         if found is None:
-            found = counts[window] = read(date).rows_in(lo, hi)
+            found = counts[window] = read(date, lo, hi)
         return found
 
     def physical(self, device_id, date, channels):
@@ -145,10 +151,20 @@ class FittingDays:
                 return physical
         physical = _cached_physical(persistent, channels)
         if physical is None:
-            digest = self._fold(device_id, date, channels, persistent)
-            digest.partial.close()
-            physical = digest.physical
-            physical.validate()
+            return self.rebuilt_physical(device_id, date, channels)
+        if cache is not None and key is not None:
+            cache.put(key, physical)
+        return physical
+
+    def rebuilt_physical(self, device_id, date, channels):
+        """One day's rows folded again from its source, replacing an unreadable cached section."""
+        persistent = _result_identity(self.view._days, device_id, date)
+        digest = self._fold(device_id, date, channels, persistent)
+        digest.partial.close()
+        physical = digest.physical
+        physical.validate()
+        cache = _physical_cache(self.view._days)
+        key = self._key(persistent, date, channels)
         if cache is not None and key is not None:
             cache.put(key, physical)
         return physical

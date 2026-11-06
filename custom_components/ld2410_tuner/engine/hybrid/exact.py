@@ -178,16 +178,25 @@ class _RowSpool:
 
 
 class _Physical:
-    """Usable row windows, spooled once for subsequent threshold replay runs."""
+    """Usable row windows for every threshold replay run of an evaluator.
+
+    A source that can read any window again answers each run itself; any other is spooled
+    once, because a second pass over it could not be had.
+    """
 
     def __init__(self, source, channels, directory, budget, files=None):
         self.source, self.channels = source, tuple(sorted(channels))
-        self.file, self.size = _RowSpool(directory, budget, files), 0
+        self.size = 0
+        rereadable = getattr(source, "rereadable", False)
+        self.file = None if rereadable else _RowSpool(directory, budget, files)
 
     def rewind(self):
-        self.file.seek(0)
+        if self.file is not None:
+            self.file.seek(0)
 
     def window(self, lo, hi):
+        if self.file is None:
+            return self._load(lo, hi)
         try:
             return self._window(lo, hi)
         finally:
@@ -237,7 +246,8 @@ class _Physical:
         return times, ends, {c: bytes(v) for c, v in columns.items()}
 
     def close(self):
-        self.file.close()
+        if self.file is not None:
+            self.file.close()
 
 
 class Evaluator:

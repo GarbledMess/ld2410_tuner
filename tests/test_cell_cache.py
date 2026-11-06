@@ -8,6 +8,7 @@ import test_tuner  # noqa: F401
 from test_hybrid_rows import source
 from tuner_under_test.history import cell_cache, summary_cache
 from tuner_under_test.history.fit_days import FittingDays
+from tuner_under_test.history.fit_rows import CapturedRowSource
 
 DAY = date(1970, 1, 1)
 
@@ -25,6 +26,18 @@ def test_finished_day_cache_survives_worker_restart(tmp_path):
         b = FittingDays(fit.view).digest("synthetic", DAY, (0,))
     assert a.channels == b.channels
     assert list(a.segments()) == list(b.segments())
+
+
+def test_a_fold_clipped_by_a_training_cutoff_is_never_kept_as_the_whole_day(tmp_path):
+    fit, _, path = fitting(tmp_path)
+    expected = fit.digest("synthetic", DAY, (0,)).physical.window(0, 86400)
+    path.with_suffix(".cell").unlink()
+    fit.view._history_until = 1.5
+    assert fit.physical("synthetic", DAY, (0,)).rows_in(0, 86400) < len(expected[0])
+    assert not path.with_suffix(".cell").exists()
+    fit.view._history_until = float("inf")
+    rows = CapturedRowSource(fit.view, "synthetic", (0,))
+    assert rows.window(0, 86400) == expected
 
 
 def test_physical_rows_reuse_sidecar_without_reading_the_day_file(tmp_path):

@@ -375,7 +375,7 @@ def test_presence_walk_lowers_the_quiet_gate_when_lowering_both_falls_off_a_clif
 
     from tuner_under_test.engine.hybrid import engine
 
-    def scored(_state, patterns, zones=None, keep=1):
+    def scored(_state, patterns, zones=None, keep=1, quiet=True):
         rows = [p["a"] for p in patterns]
         scores = [
             {
