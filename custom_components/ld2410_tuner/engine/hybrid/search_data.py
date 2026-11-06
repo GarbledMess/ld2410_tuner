@@ -292,8 +292,6 @@ def _compile_single(problem, db, zone, rid, shard_cells):
             "INSERT INTO search_single VALUES (?,?,?,?,?)",
             (zone.group_id, rid, lo, hi, _single_start(db, rid, lo, lookback)),
         )
-    db.execute("""CREATE TEMP TABLE IF NOT EXISTS search_windows
-        (state TEXT,source TEXT,parent TEXT,confidence REAL,lo REAL,hi REAL,earliest REAL)""")
     pending = []
     for a, b, span in _labels(zone.truth):
         lo = cell_ceil(max(a, problem.start), CELL_SECONDS) * CELL_SECONDS
@@ -312,20 +310,23 @@ def _label_window(span, lo, hi, lookback):
 
 def _single_labels(db, group, rid, pending):
     """One statement per batch of label windows, keeping their order and each one's rows in time."""
+    if not pending:
+        return
     pace.rest()
-    db.execute("DELETE FROM search_windows")
-    db.executemany("INSERT INTO search_windows VALUES (?,?,?,?,?,?,?)", pending)
+    values = ",".join(["(?,?,?,?,?,?,?,?)"] * len(pending))
+    rows = chain.from_iterable((i, *row) for i, row in enumerate(pending))
     db.execute(
-        """INSERT INTO search_pure
-        SELECT ?1,w.state,w.source,w.parent,w.confidence,r.vector,max(r.t,w.lo),
-               CAST((min(r.stop,w.hi)-max(r.t,w.lo))/?2 AS INTEGER)
-        FROM search_windows w CROSS JOIN search_raw r
-        WHERE r.radar=?3 AND r.t<w.hi AND r.stop>w.lo AND r.t>=coalesce(
+        f"""WITH w(at,state,source,parent,confidence,lo,hi,earliest) AS (VALUES {values})
+        INSERT INTO search_pure
+        SELECT ?,w.state,w.source,w.parent,w.confidence,r.vector,max(r.t,w.lo),
+               CAST((min(r.stop,w.hi)-max(r.t,w.lo))/? AS INTEGER)
+        FROM w CROSS JOIN search_raw r
+        WHERE r.radar=? AND r.t<w.hi AND r.stop>w.lo AND r.t>=coalesce(
             (SELECT s.t FROM search_raw s
-             WHERE s.radar=?3 AND s.t>=w.earliest AND s.t<=w.lo AND s.stop>w.lo
+             WHERE s.radar=r.radar AND s.t>=w.earliest AND s.t<=w.lo AND s.stop>w.lo
              ORDER BY s.t LIMIT 1), w.lo)
-        ORDER BY w.rowid,r.t""",
-        (group, CELL_SECONDS, rid),
+        ORDER BY w.at,r.t""",  # nosec B608: only placeholders are formatted in
+        (*rows, group, CELL_SECONDS, rid),
     )
     pending.clear()
 
