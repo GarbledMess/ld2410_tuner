@@ -39,7 +39,7 @@ FALSE_TRIGGER_SECONDS = 30.0  # A trigger costs more than its seconds: it can wa
 ROBUST_SHORTLIST = 6
 ROBUST_SWEEPS = 1
 ROBUST_SEARCH_MIN_WEIGHT = 0.05
-CELL_CACHE_VERSION = 4
+CELL_CACHE_VERSION = 5
 CELL_CACHE_MEMORY_BYTES = 2 * 1024**2
 CELL_CACHE_DISK_BYTES = 256 * 1024**2
 # Evidence horizons settled 2026-10-31 (exp2 hybrid_fast): automatic evidence counts

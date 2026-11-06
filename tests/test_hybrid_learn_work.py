@@ -397,6 +397,32 @@ def test_support_tables_are_built_once_per_gate(tmp_path, monkeypatch):
     assert Support.calls <= 18 * 101
 
 
+@pytest.mark.parametrize("budget", [0, 32 * 1024**2])
+def test_episode_totals_agree_in_memory_and_on_disk(tmp_path, monkeypatch, budget):
+    problem = fragmented_problem(tmp_path)
+    pattern = {"r": {0: 40}}
+    region = exact.regions(problem.zones[0].truth)
+    with exact.Evaluator(problem, region) as evaluator:
+        reference = evaluator.scores([pattern])
+    monkeypatch.setattr(scoring, "EPISODE_MEMORY_BYTES", budget)
+    with exact.Evaluator(problem, region) as evaluator:
+        assert wire(evaluator.scores([pattern])) == wire(reference)
+
+
+def test_scorers_of_one_zone_write_no_episode_rows_within_budget(tmp_path, monkeypatch):
+    problem = fragmented_problem(tmp_path)
+    calls, original = [], scoring.SliceScorer._flush_episodes
+
+    def counted(self):
+        calls.append(1)
+        return original(self)
+
+    monkeypatch.setattr(scoring.SliceScorer, "_flush_episodes", counted)
+    with exact.Evaluator(problem, exact.regions(problem.zones[0].truth)) as evaluator:
+        assert evaluator.scores([{"r": {0: 40}}])
+    assert calls == []
+
+
 def test_scorers_of_one_zone_share_its_resolved_labels(tmp_path, monkeypatch):
     problem = fragmented_problem(tmp_path)
     calls, original = [], exact._labels

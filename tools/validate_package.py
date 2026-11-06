@@ -19,7 +19,6 @@ RUNTIME_FILES = (
     "engine/hybrid/training.py",
     "engine/hybrid/candidates.py",
     "engine/hybrid/decision.py",
-    "engine/hybrid/index.py",
     "engine/hybrid/physical_index.py",
     "engine/hybrid/exact.py",
     "engine/hybrid/evaluate.py",

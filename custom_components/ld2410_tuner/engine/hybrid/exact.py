@@ -19,7 +19,7 @@ from .domains import attenuated_threshold
 from .evidence import _labels
 from .physical_index import physical_rows
 from .replay import replay, support_tables
-from .scoring import ScoreStore, SliceScorer, _union
+from .scoring import EpisodeLabels, ScoreStore, SliceScorer, _union
 from .search_scores import zone_policy
 from .types import TruthSpan
 
@@ -379,7 +379,7 @@ class _Scoring:
     def _scorer(self, zone, variant, z, store):
         problem = self.evaluator.problem
         if (variant, z) not in self.resolved:
-            self.resolved[variant, z] = tuple(_labels(zone.truth))
+            self.resolved[variant, z] = EpisodeLabels(_labels(zone.truth))
         return SliceScorer(
             zone,
             zone_policy(problem, zone),

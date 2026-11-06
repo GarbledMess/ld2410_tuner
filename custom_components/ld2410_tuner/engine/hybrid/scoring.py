@@ -9,6 +9,7 @@ Quiet-presence regularization belongs to training selection, never this cost.
 
 import sqlite3
 import tempfile
+from array import array
 from bisect import bisect_left, bisect_right
 from dataclasses import replace
 from itertools import accumulate, groupby
@@ -26,6 +27,25 @@ GUARD_FIELDS = ("mostly_missed_episodes", "empty_periods_mostly_false_active")
 OVERLAP_CACHE_BYTES = 8 * 1024**2
 
 _EPISODE_BATCH = 512
+EPISODE_MEMORY_BYTES = 32 * 1024**2
+
+
+class EpisodeLabels:
+    """A zone's resolved labels, each with its parent episode's slot, shared by its scorers."""
+
+    def __init__(self, labels):
+        self.pieces = tuple(labels)
+        slots, self.names = {}, []
+        found = array("I")
+        for _lo, _hi, span in self.pieces:
+            source = "human" if span.source == "human" else "automatic"
+            key = span.state, source, span.episode_id
+            slot = slots.get(key)
+            if slot is None:
+                slot = slots[key] = len(self.names)
+                self.names.append(key[:2])
+            found.append(slot)
+        self.slots = found
 
 
 class Disjoint(list):
@@ -327,7 +347,7 @@ class _LongestMiss:
 
 
 class ScoreStore:
-    """One bounded-cache disk index of parent episode totals, shared by scorers.
+    """Parent episode totals of a scoring pass: bounded arrays, then a disk index.
 
     Each scorer owns an integer id, so a scoring pass opens one database instead
     of one per (pattern, zone); rows of a scorer keep their insertion order.
@@ -343,6 +363,15 @@ class ScoreStore:
             weighted REAL, seen REAL, triggers INTEGER,
             PRIMARY KEY(scorer,state,source,parent))""")
         self._next = 0
+        self._memory = 0
+
+    def episode_totals(self, episodes):
+        """Zeroed totals for a scorer's episodes, or None once the store's budget is spent."""
+        size = 32 * episodes
+        if self._memory + size > EPISODE_MEMORY_BYTES:
+            return None
+        self._memory += size
+        return array("d", bytes(size))
 
     def allocate(self):
         self._next += 1
@@ -390,7 +419,11 @@ class SliceScorer:
             policy = replace(policy, quality={**policy.quality, **support})
         self.zone, self.policy, self.window = zone, policy, window
         self.attribution = attribution
-        self._labels = iter(_labels(zone.truth) if labels is None else labels)
+        labels = EpisodeLabels(_labels(zone.truth)) if labels is None else labels
+        self._labels = iter(labels.pieces)
+        self._slots = iter(labels.slots)
+        self._names = labels.names
+        self._slot = None
         self._labelled = 0.0
         self._label = self._next_label()
         self._end = self._active_end = None
@@ -407,6 +440,7 @@ class SliceScorer:
         self._db = self._store.db
         self._id = self._store.allocate()
         self._pending = []
+        self._episodes = self._store.episode_totals(len(self._names))
 
     def consume(self, lo, hi, coverage, raw, active, supported, *, cache=None):
         if self._db is None:
@@ -466,18 +500,30 @@ class SliceScorer:
             self._attribute(observed, members, physical, seen)
 
     def _episode(self, span, source, mass, seen, triggers):
-        pending = self._pending
-        if pending and pending[-1][1:4] == [span.state, source, span.episode_id]:
-            row = pending[-1]
-            row[4] += mass
-            row[5] += mass * span.confidence
-            row[6] += seen
-            row[7] += triggers
+        totals = self._episodes
+        if totals is None:
+            self._disk_episode(span, source, mass, seen, triggers)
             return
-        row = [self._id, span.state, source, span.episode_id, mass]
-        row.extend((mass * span.confidence, seen, triggers))
-        pending.append(row)
-        if len(pending) >= _EPISODE_BATCH:
+        at = self._slot * 4
+        totals[at] += mass
+        totals[at + 1] += mass * span.confidence
+        totals[at + 2] += seen
+        totals[at + 3] += triggers
+
+    def _disk_episode(self, span, source, mass, seen, triggers):
+        self._pending.append(
+            (
+                self._id,
+                span.state,
+                source,
+                span.episode_id,
+                mass,
+                mass * span.confidence,
+                seen,
+                triggers,
+            )
+        )
+        if len(self._pending) >= _EPISODE_BATCH:
             self._flush_episodes()
 
     def _flush_episodes(self):
@@ -490,9 +536,26 @@ class SliceScorer:
         )
         self._pending.clear()
 
+    def _episode_rows(self):
+        """``(state, source, observed, weighted, seen, triggers)`` of each observed episode."""
+        totals = self._episodes
+        if totals is None:
+            self._flush_episodes()
+            yield from self._db.execute(
+                """SELECT state,source,observed,weighted,seen,triggers FROM episodes
+                WHERE scorer=? ORDER BY rowid""",
+                (self._id,),
+            )
+            return
+        for i, (state, source) in enumerate(self._names):
+            at = i * 4
+            if totals[at]:
+                yield state, source, totals[at], totals[at + 1], totals[at + 2], int(totals[at + 3])
+
     def _next_label(self):
         label = next(self._labels, None)
         if label is not None:
+            self._slot = next(self._slots)
             lo, hi, _ = label
             self._labelled += max(0, min(hi, self.window[1]) - max(lo, self.window[0]))
         return label
@@ -513,13 +576,7 @@ class SliceScorer:
             "false_triggers": 0,
         }
         by_source = {}
-        self._flush_episodes()
-        rows = self._db.execute(
-            """SELECT state,source,observed,weighted,seen,triggers FROM episodes
-            WHERE scorer=? ORDER BY rowid""",
-            (self._id,),
-        )
-        for state, source, mass, weighted, seen, triggers in rows:
+        for state, source, mass, weighted, seen, triggers in self._episode_rows():
             pace.rest()
             bad = seen < 0.5 * mass if state == "present" else triggers > 0 or seen > 0.5 * mass
             stats = self._stats[state + "/" + source]
