@@ -10,8 +10,10 @@ block of plain rows per day resident, however many rows the day has. A small
 index of each block's first and last start and end answers row counts without
 decoding interior blocks; windows decode only the blocks they overlap, through
 one process-wide decoded-block cache bounded by ``DECODED_BLOCK_BYTES``.
-Validated native buffers also have a compressed ``SPILL_BYTES`` cache, so plain
-block eviction need not repeat delta decoding or geometry validation.
+Validated native buffers of partly filled blocks also have a compressed ``SPILL_BYTES``
+cache, so plain block eviction need not repeat delta decoding or geometry validation. A full
+block is left out: compressing it costs more than decoding it again, and a chronological
+sweep over a long history would evict it before its next use.
 """
 
 import struct
@@ -107,6 +109,10 @@ class PhysicalRows:
                 part = {c: columns[c][at:stop] for c in self.channels}
                 self._append(times[at:stop], ends[at:stop], part)
 
+    def share_decoded(self, token):
+        """Name these rows, so every copy read from one source shares its decoded blocks."""
+        self._token = token
+
     def _append(self, times, ends, columns):
         if not len(times):
             return
@@ -189,7 +195,8 @@ class PhysicalRows:
         _, milliseconds, geometry, energy, *_ = _BLOCK.unpack(head)
         payload = self._spool.read(geometry + energy)
         value = _decode_block(self.channels, rows, milliseconds, geometry, payload, bounds)
-        _COMPILED.put(key, value)
+        if rows < PHYSICAL_BLOCK_ROWS:
+            _COMPILED.put(key, value)
         _remember(key, value, rows * (16 + len(self.channels)) + 256)
         return value
 

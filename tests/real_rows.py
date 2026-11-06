@@ -14,8 +14,11 @@ Run ``python tests/real_rows.py`` to print the fixture's shape and diagnostics C
 import datetime
 import json
 import random
+import shutil
+import tempfile
 from array import array
 from bisect import bisect_left, bisect_right
+from pathlib import Path
 from types import SimpleNamespace
 
 import test_tuner  # noqa: F401
@@ -244,22 +247,35 @@ def _write_recording(folder, rows):
     return meta
 
 
-def _day_entry(folder, day, last):
+def _day_entry(path, day, persistent):
     from tuner_under_test.worker import history
 
-    path = folder / f"{day}.day"
     return {
         "device_id": "r",
         "date": str(datetime.date(1970, 1, 1) + datetime.timedelta(days=day)),
         "path": str(path),
         "identity": history._identity(path.stat()),
         "late": [],
-        "persistent": day < last,
+        "persistent": persistent,
     }
 
 
+def _job_days(root, folder, meta, budgets):
+    """A worker job's manifest: finished days in place, the open day copied in privately."""
+    from tuner_under_test.worker import manifest
+
+    job = Path(tempfile.mkdtemp(dir=root, prefix="job-"))
+    last = meta["last"]
+    days = [_day_entry(folder / f"{day}.day", day, True) for day in range(meta["first"], last)]
+    days.append(_day_entry(shutil.copy(folder / f"{last}.day", job / f"{last}.day"), last, False))
+    database = job / "manifest.sqlite"
+    with manifest.Writer(database) as write:
+        write("r", {"days": days, "budgets": budgets})
+    return {"days": {"database": str(database), "view": "r"}, "budgets": budgets}
+
+
 def recorded_view(root, rows=ROWS):
-    """A worker view of this shape's rows as day files under ``root``, the newest day open."""
+    """A worker job's view of this shape's rows as day files under ``root``, the newest day open."""
     from tuner_under_test.worker.calculations import ReadOnlyDays
 
     folder = root / "r"
@@ -268,17 +284,19 @@ def recorded_view(root, rows=ROWS):
         meta = json.loads(saved.read_text(encoding="utf8"))
     else:
         meta = _write_recording(folder, rows)
-    entries = [
-        _day_entry(folder, day, meta["last"]) for day in range(meta["first"], meta["last"] + 1)
-    ]
-    budgets = {"max_file_bytes": None, "max_raw_bytes": 1 << 34, "max_rows": None}
+    budgets = {
+        "max_file_bytes": None,
+        "max_raw_bytes": 1 << 34,
+        "max_rows": None,
+        "max_guesses": None,
+    }
     return SimpleNamespace(
         data={
             "devices": {"r": {"history_labels": meta["labels"], "training_state": "unknown"}},
             "room_snapshot": None,
         },
         hass=None,
-        _days=ReadOnlyDays({"days": entries, "budgets": {**budgets, "max_guesses": None}}),
+        _days=ReadOnlyDays(_job_days(root, folder, meta, budgets)),
         _history_until=meta["until"],
         _attribution_until=meta["until"],
     )

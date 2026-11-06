@@ -27,6 +27,8 @@ def _snapshot(view, end):
 
 
 class _WindowRows:
+    rereadable = True
+
     def __init__(self, source, start, end):
         self.source, self.end = source, end
         self.start = max(start, getattr(source.view, "_physical_history_start", -inf))

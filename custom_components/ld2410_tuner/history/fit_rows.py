@@ -80,12 +80,32 @@ class CapturedRowSource:
             self._day = date, FittingDays(self.view).physical(self.device_id, date, self.channels)
         return self._day[1]
 
+    def _rebuilt(self, date):
+        """A cached block failed its check when decoded: fold this day again, once."""
+        from .fit_days import FittingDays
+
+        rows = FittingDays(self.view).rebuilt_physical(self.device_id, date, self.channels)
+        self._day = date, rows
+        return rows
+
+    def _day_rows_in(self, date, lo, hi):
+        try:
+            return self._physical(date).rows_in(lo, hi)
+        except ValueError:
+            return self._rebuilt(date).rows_in(lo, hi)
+
+    def _day_window(self, date, lo, hi):
+        try:
+            return self._physical(date).window(lo, hi)
+        except ValueError:
+            return self._rebuilt(date).window(lo, hi)
+
     def rows_in(self, lo, hi):
         from .fit_days import FittingDays
 
         days = FittingDays(self.view)
         return sum(
-            days.rows_in(self.device_id, date, self.channels, a, b, self._physical)
+            days.rows_in(self.device_id, date, self.channels, a, b, self._day_rows_in)
             for date, a, b in self._windows(lo, hi)
         )
 
@@ -94,7 +114,7 @@ class CapturedRowSource:
         times, ends = array("d"), array("d")
         columns = {c: bytearray() for c in sorted(self.channels)}
         for date, a, b in self._windows(lo, hi):
-            t, e, values = self._physical(date).window(a, b)
+            t, e, values = self._day_window(date, a, b)
             times.extend(t)
             ends.extend(e)
             for c, column in values.items():

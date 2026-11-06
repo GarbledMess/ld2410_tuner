@@ -90,7 +90,7 @@ def test_physical_index_warm_cache_roundtrip_is_lazy(tmp_path):
 def test_cell_sidecar_version_includes_physical_rows(tmp_path):
     fit, _, path = fitting(tmp_path)
     fit.digest("synthetic", DAY, (0,))
-    assert CELL_CACHE_VERSION == 5
+    assert CELL_CACHE_VERSION == 6
     assert path.with_suffix(".cell").read_bytes()[9] == CELL_CACHE_VERSION
 
 
