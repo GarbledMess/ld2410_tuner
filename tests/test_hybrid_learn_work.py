@@ -438,3 +438,95 @@ def test_scorers_of_one_zone_share_its_resolved_labels(tmp_path, monkeypatch):
         evaluator.scores(patterns, zones=problem.zones)
     # One for the zone's scorers, one for its quiet variant; none per pattern.
     assert len(calls) <= 2
+
+
+def _memo_view(root, **options):
+    return recorded(root, 3, irregular=True, human_every=1, **options)
+
+
+def _count_fits(monkeypatch):
+    from tuner_under_test.engine.hybrid import engine
+
+    calls, original = [], engine.fit
+
+    def counted(problem, **kwargs):
+        calls.append(problem.end)
+        return original(problem, **kwargs)
+
+    monkeypatch.setattr(engine, "fit", counted)
+    return calls
+
+
+def test_unchanged_evidence_is_fitted_once_ever(tmp_path, monkeypatch):
+    first = comparable(learn(_memo_view(tmp_path), CASES["plain"]))
+    calls = _count_fits(monkeypatch)
+    again = comparable(learn(_memo_view(tmp_path), CASES["plain"]))
+    assert calls == []
+    assert json.dumps(again, default=repr) == json.dumps(first, default=repr)
+
+
+def test_new_open_day_rows_repeat_only_the_final_fit(tmp_path, monkeypatch):
+    learn(_memo_view(tmp_path), CASES["plain"])
+    (tmp_path / "r" / "3.day").unlink()
+    calls = _count_fits(monkeypatch)
+    view = _memo_view(tmp_path, open_rows=2500)
+    grown = comparable(learn(view, CASES["plain"]))
+    assert calls == [view._history_until]
+    fresh = comparable(learn(_memo_view(tmp_path / "fresh", open_rows=2500), CASES["plain"]))
+    assert json.dumps(grown, default=repr) == json.dumps(fresh, default=repr)
+
+
+def test_a_changed_label_fits_again(tmp_path, monkeypatch):
+    learn(_memo_view(tmp_path), CASES["plain"])
+    calls = _count_fits(monkeypatch)
+    view = _memo_view(tmp_path)
+    view.data["devices"]["r"]["history_labels"][0]["end"] += 60
+    learn(view, CASES["plain"])
+    assert len(calls) == 2
+
+
+def test_changed_inputs_or_code_fit_again(tmp_path, monkeypatch):
+    from tuner_under_test.engine.hybrid import fit_memo
+
+    learn(_memo_view(tmp_path), CASES["plain"])
+    calls = _count_fits(monkeypatch)
+    learn(_memo_view(tmp_path), CASES["timed"])
+    assert len(calls) == 2
+    calls.clear()
+    keys = list(HISTORY_KEYS)
+    facade.fit(_memo_view(tmp_path), "r", keys, dict.fromkeys(keys, 80), None, 0.0)
+    assert len(calls) == 2
+    calls.clear()
+    monkeypatch.setattr(fit_memo, "_producer", lambda: "other code")
+    learn(_memo_view(tmp_path), CASES["plain"])
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("content", [b"", b"{", b"[]", b'{"thresholds": {"r": {"0": 40}}}'])
+def test_an_unusable_memory_is_a_miss(tmp_path, monkeypatch, content):
+    learn(_memo_view(tmp_path), CASES["plain"])
+    memories = list(tmp_path.rglob("*.fit"))
+    assert memories
+    for path in memories:
+        path.write_bytes(content)
+    calls = _count_fits(monkeypatch)
+    learn(_memo_view(tmp_path), CASES["plain"])
+    assert len(calls) == 2
+
+
+def test_only_finished_days_hold_a_memory(tmp_path, monkeypatch):
+    view = _memo_view(tmp_path)
+    for entry in view._days.entries.values():
+        entry["persistent"] = False
+    learn(view, CASES["plain"])
+    assert not list(tmp_path.rglob("*.fit"))
+
+
+def test_memories_count_against_the_result_budget(tmp_path):
+    from tuner_under_test.history import summary_cache
+
+    learn(_memo_view(tmp_path), CASES["plain"])
+    memories = list(tmp_path.rglob("*.fit"))
+    assert memories
+    summary_cache.prune(tmp_path, max_bytes=0)
+    assert not list(tmp_path.rglob("*.fit"))

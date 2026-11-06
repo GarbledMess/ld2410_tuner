@@ -17,6 +17,7 @@ GATES = 18
 SENSOR_LABELS = 248
 LABEL_SECONDS = 348
 OUTAGES = 12
+ROWS_A_DAY = 14400
 
 
 def _noise(day, row, gate):
@@ -46,18 +47,18 @@ def _row_values(day, row, irregular):
     return values
 
 
-def _outages(day, rows):
+def _outages(day):
     """Row ranges the recorder missed: several a day, of different lengths."""
     found = {}
     for k in range(OUTAGES):
-        first = _noise(day, k, 50) % max(1, rows - 60)
+        first = _noise(day, k, 50) % (ROWS_A_DAY - 60)
         for row in range(first, first + 3 + _noise(day, k, 51) % 40):
             found[row] = True
     return found
 
 
 def _add_rows(builder, day, start, rows, irregular):
-    outages = _outages(day, rows)
+    outages = _outages(day)
     previous = False
     for row in range(rows):
         missed = row in outages
@@ -126,7 +127,7 @@ def recorded(root, days=60, *, irregular=False, open_rows=2400, human_every=10):
     entries, labels = [], []
     for day in range(days + 1):
         path = folder / f"{day}.day"
-        _write_day(path, day, 14400 if day < days else open_rows, irregular)
+        _write_day(path, day, ROWS_A_DAY if day < days else open_rows, irregular)
         entries.append(_entry(path, day, days))
         if day % human_every == 0:
             labels.extend(_human_labels(day))

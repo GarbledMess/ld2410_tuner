@@ -33,13 +33,14 @@ def with_reference(problem, reference):
     return replace(problem, policy=replace(problem.policy, reference=reference))
 
 
-def training_fits(training, weight):
+def training_fits(training, weight, fit=None):
     """``{policy: pattern}``, searching once per distinct evidence policy."""
+    fit = engine.fit if fit is None else fit
     searched, found = {}, {}
     for policy in POLICIES:
         flag = reference_flag(policy, weight)
         if flag not in searched:
-            searched[flag] = engine.fit(with_reference(training, flag)).thresholds
+            searched[flag] = fit(with_reference(training, flag)).thresholds
         found[policy] = searched[flag]
     return found
 
