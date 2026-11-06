@@ -229,6 +229,15 @@ async function testDetailsMirror(page) {
 
 async function testReviewEveryCopy(page) {
   const sofaGraph = page.locator(`${SOFA} .history-graph`);
+  // Which copy is asked to scroll is decided at the click, whatever the machine's speed.
+  await page.evaluate(() => {
+    window.layoutScrollTargets = [];
+    window.layoutScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (...args) {
+      layoutScrollTargets.push({ element: this, options: args[0] });
+      return layoutScrollIntoView.apply(this, args);
+    };
+  });
   await page.locator(`${SOFA} [data-action="review-period"]`).click();
   await page.waitForFunction(() => !panel._chartState.get("door").loading);
   assert.deepEqual(
@@ -247,12 +256,58 @@ async function testReviewEveryCopy(page) {
         .evaluate((node) => node.classList.contains("collapsed")),
       false,
     );
-  // The clicked copy, not the first copy, is scrolled into view.
-  await page.waitForFunction((card) => {
+  // The clicked copy, not the first copy, is scrolled into view. A smooth scroll is starved on
+  // a loaded machine, and aims where the graph was when it began: a chart arriving during it
+  // can move the graph down the screen. So: the request names the clicked copy's graph, and
+  // once the scroll has finished moving that graph is on screen and the first copy's is not.
+  const target = await page.evaluate((card) => {
+    Element.prototype.scrollIntoView = layoutScrollIntoView;
     const graph = panel.shadowRoot.querySelector(`${card} .history-graph`);
-    const top = graph.getBoundingClientRect().top;
-    return top >= -1 && top < 40;
+    const asked = layoutScrollTargets.filter(({ element }) =>
+      element.matches(".history-graph"),
+    );
+    return {
+      count: asked.length,
+      right: asked[0]?.element === graph,
+      ...asked[0]?.options,
+    };
   }, SOFA);
+  assert.deepEqual(target, {
+    count: 1,
+    right: true,
+    behavior: "smooth",
+    block: "start",
+  });
+  await page.waitForFunction(
+    (card) => {
+      const top = panel.shadowRoot
+        .querySelector(`${card} .history-graph`)
+        .getBoundingClientRect().top;
+      const settled = top === window.layoutLastTop;
+      window.layoutSettledPolls = settled
+        ? (window.layoutSettledPolls || 0) + 1
+        : 0;
+      window.layoutLastTop = top;
+      return window.layoutSettledPolls >= 10;
+    },
+    SOFA,
+    { polling: 100, timeout: 60000 },
+  );
+  const onScreen = await page.evaluate(
+    (cards) =>
+      cards.map((card) => {
+        const { top, bottom } = panel.shadowRoot
+          .querySelector(`${card} .history-graph`)
+          .getBoundingClientRect();
+        return top >= -1 && bottom > 0 && top < window.innerHeight;
+      }),
+    [SOFA, DESK],
+  );
+  assert.deepEqual(
+    onScreen,
+    [true, false],
+    "only the clicked copy's graph is on screen",
+  );
   assert.ok(await sofaGraph.isVisible());
 }
 
