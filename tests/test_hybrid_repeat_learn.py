@@ -1,13 +1,16 @@
 """A repeat Learn on real-shaped rows keeps its report while repeating as little work as it can."""
 
 import json
+from array import array
 from pathlib import Path
 
 import pytest
 import test_tuner  # noqa: F401
 from real_rows import recorded_view
 from test_hybrid_learn_work import CASES, comparable, learn
-from tuner_under_test.engine.hybrid import engine, exact, physical_index
+from tuner_under_test.engine.hybrid import engine, exact, physical_index, replay
+from tuner_under_test.engine.hybrid.types import RadarSpec
+from tuner_under_test.history import cell_cache
 from tuner_under_test.history.fit_days import FittingDays
 from tuner_under_test.history.fit_rows import CapturedRowSource
 
@@ -86,6 +89,51 @@ def test_repeat_learn_folds_the_open_day_at_most_once_for_each_cutoff_inside_it(
     folds = _counted(monkeypatch, FittingDays, "_fold")
     _repeat(learned)
     assert len(folds) <= 2
+
+
+def test_a_job_checksums_each_finished_day_once_however_many_sweeps_read_it(learned, monkeypatch):
+    checked = _counted(monkeypatch, cell_cache, "_checksum")
+    copied = _counted(monkeypatch, physical_index.PhysicalRows, "read")
+    view = recorded_view(learned, ROWS)
+    rows = CapturedRowSource(view, "r", tuple(range(18)))
+    lo, hi = view._history_until - 3 * 86400, view._history_until
+    first = rows.window(lo, hi)
+    used, loads = len(checked), len(copied)
+    assert CapturedRowSource(view, "r", tuple(range(18))).window(lo, hi) == first
+    assert len(checked) == used
+    assert len(copied) == loads
+
+
+def test_streams_detecting_alike_find_their_runs_once_a_block():
+    columns = {0: bytes((10, 90, 90, 10, 95, 10))}
+    times = array("d", range(6))
+    ends = array("d", range(1, 7))
+
+    class Everything:
+        def supports(self, _key, _value):
+            return True
+
+    radar = RadarSpec("r", (0,), {0: tuple(range(101))}, {0: 50}, {})
+    tables = replay.support_tables(radar, Everything())
+    state = replay._Radar(radar, [(50,), (60,), (92,)], tables)
+    found = []
+    original = replay.hits
+
+    def counted(*args):
+        found.append(args[0])
+        return original(*args)
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(replay, "hits", counted)
+        state.start()
+        state.block(times, ends, columns)
+    _, raw, active, supported = state.finish(6.0, True)
+    assert len(found) == 2
+    assert raw[0] == raw[1] == [(1.0, 3.0), (4.0, 5.0)]
+    assert raw[2] == [(4.0, 5.0)]
+    assert raw[0] is raw[1]
+    assert active[0] is raw[0]
+    assert supported[0] is raw[0]
 
 
 def test_a_damaged_cached_block_rebuilds_its_day_once(learned, monkeypatch):

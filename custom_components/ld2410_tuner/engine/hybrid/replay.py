@@ -103,10 +103,14 @@ def _contested_channels(vectors, varying, cache, contested):
     return [c for c in varying if cache[c, min(v[c] for v in vectors)] & contested]
 
 
-def _supported_masks(columns, vectors, tables):
+def _supported_masks(columns, vectors, tables, plain, unfiltered):
+    """Each vector's supported detections; one whose support filters nothing keeps ``plain``."""
     cache = {}
     masks = []
-    for vector in vectors:
+    for i, vector in enumerate(vectors):
+        if unfiltered[i]:
+            masks.append(plain[i])
+            continue
         mask = 0
         for c, column in columns.items():
             key = c, vector[c]
@@ -190,6 +194,33 @@ def _extend(intervals, new):
         intervals.extend(new)
 
 
+class _BlockHits:
+    """One block's detected runs, found once per distinct mask of all its streams.
+
+    The row times are boxed once here: reading them from the arrays would box every row of
+    the block again for each mask.
+    """
+
+    def __init__(self, times, ends, gaps, spans, hold):
+        self.times, self.ends = times.tolist(), ends.tolist()
+        self.gaps, self.spans, self.hold = gaps, spans, hold
+        self.found = {}
+
+    def of(self, mask):
+        found = self.found.get(mask)
+        if found is None:
+            detected = hits(mask, self.times, self.ends, self.gaps)
+            merged = premerge(detected, self.spans, self.hold)
+            found = self.found[mask] = detected, merged, len(self.found)
+        return found
+
+
+def _shared(outputs, marks, kept):
+    """Streams detecting alike in every block of a chunk hold one list."""
+    for i, mark in enumerate(marks):
+        outputs[i] = kept.setdefault(tuple(mark), outputs[i])
+
+
 class _Radar:
     """Unique vectors of one radar and their timing states."""
 
@@ -202,34 +233,39 @@ class _Radar:
         self.timed = bool(self.hold or on or off)
         self.physical = [TimingStream(radar.timing) for _ in keys] if self.timed else None
         self.support = [TimingStream(radar.timing) for _ in keys] if self.timed and tables else None
+        self.unfiltered = [_filters_nothing(vector, tables) for vector in self.vectors]
 
     def start(self):
         self.coverage = []
         self.raw = [[] for _ in self.keys]
+        self.raw_marks = [[] for _ in self.keys]
         self.positive = [[] for _ in self.keys] if self.tables else self.raw
+        self.positive_marks = [[] for _ in self.keys] if self.tables else self.raw_marks
 
     def block(self, times, ends, columns):
         spans, gaps = segments(times, ends)
         _extend(self.coverage, spans)
         masks, _ = fold_masks(columns, self.vectors)
-        self._feed(masks, times, ends, gaps, spans, self.raw, self.physical)
+        block = _BlockHits(times, ends, gaps, spans, self.hold)
+        self._feed(masks, block, spans, self.raw, self.raw_marks, self.physical)
         if self.tables:
-            masks = _supported_masks(columns, self.vectors, self.tables)
-            self._feed(masks, times, ends, gaps, spans, self.positive, self.support)
+            masks = _supported_masks(columns, self.vectors, self.tables, masks, self.unfiltered)
+            self._feed(masks, block, spans, self.positive, self.positive_marks, self.support)
 
-    def _feed(self, masks, times, ends, gaps, spans, outputs, streams):
-        found = {}
+    def _feed(self, masks, block, spans, outputs, marks, streams):
         for i, mask in enumerate(masks):
-            if mask not in found:
-                detected = hits(mask, times, ends, gaps)
-                found[mask] = detected, premerge(detected, spans, self.hold)
-            detected, merged = found[mask]
+            detected, merged, number = block.of(mask)
             _extend(outputs[i], detected)
+            marks[i].append(number)
             if streams is not None:
                 streams[i].feed(spans, merged)
 
     def finish(self, hi, last):
         """Drain every state to the fixed chunk end; activity is final before it."""
+        kept = {}
+        _shared(self.raw, self.raw_marks, kept)
+        if self.positive is not self.raw:
+            _shared(self.positive, self.positive_marks, kept)
         active = [_drain(s, hi, last) for s in self.physical] if self.timed else self.raw
         supported = active
         if self.support is not None:
@@ -237,6 +273,13 @@ class _Radar:
         elif self.tables:
             supported = self.positive
         return self.coverage, self.raw, active, supported
+
+
+def _filters_nothing(vector, tables):
+    """Whether every crossing of ``vector`` is admitted, so support equals plain detection."""
+    if not tables:
+        return False
+    return all(tables[c][t] == TABLES[t] for c, t in vector.items())
 
 
 def _drain(stream, hi, last):
@@ -265,25 +308,23 @@ class Records:
         self.steps = 0
 
     def write(self, lo, hi, coverage, outputs):
-        pool, lists, identities = {}, [], {}
+        pool, identities = {}, {}
 
         def index(intervals):
             identity = id(intervals)
             if identity in identities:
                 return identities[identity][1]
-            key = tuple(intervals)
-            if key not in pool:
-                pool[key] = len(lists)
-                lists.append(intervals)
-            identities[identity] = intervals, pool[key]
-            return pool[key]
+            raw = _native(array("d", chain.from_iterable(intervals))).tobytes()
+            at = pool.setdefault(raw, len(pool))
+            identities[identity] = intervals, at
+            return at
 
         rid_index = array("I", (index(coverage[rid]) for rid in self.rids))
         stream_index = array("I", (index(v) for triple in outputs for v in triple))
-        self.file.write(_STEP.pack(lo, hi, len(lists), len(rid_index), len(stream_index)))
-        for intervals in lists:
-            self.file.write(_COUNT.pack(len(intervals)))
-            self.file.write(_native(array("d", chain.from_iterable(intervals))).tobytes())
+        self.file.write(_STEP.pack(lo, hi, len(pool), len(rid_index), len(stream_index)))
+        for raw in pool:
+            self.file.write(_COUNT.pack(len(raw) // 16))
+            self.file.write(raw)
         self.file.write(_native(rid_index).tobytes() + _native(stream_index).tobytes())
         self.steps += 1
 

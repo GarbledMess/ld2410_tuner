@@ -1131,7 +1131,7 @@ def test_replay_records_index_shared_interval_objects_once(tmp_path):
     try:
         records.write(0.0, 6.0, {"r": values}, [(values, values, values)])
         # One identity-key copy and one binary serialization of the unique list.
-        assert Intervals.copies == 2
+        assert Intervals.copies == 1
         records.rewind()
         _, _, coverage, outputs = records.read()
         assert list(coverage["r"]) == list(values)

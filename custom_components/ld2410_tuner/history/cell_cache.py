@@ -114,6 +114,33 @@ def _load_physical(stream, size, identity, channels):
     return _physical(stream, size - 4, channels)
 
 
+def physical_place(path, identity, channels):
+    """Rows a job has checksummed once, and where to read them again; ``None`` when unusable."""
+    summary_cache.worker_only()
+    cache = Path(path).with_suffix(".cell")
+    try:
+        if not _identity(path, identity):
+            return None
+        size = cache.stat().st_size
+        if not _HEADER.size + 4 <= size <= CELL_CACHE_DISK_BYTES:
+            return None
+        with cache.open("rb") as stream:
+            rows = _load_physical(stream, size, identity, channels)
+            section = _section_start(stream, size, identity, channels)
+        try:
+            return rows.place(cache, section), rows.encoded_size()
+        finally:
+            rows.close()
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+def _section_start(stream, size, identity, channels):
+    stream.seek(0)
+    _, n = _header(stream, identity, channels)
+    return stream.tell() + 19 * n + _SIZE.size
+
+
 def _physical(stream, finish, channels):
     """Physical rows stay compressed until exact replay or a row budget reads them."""
     length = _SIZE.unpack(_read(stream, _SIZE.size))[0]
