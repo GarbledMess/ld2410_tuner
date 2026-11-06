@@ -11,8 +11,14 @@ from tuner_under_test.rooms import attribution_days
 from tuner_under_test.worker import calculations, codec
 
 
+def _forget_fits(root):
+    for path in root.rglob("*.fit"):
+        path.unlink()
+
+
 def _cold(root):
     """As the first Learn over this store: no derived result in memory or on disk."""
+    _forget_fits(root)
     for pattern in ("*.cell", "*.res"):
         for path in root.rglob(pattern):
             path.unlink()
@@ -40,13 +46,16 @@ def _scenario(tmp_path, monkeypatch, *, days, window_days, attribution_days_kept
 def _assert_identical(tmp_path, monkeypatch, job):
     _cold(tmp_path)
     cold = _learn(job)
+    remembered = _learn(job)
+    _forget_fits(tmp_path)
     warm = _learn(job)
     _cold(tmp_path)
     with monkeypatch.context() as patch:
         _legacy(patch)
         old_cold = _learn(job)
+        _forget_fits(tmp_path)
         old_warm = _learn(job)
-    assert cold == warm == old_cold == old_warm
+    assert cold == remembered == warm == old_cold == old_warm
     return codec.unpack_result(cold)
 
 
