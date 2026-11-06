@@ -4,8 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 import pytest
-import test_automatic_weight
-import test_tuner  # noqa: F401
+import test_tuner
 from tuner_under_test.calibration import thresholds
 
 
@@ -115,10 +114,10 @@ def test_cached_comparison_cannot_reuse_a_different_advertised_domain():
 
 
 class RuntimeThresholdTests(unittest.IsolatedAsyncioTestCase):
-    setUp = test_automatic_weight.DeviceLearnTests.setUp
-    asyncTearDown = test_automatic_weight.DeviceLearnTests.asyncTearDown
-    configuration = test_automatic_weight.DeviceLearnTests.configuration
-    labelled = test_automatic_weight.DeviceLearnTests.labelled
+    setUp = test_tuner.RuntimeTests.setUp
+    asyncTearDown = test_tuner.RuntimeTests.asyncTearDown
+    configuration = test_tuner.RuntimeTests.configuration
+    labelled = test_tuner.RuntimeTests.labelled
 
     def constrained(self):
         entities, current = self.labelled()

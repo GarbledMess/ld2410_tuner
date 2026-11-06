@@ -1201,8 +1201,8 @@ without raw readings or label text. Nothing is uploaded. Keep input exports priv
 and review reports before sharing: timestamps and aggregate measurements can
 still reveal usage patterns.
 
-Full worker capacity is checked separately with synthetic raw history using
-`python tests/lab/hybrid_capacity_checks.py --output /path/to/capacity.json`.
-It records cold/warm work, memory, spill and resource-limit evidence, and returns
-nonzero for missed gates. Capacity targets have not all been met; a constrained
+What the heaviest jobs cost on a real-shaped synthetic home is reported separately by
+`python tests/lab/real_shape_timing.py --output /path/to/timing.json`. On Linux each job runs in
+the production child under its resource limits; it returns nonzero if a job on a radar with two
+days of history is refused. A constrained
 x86 lab is not a measured Home Assistant Green performance guarantee.

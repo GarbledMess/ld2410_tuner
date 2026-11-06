@@ -4,8 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import test_tuner  # noqa: F401
-from test_event_fitting import view
-from test_event_quality import block
+from small_views import block, view
 from tuner_under_test.history import label_counts, label_lookup
 from tuner_under_test.worker import bridge, calculations, capture, codec, display, history, protocol
 

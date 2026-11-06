@@ -37,6 +37,6 @@
     "dense_legacy_learning": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/dense_history_checks.py",
     "large_day_chart": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/large_day_checks.py",
     "python_qa": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/qa.py",
-    "hybrid_capacity": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/hybrid_capacity_checks.py --output /config/lab-reports/hybrid-capacity.json"
+    "hybrid_capacity": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/real_shape_timing.py --output /config/lab-reports/real-shape-timing.json"
   }
 }

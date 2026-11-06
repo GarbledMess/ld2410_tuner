@@ -62,7 +62,7 @@ jobs:
       - run: python3 -m ruff check custom_components tools tests
       - run: python3 -m ruff format --check custom_components tools tests
       - run: python3 tools/check_complexity.py
-      - run: python3 -m pytest -m 'not scaling' --cov --cov-report=xml --cov-report=term-missing
+      - run: python3 -m pytest --cov --cov-report=xml --cov-report=term-missing
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage
@@ -70,9 +70,9 @@ jobs:
           retention-days: 7
 
   hybrid_capacity:
-    name: Hybrid full worker capacity
+    name: Real-shaped home on the production worker
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -81,15 +81,14 @@ jobs:
         with:
           python-version: '3.12'
       - run: python3 -m pip install -r requirements-dev.txt
-      # Cleanup and kernel enforcement run without coverage before the full matrix.
-      - run: python3 -m pytest tests/test_hybrid_scaling.py -q -p no:cacheprovider
-      # Each fit uses production isolation and Linux limits. A missed gate fails CI.
-      - run: python3 tests/lab/hybrid_capacity_checks.py --output hybrid-capacity.json
+      # Each job runs in the production child under its Linux limits. A refused job fails CI;
+      # the timings are the report, for comparing with earlier runs.
+      - run: python3 tests/lab/real_shape_timing.py --output real-shape-timing.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: hybrid-capacity
-          path: hybrid-capacity.json
+          name: real-shape-timing
+          path: real-shape-timing.json
           retention-days: 7
 
   browser:

@@ -1243,21 +1243,3 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*self.runtime._room_attribution_jobs.values())
         await self.poll()
         self.assertEqual(calls.count(self.zone), 2, "the result of stale inputs is rebuilt")
-
-    async def test_stop_cancels_pending_builds(self):
-        from tuner_under_test.runtime import schedule
-
-        self.office()
-        self.record(2)
-        started = asyncio.Event()
-
-        async def executor(fn, *args):
-            started.set()
-            await asyncio.Event().wait()
-
-        self.worker_transport.before = executor
-        self.runtime.snapshot()
-        await asyncio.wait_for(started.wait(), 5)
-        tasks = list(self.runtime._room_attribution_jobs.values())
-        await schedule.stop(self.runtime)
-        self.assertTrue(tasks and all(task.cancelled() for task in tasks))

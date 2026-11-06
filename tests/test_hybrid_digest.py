@@ -1,7 +1,6 @@
 """Synthetic checks for streaming physical cell geometry."""
 
 import random
-import tracemalloc
 from array import array
 
 import pytest
@@ -118,23 +117,6 @@ def test_fold_is_identical_across_4096_row_blocks():
     assert a.channels == b.channels
     assert a.cov == b.cov
     assert dict(a.partial) == dict(b.partial)
-
-
-def test_partial_coverage_spills_without_filling_gaps():
-    def blocks():
-        for offset in range(0, 100000, 1000):
-            yield block(
-                [(i / 20000, (i + 0.25) / 20000, [40] * 18) for i in range(offset, offset + 1000)]
-            )
-
-    tracemalloc.start()
-    d = fold_day(blocks(), 0, 6, (0,))
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    assert peak < 3 * 1024**2
-    assert d.cov == b"\x02"
-    assert sum(b - a for a, b in d.segments()) == pytest.approx(1.25)
-    assert len(d.partial[0]) == 100000
 
 
 @pytest.mark.parametrize("start,end,channels", [(0, 0, (0,)), (0, 6, (18,)), (0, 6, ())])

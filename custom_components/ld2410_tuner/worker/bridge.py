@@ -11,7 +11,11 @@ from . import priority, protocol
 from .supervisor import Closed, Supervisor, owned_preparation
 
 METADATA_BYTES = 1024 * 1024
-METADATA_NODES = 150_000  # Each of: all radars' metadata, and shared room inputs.
+# Each of: all radars' metadata, and shared room inputs. A radar may keep 144 reference periods
+# of a few kilobytes each, so a labelled twelve-radar home legitimately reaches several MiB; the
+# storage worker already carries the same data under this bound (transactions.MESSAGE_BYTES).
+PREFLIGHT_BYTES = 16 * 1024 * 1024
+METADATA_NODES = 150_000
 
 
 def preflight(runtime):
@@ -38,8 +42,8 @@ def preflight(runtime):
         )
     }
     # Separately: Bermuda's many room labels must not use up the radars' share, or the reverse.
-    protocol._check(selected, METADATA_BYTES, METADATA_NODES)
-    protocol._check(room_inputs, METADATA_BYTES, METADATA_NODES)
+    protocol._check(selected, PREFLIGHT_BYTES, METADATA_NODES)
+    protocol._check(room_inputs, PREFLIGHT_BYTES, METADATA_NODES)
 
 
 # Read-only display jobs get their own single child, so a chart never waits behind
