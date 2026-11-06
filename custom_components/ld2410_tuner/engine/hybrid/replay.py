@@ -17,6 +17,7 @@ import sys
 import tempfile
 from array import array
 from bisect import bisect_right
+from hashlib import blake2b
 from itertools import chain, compress, repeat
 from operator import le, ne, sub
 
@@ -306,6 +307,7 @@ class Records:
         self.rids, self.streams = tuple(rids), tuple(streams)
         self.file = tempfile.TemporaryFile(dir=directory, prefix="hybrid-replay-")
         self.steps = 0
+        self._digests = [blake2b(digest_size=16) for _ in self.streams]
 
     def write(self, lo, hi, coverage, outputs):
         pool, identities = {}, {}
@@ -325,8 +327,19 @@ class Records:
         for raw in pool:
             self.file.write(_COUNT.pack(len(raw) // 16))
             self.file.write(raw)
+        self._hash(pool, stream_index)
         self.file.write(_native(rid_index).tobytes() + _native(stream_index).tobytes())
         self.steps += 1
+
+    def _hash(self, pool, stream_index):
+        names = [blake2b(raw, digest_size=16).digest() for raw in pool]
+        for at, digest in enumerate(self._digests):
+            for list_index in stream_index[3 * at : 3 * at + 3]:
+                digest.update(names[list_index])
+
+    def signatures(self):
+        """Per stream, what it recorded in every chunk: equal only if every list is equal."""
+        return dict(zip(self.streams, (d.digest() for d in self._digests), strict=True))
 
     def rewind(self):
         self.file.flush()

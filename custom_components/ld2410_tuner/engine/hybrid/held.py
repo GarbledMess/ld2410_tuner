@@ -37,11 +37,13 @@ def training_fits(training, weight, fit=None):
     """``{policy: pattern}``, searching once per distinct evidence policy."""
     fit = engine.fit if fit is None else fit
     searched, found = {}, {}
-    for policy in POLICIES:
-        flag = reference_flag(policy, weight)
-        if flag not in searched:
-            searched[flag] = fit(with_reference(training, flag)).thresholds
-        found[policy] = searched[flag]
+    with engine.FitSession() as session:
+        for policy in POLICIES:
+            flag = reference_flag(policy, weight)
+            if flag not in searched:
+                session.release_records()
+                searched[flag] = fit(with_reference(training, flag), session=session).thresholds
+            found[policy] = searched[flag]
     return found
 
 
@@ -91,12 +93,12 @@ def held_score(metrics):
     return score
 
 
-def score_candidates(problem, cutoff, candidates, named):
+def score_candidates(problem, cutoff, candidates, named, session=None):
     """``(reports, empties)``: each policy's thresholds, held score and empty harms."""
     problem = engine.with_horizon(problem)
     held, empty = _held_zones(problem, cutoff)
     patterns = _unique(candidates.values())
-    with fixed.FixedScores(problem, len(patterns)) as scores:
+    with fixed.FixedScores(problem, len(patterns), session=session) as scores:
         found = scores.scores(patterns, [*held, *empty])
     reports, empties = {}, []
     for policy, pattern in candidates.items():
