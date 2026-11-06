@@ -21,8 +21,8 @@ from ...calibration.settings import KEY as WEIGHT_KEY
 from ...const import HISTORY_KEYS
 from ...history import spans
 from ...rooms import adaptive, attribution, roles
-from . import adapters, engine, fixed, held, reports, room_bundles
-from .diagnostics import diagnostics
+from . import adapters, engine, fit_memo, fixed, held, reports, room_bundles
+from .diagnostics import diagnostics, diagnostics_pair
 from .scoring import masked
 from .types import FitResult
 
@@ -111,7 +111,7 @@ def _policy_audit(model):
     }
 
 
-def _device_policy(build, problem, weight):
+def _device_policy(build, problem, weight, fit):
     """Training-only candidate fits, held-out selection, as the device learner did."""
     device_id = next(iter(problem.radars))
     model = problem.policy.quality["models"][device_id]
@@ -120,7 +120,7 @@ def _device_policy(build, problem, weight):
     if cutoff is None:
         return audit
     training = build(problem.start, cutoff)
-    candidates = held.training_fits(training, weight)
+    candidates = held.training_fits(training, weight, fit)
 
     def named(pattern):
         return _named(pattern)[device_id]
@@ -189,12 +189,13 @@ def _validation(scores, problem, human, audit):
     }
 
 
-def _device_bundle(scores, problem, pattern, audit):
+def _device_bundle(scores, problem, pattern, audit, review=None):
     zones = _source_zones(problem.zones[0])
     human = zones["human"]
     device_id = next(iter(problem.radars))
-    review = diagnostics(replace(problem, zones=(human,)), pattern, scores.plan)
-    review = review["radars"][device_id]
+    if review is None:
+        review = diagnostics(replace(problem, zones=(human,)), pattern, scores.plan)
+        review = review["radars"][device_id]
     zones["recent"] = fixed.since(human, "recent", review["recent_cutoffs"])
     periods, without = _influence_zones(human, review["review"])
     found = scores.scores([pattern], [*zones.values(), *without])[0]
@@ -229,13 +230,14 @@ def _device_report(problem, result, audit):
     problem = _judged(engine.with_horizon(problem), result)
     pattern = result.thresholds
     with fixed.FixedScores(problem, 3) as scores:
-        bundle, after = _device_bundle(scores, problem, pattern, audit)
+        collected, review = diagnostics_pair(problem, pattern, scores.plan)
+        bundle, after = _device_bundle(scores, problem, pattern, audit, review)
         before = scores.scores([_current(problem)], [problem.zones[0]])[0]
         values = {
             "scoring_mode": scores.mode,
             "score_plan": scores.plan,
             "measurements": bundle,
-            "raw_diagnostics": diagnostics(problem, pattern, scores.plan),
+            "raw_diagnostics": collected,
             "quiet_cost": result.diagnostics["quiet_cost"],
             "selection_cost": result.diagnostics["selection_cost"],
         }
@@ -267,9 +269,10 @@ def fit(
         )
 
     problem = build(start, end)
-    audit = _device_policy(build, problem, automatic_weight)
+    remembered = fit_memo.fitter(view, device_id)
+    audit = _device_policy(build, problem, automatic_weight, remembered)
     final = held.with_reference(problem, held.reference_flag(audit["selected"], automatic_weight))
-    return _device_report(final, engine.fit(final), audit)
+    return _device_report(final, remembered(final), audit)
 
 
 def _measured(view, device_id, keys, thresholds, timing, weight, start, end, context=None):

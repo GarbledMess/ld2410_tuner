@@ -9,6 +9,7 @@ Quiet-presence regularization belongs to training selection, never this cost.
 
 import sqlite3
 import tempfile
+from array import array
 from bisect import bisect_left, bisect_right
 from dataclasses import replace
 from itertools import accumulate, groupby
@@ -24,6 +25,61 @@ from .types import TruthSpan
 STATES = ("present", "not_present")
 GUARD_FIELDS = ("mostly_missed_episodes", "empty_periods_mostly_false_active")
 OVERLAP_CACHE_BYTES = 8 * 1024**2
+
+_EPISODE_BATCH = 512
+EPISODE_MEMORY_BYTES = 32 * 1024**2
+
+
+class EpisodeLabels:
+    """A zone's resolved labels, each with its parent episode's slot, shared by its scorers."""
+
+    def __init__(self, labels):
+        self.pieces = tuple(labels)
+        slots, self.names = {}, []
+        found = array("I")
+        for _lo, _hi, span in self.pieces:
+            source = "human" if span.source == "human" else "automatic"
+            key = span.state, source, span.episode_id
+            slot = slots.get(key)
+            if slot is None:
+                slot = slots[key] = len(self.names)
+                self.names.append(key[:2])
+            found.append(slot)
+        self.slots = found
+        self.ends = [hi for _lo, hi, _span in self.pieces]
+        self._labelled = {}
+
+    def observed(self, coverage, lo, hi, cache):
+        """``(span, slot, observed, mass)`` of the labels covered within one slice."""
+        key = "labels", id(self), id(coverage), lo, hi
+        found = cache.get(key)
+        if found is not None and found[0] is coverage:
+            return found[1]
+        rows = self._clipped(coverage, lo, hi)
+        _cache_value(cache, key, (coverage, rows), 256 * len(rows) + 512)
+        return rows
+
+    def _clipped(self, coverage, lo, hi):
+        rows, pieces, slots = [], self.pieces, self.slots
+        for at in range(bisect_right(self.ends, lo), len(pieces)):
+            a, b, span = pieces[at]
+            if a >= hi:
+                break
+            observed = coverage.clip(max(a, lo), min(b, hi))
+            mass = _seconds(observed)
+            if mass:
+                rows.append((span, slots[at], observed, mass))
+        return rows
+
+    def labelled(self, window):
+        """Labelled seconds inside ``window``, whether or not they were recorded."""
+        total = self._labelled.get(window)
+        if total is None:
+            total = 0.0
+            for lo, hi, _span in self.pieces:
+                total += max(0, min(hi, window[1]) - max(lo, window[0]))
+            self._labelled[window] = total
+        return total
 
 
 class Disjoint(list):
@@ -325,7 +381,7 @@ class _LongestMiss:
 
 
 class ScoreStore:
-    """One bounded-cache disk index of parent episode totals, shared by scorers.
+    """Parent episode totals of a scoring pass: bounded arrays, then a disk index.
 
     Each scorer owns an integer id, so a scoring pass opens one database instead
     of one per (pattern, zone); rows of a scorer keep their insertion order.
@@ -341,6 +397,15 @@ class ScoreStore:
             weighted REAL, seen REAL, triggers INTEGER,
             PRIMARY KEY(scorer,state,source,parent))""")
         self._next = 0
+        self._memory = 0
+
+    def episode_totals(self, episodes):
+        """Zeroed totals for a scorer's episodes, or None once the store's budget is spent."""
+        size = 32 * episodes
+        if self._memory + size > EPISODE_MEMORY_BYTES:
+            return None
+        self._memory += size
+        return array("d", bytes(size))
 
     def allocate(self):
         self._next += 1
@@ -369,7 +434,16 @@ class SliceScorer:
     """
 
     def __init__(
-        self, zone, policy, window, directory: Path, mask=(), store=None, *, attribution=True
+        self,
+        zone,
+        policy,
+        window,
+        directory: Path,
+        mask=(),
+        store=None,
+        *,
+        attribution=True,
+        labels=None,
     ):
         zone = masked(zone, mask)
         # Fixed report variants retain their base zone before the NUL tag.
@@ -379,9 +453,9 @@ class SliceScorer:
             policy = replace(policy, quality={**policy.quality, **support})
         self.zone, self.policy, self.window = zone, policy, window
         self.attribution = attribution
-        self._labels = iter(_labels(zone.truth))
-        self._labelled = 0.0
-        self._label = self._next_label()
+        labels = EpisodeLabels(_labels(zone.truth)) if labels is None else labels
+        self._labels = labels
+        self._names = labels.names
         self._end = self._active_end = None
         self._longest = _LongestMiss()
         self._stats = {}
@@ -395,6 +469,8 @@ class SliceScorer:
         self._store = ScoreStore(directory) if store is None else store
         self._db = self._store.db
         self._id = self._store.allocate()
+        self._pending = []
+        self._episodes = self._store.episode_totals(len(self._names))
 
     def consume(self, lo, hi, coverage, raw, active, supported, *, cache=None):
         if self._db is None:
@@ -417,23 +493,11 @@ class SliceScorer:
             if self.attribution
             else {}
         )
-        self._consume_labels(a, b, shared, signals, starts, members)
+        cache = {} if cache is None else cache
+        for span, slot, observed, mass in self._labels.observed(shared, a, b, cache):
+            self._observe(span, slot, observed, mass, signals, starts, members)
 
-    def _consume_labels(self, lo, hi, coverage, signals, starts, members):
-        while self._label is not None and self._label[1] <= lo:
-            self._label = self._next_label()
-        while self._label is not None and self._label[0] < hi:
-            a, b, span = self._label
-            observed = coverage.clip(max(a, lo), min(b, hi))
-            self._observe(span, observed, signals, starts, members)
-            if b > hi:
-                break
-            self._label = self._next_label()
-
-    def _observe(self, span, observed, signals, starts, members):
-        mass = _seconds(observed)
-        if not mass:
-            return
+    def _observe(self, span, slot, observed, mass, signals, starts, members):
         physical, raw, supported = signals
         state = span.state
         source = "human" if span.source == "human" else "automatic"
@@ -448,17 +512,24 @@ class SliceScorer:
         stats[0] += mass * span.confidence
         stats[1] += error * span.confidence
         triggers = sum(bisect_left(starts, b) - bisect_left(starts, a) for a, b in observed)
-        self._episode(span, source, mass, scored, triggers)
+        self._episode(span, slot, source, mass, scored, triggers)
         if state == "present":
             self._longest.observe(observed, physical)
             self._attribute(observed, members, physical, seen)
 
-    def _episode(self, span, source, mass, seen, triggers):
-        self._db.execute(
-            """INSERT INTO episodes VALUES (?,?,?,?,?,?,?,?)
-            ON CONFLICT(scorer,state,source,parent) DO UPDATE SET
-            observed=observed+excluded.observed, weighted=weighted+excluded.weighted,
-            seen=seen+excluded.seen, triggers=triggers+excluded.triggers""",
+    def _episode(self, span, slot, source, mass, seen, triggers):
+        totals = self._episodes
+        if totals is None:
+            self._disk_episode(span, source, mass, seen, triggers)
+            return
+        at = slot * 4
+        totals[at] += mass
+        totals[at + 1] += mass * span.confidence
+        totals[at + 2] += seen
+        totals[at + 3] += triggers
+
+    def _disk_episode(self, span, source, mass, seen, triggers):
+        self._pending.append(
             (
                 self._id,
                 span.state,
@@ -468,15 +539,36 @@ class SliceScorer:
                 mass * span.confidence,
                 seen,
                 triggers,
-            ),
+            )
         )
+        if len(self._pending) >= _EPISODE_BATCH:
+            self._flush_episodes()
 
-    def _next_label(self):
-        label = next(self._labels, None)
-        if label is not None:
-            lo, hi, _ = label
-            self._labelled += max(0, min(hi, self.window[1]) - max(lo, self.window[0]))
-        return label
+    def _flush_episodes(self):
+        self._db.executemany(
+            """INSERT INTO episodes VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(scorer,state,source,parent) DO UPDATE SET
+            observed=observed+excluded.observed, weighted=weighted+excluded.weighted,
+            seen=seen+excluded.seen, triggers=triggers+excluded.triggers""",
+            self._pending,
+        )
+        self._pending.clear()
+
+    def _episode_rows(self):
+        """``(state, source, observed, weighted, seen, triggers)`` of each observed episode."""
+        totals = self._episodes
+        if totals is None:
+            self._flush_episodes()
+            yield from self._db.execute(
+                """SELECT state,source,observed,weighted,seen,triggers FROM episodes
+                WHERE scorer=? ORDER BY rowid""",
+                (self._id,),
+            )
+            return
+        for i, (state, source) in enumerate(self._names):
+            at = i * 4
+            if totals[at]:
+                yield state, source, totals[at], totals[at + 1], totals[at + 2], int(totals[at + 3])
 
     def _attribute(self, observed, exclusive, physical, seen):
         for member, pieces in exclusive.items():
@@ -494,12 +586,7 @@ class SliceScorer:
             "false_triggers": 0,
         }
         by_source = {}
-        rows = self._db.execute(
-            """SELECT state,source,observed,weighted,seen,triggers FROM episodes
-            WHERE scorer=? ORDER BY rowid""",
-            (self._id,),
-        )
-        for state, source, mass, weighted, seen, triggers in rows:
+        for state, source, mass, weighted, seen, triggers in self._episode_rows():
             pace.rest()
             bad = seen < 0.5 * mass if state == "present" else triggers > 0 or seen > 0.5 * mass
             stats = self._stats[state + "/" + source]
@@ -539,8 +626,6 @@ class SliceScorer:
         if self._result is not None:
             return self._result
         try:
-            while self._next_label() is not None:
-                pace.rest()
             counts = self._settle()
             self._result = {
                 **cost_from_statistics(self._stats, self.policy),
@@ -548,7 +633,9 @@ class SliceScorer:
                 **self._measures(self._seen),
                 "sufficient_statistics": self._stats,
                 "longest_miss_seconds": self._longest.longest,
-                "uncovered_label_seconds": max(0.0, self._labelled - sum(self._totals.values())),
+                "uncovered_label_seconds": max(
+                    0.0, self._labels.labelled(self.window) - sum(self._totals.values())
+                ),
                 "covered_seconds": self._covered,
                 "raw": self._measures(self._raw),
                 "exclusive_seconds": self._exclusive,

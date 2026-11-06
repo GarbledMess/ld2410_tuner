@@ -74,7 +74,8 @@ def coordinate_costs(
         if packed is not None:
             costs = [v + packed[t] for t, v in zip(order, costs, strict=True)]
             continue
-        statistics = [{} for _ in order]
+        settled = _settled(problem, store, zone, folded, attenuate)
+        statistics = [{lane: list(v) for lane, v in settled.items()} for _ in order]
         episodes = _episode_statistics(
             problem, store, zone, (pattern, rid, channel), order, folded, attenuate
         )
@@ -84,6 +85,12 @@ def coordinate_costs(
         for i, stats in enumerate(statistics):
             costs[i] += linear_cost(store, zone.group_id, stats, policy)
     return {t: round(cost, 9) for t, cost in zip(order, costs, strict=True)}
+
+
+def _settled(problem, store, zone, folded, attenuate):
+    """Unpriced lanes' fixed statistics, which their episodes need not repeat."""
+    columns = column_block(problem, store, zone, attenuate) if folded else None
+    return {} if columns is None else columns.settled
 
 
 def _episode_statistics(problem, store, zone, coordinate, order, folded, attenuate):

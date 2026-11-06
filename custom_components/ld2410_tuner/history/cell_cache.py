@@ -3,22 +3,16 @@
 import json
 import os
 import struct
-import sys
 import tempfile
 import zlib
-from array import array
-from collections import OrderedDict
-from operator import lt
 from pathlib import Path
 
 from ..engine.hybrid.constants import (
     CELL_CACHE_DISK_BYTES,
-    CELL_CACHE_MEMORY_BYTES,
     CELL_CACHE_VERSION,
     CELL_SECONDS,
 )
 from ..engine.hybrid.digest import DayDigest, PartialCoverage, _pieces
-from ..engine.hybrid.index import EnergyIndex, read_index, write_index
 from ..engine.hybrid.physical_index import PhysicalRows
 from . import summary_cache
 
@@ -26,39 +20,6 @@ _MAGIC = b"LD24CELL1"
 _HEADER = struct.Struct("<9sBqIII")
 _PIECE = struct.Struct("<Idd")
 _SIZE = struct.Struct("<I")
-
-
-class _IndexOffsets:
-    """Byte-bounded validation metadata; every reuse still checks the whole CRC."""
-
-    def __init__(self):
-        self.entries, self.size = OrderedDict(), 0
-
-    def skip(self, stream, n, key, checksum):
-        key = key, checksum, n, stream.tell()
-        if key in self.entries:
-            self.entries.move_to_end(key)
-            stream.seek(self.entries[key][0])
-            return
-        _skip_index(stream, n)
-        self._remember(key, stream.tell())
-
-    def _remember(self, key, offset):
-        size = 1024 + len(str(key[0]).encode())
-        if key[0] is None or size > CELL_CACHE_MEMORY_BYTES:
-            return
-        while self.entries and self.size + size > CELL_CACHE_MEMORY_BYTES:
-            _, (_, removed) = self.entries.popitem(last=False)
-            self.size -= removed
-        self.entries[key] = offset, size
-        self.size += size
-
-
-_INDEX_OFFSETS = _IndexOffsets()
-
-
-def _index_key(path, found):
-    return str(path), found.st_dev, found.st_ino, found.st_mtime_ns, found.st_size
 
 
 def _identity(path, identity):
@@ -124,7 +85,7 @@ def _partial(stream, finish, cov, k0):
         raise
 
 
-def _load(stream, size, identity, channels, *, with_index=True, index_key=None):
+def _load(stream, size, identity, channels):
     expected = struct.unpack("<I", _read_at(stream, size - 4, 4))[0]
     if _checksum(stream, size - 4) != expected:
         raise ValueError("Corrupt cell checksum")
@@ -134,16 +95,13 @@ def _load(stream, size, identity, channels, *, with_index=True, index_key=None):
     cov = _read(stream, n)
     if any(v > 2 for v in cov):
         raise ValueError("Invalid cell coverage")
-    index = (
-        read_index(stream, n) if with_index else _INDEX_OFFSETS.skip(stream, n, index_key, expected)
-    )
     physical = _physical(stream, size - 4, channels)
     partial = _partial(stream, size - 4, cov, k0)
-    return DayDigest(CELL_SECONDS, k0, n, columns, cov, partial, index, physical)
+    return DayDigest(CELL_SECONDS, k0, n, columns, cov, partial, physical=physical)
 
 
-def _load_physical(stream, size, identity, channels, *, index_key=None):
-    """Read replay rows without rebuilding the unrelated energy-position index."""
+def _load_physical(stream, size, identity, channels):
+    """Read replay rows without the day's cell columns."""
     expected = struct.unpack("<I", _read_at(stream, size - 4, 4))[0]
     if _checksum(stream, size - 4) != expected:
         raise ValueError("Corrupt cell checksum")
@@ -153,37 +111,7 @@ def _load_physical(stream, size, identity, channels, *, index_key=None):
     if offset > size - 4:
         raise ValueError("Truncated cell cache")
     stream.seek(offset)
-    _INDEX_OFFSETS.skip(stream, n, index_key, expected)
     return _physical(stream, size - 4, channels)
-
-
-def _skip_index(stream, n):
-    """Validate unused positions without retaining an energy-position index."""
-    if _read(stream, 1)[0] != 18:
-        raise ValueError("Invalid energy index channels")
-    for _ in range(18):
-        _skip_column(stream, n)
-
-
-def _skip_column(stream, n):
-    buckets = _read(stream, 1)[0]
-    if buckets > 101:
-        raise ValueError("Invalid energy buckets")
-    seen = 0
-    for _ in range(buckets):
-        energy, count = struct.unpack("<BH", _read(stream, 3))
-        if energy > 100 or count > n or seen & (1 << energy):
-            raise ValueError("Invalid energy positions")
-        seen |= 1 << energy
-        _check_positions(_read(stream, 2 * count), n)
-
-
-def _check_positions(raw, n):
-    positions = array("H", raw)
-    if sys.byteorder != "little":
-        positions.byteswap()
-    if positions and (positions[-1] >= n or not all(map(lt, positions, positions[1:]))):
-        raise ValueError("Invalid energy positions")
 
 
 def _physical(stream, finish, channels):
@@ -199,7 +127,7 @@ def _read_at(stream, offset, size):
     return _read(stream, size)
 
 
-def load(path, identity, channels, *, with_index=True):
+def load(path, identity, channels):
     """An auxiliary error is always a miss; physical identity must remain current."""
     summary_cache.worker_only()
     path = Path(path)
@@ -208,19 +136,11 @@ def load(path, identity, channels, *, with_index=True):
         if not _identity(path, identity):
             return None
         cache = path.with_suffix(".cell")
-        found = cache.stat()
-        size = found.st_size
+        size = cache.stat().st_size
         if not _HEADER.size + 4 <= size <= CELL_CACHE_DISK_BYTES:
             return None
         with cache.open("rb") as stream:
-            result = _load(
-                stream,
-                size,
-                identity,
-                channels,
-                with_index=with_index,
-                index_key=_index_key(cache, found),
-            )
+            result = _load(stream, size, identity, channels)
         if _identity(path, identity):
             return result
     except (OSError, ValueError, struct.error):
@@ -238,14 +158,11 @@ def load_physical(path, identity, channels):
         if not _identity(path, identity):
             return None
         cache = path.with_suffix(".cell")
-        found = cache.stat()
-        size = found.st_size
+        size = cache.stat().st_size
         if not _HEADER.size + 4 <= size <= CELL_CACHE_DISK_BYTES:
             return None
         with cache.open("rb") as stream:
-            result = _load_physical(
-                stream, size, identity, channels, index_key=_index_key(cache, found)
-            )
+            result = _load_physical(stream, size, identity, channels)
         if _identity(path, identity):
             return result
     except (OSError, ValueError, struct.error):
@@ -262,7 +179,6 @@ def _write(stream, identity, channels, digest):
     for column in digest.channels:
         stream.write(column)
     stream.write(digest.cov)
-    write_index(stream, digest.index or EnergyIndex.build(digest.channels))
     if digest.physical is None:
         raise ValueError("Digest has no physical rows")
     stream.write(_SIZE.pack(digest.physical.encoded_size()))

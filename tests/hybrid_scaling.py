@@ -288,8 +288,6 @@ def _measure_digests():
     def counted_init(digest, *args, **kwargs):
         initialize(digest, *args, **kwargs)
         size = sum(map(len, digest.channels)) + len(digest.cov)
-        if digest.index is not None:
-            size += digest.index.nbytes()
         live[id(digest)] = size
         metrics["max_resident_digests"] = max(metrics["max_resident_digests"], len(live))
         metrics["resident_digest_bytes"] = max(metrics["resident_digest_bytes"], sum(live.values()))

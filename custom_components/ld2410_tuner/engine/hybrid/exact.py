@@ -19,7 +19,7 @@ from .domains import attenuated_threshold
 from .evidence import _labels
 from .physical_index import physical_rows
 from .replay import replay, support_tables
-from .scoring import ScoreStore, SliceScorer, _union
+from .scoring import EpisodeLabels, ScoreStore, SliceScorer, _union
 from .search_scores import zone_policy
 from .types import TruthSpan
 
@@ -350,30 +350,14 @@ class _Scoring:
     def __init__(self, evaluator, zones, *, attribution=True):
         self.evaluator, self.zones = evaluator, zones
         self.attribution = attribution
+        self.resolved = {}
         self.variants = {"base": zones, "quiet": tuple(quiet_zone(z) for z in zones)}
 
     def run(self, jobs):
-        problem = self.evaluator.problem
         scorers, plan = {}, []
         with ScoreStore(self.evaluator.directory) as store:
             for pattern, variant in jobs:
-                keys = []
-                for z, zone in enumerate(self.variants[variant]):
-                    members = tuple((m, self.evaluator.key(pattern, m)) for m in zone.members)
-                    key = variant, z, members
-                    if key not in scorers:
-                        window = problem.start, problem.end
-                        policy = zone_policy(problem, zone)
-                        scorers[key] = SliceScorer(
-                            zone,
-                            policy,
-                            window,
-                            self.evaluator.directory,
-                            store=store,
-                            attribution=self.attribution,
-                        )
-                    keys.append(key)
-                plan.append(keys)
+                plan.append(self._job_keys(pattern, variant, scorers, store))
             try:
                 self._feed(scorers)
                 results = {key: scorer.result() for key, scorer in scorers.items()}
@@ -381,6 +365,30 @@ class _Scoring:
                 for scorer in scorers.values():
                     scorer.close()
         return [self._combine(keys, results) for keys in plan]
+
+    def _job_keys(self, pattern, variant, scorers, store):
+        keys = []
+        for z, zone in enumerate(self.variants[variant]):
+            members = tuple((m, self.evaluator.key(pattern, m)) for m in zone.members)
+            key = variant, z, members
+            if key not in scorers:
+                scorers[key] = self._scorer(zone, variant, z, store)
+            keys.append(key)
+        return keys
+
+    def _scorer(self, zone, variant, z, store):
+        problem = self.evaluator.problem
+        if (variant, z) not in self.resolved:
+            self.resolved[variant, z] = EpisodeLabels(_labels(zone.truth))
+        return SliceScorer(
+            zone,
+            zone_policy(problem, zone),
+            (problem.start, problem.end),
+            self.evaluator.directory,
+            store=store,
+            attribution=self.attribution,
+            labels=self.resolved[variant, z],
+        )
 
     def _feed(self, scorers):
         runs = self.evaluator.runs

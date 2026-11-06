@@ -84,7 +84,7 @@ class FittingDays:
         persistent = _result_identity(self.view._days, device_id, date)
         if persistent is not None:
             path, identity = persistent
-            cached = cell_cache.load(path, identity, channels, with_index=False)
+            cached = cell_cache.load(path, identity, channels)
             if cached is not None:
                 return cached
         return self._fold(device_id, date, channels, persistent)

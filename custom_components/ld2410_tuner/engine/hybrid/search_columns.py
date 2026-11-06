@@ -10,17 +10,24 @@ exactly; no cell, episode or multiplicity is dropped. ``COLUMN_BYTES`` bounds
 the resident columns; larger zones keep the streaming path.
 """
 
-from itertools import accumulate
+from collections import Counter
+from itertools import accumulate, groupby
 
 from ...const import HISTORY_KEYS
 from .constants import CELL_SECONDS, CHANNELS
 from .replay import TABLES
 
 COLUMN_BYTES = 32 * 1024**2
+_DETECTED = 255
 _VALID = bytes(value if value <= 100 else 0 for value in range(256))
 _ATTENUATED = bytes(3 * value // 5 if value <= 100 else 0 for value in range(256))
+_TOTALS = (
+    "SELECT state,source,parent,confidence,sum(n) FROM search_groups WHERE zone=? "
+    "GROUP BY state,source,parent,confidence ORDER BY state,source,parent,confidence"
+)
 _ROWS = (
-    "SELECT state,source,parent,confidence,n,vector FROM search_groups WHERE zone=? "
+    "SELECT source,parent,confidence,n,vector FROM search_groups "
+    "WHERE zone=? AND state=? AND (source='human')=? "
     "ORDER BY state,source,parent,confidence,vector"
 )
 
@@ -29,47 +36,125 @@ def _kind(source):
     return "human" if source == "human" else "automatic"
 
 
-def _support(problem, member, channel):
-    model = problem.policy.quality.get("models", {}).get(member)
-    if model is None:
-        return None
-    key = HISTORY_KEYS[channel]
-    return bytes(v if v <= 100 and model.supports(key, v) else 0 for v in range(256))
+def _unpriced(statistics, policy):
+    """Lanes whose errors cost nothing, so no threshold can change their contribution."""
+    from .search_scores import _coefficients
+
+    priced = {key for key, _, value in _coefficients(statistics, policy) if value}
+    return {key: stats for key, stats in statistics.items() if key not in priced}
+
+
+def _lane(state, source):
+    return state + "/" + _kind(source)
+
+
+def _episode_totals(strata):
+    """Seconds and weighted seconds of each parent, adding its strata in order."""
+    for key, rows in groupby(strata, key=lambda row: row[:3]):
+        seconds = weighted = 0.0
+        for *_, confidence, count in rows:
+            mass = count * CELL_SECONDS
+            seconds += mass
+            weighted += mass * confidence
+        yield key, seconds, weighted
+
+
+def _lane_totals(strata):
+    totals = {}
+    for state, source, _parent, confidence, count in strata:
+        lane = _lane(state, source)
+        totals[lane] = totals.get(lane, 0.0) + confidence * CELL_SECONDS * count
+    return totals
+
+
+class _Section:
+    """One lane's rows: energy columns plus each stratum's range within them."""
+
+    def __init__(self, rows, tables):
+        width = len(tables)
+        joined, self.strata = bytearray(), []
+        for key, group in groupby(rows, key=lambda row: row[:3]):
+            start = len(joined) // width
+            for *_, count, vector in group:
+                joined.extend(vector * count)
+            self.strata.append((key, start, len(joined) // width))
+        self.size = len(joined) // width
+        self.columns = [bytes(joined[at::width]).translate(t) for at, t in enumerate(tables)]
+
+    def crossings(self, lanes, position, state):
+        fixed = _fixed(self.columns, lanes)
+        if position is None:
+            yield from self._outside(fixed, state)
+            return
+        column = self.columns[position]
+        if fixed:
+            flags = fixed * _DETECTED
+            value = (int.from_bytes(column, "little") & ~flags) | flags
+            column = value.to_bytes(self.size, "little")
+        for (source, parent, confidence), start, stop in self.strata:
+            counts = Counter(column[start:stop])
+            detected = counts.pop(_DETECTED, 0)
+            if detected:
+                counts[101] = detected
+            yield (state, source, parent), confidence, stop - start, counts
+
+    def _outside(self, fixed, state):
+        flags = fixed.to_bytes(self.size, "little")
+        for (source, parent, confidence), start, stop in self.strata:
+            detected = flags.count(1, start, stop)
+            counts = {101: detected} if detected else {}
+            counts[-1] = stop - start - detected
+            yield (state, source, parent), confidence, stop - start, counts
 
 
 class ColumnBlock:
-    """Strata ``(state, source, parent, confidence)`` of transformed energy columns."""
+    """Strata ``(state, source, parent, confidence)`` of transformed energy columns.
+
+    Readings are compiled only for lanes whose errors have a price; a lane without one
+    (automatic evidence at zero weight) contributes its fixed masses and nothing else.
+    """
 
     def __init__(self, problem, store, zone, attenuate):
         self.members = tuple(sorted(zone.members))
         self.width = CHANNELS * len(self.members)
-        self.strata = []
-        pending = {}
-        for state, source, parent, confidence, count, vector in store._database.execute(
-            _ROWS, (zone.group_id,)
-        ):
-            pending.setdefault((state, source, parent, confidence), bytearray()).extend(
-                vector * count
-            )
-        for (state, source, parent, confidence), joined in pending.items():
-            columns = self._columns(problem, joined, state, _kind(source), attenuate)
-            rows = len(joined) // self.width
-            self.strata.append(((state, source, parent), confidence, rows, columns))
+        from .search_scores import _settle, zone_policy
 
-    def _columns(self, problem, joined, state, kind, attenuate):
+        strata = store._database.execute(_TOTALS, (zone.group_id,)).fetchall()
+        policy = zone_policy(problem, zone)
+        statistics = [{}]
+        for key, seconds, weighted in _episode_totals(strata):
+            _settle(statistics, key, seconds, weighted, (0.0,), (0.0,))
+        self.settled = _unpriced(statistics[0], policy)
+        self.totals = _lane_totals(strata)
+        self.free_tails = _unpriced(
+            {lane: [total, 0.0, 0.0, 0.0] for lane, total in self.totals.items()}, policy
+        )
+        self.sections = {}
+        for state, kind in sorted({(row[0], _kind(row[1])) for row in strata}):
+            lane = state + "/" + kind
+            if lane not in self.settled or lane not in self.free_tails:
+                self.sections[lane] = self._section(problem, store, zone, state, kind, attenuate)
+
+    def _section(self, problem, store, zone, state, kind, attenuate):
+        rows = store._database.execute(_ROWS, (zone.group_id, state, kind == "human"))
         present = state == "present"
         final = _ATTENUATED if present and attenuate else _VALID
-        out = []
-        for at in range(self.width):
-            member, channel = self.members[at // CHANNELS], at % CHANNELS
-            column = bytes(joined[at :: self.width])
-            support = _support(problem, member, channel) if present and kind != "human" else None
-            if support is not None:
-                column = column.translate(support)
-            out.append(column.translate(final))
-        return out
+        supported = present and kind != "human"
+        tables = [
+            self._table(problem, at, final) if supported else final for at in range(self.width)
+        ]
+        return _Section(rows, tables)
 
-    def _crossings(self, pattern, rid, channel):
+    def _table(self, problem, at, final):
+        member, channel = self.members[at // CHANNELS], at % CHANNELS
+        model = problem.policy.quality.get("models", {}).get(member)
+        if model is None:
+            return final
+        key = HISTORY_KEYS[channel]
+        support = bytes(v if v <= 100 and model.supports(key, v) else 0 for v in range(256))
+        return support.translate(final)
+
+    def _crossings(self, pattern, rid, channel, skipped):
         """Per stratum: ``(key, confidence, rows, {crossing: rows})``.
 
         Crossing is the coordinate energy, 101 when another lane already detects
@@ -78,31 +163,25 @@ class ColumnBlock:
         thresholds = [pattern[m].get(c, 100) for m in self.members for c in range(CHANNELS)]
         position = self.members.index(rid) * CHANNELS + channel if rid in self.members else None
         lanes = [(at, t) for at, t in enumerate(thresholds) if at != position and t < 100]
-        for key, confidence, rows, columns in self.strata:
-            fixed = _fixed(columns, lanes)
-            detected = fixed.bit_count()
-            counts = {101: detected} if detected else {}
-            if position is None:
-                counts[-1] = rows - detected
-            else:
-                counts.update(_histogram(columns[position], fixed, rows))
-            yield key, confidence, rows, counts
+        for lane, section in self.sections.items():
+            if lane not in skipped:
+                yield from section.crossings(lanes, position, lane.split("/")[0])
 
     def lanes(self, pattern, rid, channel):
         """``{lane: [mass, bins]}`` with ``bins[crossing + 1]`` as the streaming path."""
-        lanes = {}
-        for (state, source, _), confidence, rows, counts in self._crossings(pattern, rid, channel):
+        lanes = {lane: [total, [0.0] * 103] for lane, total in self.totals.items()}
+        found = self._crossings(pattern, rid, channel, self.free_tails)
+        for key, confidence, _rows, counts in found:
             mass = confidence * CELL_SECONDS
-            lane = lanes.setdefault(state + "/" + _kind(source), [0.0, [0.0] * 103])
-            lane[0] += mass * rows
+            bins = lanes[_lane(key[0], key[1])][1]
             for crossing, count in counts.items():
-                lane[1][crossing + 1] += mass * count
+                bins[crossing + 1] += mass * count
         return lanes
 
     def episodes(self, pattern, rid, channel, candidates):
-        """Per parent episode: seconds, weighted seconds and seen per candidate."""
+        """Per priced parent episode: seconds, weighted seconds and seen per candidate."""
         out, current = [], None
-        for key, confidence, rows, counts in self._crossings(pattern, rid, channel):
+        for key, confidence, rows, counts in self._crossings(pattern, rid, channel, self.settled):
             if current is None or current[0] != key:
                 current = [key, 0.0, 0.0, [0.0] * len(candidates), [0.0] * len(candidates)]
                 out.append(current)
@@ -131,16 +210,6 @@ def _above(counts, candidates):
         bins[crossing + 1] += count
     tail = list(accumulate(reversed(bins)))[::-1]  # tail[k] = rows with crossing >= k - 1
     return [tail[t + 2] if t + 2 < len(tail) else 0 for t in candidates]
-
-
-def _histogram(column, fixed, rows):
-    """Counts of each coordinate energy among rows no other lane detects."""
-    if fixed:
-        flags = fixed * 255
-        column = ((int.from_bytes(column, "little") & ~flags) | flags).to_bytes(rows, "little")
-    for value in sorted(set(column)):
-        if value <= 100:
-            yield value, column.count(value)
 
 
 def column_block(problem, store, zone, attenuate):
