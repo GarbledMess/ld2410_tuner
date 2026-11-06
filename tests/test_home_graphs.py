@@ -69,11 +69,11 @@ def test_recorded_days_and_raw_rows_read_what_was_recorded(play):
         listed = [item["date"] for item in days["days"]]
         assert len(listed) == real_shape.RETAINED_DAYS + 1
         page = await home.ws("recording_rows", device_id="office_1", date=_date(4), limit=500)
-        assert page["total"] == real_shape.ROWS
+        assert page["total"] == real_shape.rows_on("office_1", 4)
         assert len(page["rows"]) == 500
         times = [row[0] for row in page["rows"]]
         assert times == sorted(times)
-        assert TODAY - 4 * DAY <= times[0] < TODAY - 4 * DAY + real_shape.ROW_SECONDS
+        assert TODAY - 4 * DAY <= times[0] < TODAY - 4 * DAY + 1
 
     play(scenario)
 

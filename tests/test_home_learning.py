@@ -7,7 +7,7 @@ import time
 import pytest
 import real_shape
 from real_home import WebsocketError
-from real_shape import DAY, HISTORY_KEYS, TODAY
+from real_shape import DAY, TODAY
 
 # A fit of these radars costs about a third of this (in units of ``_speed``). One far beyond it
 # is the engine getting slower, whatever the suite's other assertions say.
@@ -31,7 +31,11 @@ def _speed():
 
 def _reach(radar):
     """The channels this radar sees a person on."""
-    return [name for name in HISTORY_KEYS if int(name[1]) in real_shape._radar_gates(radar)]
+    return [
+        name
+        for name in real_shape.channels(radar)
+        if int(name[1]) in real_shape._radar_gates(radar)
+    ]
 
 
 def _assert_separates(radar, proposals):
@@ -59,12 +63,13 @@ def test_learn_one_radar_then_apply_writes_what_it_recommended(play):
         snapshot = await home.ws("snapshot")
         assert snapshot["devices"][radar]["learning_job"]["status"] == "completed"
         saved = home.runtime.data["devices"][radar]["learning_results"]["user"]
-        assert saved["status"] == "ok"
+        # "ok" or "unsafe": readings arrive late at a room's edges, near the 99.9% target.
+        assert saved["status"] in ("ok", "unsafe")
         proposals = saved["proposals"]
-        assert set(proposals) == set(HISTORY_KEYS)
+        assert set(proposals) == set(real_shape.channels(radar))
         _assert_separates(radar, proposals)
         measured = saved["training"]["duration"]
-        assert measured["presence_recall"] >= 0.9
+        assert measured["presence_recall"] >= 0.99
         assert measured["missed_presence_episodes"] == 0
         assert measured["false_trigger_events"] <= 2
 
@@ -75,7 +80,7 @@ def test_learn_one_radar_then_apply_writes_what_it_recommended(play):
             "apply", device_id=radar, slot="user", result_id=saved["id"], expected=shown
         )
         assert applied["skipped"] == {}
-        expected = {name: float(proposals[name]["threshold"]) for name in HISTORY_KEYS}
+        expected = {name: float(value["threshold"]) for name, value in proposals.items()}
         assert home.thresholds(radar) == expected
         writes = {
             call[2]["entity_id"]: call[2]["value"]

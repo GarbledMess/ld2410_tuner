@@ -47,7 +47,8 @@ def test_label_shows_on_the_graph_counts_its_readings_and_relabel_guards_a_stale
             for label in saved["history_labels"]
             if label["state"] == "present"
         )
-        assert after["present"] == pytest.approx(labelled / 6, abs=2)
+        # Within 1%: a few rows end early, and a stop in coverage is not recorded time.
+        assert after["present"] == pytest.approx(labelled / 6, rel=0.01)
 
         # The same radar relabelled from a panel that has seen the change, then a stale one.
         revision = home.runtime.data["devices"][RADAR]["label_revision"]

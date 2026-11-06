@@ -46,6 +46,10 @@ def _only_some_history(home, days):
     """This radar keeps only the days ``days`` back: enough to prove the rule, without minutes
     of the same rule on every day of every radar."""
     history = home.config / real_shape.STORE_FOLDER / real_shape.DOMAIN / "history"
+    for radar, room in real_shape.radars().items():
+        if radar != RADAR and real_shape.recorded_days(room) < RETAINED_DAYS:
+            for path in (history / radar).glob("*.day"):
+                path.unlink()
     for ago in range(1, RETAINED_DAYS + 1):
         if ago not in days:
             (history / RADAR / f"{_date(ago)}.day").unlink()
@@ -84,8 +88,8 @@ def test_retention_cleanup_works_through_the_days_in_batches_and_keeps_human_lab
         assert (await _rows(home, 42)) == 0
         assert (await _rows(home, 35)) == 0
         # ... the newest days are not touched ...
-        assert (await _rows(home, 3)) == real_shape.ROWS
-        assert (await _rows(home, 25)) == real_shape.ROWS
+        assert (await _rows(home, 3)) == real_shape.rows_on(RADAR, 3)
+        assert (await _rows(home, 25)) == real_shape.rows_on(RADAR, 25)
         # ... and time a person labelled stays for its own, longer retention.
         assert await _rows_within(home, long_label["start"], long_label["end"]) == labelled_before
         # Sensor labels are from the last two weeks and stay with the days they describe.
@@ -114,7 +118,7 @@ def test_trim_to_a_size_removes_unguessed_time_oldest_first_and_saves_human_labe
         assert await _rows_within(home, label["start"], label["end"]) == labelled_before
         # What went first was the oldest.
         assert (await _rows(home, 1)) >= (await _rows(home, 3))
-        assert (await _rows(home, 3)) < real_shape.ROWS
+        assert (await _rows(home, 3)) < real_shape.rows_on(RADAR, 3)
 
     play(scenario, prepare=lambda home: _only_some_history(home, range(1, 4)))
 

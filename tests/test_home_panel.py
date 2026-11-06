@@ -92,10 +92,10 @@ def test_export_downloads_every_recorded_day_and_the_open_one_losslessly(play):
         assert len(files) == real_shape.RETAINED_DAYS + 1
         today = datetime.datetime.fromtimestamp(TODAY, datetime.UTC).date().isoformat()
         live = dayfile.decode_day(base64.b64decode(files[today]))
-        assert len(live.times) == (real_shape.NOW - TODAY) // real_shape.PARTIAL_SECONDS
+        assert len(live.times) == real_shape.rows_today(radar)
         past = datetime.datetime.fromtimestamp(TODAY - 9 * DAY, datetime.UTC).date().isoformat()
         day = dayfile.decode_day(base64.b64decode(files[past]))
-        assert len(day.times) == real_shape.ROWS
+        assert len(day.times) == real_shape.rows_on(radar, 9)
         assert exported["bytes"] > 1024 * 1024
 
         # One export is kept: the next replaces it and its file is gone.
