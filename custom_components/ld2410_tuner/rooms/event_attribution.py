@@ -53,27 +53,6 @@ def _cells(physical, edges):
             yield low, high, cell.values
 
 
-def _places(cells, edges):
-    """Where each cell starts among ``edges``: the stretch between two edges, and whether it
-    starts on the edge itself. Cells of one place read alike from every reader here."""
-    places = []
-    for low, _high, _values in cells:
-        index = bisect_right(edges, low)
-        places.append((index, index > 0 and edges[index - 1] == low))
-    return places
-
-
-def _read_cells(read, cells, places):
-    """``read`` at each cell's start, read once for each run of cells in one place: own
-    labels, room truth and the estimate can change their answer only at the edges."""
-    answers, last, answer = [], None, None
-    for (low, _high, _values), place in zip(cells, places, strict=True):
-        if place != last:
-            answer, last = read(low), place
-        answers.append(answer)
-    return answers
-
-
 def _baseline(cells, quiet):
     """The radar's quiet readings (``quiet``: each cell's answer) as tail-quantile bins."""
     bins = [[0.0] * 101 for _ in HISTORY_KEYS]

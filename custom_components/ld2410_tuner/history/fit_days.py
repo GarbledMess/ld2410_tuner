@@ -45,6 +45,16 @@ class _PhysicalCache:
         self.size += size
 
 
+def _row_counts(days):
+    """The job's answers per day and window: budgets ask the same windows plan after plan."""
+    shared = getattr(days, "shared", None)
+    if shared is None:
+        return None
+    if not hasattr(shared, "_fit_row_counts"):
+        shared._fit_row_counts = {}
+    return shared._fit_row_counts
+
+
 def _physical_cache(days):
     shared = getattr(days, "shared", None)
     if shared is None:
@@ -98,21 +108,38 @@ class FittingDays:
             cell_cache.store(path, _cache_root(self.view._days, path), identity, channels, digest)
         return digest
 
+    def _key(self, persistent, date, channels):
+        if persistent is None:
+            return None
+        path, identity = persistent
+        return (
+            path,
+            tuple(identity[:2]),
+            tuple(sorted(channels)),
+            min(daystore.bounds(date)[1], getattr(self.view, "_history_until", float("inf"))),
+        )
+
+    def rows_in(self, device_id, date, channels, lo, hi, read):
+        """One day's rows overlapping ``[lo, hi)``; ``read`` gives the day's rows, as the caller
+        holds them, the first time a job asks for this window (never when it can reuse one)."""
+        counts = _row_counts(self.view._days)
+        key = self._key(_result_identity(self.view._days, device_id, date), date, channels)
+        if counts is None or key is None:
+            return read(date).rows_in(lo, hi)
+        window = key, lo, hi
+        found = counts.get(window)
+        if found is None:
+            found = counts[window] = read(date).rows_in(lo, hi)
+        return found
+
     def physical(self, device_id, date, channels):
         """One day's usable rows; an unreadable cached section is rebuilt once."""
         if date not in self.view._days.days(device_id):
             return PhysicalRows(channels, array("d"), array("d"), dict.fromkeys(channels, b""))
         persistent = _result_identity(self.view._days, device_id, date)
         cache = _physical_cache(self.view._days)
-        key = None
-        if persistent is not None:
-            path, identity = persistent
-            key = (
-                path,
-                tuple(identity[:2]),
-                tuple(sorted(channels)),
-                min(daystore.bounds(date)[1], getattr(self.view, "_history_until", float("inf"))),
-            )
+        key = self._key(persistent, date, channels)
+        if key is not None:
             physical = None if cache is None else cache.get(key)
             if physical is not None:
                 return physical

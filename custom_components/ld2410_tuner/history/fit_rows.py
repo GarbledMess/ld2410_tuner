@@ -81,7 +81,13 @@ class CapturedRowSource:
         return self._day[1]
 
     def rows_in(self, lo, hi):
-        return sum(self._physical(date).rows_in(a, b) for date, a, b in self._windows(lo, hi))
+        from .fit_days import FittingDays
+
+        days = FittingDays(self.view)
+        return sum(
+            days.rows_in(self.device_id, date, self.channels, a, b, self._physical)
+            for date, a, b in self._windows(lo, hi)
+        )
 
     def window(self, lo, hi):
         """Usable rows overlapping ``[lo, hi)``, clipped, as C arrays and bytes."""

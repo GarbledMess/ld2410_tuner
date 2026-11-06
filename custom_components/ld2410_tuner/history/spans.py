@@ -1,8 +1,11 @@
 """Physical energy spans, with explicit event coverage and legacy sampled uncertainty."""
 
 import math
+from array import array
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
+from itertools import compress
+from operator import lt
 
 from ..engine.columns import quantize
 from . import daystore, pace
@@ -150,6 +153,49 @@ def events(view, device_id, *, start=-math.inf, end=math.inf):
     start = max(start, getattr(view, "_physical_history_start", -math.inf))
     end = min(end, getattr(view, "_attribution_until", math.inf))
     return _disjoint(_stored(view, device_id, start, end)) if end > start else iter(())
+
+
+def event_columns(view, device_id, *, start=-math.inf, end=math.inf):
+    """``events`` as ``(times, ends, columns, named)`` of its rows, in C: ``columns`` per gate
+    are bytes of each reading's ceiling, 255 where the gate did not read (``quantize``). A span
+    clipped to a window takes the window's own number, which ``named`` keeps where the float in
+    ``times`` or ``ends`` would change its type."""
+    if math.isnan(start) or math.isnan(end) or end < start:
+        raise ValueError("Invalid physical history window")
+    start = max(start, getattr(view, "_physical_history_start", -math.inf))
+    end = min(end, getattr(view, "_attribution_until", math.inf))
+    parts, named = [], {}
+    if end > start:
+        for day, selected in _selected_days(view, device_id, start, end):
+            parts.extend(_day_columns(day, low, high) for low, high in selected)
+            named.update((v, v) for bound in selected for v in bound if type(v) is not float)
+    return *_joined_columns([part for part in parts if part is not None]), named
+
+
+def _day_columns(day, start, end):
+    first, after = bisect_right(day.ends, start), bisect_left(day.times, end)
+    if first >= after:
+        return None
+    times, ends = array("d", day.times[first:after]), array("d", day.ends[first:after])
+    times[0], ends[-1] = max(start, times[0]), min(end, ends[-1])
+    columns = [quantize(column, first, after) for column in day.columns]
+    keep = bytes(map(lt, times, ends))
+    if 0 in keep:  # A row with no duration is no span.
+        times, ends = array("d", compress(times, keep)), array("d", compress(ends, keep))
+        columns = [bytes(compress(column, keep)) for column in columns]
+    return times, ends, columns
+
+
+def _joined_columns(parts):
+    if not parts:
+        return array("d"), array("d"), []
+    times, ends = array("d"), array("d")
+    for part in parts:
+        times.extend(part[0])
+        ends.extend(part[1])
+    if any(map(lt, times[1:], ends)):
+        raise ValueError("Physical history contains overlapping coverage")
+    return times, ends, [b"".join(column) for column in zip(*(p[2] for p in parts), strict=True)]
 
 
 def search_events(view, device_id, indices, *, start=-math.inf, end=math.inf):
