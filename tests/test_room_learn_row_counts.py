@@ -8,7 +8,7 @@ import test_tuner  # noqa: F401
 from room_speed_fixture import DAY, START, build, request
 from tuner_under_test.engine.hybrid.adapters import _WindowRows
 from tuner_under_test.engine.hybrid.physical_index import PHYSICAL_BLOCK_ROWS, PhysicalRows
-from tuner_under_test.history import day_results, fit_days, worker_snapshot
+from tuner_under_test.history import day_results, daystore, fit_days, worker_snapshot
 from tuner_under_test.history.fit_rows import CapturedRowSource
 from tuner_under_test.worker import calculations
 
@@ -134,3 +134,22 @@ def test_day_results_stay_untouched_by_counting(views):
     before = day_results.kept_bytes()
     CapturedRowSource(views["radar_b"], "radar_b", (1,)).rows_in(START, START + DAY)
     assert day_results.kept_bytes() == before
+
+
+def test_a_window_looks_only_at_the_days_it_reaches(views, monkeypatch):
+    calls, plain = [], daystore.bounds
+
+    def counted(date):
+        calls.append(date)
+        return plain(date)
+
+    monkeypatch.setattr(daystore, "bounds", counted)
+    source = CapturedRowSource(views["radar_a"], "radar_a", (0,))
+    dates = list(source.view._days.days("radar_a"))
+    assert len(dates) == 4
+    found = list(source._windows(START + 3 * DAY + 5, START + 3 * DAY + 10))
+    assert len(calls) <= 2
+    assert [item[0] for item in found] == dates[3:]
+    assert [item[0] for item in source._windows(float("-inf"), float("inf"))] == dates
+    assert list(source._windows(START - 2 * DAY, START - DAY)) == []
+    assert [item[0] for item in source._windows(START + DAY, START + 2 * DAY)] == dates[1:2]

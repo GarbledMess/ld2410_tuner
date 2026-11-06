@@ -378,12 +378,17 @@ def _room(operation, views, parameters):
         )
     members = {key: _members(items, views) for key, items in parameters["members"].items()}
     rooms = parameters["rooms"]
+    from ..engine.hybrid import facade, fit_memo
+
     if operation == "room_fit":
-        contexts = adaptive.collect_contexts(members, start, end, rooms)
-        return fitting.fit_set(
-            members, start, end, rooms, parameters["weight"], quality_contexts=contexts
-        )
-    from ..engine.hybrid import facade
+
+        def fit():
+            contexts = adaptive.collect_contexts(members, start, end, rooms)
+            return fitting.fit_set(
+                members, start, end, rooms, parameters["weight"], quality_contexts=contexts
+            )
+
+        return fit_memo.remembered_room(views, parameters, fit)
 
     # The same fixed-pattern bundle as ``rooms.application.compare`` on the event loop side.
     return {

@@ -2,8 +2,9 @@
 
 Physical activity is label-independent, so it is replayed once per unique radar
 vector (``replay``) and every zone, truth variant and later re-score reads the same
-records. Scorers are shared by identical member streams: a radar shared by zones,
-or a pattern that differs only on other radars, never repeats replay or scoring.
+records. Scorers are shared by identical member streams: a radar shared by zones, a
+pattern that differs only on other radars, or thresholds no recorded row reads between,
+never repeat scoring.
 """
 
 import struct
@@ -270,6 +271,7 @@ class Evaluator:
             rid: support_tables(radar, models.get(rid)) for rid, radar in problem.radars.items()
         }
         self.runs, self.where = [], {}
+        self._alike, self._named = {}, {}
         self._providers = {}
         self._row_files = _RowFiles()
         self.operations = 0
@@ -335,8 +337,13 @@ class Evaluator:
         )
         self.operations += records.operations
         self.runs.append(records)
-        for stream in records.streams:
+        for stream, signature in records.signatures().items():
             self.where[stream] = records
+            self._alike[stream] = self._named.setdefault((stream[0], signature), stream[1])
+
+    def alike(self, rid, key):
+        """The first replayed vector of ``rid`` recording exactly what ``key`` does."""
+        return self._alike[rid, key]
 
     @property
     def spilled_bytes(self):
@@ -350,6 +357,7 @@ class Evaluator:
         for provider in self._providers.values():
             provider.close()
         self.runs, self.where = [], {}
+        self._alike, self._named = {}, {}
         self._providers.clear()
         self._row_files.close()
         self._temp.cleanup()
@@ -367,7 +375,7 @@ class _Scoring:
     def __init__(self, evaluator, zones, *, attribution=True):
         self.evaluator, self.zones = evaluator, zones
         self.attribution = attribution
-        self.resolved = {}
+        self.resolved, self.asked = {}, {}
         self.variants = {"base": zones, "quiet": tuple(quiet_zone(z) for z in zones)}
 
     def run(self, jobs):
@@ -387,16 +395,34 @@ class _Scoring:
         keys = []
         for z, zone in enumerate(self.variants[variant]):
             members = tuple((m, self.evaluator.key(pattern, m)) for m in zone.members)
-            key = variant, z, members
-            if key not in scorers:
-                scorers[key] = self._scorer(zone, variant, z, store)
-            keys.append(key)
+            keys.append(self._scorer_key(zone, variant, z, members, scorers, store))
         return keys
 
-    def _scorer(self, zone, variant, z, store):
-        problem = self.evaluator.problem
+    def _scorer_key(self, zone, variant, z, members, scorers, store):
+        """The scorer reading these streams, sharing one that reads the same recordings.
+
+        A scorer's episode totals are kept in memory or on disk by when it asked, and the two
+        add in different orders. So each pattern still asks as it did, and shares only with a
+        scorer kept the same way.
+        """
+        asked = variant, z, members
+        found = self.asked.get(asked)
+        if found is None:
+            labels = self._labels(zone, variant, z)
+            kept = store.reserve(len(labels.names))
+            alike = tuple((m, self.evaluator.alike(m, key)) for m, key in members)
+            found = self.asked[asked] = (variant, z, alike, kept) if kept else (*asked, False)
+            if found not in scorers:
+                scorers[found] = self._scorer(zone, labels, store, kept)
+        return found
+
+    def _labels(self, zone, variant, z):
         if (variant, z) not in self.resolved:
             self.resolved[variant, z] = EpisodeLabels(_labels(zone.truth))
+        return self.resolved[variant, z]
+
+    def _scorer(self, zone, labels, store, kept):
+        problem = self.evaluator.problem
         return SliceScorer(
             zone,
             zone_policy(problem, zone),
@@ -404,7 +430,8 @@ class _Scoring:
             self.evaluator.directory,
             store=store,
             attribution=self.attribution,
-            labels=self.resolved[variant, z],
+            labels=labels,
+            reserved=kept,
         )
 
     def _feed(self, scorers):
@@ -415,7 +442,7 @@ class _Scoring:
             pace.rest()
             lo, hi, coverage, outputs = self._step(runs)
             cache = {}
-            for (_, _, members), scorer in scorers.items():
+            for (_, _, members, _), scorer in scorers.items():
                 signals = [{m: outputs[m, key][i] for m, key in members} for i in range(3)]
                 scorer.consume(lo, hi, {m: coverage[m] for m, _ in members}, *signals, cache=cache)
 

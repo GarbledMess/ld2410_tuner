@@ -109,11 +109,16 @@ def untimed(problem):
 class FixedScores:
     """Exact or timed-cell scores of fixed patterns; one plan for one bundle."""
 
-    def __init__(self, problem, pattern_count, directory=None):
+    def __init__(self, problem, pattern_count, directory=None, session=None):
         self.problem = problem
         self.plan = plan_scores(problem, max(1, pattern_count), comparison=True)
         self.mode = "cells" if self.plan.mode == "cells" else "exact"
-        self._timed = Evaluators(problem, self.plan, directory=directory)
+        self._shared = session is not None
+        self._timed = (
+            session.evaluators(problem, self.plan)
+            if self._shared
+            else Evaluators(problem, self.plan, directory=directory)
+        )
         self._raw = (
             Evaluators(untimed(problem), self.plan, directory=directory)
             if any(any(_timing(radar.timing)) for radar in problem.radars.values())
@@ -131,7 +136,8 @@ class FixedScores:
         return [score["zones"] for score in found]
 
     def close(self):
-        self._timed.close()
+        if not self._shared:
+            self._timed.close()
         if self._raw is not self._timed:
             self._raw.close()
 

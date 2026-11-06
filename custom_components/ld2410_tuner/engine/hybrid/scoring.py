@@ -399,13 +399,13 @@ class ScoreStore:
         self._next = 0
         self._memory = 0
 
-    def episode_totals(self, episodes):
-        """Zeroed totals for a scorer's episodes, or None once the store's budget is spent."""
+    def reserve(self, episodes):
+        """Whether a scorer's episodes fit the budget still left, now spent on them."""
         size = 32 * episodes
         if self._memory + size > EPISODE_MEMORY_BYTES:
-            return None
+            return False
         self._memory += size
-        return array("d", bytes(size))
+        return True
 
     def allocate(self):
         self._next += 1
@@ -444,6 +444,7 @@ class SliceScorer:
         *,
         attribution=True,
         labels=None,
+        reserved=None,
     ):
         zone = masked(zone, mask)
         # Fixed report variants retain their base zone before the NUL tag.
@@ -470,7 +471,9 @@ class SliceScorer:
         self._db = self._store.db
         self._id = self._store.allocate()
         self._pending = []
-        self._episodes = self._store.episode_totals(len(self._names))
+        count = len(self._names)
+        kept = self._store.reserve(count) if reserved is None else reserved
+        self._episodes = array("d", bytes(32 * count)) if kept else None
 
     def consume(self, lo, hi, coverage, raw, active, supported, *, cache=None):
         if self._db is None:

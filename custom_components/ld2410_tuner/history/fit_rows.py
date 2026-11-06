@@ -8,6 +8,11 @@ from math import ceil, inf, isfinite
 from . import column_cache, daystore, pace
 
 
+def _first_date(dates, lo):
+    """Where ``lo``'s day stands among sorted ``dates``: no earlier one can reach it."""
+    return bisect_left(dates, daystore.date_of(lo)) if 0 < lo < inf else 0
+
+
 class CapturedRowSource:
     """Raw day-file blocks for folding; cached usable rows for exact replay.
 
@@ -25,10 +30,13 @@ class CapturedRowSource:
 
     def _windows(self, lo, hi):
         hi = min(hi, getattr(self.view, "_history_until", inf))
-        for date in self.view._days.days(self.device_id):
-            start, end = daystore.bounds(date)
-            if start < hi and end > lo:
-                yield date, max(start, lo), min(end, hi)
+        dates = self.view._days.days(self.device_id)
+        for at in range(_first_date(dates, lo), len(dates)):
+            start, end = daystore.bounds(dates[at])
+            if start >= hi:
+                break
+            if end > lo:
+                yield dates[at], max(start, lo), min(end, hi)
 
     def _columns(self, date):
         days = self.view._days

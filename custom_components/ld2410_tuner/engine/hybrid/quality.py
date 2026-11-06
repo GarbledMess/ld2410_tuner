@@ -11,7 +11,9 @@ from bisect import bisect_left
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
-from operator import eq, lt
+from itertools import compress
+from math import inf
+from operator import eq, le, lt, sub
 
 from ...calibration import event_quality
 from ...calibration.quality import QualityModel, learn
@@ -100,6 +102,7 @@ class _Densities:
 _PHYSICAL_VALUES = (*range(255), None)
 _MISSING = bytes(value == 255 for value in range(256))
 _NOT = bytes(value == 0 for value in range(256))
+_READ = bytes(value != 255 for value in range(256))
 _READABLE = re.compile(rb"\x01+")
 _SEPARATED = re.compile(rb"\x00")
 
@@ -124,15 +127,25 @@ def _native_intervals(source, reader, owner, start, end, densities, digest):
     labels = event_quality._LabelCells(reader, owner, start, end)
     vector = _vector_reader(source.channels)
     low = max(start, getattr(source.view, "_physical_history_start", float("-inf")))
-    for block in source.blocks(low, end):
+
+    def add(block, piece):
+        _add_densities(densities, block, piece, source.channels, vector)
+
+    blocks = source.blocks(low, end)
+    return _labelled_intervals(blocks, source.channels, labels, start, end, add, digest)
+
+
+def _labelled_intervals(blocks, channels, labels, start, end, add, digest):
+    """Hash each block and label piece, give ``add`` the labelled ones and yield the geometry."""
+    for block in blocks:
         pace.rest()
         digest.update(block.times.tobytes() + block.ends.tobytes())
-        digest.update(b"".join(block.columns[c] for c in source.channels))
-        readable = _readable(block, source.channels)
+        digest.update(b"".join(block.columns[c] for c in channels))
+        readable = _readable(block, channels)
         for piece in _label_pieces(block, labels, start, end):
             digest.update(repr((piece[2], piece[3])).encode())
             if piece[3] is not None:
-                _add_densities(densities, block, piece, source.channels, vector)
+                add(block, piece)
             yield from _piece_intervals(block, piece, readable)
 
 
@@ -307,6 +320,125 @@ def collect_quality(
         densities.densities("not_present"),
         densities.counts,
         5 * 101 * len(keys),
+    )
+
+
+class _RoomRows:
+    """Per-episode readings of labelled rows, read a whole label's rows at a time."""
+
+    def __init__(self, keys):
+        self.human = event_quality._Human(keys)
+
+    def add(self, block, piece):
+        first, stop, _state, parent, low, high = piece
+        if low is None:
+            seconds = list(map(sub, block.ends[first:stop], block.times[first:stop]))
+        else:
+            seconds = [high - low]
+        columns = [block.columns[position][first:stop] for position in self.human.positions]
+        _add_room_rows(self.human, parent, seconds, columns)
+
+
+def _add_room_rows(human, parent, seconds, columns):
+    """``_Human.add`` of a label's rows: a gate at a time, each bin in row order as it was."""
+    present, read = parent.state == "present", False
+    for key, sink, column in zip(human.keys, human.sinks, columns, strict=True):
+        values, durations = _read_rows(column, seconds)
+        if not values:
+            continue
+        read = True
+        token = parent, key
+        histogram = human.densities.get(token)
+        if histogram is None:
+            histogram = human.densities[token] = [0.0] * 101
+        if present:
+            human.masks[token] = human.masks.get(token, 0) | sum(1 << v for v in set(values))
+            _add_seconds(histogram, values, durations)
+        else:
+            _add_seconds_twice(histogram, sink, values, durations)
+    if read:
+        human.episodes[parent] = None
+
+
+def _read_rows(column, seconds):
+    """A gate's readings and their durations, without the rows it did not read."""
+    if 255 not in column:
+        return column, seconds
+    return column.translate(None, b"\xff"), list(compress(seconds, column.translate(_READ)))
+
+
+def _add_seconds(histogram, values, durations):
+    for energy, duration in zip(values, durations, strict=True):
+        histogram[energy] += duration
+
+
+def _add_seconds_twice(histogram, sink, values, durations):
+    for energy, duration in zip(values, durations, strict=True):
+        histogram[energy] += duration
+        sink[energy] += duration
+
+
+def _window_blocks(view, device_id, channels, start, end):
+    """Captured blocks of what ``spans.events`` reads, as whole ranges."""
+    start = max(start, getattr(view, "_physical_history_start", -inf))
+    if getattr(view, "_days", None) is None or end <= start:
+        return
+    source = CapturedRowSource(view, device_id, channels)
+    for low, high in spans._read_windows(view, device_id, start, end):
+        yield from source.blocks(low, high)
+
+
+def _checked_rows(blocks):
+    """``spans._disjoint`` over blocks: the same refusal without a step per row."""
+    last = -inf
+    for block in blocks:
+        times, ends = block.times, block.ends
+        if not (last <= times[0] and all(map(le, ends[:-1], times[1:]))):
+            _refuse_overlap(times, ends, last)
+        last = ends[-1]
+        yield block
+
+
+def _refuse_overlap(times, ends, last):
+    for low, high in zip(times, ends, strict=True):
+        if high > low:
+            if low < last:
+                raise ValueError("Physical history contains overlapping coverage")
+            last = high
+
+
+def collect_room_context(view, device_id, keys, start, end, human_reader, owner):
+    """``event_quality.collect``'s context through whole-range reads, no row tuple built.
+
+    Every field is what the row walk gives, each float added in the same order, except the
+    fingerprint: it hashes the selected columns as bytes rather than every row's text.
+    """
+    device = view.data["devices"][device_id]
+    reader = _independent_reader(device, human_reader)
+    end = min(end, getattr(view, "_attribution_until", end))
+    owner = (device_id,) if owner is None else tuple(owner)
+    first, last = spans.bounds(view, device_id, start, end)
+    runs = event_quality._clipped_runs(view, device_id, start, end, reader)
+    rows, digest = _RoomRows(keys), sha256(b"room evidence")
+    channels = rows.human.positions
+    blocks = _checked_rows(_window_blocks(view, device_id, channels, start, end))
+    labels = event_quality._LabelCells(reader, owner, first, last)
+    intervals = _labelled_intervals(blocks, channels, labels, start, end, rows.add, digest)
+    automatic, overlaps = event_quality._interval_evidence(intervals, runs, owner, keys)
+    human, presence, empty, densities = rows.human.result()
+    sources = device.get("presence_sources")
+    return QualityContext(
+        human,
+        automatic,
+        overlaps,
+        presence,
+        empty,
+        event_quality._fingerprint((), runs, keys, owner, sources, digest=digest),
+        runs,
+        start,
+        end,
+        event_quality._density(densities, keys, "present"),
+        event_quality._density(densities, keys, "not_present"),
     )
 
 

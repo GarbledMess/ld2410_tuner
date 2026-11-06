@@ -6,6 +6,9 @@ Optional sidecars never own physical history. Summaries are built only in memory
 import threading
 
 _lock = threading.RLock()
+_RESULT = (".res", ".fit")
+_CELL = (".cell", ".cols")
+_kept = {}  # Root -> bytes of each kind when it was last walked, plus those written since.
 
 
 def worker_only():
@@ -68,14 +71,13 @@ def prune(root, *, max_bytes=None, max_cell_bytes=None):
                 ".fittmp",
             ):
                 _remove(temporary)
-        _prune_kind(
-            sorted(item for item in _cache_files(root) if item[1].suffix in (".res", ".fit")),
-            result_cache.MAX_DISK_BYTES if max_bytes is None else max_bytes,
-        )
-        _prune_kind(
-            sorted(item for item in _cache_files(root) if item[1].suffix in (".cell", ".cols")),
-            CELL_CACHE_DISK_BYTES if max_cell_bytes is None else max_cell_bytes,
-        )
+        files = _cache_files(root)
+        result_limit = result_cache.MAX_DISK_BYTES if max_bytes is None else max_bytes
+        cell_limit = CELL_CACHE_DISK_BYTES if max_cell_bytes is None else max_cell_bytes
+        _kept[root] = {
+            _RESULT: _prune_kind(sorted(i for i in files if i[1].suffix in _RESULT), result_limit),
+            _CELL: _prune_kind(sorted(i for i in files if i[1].suffix in _CELL), cell_limit),
+        }
 
 
 def _prune_kind(files, limit):
@@ -85,6 +87,26 @@ def _prune_kind(files, limit):
             break
         if _remove(path):
             total -= size
+    return total
+
+
+def prune_after(root, path):
+    """``prune`` after writing the sidecar ``path``, walking the folder only when it must.
+
+    A job writes a sidecar per radar-day and each walk reads every file's size, so the first
+    write counts them and the rest add to that count until a budget would be passed.
+    """
+    from ..engine.hybrid.constants import CELL_CACHE_DISK_BYTES
+    from . import result_cache  # Imported here: it imports this module.
+
+    with _lock:
+        kept = _kept.get(root)
+        kind = _RESULT if path.suffix in _RESULT else _CELL
+        limit = result_cache.MAX_DISK_BYTES if kind is _RESULT else CELL_CACHE_DISK_BYTES
+        if kept is None or kept[kind] + path.stat().st_size > limit:
+            prune(root)
+        else:
+            kept[kind] += path.stat().st_size
 
 
 def invalidate(path):

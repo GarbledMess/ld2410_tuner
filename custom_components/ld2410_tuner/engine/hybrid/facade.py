@@ -560,7 +560,7 @@ def _truth_sources(zone):
     }
 
 
-def _room_policy(problem, groups, rooms, weight):
+def _room_policy(problem, groups, rooms, weight, fit, session):
     """Two linked training fits before a whole-episode cut, chosen on later episodes."""
     models = problem.policy.quality["models"]
     audit = _room_audit(models)
@@ -571,8 +571,8 @@ def _room_policy(problem, groups, rooms, weight):
         return "corrected_positive", audit
     earlier, clipped = adaptive._earlier(groups, rooms, cutoff)
     training = adapters.room_problem(earlier, problem.start, cutoff, clipped, weight)
-    candidates = held.training_fits(training, weight)
-    reports_, empties = held.score_candidates(problem, cutoff, candidates, _named)
+    candidates = held.training_fits(training, weight, fit)
+    reports_, empties = held.score_candidates(problem, cutoff, candidates, _named, session)
     choice = held.decide(reports_, empties)
     audit["selection"].update(
         policy=choice.policy,
@@ -673,28 +673,42 @@ def fit_set(
     rooms = rooms or {}
     problem = _room_problem(groups, start, end, rooms, automatic_weight, quality_contexts)
     room = _Room(groups, rooms, problem)
-    with fixed.FixedScores(room.problem, 1) as scores:
-        skipped = room.skipped(scores)
-    scorable = _subset(problem, set(room.seen) - set(skipped))
-    audit = None
-    policy = "corrected_positive"
-    if quality_contexts is not None:
-        kept = {gid: groups[gid] for gid in groups if gid not in skipped}
-        policy, audit = _room_policy(scorable, kept, rooms, automatic_weight)
-    reference = held.reference_flag(policy, automatic_weight)
-    result = engine.fit(held.with_reference(scorable, reference))
-    # Judge before and after with the selected evidence policy and the fit's masks.
-    room.problem = _judged(held.with_reference(room.problem, reference), result)
-    with fixed.FixedScores(room.problem, 2) as scores:
-        before = room.bundles(scores, room.problem.zones, _current(room.problem))
-        fitted = _fitted(room, scores, result, skipped, before)
-    if audit is not None:
-        fitted.diagnostics["automatic_evidence"] = audit
-    report = reports.room_report(room.problem, fitted, skipped, result.diagnostics.get("anomaly"))
+    # Between searches the whole window's patterns replay once, whichever pass asks first.
+    with engine.FitSession() as session:
+        fitted, skipped, anomaly = _fitted_set(
+            room, problem, automatic_weight, quality_contexts is not None, session
+        )
+    report = reports.room_report(room.problem, fitted, skipped, anomaly)
     if len(groups) > 1:
         for which in ("before", "after"):
             report[which] = _top_level(groups, report["groups"], which)
     return report
+
+
+def _fitted_set(room, problem, weight, adaptive_policy, session):
+    """``(fitted, skipped zones, anomaly report)`` of one linked set."""
+    groups, rooms = room.groups, room.rooms
+    with fixed.FixedScores(room.problem, 1, session=session) as scores:
+        skipped = room.skipped(scores)
+    scorable = _subset(problem, set(room.seen) - set(skipped))
+    audit = None
+    policy = "corrected_positive"
+    remembered = fit_memo.room_fitter(groups)
+    session.release_records()
+    if adaptive_policy:
+        kept = {gid: groups[gid] for gid in groups if gid not in skipped}
+        policy, audit = _room_policy(scorable, kept, rooms, weight, remembered, session)
+    reference = held.reference_flag(policy, weight)
+    session.release_records()
+    result = remembered(held.with_reference(scorable, reference), session=session)
+    # Judge before and after with the selected evidence policy and the fit's masks.
+    room.problem = _judged(held.with_reference(room.problem, reference), result)
+    with fixed.FixedScores(room.problem, 2, session=session) as scores:
+        before = room.bundles(scores, room.problem.zones, _current(room.problem))
+        fitted = _fitted(room, scores, result, skipped, before)
+    if audit is not None:
+        fitted.diagnostics["automatic_evidence"] = audit
+    return fitted, skipped, result.diagnostics.get("anomaly")
 
 
 def room_fit(
