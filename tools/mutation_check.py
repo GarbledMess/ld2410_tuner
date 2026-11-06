@@ -258,7 +258,7 @@ def _extract_suite(revision, target):
     with archive.open("wb") as stream:
         # A list of arguments and a fixed program: no shell involved.
         subprocess.run(  # nosec B603 B607
-            ["git", "-C", str(ROOT), "archive", revision, "tests"], check=True, stdout=stream
+            ["git", "-C", str(ROOT), "archive", revision], check=True, stdout=stream
         )
     with tarfile.open(archive) as tar:
         tar.extractall(target, filter="data")
@@ -271,8 +271,9 @@ def _prepare(base, suite):
     if suite is None:
         _copy_paths(tracked, base)
         return
-    _copy_paths([path for path in tracked if not path.startswith("tests/")], base)
+    # The whole revision first: its tests may use files this checkout has since removed.
     _extract_suite(suite, base)
+    _copy_paths([path for path in tracked if not path.startswith("tests/")], base)
 
 
 def _first_failure(output):
