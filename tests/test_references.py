@@ -666,7 +666,7 @@ class RoomReferenceTests(unittest.IsolatedAsyncioTestCase):
         await self.member_labelled_office()
         from tuner_under_test.history import spans
 
-        with patch.object(spans, "events", wraps=spans.events) as read:
+        with patch.object(spans, "event_columns", wraps=spans.event_columns) as read:
             training.rebuild_human(self.runtime, self.b)
         # Native attribution reads its trace once; all reference sources share the duration index.
         own = [call for call in read.call_args_list if call.args[1] == "b"]
