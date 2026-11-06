@@ -560,7 +560,7 @@ def _truth_sources(zone):
     }
 
 
-def _room_policy(problem, groups, rooms, weight):
+def _room_policy(problem, groups, rooms, weight, fit):
     """Two linked training fits before a whole-episode cut, chosen on later episodes."""
     models = problem.policy.quality["models"]
     audit = _room_audit(models)
@@ -571,7 +571,7 @@ def _room_policy(problem, groups, rooms, weight):
         return "corrected_positive", audit
     earlier, clipped = adaptive._earlier(groups, rooms, cutoff)
     training = adapters.room_problem(earlier, problem.start, cutoff, clipped, weight)
-    candidates = held.training_fits(training, weight)
+    candidates = held.training_fits(training, weight, fit)
     reports_, empties = held.score_candidates(problem, cutoff, candidates, _named)
     choice = held.decide(reports_, empties)
     audit["selection"].update(
@@ -678,11 +678,12 @@ def fit_set(
     scorable = _subset(problem, set(room.seen) - set(skipped))
     audit = None
     policy = "corrected_positive"
+    remembered = fit_memo.room_fitter(groups)
     if quality_contexts is not None:
         kept = {gid: groups[gid] for gid in groups if gid not in skipped}
-        policy, audit = _room_policy(scorable, kept, rooms, automatic_weight)
+        policy, audit = _room_policy(scorable, kept, rooms, automatic_weight, remembered)
     reference = held.reference_flag(policy, automatic_weight)
-    result = engine.fit(held.with_reference(scorable, reference))
+    result = remembered(held.with_reference(scorable, reference))
     # Judge before and after with the selected evidence policy and the fit's masks.
     room.problem = _judged(held.with_reference(room.problem, reference), result)
     with fixed.FixedScores(room.problem, 2) as scores:
