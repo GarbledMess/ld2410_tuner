@@ -35,7 +35,7 @@ def _remove(path):
 def _cache_files(root):
     files = []
     for path in root.rglob("*"):
-        if path.suffix not in (".sum", ".res", ".cell", ".cols"):
+        if path.suffix not in (".sum", ".res", ".fit", ".cell", ".cols"):
             continue
         try:
             found = path.stat()
@@ -59,10 +59,17 @@ def prune(root, *, max_bytes=None, max_cell_bytes=None):
     with _lock:
         # Writers hold this lock while a temporary exists, so these are crash leftovers.
         for temporary in root.rglob("*"):
-            if temporary.suffix in (".sum", ".sumtmp", ".restmp", ".celltmp", ".colstmp"):
+            if temporary.suffix in (
+                ".sum",
+                ".sumtmp",
+                ".restmp",
+                ".celltmp",
+                ".colstmp",
+                ".fittmp",
+            ):
                 _remove(temporary)
         _prune_kind(
-            sorted(item for item in _cache_files(root) if item[1].suffix == ".res"),
+            sorted(item for item in _cache_files(root) if item[1].suffix in (".res", ".fit")),
             result_cache.MAX_DISK_BYTES if max_bytes is None else max_bytes,
         )
         _prune_kind(

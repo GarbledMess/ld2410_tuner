@@ -21,7 +21,7 @@ from ...calibration.settings import KEY as WEIGHT_KEY
 from ...const import HISTORY_KEYS
 from ...history import spans
 from ...rooms import adaptive, attribution, roles
-from . import adapters, engine, fixed, held, reports, room_bundles
+from . import adapters, engine, fit_memo, fixed, held, reports, room_bundles
 from .diagnostics import diagnostics, diagnostics_pair
 from .scoring import masked
 from .types import FitResult
@@ -111,7 +111,7 @@ def _policy_audit(model):
     }
 
 
-def _device_policy(build, problem, weight):
+def _device_policy(build, problem, weight, fit):
     """Training-only candidate fits, held-out selection, as the device learner did."""
     device_id = next(iter(problem.radars))
     model = problem.policy.quality["models"][device_id]
@@ -120,7 +120,7 @@ def _device_policy(build, problem, weight):
     if cutoff is None:
         return audit
     training = build(problem.start, cutoff)
-    candidates = held.training_fits(training, weight)
+    candidates = held.training_fits(training, weight, fit)
 
     def named(pattern):
         return _named(pattern)[device_id]
@@ -269,9 +269,10 @@ def fit(
         )
 
     problem = build(start, end)
-    audit = _device_policy(build, problem, automatic_weight)
+    remembered = fit_memo.fitter(view, device_id)
+    audit = _device_policy(build, problem, automatic_weight, remembered)
     final = held.with_reference(problem, held.reference_flag(audit["selected"], automatic_weight))
-    return _device_report(final, engine.fit(final), audit)
+    return _device_report(final, remembered(final), audit)
 
 
 def _measured(view, device_id, keys, thresholds, timing, weight, start, end, context=None):
