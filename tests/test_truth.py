@@ -643,7 +643,7 @@ class SensorLevelTests(unittest.TestCase):
             {"a": device(automatic=auto("present", 0.6)), "b": device()},
             {"a": device("unknown"), "b": device(automatic=auto("present", 0.7))},
         ):
-            with self.subTest(inputs=inputs):
+            with self.subTest(inputs=repr(inputs)):
                 expected = room_scenes.room_label(inputs, 50)
                 self.assertEqual(self.assessed(view("area:office"), inputs), expected)
                 self.assertEqual(self.assessed(sensor_room(end=40), inputs), expected)

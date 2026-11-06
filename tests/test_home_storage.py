@@ -43,16 +43,17 @@ async def _clean_until_done(home):
 
 
 def _only_some_history(home, days):
-    """The other long-lived radars' days are not on disk, and this one has ``days`` of its own:
-    enough to prove the rule, without minutes of the same rule on eleven more radars."""
+    """This radar keeps only the days ``days`` back: enough to prove the rule, without minutes
+    of the same rule on every day of every radar."""
     history = home.config / real_shape.STORE_FOLDER / real_shape.DOMAIN / "history"
-    for ago in range(days + 1, RETAINED_DAYS + 1):
-        (history / RADAR / f"{_date(ago)}.day").unlink()
+    for ago in range(1, RETAINED_DAYS + 1):
+        if ago not in days:
+            (history / RADAR / f"{_date(ago)}.day").unlink()
 
 
 def _automatic_expiry_shortened_a_day_ago(home):
     """The owner cut automatic retention to 30 days; tonight's cleanup has not yet run."""
-    _only_some_history(home, 42)
+    _only_some_history(home, {3, *range(10, 26), *range(31, 43)})
     path = home.config / real_shape.STORE_FOLDER / f"{real_shape.DOMAIN}.data"
     saved = json.loads(path.read_text(encoding="utf8"))
     saved["data"]["storage_settings"].update(thin_after_days=29, automatic_days=30)
@@ -112,10 +113,10 @@ def test_trim_to_a_size_removes_unguessed_time_oldest_first_and_saves_human_labe
         assert await home.hass.async_add_executor_job(runtime._days.size) <= target * 1024 * 1024
         assert await _rows_within(home, label["start"], label["end"]) == labelled_before
         # What went first was the oldest.
-        assert (await _rows(home, 1)) >= (await _rows(home, 4))
-        assert (await _rows(home, 4)) < real_shape.ROWS
+        assert (await _rows(home, 1)) >= (await _rows(home, 3))
+        assert (await _rows(home, 3)) < real_shape.ROWS
 
-    play(scenario, prepare=lambda home: _only_some_history(home, 4))
+    play(scenario, prepare=lambda home: _only_some_history(home, range(1, 4)))
 
 
 def test_an_impossible_storage_setting_is_refused_and_changes_nothing(play):
