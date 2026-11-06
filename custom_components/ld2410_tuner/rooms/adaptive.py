@@ -6,7 +6,7 @@ policy; the two candidate fits, held-out scoring and choice run in the hybrid fa
 from ..calibration.adaptive import _clip_labels, earlier_view
 from ..calibration.constants import MIN_AUTO_CONFIDENCE
 from ..calibration.quality import QualityModel, learn
-from ..calibration.quality_evidence import collect
+from ..engine.hybrid.quality import collect_room_context
 from ..history import guesses
 from . import attribution, evidence, roles, truth
 
@@ -98,6 +98,10 @@ def independent_reader(rooms):
 
     read.edges = sorted({edge for context in contexts for edge in context["boundaries"]})
     return read
+
+
+def collect(view, device_id, keys, *, start, end, human_reader):
+    return collect_room_context(view, device_id, keys, start, end, human_reader, None)
 
 
 def collect_contexts(groups, start, end, rooms=None):
