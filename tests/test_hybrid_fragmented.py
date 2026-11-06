@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import asdict, fields, is_dataclass, replace
 from math import ceil
@@ -277,7 +278,7 @@ def reference_radar(problem, device_id, pattern, truth):
     totals = diagnostics._totals(problem, device_id, truth)
     remaining = {s: 0.8 * totals[s] for s in diagnostics.STATES}
     cutoffs, histograms = {}, diagnostics._histograms(channels)
-    samples = {s: diagnostics.deque(maxlen=5000) for s in diagnostics.STATES}
+    samples = {s: deque(maxlen=5000) for s in diagnostics.STATES}
     counts = dict.fromkeys(diagnostics.STATES, 0)
     review = diagnostics._Review()
     for a, b, span, values in diagnostics._pieces(problem, device_id, truth):
