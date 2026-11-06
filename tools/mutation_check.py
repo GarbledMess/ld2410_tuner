@@ -8,8 +8,9 @@ Run from the repository root::
 Each bug is a small source patch, applied to a private copy of the repository's tracked files and
 the suite under test; the suite then runs in that copy and stops at its first failure. ``--suite-from``
 takes the tests from any git revision, so the old and new suites face the same bugs with the
-same source. An unpatched run comes first and each catch is confirmed: the failing test must pass
-on the unpatched source, or it is set aside as flaky and the suite runs again without it.
+same source. An unpatched run comes first and each catch is confirmed: alone, the failing test must
+fail with the bug and pass without it, or it is set aside as flaky and the suite runs again
+without it.
 
 The private ``tests/data`` folder is never copied, read or listed: suites come out of git or from
 the tracked files of the working tree, and it is not tracked.
@@ -55,8 +56,8 @@ BUGS = (
         "flush-drops-last-record",
         "Each flush to the worker leaves out the newest buffered record",
         "worker/flushing.py",
-        "records.append([budget.values[id(record)] for record in live.buffer])",
-        "records.append([budget.values[id(record)] for record in live.buffer[:-1]])",
+        'records = b",".join(_record_bytes(live.buffer, budget) for _, live, _ in items)',
+        'records = b",".join(_record_bytes(live.buffer[:-1], budget) for _, live, _ in items)',
     ),
     Bug(
         "charts-in-learning-lane",
@@ -326,14 +327,17 @@ def _test_id(failure):
     return failure.split(" ", 1)[1] if failure and " " in failure else None
 
 
-def _fails_without_the_bug(base, path, original, patched_text, test_id, timeout):
-    """Whether ``test_id`` also fails on the unpatched source: then it says nothing of the bug."""
+def _says_nothing(base, path, original, patched_text, test_id, timeout):
+    """Whether ``test_id`` says nothing of the bug: alone, it passes with the bug in place (it
+    failed from load in the full run) or fails without it."""
+    alone = ["-n", "0", test_id]
+    if run_suite(base, alone, timeout)[0]:
+        return True
     path.write_text(original, encoding="utf8", newline="\n")
     try:
-        passed, _failure, _seconds = run_suite(base, ["-n", "0", test_id], timeout)
+        return not run_suite(base, alone, timeout)[0]
     finally:
         path.write_text(patched_text, encoding="utf8", newline="\n")
-    return not passed
 
 
 def _confirmed_run(base, path, original, patched_text, arguments, timeout):
@@ -347,7 +351,7 @@ def _confirmed_run(base, path, original, patched_text, arguments, timeout):
         test_id = _test_id(failure)
         if passed or test_id is None:
             return passed, failure, seconds, flaky
-        if not _fails_without_the_bug(base, path, original, patched_text, test_id, timeout):
+        if not _says_nothing(base, path, original, patched_text, test_id, timeout):
             return False, failure, seconds, flaky
         flaky.append(test_id)
     return None, None, seconds, flaky  # Undecided: too much failed without the bug as well.
