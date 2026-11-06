@@ -18,7 +18,9 @@ def runtime():
 def test_oversized_metadata_rejected_before_view_copy():
     async def run():
         owner = runtime()
-        owner.data["devices"]["a"]["history_labels"] = [{"note": "x" * (2 * 1024 * 1024)}]
+        owner.data["devices"]["a"]["history_labels"] = [
+            {"note": "x" * (bridge.PREFLIGHT_BYTES + 1)}
+        ]
 
         def prepare():
             pytest.fail("copied unrestricted metadata")
@@ -60,7 +62,9 @@ def test_preparer_failure_is_released_and_next_request_can_enter():
 
 def test_reference_profile_budget_precedes_reference_view_copy():
     owner = runtime()
-    owner.data["devices"]["a"]["reference_profile"] = {"periods": ["x" * (2 * 1024 * 1024)]}
+    owner.data["devices"]["a"]["reference_profile"] = {
+        "periods": ["x" * (bridge.PREFLIGHT_BYTES + 1)]
+    }
     with pytest.raises(ValueError):
         bridge.preflight(owner)
 

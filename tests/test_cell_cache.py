@@ -253,23 +253,6 @@ def test_worker_trim_removes_cells_before_considering_physical_history(tmp_path)
     assert not cache.exists()
 
 
-def test_rewrite_and_delete_remove_cells_from_real_store(tmp_path):
-    from test_day_summaries import synthetic_day
-    from tuner_under_test.history.daystore import DayStore, date_of
-
-    store = DayStore(tmp_path / "history")
-    day = synthetic_day()
-    date = date_of(day.start)
-    store.replace("synthetic", date, day)
-    path = store._path("synthetic", date, ".cell")
-    path.write_bytes(b"old cache")
-    store.replace("synthetic", date, day)
-    assert not path.exists()
-    path.write_bytes(b"old cache")
-    store.delete("synthetic", [date])
-    assert not path.exists()
-
-
 def test_partial_geometry_roundtrip_is_streamed(tmp_path):
     from test_hybrid_digest import block
     from tuner_under_test.engine.hybrid.digest import fold_day

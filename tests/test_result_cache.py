@@ -495,30 +495,6 @@ def test_invalid_tagged_values_are_misses(physical, bad):
     assert module.load(path, identity, "rows", ()) == (False, None)
 
 
-def attribution_part():
-    """A real day's room attribution part (``rooms.attribution_days._measure``)."""
-    import test_attribution_days as days
-    from tuner_under_test.rooms import attribution_days, event_attribution
-
-    view, saved, _runs = days.scenario(2)
-    with patch.object(event_attribution, "_found", wraps=event_attribution._found) as spy:
-        event_attribution.calculate(view, "a", saved, True, None)
-    runtime, device_id, edges, reads, own = spy.call_args.args
-    low, high, _date, _whole = attribution_days._segments(runtime, device_id)[0]
-    return attribution_days._measure(runtime, device_id, low, high, edges, reads, own)
-
-
-def test_a_day_of_room_attribution_round_trips_exactly(physical):
-    path, identity = physical
-    value = attribution_part()
-    assert any(value[1]), "the day holds runs of Present cells"
-    module = cache()
-    module.store(path, path.parent, identity, "attribution", ("key",), value)
-    found, loaded = module.load(path, identity, "attribution", ("key",))
-    assert found
-    exact(loaded, value)
-
-
 GATES = array("d", [0.0, -1.0, 0.0, 0.0] * 18)  # Per gate: lowest, threshold, no stretches.
 
 

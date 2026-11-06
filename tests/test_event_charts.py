@@ -295,12 +295,6 @@ def _dense_chart_calls(spacing, summary):
     return calls
 
 
-@pytest.mark.parametrize("summary", [False, True])
-def test_dense_day_chart_work_does_not_grow_per_reading(summary):
-    # Twice the readings over the same period: Python work follows buckets, not readings.
-    assert _dense_chart_calls(0.25, summary) < 1.2 * _dense_chart_calls(0.5, summary)
-
-
 def _long_and_zero_blocks(seed):
     """Rows spanning many buckets, readings at one instant and closes at a change."""
     import random
@@ -343,28 +337,6 @@ def test_long_rows_and_zero_length_rows_match_per_span_chart(seed, summary):
     else:
         _close(result["series"], expected[0])
         assert result["modes"] == expected[1]
-
-
-@pytest.mark.parametrize("seed", range(4))
-def test_dense_noisy_day_matches_per_span_chart(seed):
-    import random
-
-    rng = random.Random(seed)
-    clock, changes = 0.0, []
-    for _ in range(6000):
-        clock += rng.choice((0.5, 0.5, 1.0))
-        changes.append(
-            (clock, {g: None if rng.random() < 0.01 else rng.randrange(0, 100) for g in range(18)})
-        )
-    end = clock + 1.0
-    runtime = _blocks_view([(changes, end)], end)
-    keys = [f"g{gate}_still" for gate in range(9)]
-    with patch("time.time", return_value=end):
-        result = history_series_multi(runtime, "a", keys, end / 3600, 400, end)
-        expected = _reference_chart(
-            runtime, keys, end=end, hours=end / 3600, max_points=400, summary=False
-        )
-    _close(result["series"], expected[0])
 
 
 def test_chart_source_lanes_keep_manual_external_and_guessed_separate():

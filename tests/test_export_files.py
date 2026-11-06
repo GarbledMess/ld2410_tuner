@@ -15,7 +15,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-import test_surfaces as surfaces
 import test_tuner as harness
 
 mod = harness.mod
@@ -27,8 +26,23 @@ class ExportFileTests(unittest.IsolatedAsyncioTestCase):
     setUp = harness.RuntimeTests.setUp
     asyncTearDown = harness.RuntimeTests.asyncTearDown
     configuration = harness.RuntimeTests.configuration
-    add_entity = surfaces.SurfaceTests.add_entity
-    registry_device = surfaces.SurfaceTests.registry_device
+
+    def add_entity(self, entity_id, device_id="a"):
+        entity = types.SimpleNamespace(
+            entity_id=entity_id, device_id=device_id, domain=entity_id.split(".")[0]
+        )
+        self.registry.entities[entity_id] = entity
+        return entity
+
+    def registry_device(self):
+        self.configuration()
+        self.add_entity("sensor.radar_g0_move_energy")
+        dr = sys.modules["homeassistant.helpers.device_registry"]
+        dr.async_get = lambda _: types.SimpleNamespace(
+            async_get=lambda _: types.SimpleNamespace(
+                name_by_user="Synthetic room", name="Radar", area_id="test_area"
+            )
+        )
 
     def record_two_days(self):
         rows = [

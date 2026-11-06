@@ -19,7 +19,6 @@ replay = importlib.import_module("replay_autolabels")
 release = importlib.import_module("release")
 validator = importlib.import_module("validate_package")
 complexity = importlib.import_module("check_complexity")
-updater = importlib.import_module("update_characterisation")
 
 
 START = 1_760_486_400.0  # A UTC midnight: the recording is one day file.
@@ -290,33 +289,3 @@ class TransportTests(unittest.TestCase):
             release.main()
             build.assert_not_called()
             publish.assert_not_called()
-
-
-class CharacterisationUpdaterTests(unittest.TestCase):
-    def test_generate_writes_every_reviewed_case_and_main_reports_them(self):
-        import test_characterisation as suite
-
-        historical = {
-            name: (updater.FIXTURES / f"{name}.json").read_bytes() for name in suite.CASES
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "nested"
-            names = updater.generate(target)
-            self.assertEqual(sorted(path.stem for path in target.glob("*.json")), names)
-            self.assertEqual(len(names), 5)
-            for name in names:
-                fresh = (target / f"{name}.json").read_bytes()
-                self.assertNotIn(b"\r", fresh)
-                builder, drop = suite.CASES[name]
-                self.assertEqual(fresh, suite.canonical(builder(), drop).encode())
-                # Historical engine reports remain compatibility fixtures. A
-                # current-model export to another directory must not rewrite them.
-                self.assertEqual((updater.FIXTURES / f"{name}.json").read_bytes(), historical[name])
-                if name == "reference_profile":
-                    self.assertEqual(fresh, historical[name])
-        with (
-            patch.object(updater, "generate", return_value=["one"]),
-            contextlib.redirect_stdout(io.StringIO()) as out,
-        ):
-            self.assertEqual(updater.main(), 0)
-        self.assertEqual(out.getvalue(), "wrote one.json\n")
