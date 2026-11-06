@@ -22,6 +22,7 @@ class CapturedRowSource:
         self.device_id = device_id
         self.channels = channels
         self._day = None
+        self._spans = None
 
     def _windows(self, lo, hi):
         hi = min(hi, getattr(self.view, "_history_until", inf))
@@ -51,8 +52,19 @@ class CapturedRowSource:
             self._day = date, FittingDays(self.view).physical(self.device_id, date, self.channels)
         return self._day[1]
 
+    def _geometry(self, date):
+        if self._spans is None or self._spans[0] != date:
+            from .fit_days import FittingDays
+
+            found = FittingDays(self.view).geometry(
+                self.device_id, date, self.channels, self._physical
+            )
+            self._spans = date, found
+        return self._spans[1]
+
     def rows_in(self, lo, hi):
-        return sum(self._physical(date).rows_in(a, b) for date, a, b in self._windows(lo, hi))
+        """Rows overlapping ``[lo, hi)``, by bisecting each day's kept row times."""
+        return sum(_count(self._geometry(date), a, b) for date, a, b in self._windows(lo, hi))
 
     def window(self, lo, hi):
         """Usable rows overlapping ``[lo, hi)``, clipped, as C arrays and bytes."""
@@ -65,6 +77,13 @@ class CapturedRowSource:
             for c, column in values.items():
                 columns[c] += column
         return times, ends, {c: bytes(v) for c, v in columns.items()}
+
+
+def _count(geometry, lo, hi):
+    if hi <= lo:
+        return 0
+    times, ends = geometry
+    return max(0, bisect_left(times, hi) - bisect_right(ends, lo))
 
 
 def _byte_column(column, first, after):
