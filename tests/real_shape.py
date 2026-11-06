@@ -211,7 +211,8 @@ def _day_file(body, start):
     header = dayfile.HEADER.pack(
         dayfile.VERSION, start * 1000, (start + DAY) * 1000, rows, runs, *[0] * dayfile.GATES
     )
-    return dayfile.MAGIC + zlib.compress(header + contents, 6)
+    # The reader takes any zlib level; the fastest keeps the files about the size of real ones.
+    return dayfile.MAGIC + zlib.compress(header + contents, 1)
 
 
 def recorded_days(room):

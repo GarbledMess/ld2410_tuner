@@ -1,5 +1,7 @@
 """The real-shaped home, built once per test session and copied for each test that uses it."""
 
+import time
+
 import pytest
 import real_home
 import real_shape
@@ -7,7 +9,20 @@ import real_shape
 
 @pytest.fixture(scope="session")
 def home_template(tmp_path_factory):
-    return real_shape.build(tmp_path_factory.mktemp("real_home_template") / "config")
+    """Built once per run: the first test worker to arrive builds, the others wait for it."""
+    shared = tmp_path_factory.getbasetemp().parent / "real_home_template"
+    done = shared / "config"
+    try:
+        shared.mkdir()
+    except FileExistsError:
+        deadline = time.monotonic() + 300
+        while not done.exists():
+            assert time.monotonic() < deadline, "Another test worker never built the home"
+            time.sleep(0.1)
+        return done
+    partial = real_shape.build(shared / "building")
+    partial.rename(done)
+    return done
 
 
 @pytest.fixture

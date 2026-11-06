@@ -593,7 +593,7 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
         )
         for change in changes:
             with (
-                self.subTest(change=change),
+                self.subTest(change=repr(change)),
                 patch.object(seen_by, "build", wraps=seen_by.build) as spy,
             ):
                 change()

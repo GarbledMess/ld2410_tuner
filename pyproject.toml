@@ -7,7 +7,7 @@ select = ["E4", "E7", "E9", "F", "I", "UP", "B", "C4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["scaling: full hybrid resource acceptance"]
+addopts = "-n 6"
 
 [tool.coverage.run]
 source = ["custom_components/ld2410_tuner", "tools"]
