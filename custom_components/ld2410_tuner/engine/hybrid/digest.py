@@ -86,7 +86,6 @@ class DayDigest:
     channels: tuple[bytes, ...]
     cov: bytes
     partial: Mapping
-    index: object = None
     physical: object = None
 
     def segments(self):
