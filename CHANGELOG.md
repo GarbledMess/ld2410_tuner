@@ -1,35 +1,23 @@
 # Release notes
 
-## Unreleased
+## 1.33.0 - 2026-11-07
 
+- Threshold fitting is replaced by a new engine. On a real home, a two-radar room's Learn
+  used about 8 times less CPU than before, and an unchanged repeat is almost free. Single
+  radars cost about the same as before. The first Learn after updating rebuilds its caches.
+- Learn catches quiet presence better, with far less false activity. A fit now lowers its
+  thresholds, together and then gate by gate, when that catches more presence for little
+  false activity. Reports show errors per episode and flag suspicious stretches of labels.
+- Learning sets now use all retained shared recordings, not just the last week. Automatic
+  evidence is limited to 28 days and human evidence to the newest 400 labelled hours.
 - Overnight learning skips a radar or learning set only when nothing it learns from has
-  changed since its last good Learn, and shows "Nothing new" for it. A restart during the
-  night continues the remaining Learns about five minutes later the same day, the ones with
-  changes you made run first, and a Learn you start goes ahead of the rest of the night.
-
-- Learn together and overnight room fits now use retained shared recordings with
-  the device learner's evidence limits, including human labels older than a week.
-  Automatic evidence remains limited to 28 days and human evidence to the newest
-  400 labelled hours, keeping the crossing label whole.
-
-- Learning now lowers a fit's thresholds, together and then gate by gate, when that catches
-  more labelled presence for little false activity, so quiet presence is missed less often.
-
-- Replace threshold fitting with the hybrid histogram and physical-replay engine.
-  Learning reports episode-level errors, timing fidelity and suspicious label
-  sub-stretches, with deterministic work limits and guarded recommendations.
-  Stored history and labels are preserved; performance capacity gates remain
-  unmet on some synthetic workloads.
-- Add an offline hybrid validator for private history exports. It writes anonymous
-  held-out accuracy and resource reports without modifying source history or
-  uploading recordings.
-
-- Radar and room status charts now show labelled Human, Entity / sensor and Guessed
-  evidence lanes. Each kind can be hidden with a remembered viewer preference. Room
-  guesses stay separate per radar. Rendering clips and merges periods and batches
-  SVG paths by state; toggling uses the loaded data without another request.
-
-## 1.32.1 - unreleased
+  changed, and shows "Nothing new" for it. After a restart, the rest of the night continues
+  about five minutes later the same day. Radars with your changes go first, and a Learn you
+  start goes ahead of the rest of the night.
+- The metadata check allows larger saved reference data, so it can't refuse graphs and Learn
+  on a home with many labelled radars.
+- Add an offline validator for private history exports. It writes anonymous accuracy and
+  resource reports without changing the history or uploading recordings.
 
 ## 1.32.2 - 2026-11-05
 
