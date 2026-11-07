@@ -161,12 +161,12 @@ def test_a_label_edit_and_a_save_during_a_long_fit_land_and_the_stale_fit_is_ref
         await asyncio.wait_for(
             home.ws("label_history", device_id=radar, start=low, end=high, state="present"), 20
         )
-        # A save queues behind the running job; it neither overtakes the fit nor is lost.
-        saving = asyncio.create_task(home.runtime.async_save())
-        await asyncio.sleep(0.2)
-        assert not saving.done()
+        # A fit can run for many minutes, so saving the label does not wait for it.
+        await asyncio.wait_for(home.runtime.async_save(), 60)
+        assert not may_finish.is_set()
+        stored = await home.runtime.store.async_load()
+        assert any(x["start"] == low for x in stored["devices"][radar]["history_labels"])
         may_finish.set()
-        await asyncio.wait_for(saving, 60)
         await asyncio.gather(*home.runtime._learning_jobs.values(), return_exceptions=True)
 
         report = home.runtime.data["devices"][radar]["learning_job"]
