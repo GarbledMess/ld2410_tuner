@@ -83,7 +83,7 @@ def test_timed_score_cache_hashes_a_large_mask_once_on_hit():
     geometry = SimpleNamespace(scores={key: 0.0})
     mask.hashes = 0
     assert _cached_score(None, geometry, None, None, key, ((mask,),)) == 0.0
-    assert mask.hashes == 1
+    assert mask.hashes <= 1  # Python 3.14 caches a tuple's hash, so a hit may need none.
 
 
 def test_search_pool_keys_use_compiled_coordinate_columns(tmp_path):

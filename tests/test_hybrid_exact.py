@@ -646,8 +646,9 @@ def test_physical_window_spool_segments_crossing_arrays_exactly(tmp_path, monkey
     with exact.Evaluator(p, ((0, 24),), directory=tmp_path) as evaluator:
         got = evaluator.scores(patterns[:1]) + evaluator.scores(patterns[1:])
         files = [path for path in evaluator.directory.rglob("*") if path.is_file()]
-        assert len(files) > len(evaluator.runs)
-        assert max(path.stat().st_size for path in files if "rows" in str(path)) <= 31
+        segments = [path for path in files if "rows" in str(path)]
+        assert len(segments) > 1  # Anonymous spill files are invisible on Linux: count rows only.
+        assert max(path.stat().st_size for path in segments) <= 31
     assert got == expected
     assert list(tmp_path.iterdir()) == []
 
