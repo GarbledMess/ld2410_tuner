@@ -29,7 +29,7 @@ def main():
     # Reading children spill one inflated day (history.DAY_BYTES at most) before mapping it.
     file_mib = 192 if mode == "storage" else 128
     # Fits are queued at the lowest priority and nobody waits on them; charts and saves stay short.
-    cpu_seconds = 900 if mode is None else 120
+    cpu_seconds = 120 if mode == "display" else 900
     controls = install(
         Budget(memory_mib * 1024 * 1024, cpu_seconds, file_mib * 1024 * 1024),
         expected_parent=int(sys.argv[2]),
