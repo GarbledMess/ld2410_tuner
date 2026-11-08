@@ -191,9 +191,7 @@ async def run(runtime, operation, data, accept, *, snapshot=None):
 
     async def finish():
         if holder.get("accepting"):
-            raise OSError(
-                f"Storage acceptance failed; recovery files retained at {holder['directory']}"
-            )
+            return
         if directory := holder.get("directory"):
             await owned_preparation(runtime.hass.async_add_executor_job(shutil.rmtree, directory))
 
