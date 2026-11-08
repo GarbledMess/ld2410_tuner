@@ -18,7 +18,7 @@ from .history import _nonblocking
 # A full day can contain more than 131k changes or 32k automatic guess runs.
 # Bound the transferred buffers and their restored heap, rather than assuming
 # that a normal radar records less than once per second.
-MAX_DECODED_BYTES = 192 * 1024 * 1024
+MAX_DECODED_BYTES = 512 * 1024 * 1024
 MAX_BYTES = MAX_DECODED_BYTES
 RUN = struct.Struct("<ddBBB")
 CONFIRMED = struct.Struct("<dddBBB")
