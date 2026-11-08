@@ -25,7 +25,7 @@ def main():
     if len(sys.argv) not in (3, 4) or mode not in (None, "storage", "display"):
         raise ValueError("Expected request path and parent PID")
     # Display jobs are byte-bounded reads and may run beside a numerical child.
-    memory_mib = 256 if mode == "display" else 512
+    memory_mib = 256 if mode == "display" else 1024
     # Reading children spill one inflated day (history.DAY_BYTES at most) before mapping it.
     file_mib = 192 if mode == "storage" else 128
     # Fits are queued at the lowest priority and nobody waits on them; charts and saves stay short.
