@@ -55,6 +55,7 @@ class Observation:
         self.started = time.monotonic()
         self.last = {}
         self.samples = 0
+        self.sampled_peak_rss_kib = None
 
     def start(self):
         self.group = self.cgroups
@@ -82,6 +83,8 @@ class Observation:
             sample["elapsed_seconds"] = round(time.monotonic() - self.started, 3)
             self.last = sample
             self.samples += 1
+            if "rss_kib" in sample:
+                self.sampled_peak_rss_kib = max(self.sampled_peak_rss_kib or 0, sample["rss_kib"])
 
     def report(self):
         after = _memory(self.group)
@@ -98,6 +101,7 @@ class Observation:
             "elapsed_seconds": round(time.monotonic() - self.started, 3),
             "samples": self.samples,
             "last_sample": self.last,
+            "sampled_peak_rss_kib": self.sampled_peak_rss_kib,
             "cgroup_memory_before": self.before,
             "cgroup_memory_after": after,
             "cgroup_event_delta": delta,

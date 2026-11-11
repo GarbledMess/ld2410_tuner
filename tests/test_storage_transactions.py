@@ -92,6 +92,165 @@ def test_transaction_failure_removes_private_tree_and_preserves_original(tmp_pat
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("failure_type", [OSError, MemoryError])
+def test_acceptance_failure_retains_recovery_and_does_not_close_shared_service(
+    tmp_path, failure_type
+):
+    from tuner_under_test.worker import protocol, transactions
+
+    async def run():
+        service = supervisor.Supervisor(Path(__file__))
+        root = tmp_path / "history"
+        root.mkdir()
+        (root / "record.day").write_bytes(b"recording")
+        runtime = SimpleNamespace(
+            _days=SimpleNamespace(root=root),
+            _worker_service=service,
+            hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
+        )
+
+        async def process(args):
+            if not args:
+                return protocol.pack("result", {"storage": True})
+            directory = Path(args[0]).parent
+            (directory / "result.json").write_bytes(protocol.pack("result", {"saved": True}))
+            return protocol.pack("result", {"storage": True})
+
+        attempts = 0
+
+        async def accept(_result, _directory):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise failure_type("acceptance disk error")
+            return "accepted"
+
+        with patch.object(service, "_process", process):
+            with pytest.raises(failure_type, match="acceptance disk error") as failure:
+                await transactions.run(runtime, "maintenance", {}, accept)
+            assert any("recovery" in note for note in failure.value.__notes__)
+            kept = list(tmp_path.glob(".ld2410-storage-*"))
+            assert len(kept) == 1
+            assert (kept[0] / "history" / "record.day").read_bytes() == b"recording"
+            assert await transactions.run(runtime, "maintenance", {}, accept) == "accepted"
+        assert service._closed is False
+        await service.aclose()
+
+    asyncio.run(run())
+
+
+def test_private_directory_removal_failure_preserves_history_and_worker_admission(
+    tmp_path, monkeypatch
+):
+    from tuner_under_test.worker import protocol, transactions
+
+    async def run():
+        service = supervisor.Supervisor(Path(__file__))
+        root = tmp_path / "history"
+        root.mkdir()
+        (root / "record.day").write_bytes(b"recording")
+        runtime = SimpleNamespace(
+            _days=SimpleNamespace(root=root),
+            _worker_service=service,
+            hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
+        )
+
+        async def process(args):
+            if not args:
+                return protocol.pack("result", {"storage": True})
+            directory = Path(args[0]).parent
+            (directory / "result.json").write_bytes(protocol.pack("result", {}))
+            return protocol.pack("result", {"storage": True})
+
+        async def accept(_result, _directory):
+            return "accepted"
+
+        original_rmtree = transactions.shutil.rmtree
+
+        def refuse_removal(path):
+            if Path(path).name.startswith(".ld2410-storage-"):
+                raise OSError("cannot remove private directory")
+            return original_rmtree(path)
+
+        monkeypatch.setattr(transactions.shutil, "rmtree", refuse_removal)
+        with patch.object(service, "_process", process):
+            with pytest.raises(OSError, match="cannot remove private directory"):
+                await transactions.run(runtime, "maintenance", {}, accept)
+            assert service._closed is False
+            assert (root / "record.day").read_bytes() == b"recording"
+            assert await service.run(lambda: asyncio.sleep(0, result=())) == protocol.pack(
+                "result", {"storage": True}
+            )
+        await service.aclose()
+
+    asyncio.run(run())
+
+
+def test_private_cleanup_failure_does_not_hide_worker_failure(tmp_path, monkeypatch):
+    from tuner_under_test.worker import transactions
+
+    async def run():
+        service = supervisor.Supervisor(Path(__file__))
+        root = tmp_path / "history"
+        root.mkdir()
+        runtime = SimpleNamespace(
+            _days=SimpleNamespace(root=root),
+            _worker_service=service,
+            hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
+        )
+
+        async def process(_args):
+            raise ValueError("original worker error")
+
+        def refuse_removal(_path):
+            raise OSError("private directory still present")
+
+        monkeypatch.setattr(transactions.shutil, "rmtree", refuse_removal)
+        with patch.object(service, "_process", process):
+            with pytest.raises(ValueError, match="original worker error") as failure:
+                await transactions.run(runtime, "maintenance", {}, lambda *_: None)
+        assert any("private directory still present" in note for note in failure.value.__notes__)
+        assert service._closed is False
+        await service.aclose()
+
+    asyncio.run(run())
+
+
+def test_acceptance_allocation_failure_keeps_original_when_note_cannot_allocate(tmp_path):
+    from tuner_under_test.worker import protocol, transactions
+
+    class Exhausted(MemoryError):
+        def add_note(self, _note):
+            raise MemoryError("annotation allocation failed")
+
+    async def run():
+        service = supervisor.Supervisor(Path(__file__))
+        root = tmp_path / "history"
+        root.mkdir()
+        runtime = SimpleNamespace(
+            _days=SimpleNamespace(root=root),
+            _worker_service=service,
+            hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
+        )
+
+        async def process(args):
+            directory = Path(args[0]).parent
+            (directory / "result.json").write_bytes(protocol.pack("result", {}))
+            return protocol.pack("result", {"storage": True})
+
+        async def accept(_result, _directory):
+            raise Exhausted("original allocation failure")
+
+        with patch.object(service, "_process", process):
+            with pytest.raises(Exhausted, match="original allocation failure"):
+                await transactions.run(runtime, "maintenance", {}, accept)
+        assert service._closed is False
+        assert list(tmp_path.glob(".ld2410-storage-*"))
+        await service.aclose()
+
+    asyncio.run(run())
+
+
 def test_storage_entrypoint_installs_limits_before_reading_request(tmp_path, monkeypatch):
     import importlib
     import io

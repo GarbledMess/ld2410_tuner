@@ -8,6 +8,7 @@ import threading
 _lock = threading.RLock()
 _RESULT = (".res", ".fit")
 _CELL = (".cell", ".cols")
+_COUNT = (".count", ".ret")
 _kept = {}  # Root -> bytes of each kind when it was last walked, plus those written since.
 
 
@@ -38,7 +39,7 @@ def _remove(path):
 def _cache_files(root):
     files = []
     for path in root.rglob("*"):
-        if path.suffix not in (".sum", ".res", ".fit", ".cell", ".cols"):
+        if path.suffix not in (".sum", *_RESULT, *_CELL, *_COUNT):
             continue
         try:
             found = path.stat()
@@ -48,12 +49,16 @@ def _cache_files(root):
     return files
 
 
-def disk_bytes(root):
+def disk_bytes(root, *, preserve_counts=False):
     worker_only()
-    return sum(size for _, _, size in _cache_files(root))
+    return sum(
+        size
+        for _, path, size in _cache_files(root)
+        if not preserve_counts or path.suffix not in (".count", ".ret")
+    )
 
 
-def prune(root, *, max_bytes=None, max_cell_bytes=None):
+def prune(root, *, max_bytes=None, max_cell_bytes=None, preserve_counts=False):
     """Remove all legacy summaries and bound result sidecars, oldest first."""
     from ..engine.hybrid.constants import CELL_CACHE_DISK_BYTES
     from . import result_cache  # Imported here: it imports this module.
@@ -69,6 +74,8 @@ def prune(root, *, max_bytes=None, max_cell_bytes=None):
                 ".celltmp",
                 ".colstmp",
                 ".fittmp",
+                ".counttmp",
+                ".rettmp",
             ):
                 _remove(temporary)
         files = _cache_files(root)
@@ -78,6 +85,9 @@ def prune(root, *, max_bytes=None, max_cell_bytes=None):
             _RESULT: _prune_kind(sorted(i for i in files if i[1].suffix in _RESULT), result_limit),
             _CELL: _prune_kind(sorted(i for i in files if i[1].suffix in _CELL), cell_limit),
         }
+        if not preserve_counts:
+            count_limit = 16 * 1024 * 1024 if max_bytes is None else max_bytes
+            _prune_kind(sorted(i for i in files if i[1].suffix in _COUNT), count_limit)
 
 
 def _prune_kind(files, limit):
@@ -111,5 +121,5 @@ def prune_after(root, path):
 
 def invalidate(path):
     """Remove an optional sidecar alongside an already-authorized history mutation."""
-    for suffix in (".sum", ".res", ".cell", ".celltmp", ".cols", ".colstmp"):
+    for suffix in (".sum", *_RESULT, *_CELL, *_COUNT, ".celltmp", ".colstmp"):
         _remove(path.with_suffix(suffix))

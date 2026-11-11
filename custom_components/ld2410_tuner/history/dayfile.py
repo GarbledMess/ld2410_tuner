@@ -500,7 +500,7 @@ def encode_day(day):
     base = _ms(day.start)
     for start, end, state, level, basis in day.guesses:
         body += RUN.pack(_ms(start) - base, _ms(end) - base, STATES.index(state), level, basis)
-    return MAGIC + zlib.compress(bytes(body), 6)
+    return MAGIC + zlib.compress(body, 6)
 
 
 def _times(raw, position, count, base):
@@ -531,9 +531,9 @@ def _int32s(raw, position, count, planes):
 
 def _row_ends(offsets, second, planes):
     """Each row's end offset: version 3 stores it beside the next row's start (its own for
-    the last row), version 2 as its duration. Python integers: they cannot overflow."""
+    the last row), version 2 as its duration. Int64 holds the sum of two int32 values."""
     base = chain(offsets[1:], offsets[-1:]) if planes else offsets
-    return list(map(add, second, base))
+    return array("q", map(add, second, base))
 
 
 def _time_columns(raw, position, count, start, end, version):
@@ -616,7 +616,7 @@ def _body(data):
     """The checked decompressed body, its header and where the readings end."""
     if data[:4] != MAGIC:
         raise ValueError("Not a recorded day file")
-    raw = zlib.decompress(data[4:])
+    raw = _inflate(data)
     header = version, start, end, count, runs, *floats = HEADER.unpack_from(raw)
     if version not in VERSIONS:
         raise ValueError(f"Unsupported day file version {version}")
@@ -628,3 +628,22 @@ def _body(data):
     ):
         raise ValueError(CORRUPT)
     return raw, header, readings
+
+
+def _inflate(data):
+    """Expand a day without asking zlib for one allocation the size of the whole body."""
+    decoder = zlib.decompressobj()
+    raw = bytearray()
+    compressed = memoryview(data)[4:]
+    for offset in range(0, len(compressed), 256 * 1024):
+        pending = compressed[offset : offset + 256 * 1024]
+        while pending:
+            raw.extend(decoder.decompress(pending, 1024 * 1024))
+            pending = decoder.unconsumed_tail
+        if decoder.eof:
+            if decoder.unused_data or offset + 256 * 1024 < len(compressed):
+                raise ValueError(CORRUPT)
+            break
+    if not decoder.eof:
+        raise ValueError(CORRUPT)
+    return raw

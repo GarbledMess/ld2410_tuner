@@ -67,7 +67,6 @@ async def save_directly(runtime):
 
 
 async def _persist(runtime, *, values=None, clean=False, target=None, persist=True):
-    from ..worker.supervisor import WorkerFailed
     from . import live
 
     live.settle(runtime)  # Saved references include the evidence waiting for its batch.
@@ -79,13 +78,23 @@ async def _persist(runtime, *, values=None, clean=False, target=None, persist=Tr
         runtime._storage_status["busy"] = True
         try:
             return await _prepare_and_save(runtime, values, clean, target, persist)
-        except (ValueError, OSError, WorkerFailed, TimeoutError) as error:
-            if not clean and values is None and target is None:
-                await retry_failure(runtime)
-            _failed_status(runtime, error, values, target)
+        except Exception as error:
+            await _record_failure(runtime, error, clean, values, target)
             raise
         finally:
             runtime._storage_status["busy"] = False
+
+
+async def _record_failure(runtime, error, clean, values, target):
+    if not clean and values is None and target is None:
+        try:
+            await retry_failure(runtime)
+        except Exception as retry_error:
+            try:
+                error.add_note(f"Retry bookkeeping also failed: {retry_error}")
+            except MemoryError:
+                pass
+    _failed_status(runtime, error, values, target)
 
 
 async def _prepare_and_save(runtime, values, clean, target, persist=True):
@@ -102,8 +111,12 @@ async def _prepare_and_save(runtime, values, clean, target, persist=True):
             runtime._storage_status.update(report)
             return report
         if time.time() < runtime.data.get("maintenance_retry", {}).get("after", 0):
+            previous = runtime._storage_status.get("last_failure") or runtime._storage_status.get(
+                "error", "unknown failure"
+            )
             raise budget.BudgetExceeded(
-                "Storage maintenance is in failure backoff; Trim retries now"
+                f"Storage maintenance is in failure backoff after {previous[:512]}; "
+                "Trim retries now"
             )
     return await _save_days(runtime, values, clean, target, persist)
 
@@ -136,8 +149,11 @@ def _prepare_save(store, candidate, now, clean, target):
     limit = ceiling if target is None else min(ceiling, target)
     json_bytes = budget.storage_bytes(candidate)  # Measured once per save: it is the costly part.
     if store.size() + json_bytes > limit:
-        summary_cache.prune(store.root, max_bytes=0, max_cell_bytes=0)
-        if summary_cache.disk_bytes(store.root) and store.size() + json_bytes > limit:
+        summary_cache.prune(store.root, max_bytes=0, max_cell_bytes=0, preserve_counts=True)
+        if (
+            summary_cache.disk_bytes(store.root, preserve_counts=True)
+            and store.size() + json_bytes > limit
+        ):
             raise budget.BudgetExceeded(
                 "Optional history indexes could not be removed. Retry when their files are "
                 "available; recorded history was not trimmed to make room for the indexes."
@@ -272,7 +288,7 @@ def _accept_days(runtime, prepared, changes, values, metadata_keys=()):
 
 
 def _prune_indexes(root):
-    summary_cache.prune(root, max_bytes=0, max_cell_bytes=0)
+    summary_cache.prune(root, max_bytes=0, max_cell_bytes=0, preserve_counts=True)
 
 
 def _accept_worker(runtime, original, marks, values, clean, persist):
@@ -303,8 +319,20 @@ def _accept_worker(runtime, original, marks, values, clean, persist):
             )
         if not await commit.publish(runtime, staged, valid, install):
             return None
+        from . import maintenance_cache
+
+        await owned_preparation(
+            runtime.hass.async_add_executor_job(
+                maintenance_cache.transfer, directory / "history", runtime._days.root
+            )
+        )
+        report["used_bytes"] = await owned_preparation(
+            runtime.hass.async_add_executor_job(_accepted_size, runtime._days, prepared)
+        )
+        runtime._storage_status["used_bytes"] = report["used_bytes"]
         for key, counted in result.get("counts", {}).items():
             label_counts.adopt(runtime, key, counted)  # Published: the days it counted.
+        _save_profile(runtime, result)
         if persist or "guard_keys" in result:
             await runtime.store.async_save(prepared)
         return report
@@ -339,8 +367,19 @@ async def retry_failure(runtime):
 
 
 def _failed_status(runtime, error, values, target):
+    if "failure backoff" not in str(error):
+        runtime._storage_status["last_failure"] = str(error)
     runtime._storage_status.update(
         error=str(error),
         blocked=isinstance(error, budget.BudgetExceeded) and values is None and target is None,
     )
-    _LOGGER.warning("Storage maintenance could not finish: %s", error)
+    _LOGGER.exception("Storage maintenance could not finish")
+
+
+def _accepted_size(store, prepared):
+    return store.size() + budget.storage_bytes(prepared)
+
+
+def _save_profile(runtime, result):
+    if "profile" in result:
+        runtime._storage_status["maintenance_profile"] = result["profile"]

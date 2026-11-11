@@ -38,6 +38,18 @@ def test_append_flush_and_read_back(tmp_path):
     assert day.ends[-1] == START + 2  # Reopened: coverage ends at the last stored record.
 
 
+def test_zero_cache_budget_does_not_retain_finished_days(tmp_path):
+    writer = store(tmp_path)
+    builder = dayfile.DayBuilder(START, NEXT)
+    builder.add(change(START + 1, g0=10))
+    builder.add(dayfile.End(START + 2))
+    writer.replace("radar", DAY, builder.day())
+    reader = store(tmp_path, cache_bytes=0)
+    assert first_gate(reader.day("radar", DAY)) == [10]
+    assert reader._cached == 0
+    assert not reader._cache
+
+
 def test_unchanged_observations_continue_open_coverage_after_midnight(tmp_path):
     days = store(tmp_path)
     days.append("radar", change(NEXT - 2, g0=10))

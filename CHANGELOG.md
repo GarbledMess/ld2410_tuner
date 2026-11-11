@@ -1,5 +1,17 @@
 # Release notes
 
+## 1.33.5 - 2026-11-11
+
+- History maintenance now keeps per-day retention and occupancy statistics beside unchanged
+  days, so later batches avoid decoding and recounting them. Replacement days are staged on
+  disk, and the worker does not retain a decoded-day cache while maintaining history.
+- Maintenance reports time and current memory by stage. Its worker supervisor samples peak
+  resident memory during the job; the inherited process high-water counter is no longer used
+  as the maintenance memory result.
+- Failed storage acceptance retains recovery files and the original error without closing
+  unrelated workers. Backoff reports the preceding failure, and retry bookkeeping cannot
+  hide the maintenance error.
+
 ## 1.33.0 - 2026-11-07
 
 - Threshold fitting is replaced by a new engine. On a real home, a two-radar room's Learn

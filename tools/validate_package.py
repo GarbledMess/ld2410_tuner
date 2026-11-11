@@ -116,6 +116,7 @@ RUNTIME_FILES = (
     "history/trust.py",
     "history/policy.py",
     "history/budget.py",
+    "history/maintenance_cache.py",
     "history/storage.py",
     "history/source_labels.py",
     "history/label_lookup.py",

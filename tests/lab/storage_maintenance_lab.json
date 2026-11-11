@@ -1,0 +1,12 @@
+{
+  "source_paths": [
+    "custom_components",
+    "tests/lab/storage_maintenance_checks.py"
+  ],
+  "domains": ["ld2410_tuner"],
+  "commands": {
+    "ready": "chroot /work/os docker exec ha-lab python3 /lab/scripts/ha_smoke.py",
+    "maintenance": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/storage_maintenance_checks.py"
+  },
+  "command_timeout": 1800
+}

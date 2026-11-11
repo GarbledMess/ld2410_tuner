@@ -2,6 +2,11 @@
 
 import json
 import math
+import tempfile
+from bisect import bisect_left, bisect_right
+from collections import Counter
+from hashlib import blake2b
+from pathlib import Path
 
 from ..const import STORAGE_KEY, STORAGE_MINOR_VERSION, STORAGE_VERSION
 from . import guesses, pace
@@ -49,7 +54,7 @@ def storage_bytes(data):
         "key": STORAGE_KEY,
         "data": data,
     }
-    return len(json.dumps(envelope, indent=2))
+    return sum(map(len, json.JSONEncoder(indent=2).iterencode(envelope)))
 
 
 def _finished_dates(store, key):
@@ -60,28 +65,28 @@ def _finished_dates(store, key):
     return [date for date in store.days(key) if date != live]
 
 
-def plan(store, data, now, policy, target=None):
+def plan(store, data, now, policy, target=None, spool=None):
     """Plan finished-day range cuts; live days are immutable to maintenance. Each day's
     ranges are kept until the day or its labels change (``_retention``), so an hourly plan
     reads no unchanged day."""
     from .cleanup import _cut_union
 
     cuts = {}
-    for key, date, _bounds, ranges in _finished_retention(store, data):
+    for key, date, _bounds, ranges in _finished_retention(store, data, persist=spool is not None):
         expired = _expired(ranges, now, policy)
         if expired:
             cuts[key, date] = _cut_union(expired)
     if target is not None:
-        _ceiling_plan(store, data, cuts, target)
+        _ceiling_plan(store, data, cuts, target, spool=spool)
     return [(key, date, ranges) for (key, date), ranges in cuts.items()]
 
 
-def _finished_retention(store, data):
+def _finished_retention(store, data, *, persist=False):
     """``(key, date, bounds, ranges)`` of every finished day, from ``_retention``."""
     for key, device in data.get("devices", {}).items():
         for date in _finished_dates(store, key):
             pace.rest()
-            yield key, date, *_retention(store, key, date, device)
+            yield key, date, *_retention(store, key, date, device, persist=persist)
 
 
 def _expired(ranges, now, policy):
@@ -95,11 +100,11 @@ def _expired(ranges, now, policy):
     return found
 
 
-def _retention(store, key, date, device):
+def _retention(store, key, date, device, *, persist=False):
     """The finished ``date``'s recorded bounds and its ranges ``(low, high, human, confidence,
     earliest)``, ``earliest`` being the first time a reading or guess is held in the range
     (None: nothing left there). Kept while the day and its labels are unchanged."""
-    from . import day_results, daystore
+    from . import day_results, daystore, maintenance_cache
 
     read = _history_label_reader(device)
     labels = day_results.fingerprint(read, *daystore.bounds(date))
@@ -111,7 +116,22 @@ def _retention(store, key, date, device):
         bounds = (day.times[0], day.ends[-1]) if len(day.times) else None
         return bounds, tuple(_held_ranges(day, device))
 
-    return day_results.remembered(store, key, date, "retention", (labels,), derive)
+    def persisted():
+        if not persist:
+            return derive()
+        identity = store.identity(key, date)
+        if identity is None:
+            return derive()
+        path = store._path(key, date, ".day")
+        signature = identity[-2:], labels
+        found = maintenance_cache.load_retention(path, signature)
+        if found is not None:
+            return found
+        value = derive()
+        maintenance_cache.save_retention(path, signature, value)
+        return value
+
+    return day_results.remembered(store, key, date, "retention", (labels,), persisted)
 
 
 def _held_ranges(day, device):
@@ -166,8 +186,9 @@ class _Planned:
     every day cut so far. Each day's latest replacement is kept with its encoding (``replaced``)
     for the cleanup to stage; the original counts as the file it is."""
 
-    def __init__(self, store, data, cuts):
+    def __init__(self, store, data, cuts, spool=None):
         self.store = store
+        self.spool = spool
         self.base = None if data is None else store.size() + storage_bytes(data)
         self.original, self.change, self.replaced = {}, {}, {}
         for token, ranges in cuts.items():
@@ -182,8 +203,23 @@ class _Planned:
         if token not in self.original:
             self.original[token] = self._stored_bytes(token, day)
         updated = cut(day, ranges)
-        encoded = dayfile.encode_day(updated) if len(updated.times) or updated.guesses else b""
-        self.replaced[token] = updated, encoded
+        present = bool(len(updated.times) or updated.guesses)
+        encoded = dayfile.encode_day(updated) if present else b""
+        if self.spool is None:
+            self.replaced[token] = updated, encoded
+        else:
+            from .daystore import StagedDay
+
+            Path(self.spool).mkdir(parents=True, exist_ok=True)
+            name = blake2b(repr(token).encode(), digest_size=16).hexdigest() + ".replacement"
+            path = Path(self.spool) / name
+            with tempfile.NamedTemporaryFile(
+                dir=self.spool, suffix=".replacementtmp", delete=False
+            ) as out:
+                temporary = Path(out.name)
+                out.write(encoded)
+            temporary.replace(path)
+            self.replaced[token] = StagedDay(path, token[1], present), None
         self.change[token] = len(encoded) - self.original[token]
 
     def _stored_bytes(self, token, day):
@@ -202,8 +238,8 @@ class _Planned:
         return self.store.size() + storage_bytes(data) + sum(self.change.values())
 
 
-def _day_candidates(store, data):
-    for key, date, bounds, ranges in _finished_retention(store, data):
+def _day_candidates(store, data, *, persist=False):
+    for key, date, bounds, ranges in _finished_retention(store, data, persist=persist):
         if bounds is None:
             continue
         for low, high, human, confidence, _earliest in ranges:
@@ -212,16 +248,30 @@ def _day_candidates(store, data):
                 yield human, confidence, low, key, date, high
 
 
-def _ceiling_plan(store, data, cuts, target):
+def _ceiling_plan(store, data, cuts, target, spool=None):
     from .cleanup import _cut_union
 
-    planned = _Planned(store, data, cuts)
-    for _human, _confidence, low, key, date, high in sorted(_day_candidates(store, data)):
+    candidates = sorted(_day_candidates(store, data, persist=spool is not None))
+
+    def selected(count):
+        chosen = {token: list(ranges) for token, ranges in cuts.items()}
+        for _human, _confidence, low, key, date, high in candidates[:count]:
+            chosen.setdefault((key, date), []).append((low, high))
+        return {token: _cut_union(ranges) for token, ranges in chosen.items()}
+
+    base = _Planned(store, data, cuts, spool)
+    if base.total <= target or not candidates:
+        return cuts
+    low, high = 1, len(candidates)
+    while low < high:
+        middle = (low + high) // 2
+        planned = _Planned(store, data, selected(middle), spool)
         if planned.total <= target:
-            break
-        token = key, date
-        cuts[token] = _cut_union([*cuts.get(token, []), (low, high)])
-        planned.cut(token, cuts[token])
+            high = middle
+        else:
+            low = middle + 1
+    cuts.clear()
+    cuts.update(selected(low))
     return cuts
 
 
@@ -236,27 +286,45 @@ def _replacement_days(store, data, cuts, planned):
     return changes, automatic, human
 
 
-def _bounded_days(store, data, cuts, now, target, counts=None, encoded=None):
+def _bounded_days(
+    store, data, cuts, now, target, counts=None, encoded=None, spool=None, profile=None
+):
     while True:
-        planned = _Planned(store, None, cuts)
+        _stage(profile, "replacements", True)
+        planned = _Planned(store, None, cuts, spool)
         changes, automatic, human = _replacement_days(store, data, cuts, planned)
+        _stage(profile, "replacements")
         prepared = copy_data(data)
+        _stage(profile, "histograms", True)
         _day_metadata(store, prepared, changes, now, counts)
+        _stage(profile, "histograms")
+        _stage(profile, "size", True)
         used = planned.total_with(prepared)
+        _stage(profile, "size")
         if used <= target:
-            if encoded is not None:  # Staged as they were measured: each encoded once.
-                encoded.update(
-                    (token, replaced[1])
-                    for token, replaced in planned.replaced.items()
-                    if replaced[1]
-                )
+            _keep_encodings(encoded, spool, planned)
             return prepared, changes, automatic, human, used
         previous = {key: list(ranges) for key, ranges in cuts.items()}
-        _ceiling_plan(store, prepared, cuts, target)
+        _stage(profile, "ceiling", True)
+        _ceiling_plan(store, prepared, cuts, target, spool=spool)
+        _stage(profile, "ceiling")
+        data = prepared
         if cuts == previous:
             raise BudgetExceeded(
                 "The size limit is below the remaining settings, summaries and saved results. Increase the limit or clear unused devices; no oversized file was written."
             )
+
+
+def _stage(profile, name, starting=False):
+    if profile is not None:
+        profile(name, starting)
+
+
+def _keep_encodings(encoded, spool, planned):
+    if encoded is not None and spool is None:
+        encoded.update(
+            (token, replaced[1]) for token, replaced in planned.replaced.items() if replaced[1]
+        )
 
 
 def expired_labels(labels, cutoff):
@@ -276,7 +344,16 @@ def _expire_labels(data, cutoff):
 
 
 def prepare_days(
-    store, data, now, clean=False, target=None, before=None, counts=None, encoded=None
+    store,
+    data,
+    now,
+    clean=False,
+    target=None,
+    before=None,
+    counts=None,
+    encoded=None,
+    spool=None,
+    profile=None,
 ):
     """Prepare immutable replacements and a seconds report; mutate no files or live state.
     ``before`` is the current total size when the caller measured it already. A save that
@@ -292,10 +369,14 @@ def prepare_days(
     if clean:
         data = _marked_clean(data, now)
     # Cuts only shrink the store: the ceiling needs planning only when it is exceeded already.
-    planned = plan(store, data, now, settings(data), target=target if before > target else None)
+    _stage(profile, "retention", True)
+    planned = plan(
+        store, data, now, settings(data), target=target if before > target else None, spool=spool
+    )
+    _stage(profile, "retention")
     cuts = {(key, date): ranges for key, date, ranges in planned}
     prepared, changes, automatic, human, used = _bounded_days(
-        store, data, cuts, now, target, counts, encoded
+        store, data, cuts, now, target, counts, encoded, spool, profile
     )
     if clean:  # After planning: the removed time is reported under the labels it had.
         _expire_labels(prepared, now - settings(data)["human_days"] * DAY)
@@ -356,18 +437,16 @@ def _day_histograms(store, key, device, replacements, now, cutoff, counted=None)
     ``counted`` (a dict) receives the counts behind them: the finished days' and the live
     day's apart, with the dates counted (``label_counts.adopt``)."""
     from ..calibration.constants import SAMPLE_SECONDS
-    from . import label_counts, spans
+    from . import label_counts
 
     raw, finished, live, dates = label_counts.empty(), label_counts.empty(), None, []
     read = _history_label_reader(device)
     live_date = store.live_date(key)
     for date in store.days(key):
         pace.rest()
-        day = _counted_day(store, key, date, replacements, now)
-        if day is None:
+        part = _day_part(store, key, date, replacements, now, read, cutoff, live_date)
+        if part is None:
             continue
-        part = label_counts.empty()
-        label_counts._count_native(part, spans.day_spans(day), read, cutoff, 1)
         label_counts._combine(raw, part)
         if date == live_date:
             live = part
@@ -394,12 +473,93 @@ def _day_histograms(store, key, device, replacements, now, cutoff, counted=None)
     )
 
 
+def _day_part(store, key, date, replacements, now, read, cutoff, live_date):
+    from . import label_counts, maintenance_cache, spans
+
+    signature = _day_signature(store, key, date, replacements, read, cutoff, live_date)
+    path = store._path(key, date, ".day")
+    part = maintenance_cache.load(path, signature) if signature is not None else None
+    if part is not None:
+        return part
+    day = _counted_day(store, key, date, replacements, now)
+    if day is None:
+        return None
+    part = _uniform_day_counts(day, read, cutoff)
+    if part is None:
+        part = label_counts.empty()
+        label_counts._count_native(part, spans.day_spans(day), read, cutoff, 1)
+    if signature is not None:
+        maintenance_cache.save(path, signature, part)
+    return part
+
+
+def _day_signature(store, key, date, replacements, read, cutoff, live_date):
+    from . import day_results, daystore
+
+    if date == live_date or (key, date) in replacements:
+        return None
+    identity = store.identity(key, date)
+    if identity is None:
+        return None
+    low, high = daystore.bounds(date)
+    return (
+        identity[-2:],
+        day_results.fingerprint(read, low, high),
+        min(max(cutoff, low), high),
+    )
+
+
+def _uniform_day_counts(day, read, cutoff):
+    """Count a fully labelled, constant-duration byte day in C without per-row spans."""
+    from ..const import HISTOGRAM_BINS, HISTORY_KEYS
+    from . import label_counts
+
+    count = len(day.times)
+    if not count:
+        return label_counts.empty()
+    low, high = day.times[0], day.ends[-1]
+    if cutoff > low or bisect_right(read.edges, low) < bisect_left(read.edges, high):
+        return None
+    state = read(low)
+    if state not in ("present", "not_present"):
+        return label_counts.empty()
+    duration = day.ends[0] - low
+    if not all(end - start == duration for start, end in zip(day.times, day.ends, strict=True)):
+        return None
+    if not _byte_columns(day, count, len(HISTORY_KEYS)):
+        return None
+    result = label_counts.empty()
+    for gate, column in zip(HISTORY_KEYS, day.columns, strict=True):
+        histogram = _column_counts(column, duration, HISTOGRAM_BINS)
+        if histogram is None:
+            return None
+        result[gate][state] = histogram
+    return result
+
+
+def _byte_columns(day, count, expected):
+    return len(day.columns) == expected and all(
+        isinstance(column, bytes) and len(column) == count for column in day.columns
+    )
+
+
+def _column_counts(column, duration, bins):
+    frequencies = Counter(column)
+    if any(value >= bins and value != 255 for value in frequencies):
+        return None
+    return [frequencies.get(value, 0) * duration for value in range(bins)]
+
+
 def _counted_day(store, key, date, replacements, now):
     """The day as the cleanup leaves it: its replacement, or as it is; None when it has no
     recorded time left (an emptied day's file goes)."""
     day = replacements.get((key, date))
     if day is None:
         return store.day(key, date, until=now)
+    from .daystore import StagedDay
+
+    if isinstance(day, StagedDay):
+        day = day.load()
     return day if len(day.times) or day.guesses else None
 
 

@@ -1,10 +1,11 @@
 """Retention planning and day compression inside the protected storage child."""
 
 import datetime
+import time
 from pathlib import Path
 
 from ..history import budget, daystore, policy, summary_cache
-from . import startup
+from . import diagnostics, startup
 
 
 def execute(request):
@@ -13,41 +14,77 @@ def execute(request):
 
         return retention.execute(request)
     root, directory = Path(request["root"]), Path(request["directory"])
-    store = daystore.DayStore(root)
+    store = daystore.DayStore(root, cache_bytes=0)
     now, candidate = request["now"], request["data"]
-    store.open(now)
-    _restore_live(store, request.get("live", {}))
-    target = request.get("target")
-    json_bytes, prune = _prune(store, candidate, target, root)
-    counts, encoded = {}, {}
-    prepared, changes, report = budget.prepare_days(
-        store,
-        candidate,
-        now,
-        request.get("clean", False),
-        target,
-        before=store.size() + json_bytes,
-        counts=counts,
-        encoded=encoded,
-    )
-    staged = store.stage(changes, encoded)
-    handoff = []
-    for index, (key, date, day, temporary) in enumerate(staged):
-        handoff.append(
+    profile = []
+    wall, cpu = time.perf_counter(), time.process_time()
+    active = "open"
+
+    def measure(stage, starting=False):
+        nonlocal wall, cpu, active
+        if starting:
+            active = stage
+            return
+        elapsed, used = time.perf_counter(), time.process_time()
+        item = {
+            "stage": stage,
+            "wall_seconds": round(elapsed - wall, 3),
+            "cpu_seconds": round(used - cpu, 3),
+            "rss_kib": diagnostics._pairs(Path("/proc/self/status")).get("VmRSS"),
+        }
+        if len(profile) < 32:
+            profile.append(item)
+            diagnostics.emit("maintenance_stage", **item)
+        wall, cpu = elapsed, used
+
+    try:
+        measure("entry")
+        store.open(now)
+        _restore_live(store, request.get("live", {}))
+        measure("open")
+        target = request.get("target")
+        active = "prune"
+        json_bytes, prune = _prune(store, candidate, target, root)
+        measure("prune")
+        counts = {}
+        prepared, changes, report = budget.prepare_days(
+            store,
+            candidate,
+            now,
+            request.get("clean", False),
+            target,
+            before=store.size() + json_bytes,
+            counts=counts,
+            spool=directory / "replacements",
+            profile=measure,
+        )
+        active = "stage"
+        staged = store.stage(changes)
+        measure("stage")
+        handoff = [
             {
                 "key": key,
                 "date": date.isoformat(),
                 "temporary": str(temporary.relative_to(directory)),
-                "day": startup.write_day(day, directory, index),
+                "present": day.present,
             }
-        )
-    return {
-        "prepared": prepared,
-        "report": report,
-        "changes": handoff,
-        "prune": prune,
-        "counts": counts,
-    }
+            for key, date, day, temporary in staged
+        ]
+        return {
+            "prepared": prepared,
+            "report": report,
+            "changes": handoff,
+            "prune": prune,
+            "counts": counts,
+            "profile": profile,
+        }
+    except BaseException as error:
+        diagnostics.emit("maintenance_failure", stage=active, error=type(error).__name__)
+        try:
+            error.add_note(f"Maintenance failed during {active}")
+        except MemoryError:
+            pass
+        raise
 
 
 def load(result, directory):
@@ -62,10 +99,16 @@ def load(result, directory):
         if not path.is_relative_to(directory) or path.suffix != ".trim":
             raise ValueError("Invalid staged storage path")
         paths.append(path)
-    startup._budget({"live": [entry["day"] for entry in result["changes"]]}, max_items=8192)
+    legacy = [entry["day"] for entry in result["changes"] if "day" in entry]
+    if legacy:
+        startup._budget({"live": legacy}, max_items=8192)
     for entry, path in zip(result["changes"], paths, strict=True):
-        day = startup.read_day(directory, entry["day"])
         date = datetime.date.fromisoformat(entry["date"])
+        day = (
+            startup.read_day(directory, entry["day"])
+            if "day" in entry
+            else daystore.StagedDay(path, date, entry["present"])
+        )
         changes.append((entry["key"], date, day))
         staged.append((entry["key"], date, day, path))
     return result["prepared"], changes, result["report"], staged
@@ -89,8 +132,11 @@ def _prune(store, candidate, target, root):
     json_bytes = budget.storage_bytes(candidate)
     prune = store.size() + json_bytes > limit
     if prune:
-        summary_cache.prune(root, max_bytes=0, max_cell_bytes=0)
-        if summary_cache.disk_bytes(root) and store.size() + json_bytes > limit:
+        summary_cache.prune(root, max_bytes=0, max_cell_bytes=0, preserve_counts=True)
+        if (
+            summary_cache.disk_bytes(root, preserve_counts=True)
+            and store.size() + json_bytes > limit
+        ):
             raise budget.BudgetExceeded("Optional history indexes could not be removed")
     return json_bytes, prune
 

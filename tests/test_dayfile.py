@@ -1,10 +1,48 @@
 """Day files: append-log records for the live day, columnar zlib files for finished days."""
 
 import math
+import tracemalloc
+from array import array
 
 import pytest
 import test_tuner  # noqa: F401
 from tuner_under_test.history import dayfile
+
+
+def test_large_row_end_decode_avoids_per_row_python_objects():
+    count = 250_000
+    starts = array("i", range(count))
+    distances = array("i", [1]) * count
+    tracemalloc.start()
+    try:
+        ends = dayfile._row_ends(starts, distances, planes=False)
+        _used, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert ends[0] == 1 and ends[-1] == count
+    assert peak < 6 * 1024 * 1024
+
+
+def test_day_decoder_streams_decompressed_body(monkeypatch):
+    from array import array
+
+    start = 2_000_000_000.0
+    day = dayfile.Day(
+        start,
+        start + 86_400,
+        array("d", [start + index for index in range(20_000)]),
+        array("d", [start + index + 1 for index in range(20_000)]),
+        [bytes([gate]) * 20_000 for gate in range(18)],
+        [],
+    )
+    encoded = dayfile.encode_day(day)
+
+    def refuse_one_shot(_data):
+        raise AssertionError("one-shot zlib output allocation")
+
+    monkeypatch.setattr(dayfile.zlib, "decompress", refuse_one_shot)
+    assert dayfile.decode_day(encoded) == day
+
 
 START = 1_760_486_400.0  # 2025-10-15T00:00:00Z
 END = START + 86_400

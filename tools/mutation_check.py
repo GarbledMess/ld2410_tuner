@@ -216,9 +216,11 @@ BUGS = (
         "trim-removes-human-first",
         "Trim to a size limit removes human-labelled time before automatic time",
         "history/budget.py",
-        "for _human, _confidence, low, key, date, high in sorted(_day_candidates(store, data)):",
-        "for _human, _confidence, low, key, date, high in sorted(\n"
-        "        _day_candidates(store, data), key=lambda item: (not item[0], *item[1:])\n    ):",
+        "candidates = sorted(_day_candidates(store, data, persist=spool is not None))",
+        "candidates = sorted(\n"
+        "        _day_candidates(store, data, persist=spool is not None),\n"
+        "        key=lambda item: (not item[0], *item[1:]),\n"
+        "    )",
     ),
     Bug(
         "export-omits-open-day",

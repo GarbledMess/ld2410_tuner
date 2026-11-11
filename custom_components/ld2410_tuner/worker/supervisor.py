@@ -40,6 +40,10 @@ class CleanupFailed(Exception):
     """Ownership could not be released safely; do not start replacement work."""
 
 
+class RecoverableCleanupFailed(OSError):
+    """An owned child is reaped, but disposable input files could not be removed."""
+
+
 class WorkerFailed(Exception):
     def __init__(self, returncode, stderr, *, diagnostics=None):
         detail = stderr[:2048].decode("utf-8", errors="replace").strip()
@@ -206,6 +210,7 @@ class Supervisor:
         self._jobs, self._cancelled = set(), set()
         self._closed, self._closing = False, None
         self._failure = None
+        self.last_observation = None
 
     async def run(self, prepare, *, finish=None, consume=None):
         """Fail-fast admission; preparation waits for the chosen priority turn."""
@@ -312,6 +317,7 @@ class Supervisor:
             self._dispatch()
 
     async def _owned(self, prepare, finish, consume):
+        primary = None
         try:
             async with asyncio.timeout(self.deadline):
                 args = await prepare()
@@ -319,11 +325,12 @@ class Supervisor:
                     raise ValueError("Prepared arguments must be a tuple of strings")
                 raw = await self._process(args)
                 return raw if consume is None else await consume(raw)
+        except BaseException as error:
+            primary = error
+            raise
         finally:
             if finish is not None:
-                cleanup = asyncio.create_task(_finalize(finish))
-                if await _finish_cleanup(cleanup):
-                    raise asyncio.CancelledError
+                await _finish_owned(finish, primary)
 
     async def _process(self, args):
         observation = Observation()
@@ -362,10 +369,11 @@ class Supervisor:
                 asyncio.create_task(process.wait()),
             ]
             out, err, code = await asyncio.gather(*readers)
+            stopped.set()
+            await owned_preparation(sampler)
+            evidence = await owned_preparation(asyncio.to_thread(safely, observation.report))
+            self.last_observation = evidence
             if code:
-                stopped.set()
-                await owned_preparation(sampler)
-                evidence = await owned_preparation(asyncio.to_thread(safely, observation.report))
                 evidence.update(pid=process.pid, wall_deadline_seconds=self.deadline)
                 raise WorkerFailed(code, err, diagnostics=evidence)
             return out
@@ -392,7 +400,7 @@ async def _observe(observation, pid, stopped):
     while not stopped.is_set():
         await owned_preparation(asyncio.to_thread(safely, observation.sample, pid))
         try:
-            await asyncio.wait_for(stopped.wait(), 0.5)
+            await asyncio.wait_for(stopped.wait(), 0.1)
         except TimeoutError:
             pass
 
@@ -408,5 +416,23 @@ async def _observed_cleanup(spawning, readers, grace, sampler):
 async def _finalize(finish):
     try:
         await finish()
+    except RecoverableCleanupFailed:
+        raise
     except BaseException as error:
         raise CleanupFailed("Worker input cleanup failed") from error
+
+
+async def _finish_owned(finish, primary):
+    cleanup = asyncio.create_task(_finalize(finish))
+    try:
+        cancelled = await _finish_cleanup(cleanup)
+    except RecoverableCleanupFailed as error:
+        if primary is None:
+            raise
+        try:
+            primary.add_note(str(error))
+        except MemoryError:
+            pass
+    else:
+        if cancelled:
+            raise asyncio.CancelledError

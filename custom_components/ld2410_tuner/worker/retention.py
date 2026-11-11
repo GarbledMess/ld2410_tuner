@@ -1,16 +1,17 @@
 """Durable age-retention batches; each child reads only its selected days."""
 
 import datetime
+import time
 from pathlib import Path
 
 from ..calibration.constants import SAMPLE_SECONDS
 from ..const import TRAINING_FIELDS
 from ..history import budget, daystore, label_counts, policy
 from ..history.label_lookup import _history_label_reader
-from . import startup
+from . import diagnostics
 
 BATCH_DAYS = 30
-BATCH_BYTES = 2 * 1024**2  # Real days vary widely; about 5 desktop CPU-s of the 120 s budget.
+BATCH_BYTES = 32 * 1024**2  # A batch shares one uncached day buffer across its files.
 
 
 def _basis(device):
@@ -26,7 +27,7 @@ def _file_bytes(path):
 
 def _paths(store, key, date):
     day = datetime.date.fromisoformat(date)
-    return [store._path(key, day, suffix) for suffix in (".day", ".log")]
+    return [store._path(key, day, suffix) for suffix in (".day", ".log", ".count", ".ret")]
 
 
 def _take(store, tokens, max_bytes):
@@ -71,10 +72,9 @@ def snapshot(store, data, now, *, max_bytes=BATCH_BYTES):
 
 
 def execute(request):
-    from ..history import spans
     from .maintenance import _restore_live
 
-    store = daystore.DayStore(request["root"])
+    store = daystore.DayStore(request["root"], cache_bytes=0)
     store.open(request["now"])
     _restore_live(store, request.get("live", {}))
     batch = request["batch"]
@@ -85,24 +85,34 @@ def execute(request):
     device = prepared["devices"][key]
     progress = batch["progress"]
     now = progress.get("now", request["now"])
+    spool = Path(request["directory"]) / "replacements"
+    profile = []
+    started = time.perf_counter(), time.process_time()
     cuts = {
         (key, date): ranges
-        for key, date, ranges in budget.plan(store, prepared, now, policy.settings(prepared))
+        for key, date, ranges in budget.plan(
+            store, prepared, now, policy.settings(prepared), spool=spool
+        )
     }
-    planned = budget._Planned(store, None, cuts)
+    started = _record(profile, "retention", started)
+    planned = budget._Planned(store, None, cuts, spool)
     changes, automatic, human = budget._replacement_days(store, prepared, cuts, planned)
+    started = _record(profile, "replacements", started)
     seconds = progress.get("seconds") if progress.get("key") == key else None
     seconds = label_counts.empty() if seconds is None else seconds
     read = _history_label_reader(device)
     cutoff = max(0, now - policy.settings(prepared)["human_days"] * policy.DAY)
     replacements = {(k, d): v for k, d, v in changes}
     for date in store.days(key):
-        day = budget._counted_day(store, key, date, replacements, now)
-        if day is not None:
-            label_counts._count_native(seconds, spans.day_spans(day), read, cutoff, 1)
+        part = budget._day_part(
+            store, key, date, replacements, now, read, cutoff, store.live_date(key)
+        )
+        if part is not None:
+            label_counts._combine(seconds, part)
+    started = _record(profile, "histograms", started)
     changed = _metadata(prepared, key, seconds, batch, now, changes)
-    encoded = {token: value[1] for token, value in planned.replaced.items() if value[1]}
-    staged = store.stage(changes, encoded)
+    staged = store.stage(changes)
+    _record(profile, "stage", started)
     used = batch["before"] + sum(planned.change.values())
     used += budget.storage_bytes(prepared) - budget.storage_bytes(request["data"])
     report = budget._report(
@@ -122,7 +132,21 @@ def execute(request):
         "prune": False,
         "guard_keys": [key],
         "metadata_keys": [key] if batch["radar_done"] and changed else [],
+        "profile": profile,
     }
+
+
+def _record(profile, stage, started):
+    now = time.perf_counter(), time.process_time()
+    item = {
+        "stage": stage,
+        "wall_seconds": round(now[0] - started[0], 3),
+        "cpu_seconds": round(now[1] - started[1], 3),
+        "rss_kib": diagnostics._pairs(Path("/proc/self/status")).get("VmRSS"),
+    }
+    profile.append(item)
+    diagnostics.emit("maintenance_stage", **item)
+    return now
 
 
 def _metadata(prepared, key, seconds, batch, now, changes):
@@ -162,9 +186,9 @@ def _handoff(staged, directory):
             "key": key,
             "date": date.isoformat(),
             "temporary": str(temporary.relative_to(directory)),
-            "day": startup.write_day(day, directory, index),
+            "present": day.present,
         }
-        for index, (key, date, day, temporary) in enumerate(staged)
+        for key, date, day, temporary in staged
     ]
 
 

@@ -24,6 +24,23 @@ DAY = datetime.timedelta(days=1)
 MIB = 1024 * 1024
 
 
+class StagedDay:
+    """A replacement held on disk until publication, decoded only for an actual read."""
+
+    def __init__(self, path, date, present):
+        self.path = Path(path)
+        self.date = date
+        self.present = present
+
+    def load(self):
+        if self.present:
+            return dayfile.decode_day(self.path.read_bytes())
+        return dayfile.DayBuilder(*bounds(self.date)).day()
+
+    def __eq__(self, other):
+        return self.load() == (other.load() if isinstance(other, StagedDay) else other)
+
+
 def date_of(timestamp):
     return datetime.datetime.fromtimestamp(timestamp, datetime.UTC).date()
 
@@ -382,7 +399,8 @@ class DayStore:
             late = list(self._late.get(device_id, {}).get(date, ()))
             pending = self._pending.get((device_id, date))
             if pending is not None:
-                return _visible_pending(pending[0], late)
+                day = pending[0]
+                return _visible_pending(day.load() if isinstance(day, StagedDay) else day, late)
             closing = self._closing.get(device_id, {}).get(date)
             if closing is not None:
                 return dayfile.splice(closing.builder.day(), late)
@@ -480,8 +498,7 @@ class DayStore:
                 ) as out:
                     temporary = Path(out.name)
                     staged.append((key, date, day, temporary))
-                    data = encoded.get((key, date))
-                    out.write(dayfile.encode_day(day) if data is None else data)
+                    _write_staged(out, day, encoded.get((key, date)))
         except BaseException:
             self.discard(staged)
             raise
@@ -614,18 +631,22 @@ class DayStore:
             return
         path = self._path(key, date, ".day")
         summary_cache.invalidate(path)
-        present = bool(len(day.times) or day.guesses)
-        if present:
-            temporary.replace(path)
-        else:
-            path.unlink(missing_ok=True)
-            temporary.unlink(missing_ok=True)
+        present = day.present if isinstance(day, StagedDay) else bool(len(day.times) or day.guesses)
+        _publish_staged(path, temporary, day, present)
         with self._lock:
-            if self._pending.get((key, date), (None, None))[1] is token:
-                self.inventory(key, date, ".day", present)
-                self._pending.pop((key, date))
-                if generation == self._generations.get(key, 0) and present:
-                    self._remember((key, date), day)
+            self._finish_reserved(token, key, date, day, generation, present)
+
+    def _finish_reserved(self, token, key, date, day, generation, present):
+        if self._pending.get((key, date), (None, None))[1] is not token:
+            return
+        self.inventory(key, date, ".day", present)
+        self._pending.pop((key, date))
+        if (
+            generation == self._generations.get(key, 0)
+            and present
+            and not isinstance(day, StagedDay)
+        ):
+            self._remember((key, date), day)
 
     def _changed(self, key):
         with self._lock:
@@ -698,6 +719,8 @@ class DayStore:
     def _remember(self, key, day):
         with self._lock:
             self._forget(key)
+            if self._cache_bytes == 0:
+                return
             self._cache[key] = day
             self._cached += _bytes(day)
             while self._cached > self._cache_bytes and len(self._cache) > 1:
@@ -715,6 +738,25 @@ def _bytes(day):
         len(column) * column.itemsize if hasattr(column, "itemsize") else len(column)
         for column in day.columns
     )
+
+
+def _write_staged(out, day, encoded):
+    if isinstance(day, StagedDay):
+        if day.present:
+            with day.path.open("rb") as source:
+                shutil.copyfileobj(source, out, 1024 * 1024)
+        return
+    out.write(dayfile.encode_day(day) if encoded is None else encoded)
+
+
+def _publish_staged(path, temporary, day, present):
+    if present:
+        temporary.replace(path)
+        if isinstance(day, StagedDay):
+            day.path = path
+    else:
+        path.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
 
 
 def _visible_pending(day, late):

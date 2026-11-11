@@ -6,16 +6,17 @@ import stat
 import tempfile
 import threading
 import time
+from functools import partial
 from pathlib import Path
 
 from . import bridge, priority, protocol, storage_values
-from .supervisor import Supervisor, owned_preparation
+from .supervisor import RecoverableCleanupFailed, Supervisor, owned_preparation
 
 MESSAGE_BYTES = 16 * 1024 * 1024
 MESSAGE_NODES = 1024 * 1024
 # The store only ever replaces these atomically, so a private hard link cannot
 # be written through. Logs are appended in place and must be copied.
-LINKED = (".day", ".sum")
+LINKED = (".day", ".sum", ".count", ".ret")
 
 
 def _message(kind, data):
@@ -157,45 +158,64 @@ async def run(runtime, operation, data, accept, *, snapshot=None):
     """Hold shared admission through private preparation, child, acceptance and cleanup."""
     service = _lane(runtime, operation)
     holder = {}
+    return await _admit(
+        service,
+        partial(_prepare_request, runtime, holder, operation, data, snapshot),
+        partial(_consume_result, runtime, holder, accept),
+        partial(_finish_request, runtime, holder),
+    )
 
-    async def prepare():
-        return await owned_preparation(
-            runtime.hass.async_add_executor_job(
-                _prepare,
-                holder,
-                Path(runtime._days.root),
-                operation,
-                data,
-                time.time(),
-                snapshot,
-                getattr(runtime._days, "_fs_lock", threading.RLock()),
-            )
+
+async def _prepare_request(runtime, holder, operation, data, snapshot):
+    return await owned_preparation(
+        runtime.hass.async_add_executor_job(
+            _prepare,
+            holder,
+            Path(runtime._days.root),
+            operation,
+            data,
+            time.time(),
+            snapshot,
+            getattr(runtime._days, "_fs_lock", threading.RLock()),
         )
+    )
 
-    async def consume(raw):
-        acknowledgement = protocol.unpack(raw, "result")
-        if acknowledgement != {"storage": True}:
-            raise ValueError("Invalid storage worker acknowledgement")
-        directory = holder["directory"]
-        result = await owned_preparation(
-            runtime.hass.async_add_executor_job(_read, directory / "result.json", "result")
-        )
-        if "error" in result:
-            from ..history.budget import BudgetExceeded
 
-            raise BudgetExceeded(result["error"])
-        holder["accepting"] = True
+async def _consume_result(runtime, holder, accept, raw):
+    acknowledgement = protocol.unpack(raw, "result")
+    if acknowledgement != {"storage": True}:
+        raise ValueError("Invalid storage worker acknowledgement")
+    directory = holder["directory"]
+    result = await owned_preparation(
+        runtime.hass.async_add_executor_job(_read, directory / "result.json", "result")
+    )
+    if "error" in result:
+        from ..history.budget import BudgetExceeded
+
+        raise BudgetExceeded(result["error"])
+    holder["accepting"] = True
+    try:
         accepted = await accept(result, directory)
-        holder["accepting"] = False
-        return accepted
+    except BaseException as error:
+        try:
+            error.add_note(f"Storage acceptance failed; recovery files retained at {directory}")
+        except MemoryError:
+            pass  # An exhausted process must retain the original allocation failure.
+        raise
+    holder["accepting"] = False
+    return accepted
 
-    async def finish():
-        if holder.get("accepting"):
-            return
-        if directory := holder.get("directory"):
+
+async def _finish_request(runtime, holder):
+    if holder.get("accepting"):
+        return  # The private tree is retained, and no cleanup was attempted.
+    if directory := holder.get("directory"):
+        try:
             await owned_preparation(runtime.hass.async_add_executor_job(shutil.rmtree, directory))
-
-    return await _admit(service, prepare, consume, finish)
+        except OSError as error:
+            raise RecoverableCleanupFailed(
+                f"Private storage cleanup failed at {directory}: {error}"
+            ) from error
 
 
 def execute(request):
