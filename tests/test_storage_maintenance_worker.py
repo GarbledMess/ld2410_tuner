@@ -2,12 +2,51 @@
 
 import asyncio
 import time
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import test_tuner  # noqa: F401
+import test_tuner as harness
 from tuner_under_test.history import budget, dayfile, daystore, policy
+
+
+class HotStorageSettingsTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        harness.RuntimeTests.setUp(self)
+
+    asyncTearDown = harness.RuntimeTests.asyncTearDown
+    sample = harness.RuntimeTests.sample
+
+    async def test_settings_save_accepts_new_live_samples_while_trimming_old_day(self):
+        from tuner_under_test.history import ingest
+
+        old = self.now - 10 * policy.DAY
+        self.sample(old)
+        ingest.end(self.runtime, "a", old + 6)
+        self.device["history_labels"] = [
+            {"start": self.now - 60, "end": self.now + 60, "state": "present"}
+        ]
+        self.sample(self.now - 6)
+        preparations = 0
+
+        async def record(request):
+            nonlocal preparations
+            if request["operation"] == "maintenance":
+                preparations += 1
+                self.sample(self.now + preparations * 6, 81)
+
+        self.worker_transport.after = record
+        settings = {**policy.DEFAULTS, "human_days": 45}
+        await self.runtime.configure_storage(settings)
+
+        saved = self.runtime.store.async_save.call_args.args[0]
+        self.assertEqual(preparations, 1)
+        self.assertEqual(saved["storage_settings"], settings)
+        self.assertEqual(self.runtime.data["storage_settings"], settings)
+        self.assertIsNone(self.runtime._days.day("a", daystore.date_of(old)))
+        self.assertGreaterEqual(self.runtime._days.seen("a"), self.now + 5.9)
+        self.assertEqual(saved["devices"]["a"]["histograms"], self.device["histograms"])
 
 
 def test_batch_snapshot_carries_persistent_day_statistics(tmp_path):

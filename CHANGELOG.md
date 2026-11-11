@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.34.1 - 2026-11-11
+
+- Changing storage settings now completes while a radar records new readings. Trimming
+  checks the finished days it replaces and refreshes live histogram counts before saving.
+  Concurrent edits to affected labels and finished days remain protected.
+
 ## 1.34.0 - 2026-11-11
 
 - The tuner panel now shows live status for the main, display, and history-save workers:

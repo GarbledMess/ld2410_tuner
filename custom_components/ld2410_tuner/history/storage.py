@@ -195,11 +195,16 @@ async def _save_days(runtime, values, clean, target, persist=True):
         # Bounded; the copy is validated in the executor, before anything is copied for it.
         original = budget.copy_data(runtime.data, max_nodes=transactions.MESSAGE_NODES)
         marks = {key: _observation_mark(runtime, key) for key in original["devices"]}
+        versions = {
+            (key, date): runtime._days.day_version(key, date)
+            for key in original["devices"]
+            for date in runtime._days.days(key)
+        }
         candidate = original if values is None else {**original, "storage_settings": values}
 
         snapshot = _snapshot_days(runtime, candidate, clean, target, values)
 
-        accept = _accept_worker(runtime, original, marks, values, clean, persist)
+        accept = _accept_worker(runtime, original, marks, versions, values, clean, persist)
 
         report = await transactions.run(
             runtime, "maintenance", candidate, accept, snapshot=snapshot
@@ -258,12 +263,21 @@ def _record_maintenance(runtime, prepared, report, clean):
         runtime._storage_status["last_trim"] = report
 
 
-def _days_unchanged(runtime, original, marks, keys):
+def _days_unchanged(runtime, original, marks, versions, changes, keys, guard_keys):
     if runtime.data.get("storage_settings") != original.get("storage_settings"):
+        return False
+    if any(
+        runtime._days.day_version(key, date) != versions.get((key, date))
+        for key, date, _day in changes
+    ):
         return False
     return all(
         key in runtime.data["devices"]
-        and _observation_mark(runtime, key) == marks[key]
+        and (
+            _observation_mark(runtime, key) == marks[key]
+            if key in guard_keys
+            else _live_date(_observation_mark(runtime, key)) == _live_date(marks[key])
+        )
         and all(runtime.data["devices"][key].get(field) == before.get(field) for field in GUARDED)
         for key, before in original["devices"].items()
         if key in keys
@@ -272,6 +286,11 @@ def _days_unchanged(runtime, original, marks, keys):
 
 def _observation_mark(runtime, key):
     return runtime._days.mark(key), runtime._days.seen(key)
+
+
+def _live_date(mark):
+    state = mark[0][1]
+    return None if state is None else state[0]
 
 
 def _accept_days(runtime, prepared, changes, values, metadata_keys=()):
@@ -291,7 +310,21 @@ def _prune_indexes(root):
     summary_cache.prune(root, max_bytes=0, max_cell_bytes=0, preserve_counts=True)
 
 
-def _accept_worker(runtime, original, marks, values, clean, persist):
+async def _adopt_counts(runtime, prepared, counts, marks, touched):
+    live_changed = {key for key in touched if _observation_mark(runtime, key) != marks[key]}
+    for key, counted in counts.items():
+        label_counts.adopt(runtime, key, counted)
+        if key not in live_changed or key not in runtime._label_counts:
+            continue
+        refreshed = await label_counts.refresh(runtime, key, runtime.data["devices"][key])
+        if refreshed is not None:
+            raw, _index = refreshed
+            histograms = label_counts.stored(raw)
+            runtime.data["devices"][key]["histograms"] = histograms
+            prepared["devices"][key]["histograms"] = deepcopy(histograms)
+
+
+def _accept_worker(runtime, original, marks, versions, values, clean, persist):
     from ..worker import maintenance
     from ..worker.supervisor import owned_preparation
 
@@ -300,12 +333,11 @@ def _accept_worker(runtime, original, marks, values, clean, persist):
             runtime.hass.async_add_executor_job(maintenance.load, result, directory)
         )
         relabelled = _relabelled(original, prepared)
-        touched = (
-            {key for key, _date, _day in changes} | relabelled | set(result.get("guard_keys", ()))
-        )
+        guard_keys = set(result.get("guard_keys", ()))
+        touched = {key for key, _date, _day in changes} | relabelled | guard_keys
 
         def valid():
-            return _days_unchanged(runtime, original, marks, touched)
+            return _days_unchanged(runtime, original, marks, versions, changes, touched, guard_keys)
 
         def install():
             _accept_days(runtime, prepared, changes, values, result.get("metadata_keys", ()))
@@ -326,12 +358,11 @@ def _accept_worker(runtime, original, marks, values, clean, persist):
                 maintenance_cache.transfer, directory / "history", runtime._days.root
             )
         )
+        await _adopt_counts(runtime, prepared, result.get("counts", {}), marks, touched)
         report["used_bytes"] = await owned_preparation(
             runtime.hass.async_add_executor_job(_accepted_size, runtime._days, prepared)
         )
         runtime._storage_status["used_bytes"] = report["used_bytes"]
-        for key, counted in result.get("counts", {}).items():
-            label_counts.adopt(runtime, key, counted)  # Published: the days it counted.
         _save_profile(runtime, result)
         if persist or "guard_keys" in result:
             await runtime.store.async_save(prepared)
