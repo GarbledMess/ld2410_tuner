@@ -2,7 +2,7 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
-[Release notes](CHANGELOG.md) - 1.33.5 reduces storage maintenance memory and repeated counting, and keeps unrelated workers available after a recoverable storage failure.
+[Release notes](CHANGELOG.md) - 1.34.0 adds live worker status, queue counts, resource readings, and estimated remaining time to the tuner panel.
 
 All collapsible sections start closed. Each heading describes what is inside;
 sections you open stay open during panel refreshes. History and Recommendations

@@ -1,5 +1,14 @@
 # Release notes
 
+## 1.34.0 - 2026-11-11
+
+- The tuner panel now shows live status for the main, display, and history-save workers:
+  current task and stage, elapsed time, queued work, and process memory and CPU when available.
+  The card continues updating while a panel action is running.
+- After two successful runs of the same task, the panel estimates remaining time from recent
+  durations. It says when a job passes that estimate. A progress indicator is ready for measured
+  percentages; until a worker supplies them, it says progress is unavailable.
+
 ## 1.33.5 - 2026-11-11
 
 - History maintenance now keeps per-day retention and occupancy statistics beside unchanged

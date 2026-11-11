@@ -163,6 +163,7 @@ async def run(runtime, operation, data, accept, *, snapshot=None):
         partial(_prepare_request, runtime, holder, operation, data, snapshot),
         partial(_consume_result, runtime, holder, accept),
         partial(_finish_request, runtime, holder),
+        operation,
     )
 
 
@@ -253,8 +254,12 @@ async def final_save(runtime):
         runtime._final_storage_service = None
 
 
-async def _admit(service, prepare, consume, finish):
+async def _admit(service, prepare, consume, finish, operation):
     """The serialized storage caller waits without dropping durability work or copying it."""
     return await service.run_when_available(
-        prepare, consume=consume, finish=finish, background=priority.is_background()
+        prepare,
+        consume=consume,
+        finish=finish,
+        background=priority.is_background(),
+        operation=operation,
     )

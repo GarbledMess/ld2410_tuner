@@ -124,7 +124,9 @@ async def calculate(runtime, operation, prepare):
     # Queue lightweight identities before preparing views. Each caller owns its
     # request; saturation delays valid work instead of failing an accepted job.
     background = priority.is_background(operation)
-    raw = await service.run_when_available(admitted, finish=finish, background=background)
+    raw = await service.run_when_available(
+        admitted, finish=finish, background=background, operation=operation
+    )
     from .codec import unpack_result
 
     return await owned_preparation(runtime.hass.async_add_executor_job(unpack_result, raw))

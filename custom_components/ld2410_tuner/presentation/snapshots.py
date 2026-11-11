@@ -125,6 +125,7 @@ def snapshot(runtime) -> dict[str, Any]:
             "waiting_since": runtime._history_waiting_since,
             "stall_seconds": history_save.HISTORY_STALL_SECONDS,
         },
+        "workers": worker_status(runtime),
     }
 
     _snapshot_devices(runtime, registry, result)
@@ -141,6 +142,27 @@ def snapshot(runtime) -> dict[str, Any]:
     result["learning_sets"] = room_jobs.learning_sets(runtime, definitions)
     result["room_attribution"] = seen_by.snapshot(runtime, definitions)
     return result
+
+
+def worker_status(runtime):
+    """Read live lanes without starting work or copying history."""
+    idle = {
+        "active": None,
+        "foreground": 0,
+        "background": 0,
+        "oldest_wait_seconds": 0,
+        "closed": False,
+    }
+    services = {
+        "calculations": getattr(runtime, "_worker_service", None),
+        "display": getattr(runtime, "_display_service", None),
+        "storage": getattr(runtime, "_final_storage_service", None)
+        or getattr(runtime, "_storage_service", None),
+    }
+    return {
+        label: service.status() if service is not None else dict(idle)
+        for label, service in services.items()
+    }
 
 
 def histogram_summary(histogram: list[int]) -> dict[str, Any]:

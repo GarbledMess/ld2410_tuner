@@ -80,6 +80,13 @@ export const panelView = {
         .card,.panel-card { min-width:0; align-self:start; background:var(--ha-card-background,var(--card-background-color,#fff)); border-radius:12px; padding:16px; box-shadow:var(--ha-card-box-shadow,0 2px 8px rgba(0,0,0,.12)); }
         .panel-card { margin-bottom:14px; }
         .panel-intro .subtitle { margin:0; line-height:1.5; }
+        #workers h2 { font-size:16px; margin:0 0 10px; }
+        #workers h2 .muted { font-weight:400; margin-left:8px; }
+        .worker-list { display:grid; gap:8px; }
+        .worker-row { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; border-top:1px solid var(--divider-color); padding:10px 0; }
+        .worker-row strong { min-width:145px; }
+        .worker-progress { display:flex; align-items:center; gap:8px; width:100%; }
+        .worker-progress progress { width:min(220px,60%); height:8px; accent-color:var(--primary-color,#1976d2); }
         .global-settings-card > summary, #bermuda > summary { cursor:pointer; min-height:44px; align-content:center; }
         .global-settings-card > summary h2, #bermuda > summary h2 { display:inline; }
         .global-settings-card h2, #bermuda > summary h2 { margin:0 0 6px; font-size:16px; }
@@ -331,6 +338,7 @@ export const panelView = {
         <div class="subtitle">Review room presence, label recorded periods, and tune your radars. Your labels take priority over automatic estimates.</div>
         <div id="snapshot-status" class="muted" role="status" aria-live="polite"></div>
         </header>
+        <section id="workers" class="panel-card" aria-label="Workers" aria-live="polite"></section>
         <details class="panel-card global-settings-card">
           <summary><h2 id="global-settings-title">Global settings</h2><span class="section-description">Learning schedules, recording storage and timing.</span></summary>
           <section class="settings-section" aria-labelledby="overnight-settings-title">
@@ -401,6 +409,7 @@ export const panelView = {
   },
 
   _draw() {
+    this._drawWorkers();
     this._drawHistorySaveWarning();
     this._drawLearningSchedule();
     this._drawStorage();

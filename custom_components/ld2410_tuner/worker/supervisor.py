@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import signal
+import statistics
 import subprocess  # nosec B404
 import sys
 import time
@@ -22,6 +23,32 @@ from .diagnostics import Observation, safely
 _LOGGER = logging.getLogger(__name__)
 
 _POSIX = os.name == "posix"
+_OPERATIONS = frozenset(
+    {
+        "learn",
+        "comparison",
+        "room_assess",
+        "room_fit",
+        "room_compare",
+        "seen_by",
+        "references",
+        "recount",
+        "charts",
+        "recording_rows",
+        "startup",
+        "maintenance",
+        "flush",
+    }
+)
+
+
+def _eta(durations, elapsed):
+    if len(durations) < 2:
+        return None, "estimating"
+    estimate = statistics.median(durations)
+    if elapsed >= estimate:
+        return None, "past_estimate"
+    return round(estimate - elapsed), "estimated"
 
 
 class Busy(Exception):
@@ -205,6 +232,10 @@ class Supervisor:
         self._queue, self._waiting = [], set()
         self._active = None
         self._active_details = None
+        self._active_operation = None
+        self._stage = None
+        self._live_observation = None
+        self._durations = {}
         self._clock = time.monotonic
         self.BACKGROUND_MAX_WAIT = 60
         self._jobs, self._cancelled = set(), set()
@@ -212,24 +243,32 @@ class Supervisor:
         self._failure = None
         self.last_observation = None
 
-    async def run(self, prepare, *, finish=None, consume=None):
+    async def run(self, prepare, *, finish=None, consume=None, operation=None):
         """Fail-fast admission; preparation waits for the chosen priority turn."""
-        return await self._submit(prepare, finish, consume, deferred=False, background=False)
+        return await self._submit(
+            prepare, finish, consume, deferred=False, background=False, operation=operation
+        )
 
-    async def run_when_available(self, prepare, *, finish=None, consume=None, background=False):
+    async def run_when_available(
+        self, prepare, *, finish=None, consume=None, background=False, operation=None
+    ):
         """Queue only lightweight callables; callers must bound/deduplicate waiters.
 
         Foreground work takes the next turn. Background work remains deferred,
         preserving durability; a priority change never cancels an active child.
         """
-        return await self._submit(prepare, finish, consume, deferred=True, background=background)
+        return await self._submit(
+            prepare, finish, consume, deferred=True, background=background, operation=operation
+        )
 
-    async def _submit(self, prepare, finish, consume, *, deferred, background):
+    async def _submit(self, prepare, finish, consume, *, deferred, background, operation):
+        if operation is not None and operation not in _OPERATIONS:
+            raise ValueError("Unknown worker operation")
         if self._closed:
             raise Closed("Worker supervisor is closed")
         if not deferred and len(self._jobs) >= 1 + self.max_pending:
             raise Busy("Worker pending queue is full")
-        work = asyncio.create_task(self._execute(prepare, finish, consume, background))
+        work = asyncio.create_task(self._execute(prepare, finish, consume, background, operation))
         (self._waiting if deferred else self._jobs).add(work)
         work.add_done_callback(self._finished)
         try:
@@ -260,6 +299,8 @@ class Supervisor:
         self._queue.remove(ticket)
         self._active = ticket[1]
         self._active_details = ticket[0], self._clock()
+        self._active_operation = ticket[3]
+        self._stage = "preparing"
         ticket[1].set_result(None)
 
     def _next_ticket(self):
@@ -291,8 +332,30 @@ class Supervisor:
             "oldest_wait_seconds": max((max(0, now - ticket[2]) for ticket in queue), default=0),
         }
 
-    async def _execute(self, prepare, finish, consume, background):
-        ticket = background, asyncio.get_running_loop().create_future(), self._clock()
+    def status(self):
+        """Bounded panel data; never expose diagnostic errors or job arguments."""
+        state = self.diagnostics()
+        state.pop("failure", None)
+        active = state["active"]
+        if active is not None:
+            operation = self._active_operation
+            eta_seconds, eta_state = _eta(
+                self._durations.get(operation, ()), active["running_seconds"]
+            )
+            active.update(
+                operation=operation,
+                stage=self._stage,
+                eta_seconds=eta_seconds,
+                eta_state=eta_state,
+                progress_percent=None,
+                resources=None
+                if self._live_observation is None
+                else dict(self._live_observation.last),
+            )
+        return state
+
+    async def _execute(self, prepare, finish, consume, background, operation):
+        ticket = background, asyncio.get_running_loop().create_future(), self._clock(), operation
         self._queue.append(ticket)
         self._dispatch()
         try:
@@ -302,7 +365,12 @@ class Supervisor:
             self._waiting.discard(asyncio.current_task())
             self._jobs.add(asyncio.current_task())
             try:
-                return await self._owned(prepare, finish, consume)
+                result = await self._owned(prepare, finish, consume)
+                if operation is not None and self._active_details is not None:
+                    history = self._durations.setdefault(operation, [])
+                    history.append(max(0, self._clock() - self._active_details[1]))
+                    del history[:-5]
+                return result
             except CleanupFailed as error:
                 self._closed = True
                 self._failure = error
@@ -314,6 +382,9 @@ class Supervisor:
             if self._active is ticket[1]:
                 self._active = None
                 self._active_details = None
+                self._active_operation = None
+                self._stage = None
+                self._live_observation = None
             self._dispatch()
 
     async def _owned(self, prepare, finish, consume):
@@ -330,9 +401,11 @@ class Supervisor:
             raise
         finally:
             if finish is not None:
+                self._stage = "finishing"
                 await _finish_owned(finish, primary)
 
     async def _process(self, args):
+        self._stage = "starting"
         observation = Observation()
         if sys.platform == "linux":
             await owned_preparation(asyncio.to_thread(safely, observation.start))
@@ -362,6 +435,8 @@ class Supervisor:
         readers = []
         try:
             process = await asyncio.shield(spawning)
+            self._stage = "running"
+            self._live_observation = observation
             sampler = asyncio.create_task(_observe(observation, process.pid, stopped))
             readers = [
                 asyncio.create_task(_capture(process.stdout, self.stdout_bytes)),

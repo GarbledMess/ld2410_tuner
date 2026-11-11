@@ -7,6 +7,7 @@ import { panelBermuda } from "./panel/bermuda.js";
 import { panelRecordedData } from "./panel/recorded_data.js";
 import { panelStorage } from "./panel/storage.js";
 import { panelJobs } from "./panel/jobs.js";
+import { panelWorkers } from "./panel/workers.js";
 import { panelSavedResults } from "./panel/saved_results.js";
 import { panelHistoryGraph } from "./panel/history_graph.js";
 import { panelTimeline } from "./panel/timeline.js";
@@ -283,6 +284,7 @@ Object.assign(
   panelBermuda,
   panelSources,
   panelJobs,
+  panelWorkers,
   panelSavedResults,
   panelHistoryGraph,
   panelTimeline,

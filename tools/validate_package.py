@@ -206,6 +206,7 @@ RUNTIME_FILES = (
     "static/panel/saved_results.js",
     "static/panel/learning.js",
     "static/panel/jobs.js",
+    "static/panel/workers.js",
     "static/panel/storage.js",
     "static/panel/recorded_data.js",
     "static/panel/recorded_view.js",

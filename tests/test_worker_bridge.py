@@ -169,7 +169,8 @@ def test_only_flushes_use_the_storage_lane(monkeypatch):
 
     used = []
 
-    async def admit(service, prepare, consume, finish):
+    async def admit(service, prepare, consume, finish, operation):
+        assert operation in {"flush", "maintenance"}
         used.append(service)
 
     async def run():
