@@ -25,3 +25,9 @@ tests/data/
 docs/superpowers/
 .pytest*
 .superpowers*
+/.codex/
+/.serena/
+/.release-worker-monitor/
+/.tmp-validator-debug/
+/.local-archive/
+/.local-cache/

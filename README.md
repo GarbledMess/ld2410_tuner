@@ -2,6 +2,8 @@
 
 Home Assistant custom integration for labelled radar calibration and gate history.
 
+[Documentation index](docs/README.md)
+
 [Release notes](CHANGELOG.md) - 1.34.0 adds live worker status, queue counts, resource readings, and estimated remaining time to the tuner panel.
 
 All collapsible sections start closed. Each heading describes what is inside;
@@ -798,6 +800,10 @@ windows; zoom into a review period to inspect its short-lived readings.
   matches the panel's administrator-only access.
 
 ## Verification
+
+Routine pytest cache, Ruff cache and coverage output is kept in ignored
+`.local-cache/`. Pytest temporary fixtures use the system temporary directory,
+which is required by the hybrid validator's out-of-repository safety checks.
 
 Install the development tools in a virtual environment, then run:
 
