@@ -11,6 +11,7 @@ import { panelWorkers } from "./panel/workers.js";
 import { panelSavedResults } from "./panel/saved_results.js";
 import { panelHistoryGraph } from "./panel/history_graph.js";
 import { panelTimeline } from "./panel/timeline.js";
+import { panelZoom } from "./panel/zoom.js";
 import { panelActivity } from "./panel/activity.js";
 import { panelVisualization } from "./panel/visualization.js";
 import { panelCards } from "./panel/card.js";
@@ -288,6 +289,7 @@ Object.assign(
   panelSavedResults,
   panelHistoryGraph,
   panelTimeline,
+  panelZoom,
   panelActivity,
   panelChart,
   panelPresenceLanes,

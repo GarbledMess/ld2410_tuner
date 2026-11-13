@@ -123,6 +123,9 @@ export const panelView = {
         .history-navigation { display:flex; flex-wrap:wrap; align-items:flex-end; gap:8px; margin:12px 0; }
         .history-navigation label { flex:1; min-width:130px; font-size:12px; }
         .history-navigation input { display:block; width:100%; min-width:0; min-height:44px; box-sizing:border-box; padding:8px; font:inherit; border:1px solid var(--divider-color); border-radius:9px; background:var(--card-background-color); color:var(--primary-text-color); }
+        .history-zoom { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 0 12px; }
+        .history-zoom button { min-height:44px; min-width:44px; }
+        .history-zoom [data-history-zoom-label] { font-size:12px; }
         .history-range { position:relative; margin:12px 0; touch-action:none; user-select:none; -webkit-user-select:none; cursor:crosshair; }
         .history-range .history-timeline { height:44px; }
         .history-range-selection { position:absolute; top:0; bottom:0; background:rgba(30,136,229,.25); border-inline:2px solid #1565c0; box-sizing:border-box; pointer-events:none; }

@@ -89,6 +89,7 @@ export const panelHistory = {
         <button type="button" data-action="history-next" aria-label="Next day">›</button>
         <button type="button" data-action="history-today">Today</button>
       </div>
+      ${this._historyZoomHtml()}
       <div class="history-graph"></div>
       <div class="history-timeline-editor">${this._historyRangeHtml(timeline, ui.day)}
       <div class="history-axis"><span>${this._esc(this._historyTime(bounds.start))}</span><span>${this._esc(this._historyTime(bounds.end))} (next day)</span></div></div>
@@ -195,6 +196,7 @@ export const panelHistory = {
     const ui = this._historyStateFor(id);
     ui.day = day;
     ui.month = day.slice(0, 7);
+    ui.view = null;
     this._refreshHistorySection(card, id);
     this._showHistoryWindow(card, id, this._historyDayBounds(day));
   },

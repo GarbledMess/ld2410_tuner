@@ -548,6 +548,14 @@ Focused handles also support left/right arrows (one minute; Shift for 15 minutes
 Choose the status and save to confirm the change; dragging alone never saves a label.
 Selecting a saved period keeps the existing edit/remove workflow.
 
+Both this graph and the **Room presence** graph can zoom into part of the chosen day.
+**−** and **+** halve or double the window around its middle, down to ten minutes;
+**‹ Earlier** and **Later ›** move it by half its width; **Zoom to selection** fits the
+selected period with a little margin; **Whole day** returns to the full day. The window
+stays inside the day and never moves past the present, and a zoomed window loads finer
+buckets, down to six seconds. The label bar, its axis and the selection follow the zoom.
+Choosing another day starts at the whole day.
+
 ## Charts
 
 Changing the history window (for example 6h to 24h) keeps the same ending timestamp.

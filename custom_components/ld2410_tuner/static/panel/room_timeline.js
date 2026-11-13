@@ -21,10 +21,15 @@ export const panelRoomTimeline = {
     const rid = `room:${gid}`;
     const ui = this._historyStateFor(rid);
     const bounds = this._historyDayBounds(ui.day);
+    const view = this._historyViewBounds(rid);
     const inDay = (label) =>
       label.end > bounds.start && label.start < bounds.end;
     const labels = (group.labels || []).filter(inDay);
     const manual = labels.filter((label) => label.source === "manual");
+    const shown = manual.filter(
+      (label) => label.end > view.start && label.start < view.end,
+    );
+    const next = view.end >= bounds.end ? " (next day)" : "";
     const rows = [...manual]
       .sort((a, b) => a.start - b.start)
       .map((label) => this._roomPeriodHtml(label))
@@ -44,9 +49,10 @@ export const panelRoomTimeline = {
         <button type="button" data-room-label-action="next" aria-label="Next day">›</button>
         <button type="button" data-room-label-action="today">Today</button>
       </div>
+      ${this._historyZoomHtml()}
       ${this._roomGraphHtml(gid)}
-      <div class="history-timeline-editor">${this._historyRangeHtml(this._historySegmentsHtml(manual, bounds), ui.day)}
-      <div class="history-axis"><span>${this._esc(this._historyTime(bounds.start))}</span><span>${this._esc(this._historyTime(bounds.end))} (next day)</span></div></div>
+      <div class="history-timeline-editor">${this._historyRangeHtml(this._historySegmentsHtml(shown, view), ui.day)}
+      <div class="history-axis"><span>${this._esc(this._historyTime(view.start))}</span><span>${this._esc(this._historyTime(view.end))}${next}</span></div></div>
       <div class="history-periods">${rows || '<p class="muted">No manual room labels on this day.</p>'}</div>
       ${this._loneRadarLabelsHtml(group)}
       <p class="history-edit-note" role="status">${ui.edit ? "Editing the full saved room period." : "Add a period, or select a saved period to edit it."}</p>
@@ -256,6 +262,7 @@ export const panelRoomTimeline = {
   _changeRoomDay(rid, value) {
     const ui = this._historyStateFor(rid);
     ui.day = value.slice(0, 10);
+    ui.view = null;
     ui.fields = null;
     ui.range = null;
     ui.edit = null;

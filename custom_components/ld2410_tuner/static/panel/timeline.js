@@ -4,7 +4,7 @@ export const panelTimeline = {
     const cs = this._chartState.get(id);
     if (cs?.historyLinked && cs.end)
       return { start: cs.end - cs.hours * 3600, end: cs.end };
-    return this._historyDayBounds(this._historyStateFor(id).day);
+    return this._historyViewBounds(id);
   },
 
   _historyRangeHtml(timeline, day) {
@@ -52,6 +52,7 @@ export const panelTimeline = {
       handle.setAttribute("aria-valuetext", this._historyTime(time));
     }
     this._paintRoomGraphSelection(card, id, selection);
+    this._paintHistoryZoom(card, id);
   },
 
   _setHistoryRange(card, id, selection, newPeriod = false) {
@@ -80,6 +81,7 @@ export const panelTimeline = {
           this._paintHistoryRange(card, id);
           this._syncHistorySelection(card, id);
         };
+    this._wireHistoryZoom(card, id);
     this._paintHistoryRange(card, id);
   },
 

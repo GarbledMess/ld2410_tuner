@@ -56,6 +56,8 @@ h2, h3 { font-size:16px; }
   .history-fields { grid-template-columns:minmax(0,1fr); }
   .history-navigation label { min-width:0; flex:1 1 100%; order:-1; }
   .history-navigation button { flex:1; }
+  .history-zoom button { flex:1 1 auto; }
+  .history-zoom [data-history-zoom-label] { flex:1 1 100%; }
   .room-graph .chart-controls { display:grid; grid-template-columns:minmax(0,1fr); }
   .room-graph .chart-controls label, .room-graph .chart-controls select { display:block; width:100%; }
   .room-graph .chart-controls button { width:100%; }

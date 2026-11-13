@@ -221,6 +221,7 @@ RUNTIME_FILES = (
     "static/panel/timeline.js",
     "static/panel/view.js",
     "static/panel/visualization.js",
+    "static/panel/zoom.js",
     "translations/en.json",
 )
 

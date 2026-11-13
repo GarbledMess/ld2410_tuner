@@ -1,5 +1,13 @@
 # Release notes
 
+## 1.35.0 - 2026-11-13
+
+- The day graphs in **Past presence labels** and **Room presence** can zoom into part of the
+  day: zoom in and out, move earlier or later, zoom to the selected period, or return to the
+  whole day. The shortest window is ten minutes. Zoomed windows load finer data, down to
+  six-second buckets, and the label bar and selection follow the zoom so short periods can
+  be labelled precisely. Windows of half an hour or less show seconds on the time axis.
+
 ## 1.34.6 - 2026-11-13
 
 - **Download day CSV** is now written by Home Assistant in one pass and downloaded as a file,

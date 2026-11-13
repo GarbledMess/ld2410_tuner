@@ -96,8 +96,10 @@ export const panelHistoryGraph = {
     cs.selection = selection;
     cs.panelOpen = false;
     this._setSectionCollapsed(id, "chart", false);
-    for (const copy of this._showSection(card, id, "chart", false))
+    for (const copy of this._showSection(card, id, "chart", false)) {
       this._placeHistoryGraph(copy, id);
+      this._paintHistoryZoom(copy, id);
+    }
     if (end <= bounds.start) {
       // Invalidate older in-flight responses when navigating to a future day.
       cs.request = (cs.request || 0) + 1;

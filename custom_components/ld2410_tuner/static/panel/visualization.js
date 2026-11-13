@@ -55,6 +55,7 @@ export const panelVisualization = {
           : {}),
         hour: "2-digit",
         minute: "2-digit",
+        ...(span <= 1800 ? { second: "2-digit" } : {}),
       });
     };
     const xTicks = Array.from({ length: tickCount }, (_, i) => {

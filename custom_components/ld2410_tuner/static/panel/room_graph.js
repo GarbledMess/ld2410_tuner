@@ -122,8 +122,7 @@ export const panelRoomGraph = {
   async _loadRoomGraph(gid, group, refresh = false, foreground = refresh) {
     if (!this._roomGraphVisible(gid)) return;
     const state = this._roomGraphState(gid);
-    const day = this._historyStateFor(`room:${gid}`).day;
-    const bounds = this._historyDayBounds(day);
+    const { day, bounds } = this._roomGraphWindow(gid);
     const currentDay =
       Date.now() / 1000 >= bounds.start && Date.now() / 1000 < bounds.end;
     const ids = group.device_ids.filter((id) => this._data.devices[id]);
@@ -320,7 +319,7 @@ export const panelRoomGraph = {
     if (
       !state.data ||
       state.loadedKind !== state.kind ||
-      state.loadedDay !== this._historyStateFor(`room:${gid}`).day
+      state.loadedDay !== this._roomGraphWindow(gid).day
     ) {
       canvas.innerHTML =
         state.loading || state.error
@@ -381,6 +380,19 @@ export const panelRoomGraph = {
     this._paintHistoryRange(section, `room:${gid}`);
   },
 
+  // The day and zoomed window a room graph shows; `day` keys loads and caches.
+  _roomGraphWindow(gid) {
+    const rid = `room:${gid}`;
+    const bounds = this._historyViewBounds(rid);
+    const day = this._historyStateFor(rid).day;
+    const whole = this._historyDayBounds(day);
+    const zoomed = bounds.start !== whole.start || bounds.end !== whole.end;
+    return {
+      day: zoomed ? `${day}@${bounds.start}-${bounds.end}` : day,
+      bounds,
+    };
+  },
+
   _roomGraphSvg(gid, data, width) {
     const { bounds, series } = data;
     const plotWidth = width - CHART_MARGIN.left - CHART_MARGIN.right;
@@ -398,11 +410,7 @@ export const panelRoomGraph = {
       .join("");
     const ticks = Array.from({ length: 5 }, (_, i) => {
       const time = bounds.start + ((bounds.end - bounds.start) * i) / 4;
-      const label = new Date(time * 1000).toLocaleTimeString(undefined, {
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-      });
+      const label = this._axisTime(time, bounds.end - bounds.start);
       return `<text class="axis-label" x="${x(time)}" y="${CHART_H - 6}" text-anchor="${this._tickAnchor(i, 5)}"><title>${this._esc(this._historyTime(time))}</title>${this._esc(label)}</text>`;
     }).join("");
     const gate = this._roomGraphGate(gid);
@@ -456,7 +464,7 @@ export const panelRoomGraph = {
     if (!id.startsWith("room:")) return;
     const overlay = section.querySelector("[data-room-graph-selection]");
     if (!overlay) return;
-    const bounds = this._historyDayBounds(this._historyStateFor(id).day);
+    const bounds = this._historyViewBounds(id);
     const visible =
       selection && selection.end > bounds.start && selection.start < bounds.end;
     overlay.hidden = !visible;
