@@ -597,10 +597,40 @@ async def _drain(runtime):
         await asyncio.sleep(0)
 
 
+def _appends_only(store, today):
+    """Nothing to rewrite: no day to finish or roll, no late splice and no clear to drain."""
+    with store._lock:
+        return not (
+            store._clear_pending
+            or any(store._closing.values())
+            or any(store._late.values())
+            or any(live.date < today for live in store._live.values())
+        )
+
+
+def append_logs(store, now):
+    """Append every radar's buffered records to its day log in-process (executor), or return
+    None when the flush also has history to rewrite, which stays in the limited worker.
+
+    Appending a few records is cheap; the worker route started a process and copied each
+    growing day log twice for it, every few seconds while recording."""
+    with store._lock:
+        if not _appends_only(store, date_of(now)):
+            return None
+        for live in store._live.values():
+            live.checkpoint()
+        pending = [(key, live, len(live.buffer)) for key, live in store._live.items()]
+    return sum(store.append_log(key, live, count) for key, live, count in pending if count)
+
+
 async def _durable_drain(runtime):
     """Recordings outlive a quarantined worker, using the direct route shutdown relies on."""
     from .supervisor import Closed
 
+    store = runtime._days
+    written = await runtime.hass.async_add_executor_job(append_logs, store, time.time())
+    if written is not None:
+        return written
     try:
         return await _drain(runtime)
     except Closed:

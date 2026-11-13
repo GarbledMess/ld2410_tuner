@@ -3,6 +3,8 @@
 import asyncio
 
 import real_shape
+from tuner_under_test.history import dayfile
+from tuner_under_test.history.daystore import bounds, date_of
 from tuner_under_test.worker.supervisor import WorkerFailed
 
 
@@ -29,7 +31,16 @@ def test_a_long_learn_does_not_hold_up_saving_recordings(play):
         home.report(real_shape.LONG_RADAR, "g1_move", 41)
         home.runtime._schedule_flush()
         await home.flushed()
-        assert order[:2] == ["learn", "flush"]  # Saved while the Learn is still running.
+        # Saved while the Learn is still running, without waiting for any worker.
+        assert not any(job.done() for job in home.runtime._learning_jobs.values())
+        days = home.runtime._days
+        assert not days._live[real_shape.LONG_RADAR].buffer
+        date = date_of(real_shape.NOW)
+        logged = dayfile.decode_log(
+            days._path(real_shape.LONG_RADAR, date, ".log").read_bytes(), bounds(date)[0]
+        )
+        assert any(getattr(record, "values", {}).get(2) == 41 for record in logged)
+        assert order == ["learn"]
         let_go.set()
         await asyncio.gather(*home.runtime._learning_jobs.values(), return_exceptions=True)
 

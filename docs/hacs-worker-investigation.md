@@ -16,11 +16,14 @@ reference initialization/rebuilding, cold label recounts, asynchronous charts
 and export-day encoding use the same boundary. These are enabled routes, not
 an unused supervisor prototype.
 
-Storage startup recovery and legacy conversion, journal encoding, finished-day
-compression, late-guess splicing, retention planning, histogram rebuilding and
-replacement staging now also run in protected children. Private trees preserve
-original history when a worker fails or is killed. Ordinary flushes copy only
-touched files; idle flushes start no worker.
+Storage startup recovery and legacy conversion, finished-day compression,
+late-guess splicing, retention planning, histogram rebuilding and replacement
+staging now also run in protected children. Private trees preserve original
+history when a worker fails or is killed. A flush that only appends journal
+records (the 5 s recording case) appends them in the executor instead: records
+stay buffered until written, and a failed append is cut back off the log. A flush
+that rolls, finishes or splices a day, or drains a clear, uses a child; idle
+flushes start no worker.
 
 HA retains device writes, bounded event ingestion, raw-buffer handoff and logical
 result acceptance. Existing label, timing, source, history ownership and threshold

@@ -29,6 +29,13 @@ def transaction(store, directory, now):
     return result, ownership
 
 
+def worker_route():
+    """Send even plain appends through the worker, to test its drain and publication."""
+    from tuner_under_test.worker import flushing
+
+    return patch.object(flushing, "append_logs", return_value=None)
+
+
 def test_flush_acknowledges_only_captured_prefix_and_never_duplicates(tmp_path):
     from tuner_under_test.worker import flushing
 
@@ -259,42 +266,44 @@ class ProductionFlushTests(unittest.IsolatedAsyncioTestCase):
         store = self.runtime._days
         first = dayfile.Change(now, {0: 20})
         second = dayfile.Change(now + 1, {0: 30})
-        store.append("a", first)
+        with worker_route():
+            store.append("a", first)
 
-        async def concurrent(request):
-            self.assertEqual(request["operation"], "flush")
-            store.append("a", second)
+            async def concurrent(request):
+                self.assertEqual(request["operation"], "flush")
+                store.append("a", second)
 
-        self.worker_transport.before = concurrent
-        await flushing.flush(self.runtime)
-        self.assertEqual(store._live["a"].buffer, [second])
-        self.worker_transport.before = None
-        await flushing.flush(self.runtime, locked=True)
-        self.assertEqual(store._live["a"].buffer, [])
+            self.worker_transport.before = concurrent
+            await flushing.flush(self.runtime)
+            self.assertEqual(store._live["a"].buffer, [second])
+            self.worker_transport.before = None
+            await flushing.flush(self.runtime, locked=True)
+            self.assertEqual(store._live["a"].buffer, [])
 
     async def test_flush_drains_finite_target_across_worker_turns(self):
         from tuner_under_test.worker import flushing
 
         now = time.time()
         store = self.runtime._days
-        initial = [dayfile.Change(now + n, {0: 20 + n}) for n in range(5)]
-        for record in initial:
-            store.append("a", record)
-        appended = []
+        with worker_route():
+            initial = [dayfile.Change(now + n, {0: 20 + n}) for n in range(5)]
+            for record in initial:
+                store.append("a", record)
+            appended = []
 
-        async def concurrent(request):
-            record = dayfile.Change(now + 10 + len(appended), {0: 50 + len(appended)})
-            appended.append(record)
-            store.append("a", record)
+            async def concurrent(request):
+                record = dayfile.Change(now + 10 + len(appended), {0: 50 + len(appended)})
+                appended.append(record)
+                store.append("a", record)
 
-        self.worker_transport.before = concurrent
-        with patch.object(flushing, "MAX_RECORDS", 2):
-            await flushing.flush(self.runtime)
-        self.assertEqual(len(self.worker_transport.requests), 3)
-        self.assertEqual(store._live["a"].buffer, appended)
-        raw = store._path("a", date_of(now), ".log").read_bytes()
-        self.assertEqual(dayfile.decode_log(raw, bounds(date_of(now))[0]), initial)
-        self.worker_transport.before = None
+            self.worker_transport.before = concurrent
+            with patch.object(flushing, "MAX_RECORDS", 2):
+                await flushing.flush(self.runtime)
+            self.assertEqual(len(self.worker_transport.requests), 3)
+            self.assertEqual(store._live["a"].buffer, appended)
+            raw = store._path("a", date_of(now), ".log").read_bytes()
+            self.assertEqual(dayfile.decode_log(raw, bounds(date_of(now))[0]), initial)
+            self.worker_transport.before = None
 
     async def test_rollover_drains_to_captured_today_in_bounded_turns(self):
         from tuner_under_test.worker import flushing
@@ -323,11 +332,12 @@ class ProductionFlushTests(unittest.IsolatedAsyncioTestCase):
 
         now = time.time()
         store = self.runtime._days
-        for number in range(129):
-            store.append(str(number), dayfile.Change(now, {0: 20}))
-        await flushing.flush(self.runtime)
-        self.assertEqual(len(self.worker_transport.requests), 2)
-        self.assertTrue(all(not live.buffer for live in store._live.values()))
+        with worker_route():
+            for number in range(129):
+                store.append(str(number), dayfile.Change(now, {0: 20}))
+            await flushing.flush(self.runtime)
+            self.assertEqual(len(self.worker_transport.requests), 2)
+            self.assertTrue(all(not live.buffer for live in store._live.values()))
 
     async def test_empty_runtime_needs_no_worker(self):
         from tuner_under_test.worker import flushing
@@ -343,10 +353,10 @@ class ProductionFlushTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.worker_transport.requests, [])
         now = time.time()
         self.runtime._days.append("a", dayfile.Change(now, {0: 20}))
-        await flushing.flush(self.runtime)
-        self.assertEqual(len(self.worker_transport.requests), 1)
+        await flushing.flush(self.runtime)  # Plain appends are written in-process.
+        self.assertEqual(self.worker_transport.requests, [])
         self.assertEqual(await flushing.flush(self.runtime), 0)
-        self.assertEqual(len(self.worker_transport.requests), 1)
+        self.assertEqual(self.worker_transport.requests, [])
 
     async def test_no_op_guard_still_rolls_a_durable_previous_day(self):
         from tuner_under_test.worker import flushing
@@ -365,21 +375,22 @@ class ProductionFlushTests(unittest.IsolatedAsyncioTestCase):
 
         now = time.time()
         store = self.runtime._days
-        store.append("a", dayfile.Change(now, {0: 20}))
-        replacement = dayfile.Change(now + 1, {0: 30})
-        original = flushing._publish_file
+        with worker_route():
+            store.append("a", dayfile.Change(now, {0: 20}))
+            replacement = dayfile.Change(now + 1, {0: 30})
+            original = flushing._publish_file
 
-        def clear_during_write(*args):
-            store.forget_device("a")
-            store.append("a", replacement)
-            return original(*args)
+            def clear_during_write(*args):
+                store.forget_device("a")
+                store.append("a", replacement)
+                return original(*args)
 
-        with patch.object(flushing, "_publish_file", side_effect=clear_during_write):
+            with patch.object(flushing, "_publish_file", side_effect=clear_during_write):
+                await flushing.flush(self.runtime)
             await flushing.flush(self.runtime)
-        await flushing.flush(self.runtime)
-        date = store.live_date("a")
-        raw = store._path("a", date, ".log").read_bytes()
-        self.assertEqual(dayfile.decode_log(raw, bounds(date)[0]), [replacement])
+            date = store.live_date("a")
+            raw = store._path("a", date, ".log").read_bytes()
+            self.assertEqual(dayfile.decode_log(raw, bounds(date)[0]), [replacement])
 
 
 def test_bounded_flush_drains_closing_and_late_prefixes(tmp_path):

@@ -184,10 +184,11 @@ def _extend_empty(runtime, group_id, now, percent):
 
 
 def _finalise(runtime, group_id):
-    """Close the open label: bump the sensor revision and mark member references stale.
-    Both are cheap, so every finalise does both."""
+    """Close the open label: bump the sensor revision, mark member references stale and save.
+    All are cheap once per label, so every finalise does all three."""
     closed = runtime._room_sensor_open.pop(group_id, None)
     if not (closed and closed["written"]):
         return
     room_labels.bump_sensor_revision(runtime, group_id)
     membership.labels_changed(runtime, group_id, invalidate=False)
+    runtime._schedule_save()  # Extensions since the last save end with the label.

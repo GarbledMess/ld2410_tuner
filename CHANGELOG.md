@@ -1,5 +1,17 @@
 # Release notes
 
+## 1.34.2 - 2026-11-13
+
+- Recording no longer starts a worker process every few seconds. New readings are appended to
+  the day's log directly; finishing, trimming and repairing days still run in protected
+  workers. In a constrained test container with six busy radars, five minutes of recording
+  used 0.1 s of CPU instead of 13 s, copied nothing instead of 482 MiB, and Home Assistant's
+  95th-percentile response time while recording fell from 50 ms to 2 ms. A failed write leaves
+  the log as it was and keeps the readings for the next attempt.
+- A room with a camera, sensor or Bermuda source no longer saves all settings every few
+  seconds while its label grows. The label is saved when it opens and closes, and with the
+  regular five-minute state save in between.
+
 ## 1.34.1 - 2026-11-11
 
 - Changing storage settings now completes while a radar records new readings. Trimming

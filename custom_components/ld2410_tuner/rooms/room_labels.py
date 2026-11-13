@@ -216,7 +216,7 @@ def write_sensor_range(runtime, group_id, start, end, state, confidence, bump=Tr
     stretches of the same state and confidence merge, which makes an open label cheap to
     extend. Mark assessments stale but leave reference retraining to the caller, which defers
     it until the label closes (see ``rooms/room_sources.py``). ``bump`` advances
-    ``room_sensor_revision`` (assessment staleness only); pure extension passes False.
+    ``room_sensor_revision`` (assessment staleness only) and saves; pure extension passes False.
     """
     others = [x for x in room_labels_for(runtime, group_id) if x.get("source") != "sensor"]
     sensor = [x for x in room_labels_for(runtime, group_id) if x.get("source") == "sensor"]
@@ -227,7 +227,12 @@ def write_sensor_range(runtime, group_id, start, end, state, confidence, bump=Tr
     runtime.data.setdefault("room_labels", {})[group_id] = labels
     if bump:
         bump_sensor_revision(runtime, group_id)
-    runtime._schedule_save()
+        runtime._schedule_save()
+    else:
+        # A source extends its open label every tick; a full save each time folded every
+        # radar's references and re-encoded the store every few seconds. Extensions ride on
+        # the recording-state save, so a crash loses at most STATE_SAVE_SECONDS of one.
+        runtime._schedule_state_save(end)
 
 
 def expire_sensor(runtime, now) -> bool:

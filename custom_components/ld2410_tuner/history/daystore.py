@@ -83,6 +83,13 @@ class _Live:
         return self.builder.current is not None or self.builder.run is not None
 
 
+def _write_bytes(log, data):
+    """Write all of ``data`` to an unbuffered file: a raw write may take only part of it."""
+    view = memoryview(data)
+    while view:
+        view = view[log.write(view) :]
+
+
 def _carry_records(carry, start):
     records = []
     if carry.vector is not None:
@@ -278,6 +285,37 @@ class DayStore:
             live.written = records[-1].time
             with self._lock:
                 if live.generation == self._generations.get(device_id, 0):
+                    self.inventory(device_id, live.date, ".log", True)
+        return len(data)
+
+    def append_log(self, device_id, live, count):
+        """Append the first ``count`` buffered records to the day's log in-process (executor).
+
+        The records stay buffered until written, as a worker flush keeps them until its
+        publication: a record appended meanwhile stays for the next flush, and a failed append
+        is cut back off the log so no partial record ever precedes later ones."""
+        with self._lock:
+            records = live.buffer[:count]
+        if not records:
+            return 0
+        data = dayfile.encode_records(records, live.written)
+        path = self._path(device_id, live.date, ".log")
+        with self._fs_lock:
+            self._remove_files(device_id)
+            if live.generation != self._generations.get(device_id, 0):
+                return 0
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("ab", buffering=0) as log:  # Nothing buffered to flush on failure.
+                size = log.tell()
+                try:
+                    _write_bytes(log, data)
+                except BaseException:
+                    log.truncate(size)
+                    raise
+            with self._lock:
+                if live.generation == self._generations.get(device_id, 0):
+                    live.written = records[-1].time
+                    del live.buffer[: len(records)]
                     self.inventory(device_id, live.date, ".log", True)
         return len(data)
 

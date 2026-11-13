@@ -2,11 +2,13 @@
 restart, a crash and a failing worker."""
 
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import real_home
 import real_shape
 from real_shape import NOW, ROOMS
-from tuner_under_test.history import dayfile
+from tuner_under_test.history import dayfile, daystore
+from tuner_under_test.history.daystore import date_of
 from tuner_under_test.worker import bridge
 from tuner_under_test.worker.supervisor import WorkerFailed
 
@@ -130,15 +132,20 @@ def test_recording_continues_through_a_failing_worker_and_nothing_is_lost(play):
             if request.get("operation") in ("flush", "save"):
                 raise WorkerFailed(-9, b"killed by the memory limit")
 
+        def full(log, data):  # Plain appends are written in-process; the disk fails too.
+            log.write(data[:3])
+            raise OSError("No space left on device")
+
         home.transport.before = broken
-        await home.poll()
-        await home.flushed()
-        stalled = runtime.snapshot()["history_save"]
-        assert stalled["waiting_since"] is not None
-        # The worker keeps failing; readings keep arriving and are kept for the next flush.
-        delivered += _deliver(home, "office_1", [33, 34])
-        await home.poll()
-        await home.flushed()
+        with patch.object(daystore, "_write_bytes", side_effect=full):
+            await home.poll()
+            await home.flushed()
+            stalled = runtime.snapshot()["history_save"]
+            assert stalled["waiting_since"] is not None
+            # Writes keep failing; readings keep arriving and are kept for the next flush.
+            delivered += _deliver(home, "office_1", [33, 34])
+            await home.poll()
+            await home.flushed()
         home.transport.before = None
         delivered += _deliver(home, "office_1", [35])
         await home.save()
@@ -159,8 +166,12 @@ def test_recording_is_saved_directly_once_the_worker_is_quarantined(play):
         # A cleanup that could not be proven closes the worker for good; recording goes on.
         supervisor = bridge._service(runtime)
         supervisor._closed = True
+        # A day still to finish needs the worker; the direct route must finish it instead.
+        yesterday = real_shape.TODAY - 86400
+        runtime._days.append("unfinished", dayfile.Change(yesterday + 60, {0: 20}))
         await home.poll()
         await home.flushed()
+        assert runtime._days._path("unfinished", date_of(yesterday), ".day").exists()
         assert not runtime._days._live["office_1"].buffer
         recorded = (runtime._days.folder("office_1") / f"{TODAY}.log").read_bytes()
         records = dayfile.decode_log(recorded, TODAY_START)

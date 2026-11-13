@@ -353,6 +353,38 @@ class RoomSourceTests(unittest.IsolatedAsyncioTestCase):
         # The tick that sees the entity go off still settles up to its own time.
         self.assertEqual(self.spans(), [(1000, 1022)])
 
+    def test_extending_ticks_save_only_when_the_label_opens_and_closes(self):
+        # Each save folds references, flushes and encodes the whole store: a source ticking
+        # every 2 s must not cause one every STORE_DELAY.
+        self.office()
+        self.configure()
+        self.entity("on")
+        with patch.object(self.runtime, "_schedule_save") as save:
+            self.run_ticks(1000, 1002)
+            self.assertTrue(save.called)
+            save.reset_mock()
+            self.run_ticks(1004, 1100)
+            save.assert_not_called()
+            self.entity("off")
+            self.run_ticks(1102, 1102)
+            self.assertTrue(save.called)
+        self.assertEqual(self.spans(), [(1000, 1102)])
+
+    def test_an_extending_label_is_still_saved_with_the_recording_state(self):
+        # Without any recording radar, the open label still reaches the store within
+        # STATE_SAVE_SECONDS, so a crash loses at most that much of it.
+        from tuner_under_test.runtime.coordinator import STATE_SAVE_SECONDS
+
+        self.office()
+        self.configure()
+        self.entity("on")
+        self.run_ticks(1000, 1002)
+        with patch.object(self.runtime, "_schedule_save") as save:
+            self.run_ticks(1004, 1004 + STATE_SAVE_SECONDS - 10)
+            save.assert_not_called()
+            self.run_ticks(1004 + STATE_SAVE_SECONDS - 8, 1004 + STATE_SAVE_SECONDS + 10)
+            save.assert_called_once()
+
     def test_room_source_buffers_delay_start(self):
         self.office()
         self.configure(start_buffer_seconds=10, end_buffer_seconds=6)

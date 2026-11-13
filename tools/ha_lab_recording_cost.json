@@ -1,0 +1,17 @@
+{
+  "profile": {
+    "memory_mib": 2048,
+    "vcpus": 2,
+    "container_cpus": 0.5,
+    "container_memory_mib": 1536,
+    "disk_gib": 24,
+    "port": 0
+  },
+  "source_paths": ["custom_components", "tests/lab/recording_cost_checks.py"],
+  "domains": ["ld2410_tuner"],
+  "command_timeout": 1800,
+  "commands": {
+    "http_ready": "chroot /work/os docker exec ha-lab python3 /lab/scripts/ha_smoke.py",
+    "recording_cost": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/recording_cost_checks.py"
+  }
+}
