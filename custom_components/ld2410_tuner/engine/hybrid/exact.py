@@ -438,19 +438,20 @@ class _Scoring:
         runs = self.evaluator.runs
         for records in runs:
             records.rewind()
+        wanted = {stream for (_, _, members, _) in scorers for stream in members}
         for _ in range(runs[0].steps if runs else 0):
             pace.rest()
-            lo, hi, coverage, outputs = self._step(runs)
+            lo, hi, coverage, outputs = self._step(runs, wanted)
             cache = {}
             for (_, _, members, _), scorer in scorers.items():
                 signals = [{m: outputs[m, key][i] for m, key in members} for i in range(3)]
                 scorer.consume(lo, hi, {m: coverage[m] for m, _ in members}, *signals, cache=cache)
 
     @staticmethod
-    def _step(runs):
+    def _step(runs, wanted):
         coverage, outputs = {}, {}
         for records in runs:
-            lo, hi, cov, out = records.read()
+            lo, hi, cov, out = records.read(wanted)
             coverage.update(cov)
             outputs.update(out)
         return lo, hi, coverage, outputs

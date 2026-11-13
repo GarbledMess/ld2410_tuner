@@ -926,12 +926,28 @@ def _resident_statistics(geometry, zone, masks, rows):
     return statistics[0]
 
 
-def _add_seen(geometry, zone, masks, counters):
+def _seen(geometry, zone, masks):
+    """Per block, each label's ``(pid, confidence, seen seconds)`` in label order.
+
+    A label's count reads only its own bytes of the block mask, as ``_episode_flags`` does:
+    shifting the whole mask per label allocated a block-sized integer each time."""
     for block, (lo, _size) in enumerate(geometry.blocks):
         _, labels, _ranges = geometry.get((zone.group_id, lo, "labels"))
+        pools = [
+            lane[block].to_bytes((lane[block].bit_length() + 7) // 8, "little") for lane in masks
+        ]
+        found = []
         for (state, source, pid, confidence), offset, bits in labels:
             signal = int(len(masks) > 1 and state == "present" and source != "human")
-            seen = ((masks[signal][block] >> offset) & bits).bit_count() * CELL_SECONDS
+            window = pools[signal][offset >> 3 : (offset + bits.bit_length() + 7) >> 3]
+            local = (int.from_bytes(window, "little") >> (offset & 7)) & bits
+            found.append((pid, confidence, local.bit_count() * CELL_SECONDS))
+        yield found
+
+
+def _add_seen(geometry, zone, masks, counters):
+    for found in _seen(geometry, zone, masks):
+        for pid, confidence, seen in found:
             counters[2 * pid] += seen
             counters[2 * pid + 1] += seen * confidence
 
@@ -955,16 +971,19 @@ def _spilled_statistics(geometry, store, zone, masks):
 
 
 def _count_seen(geometry, zone, masks, counters):
-    """Update fixed-width disk counters; resident work stays within one label block."""
-    for block, (lo, _size) in enumerate(geometry.blocks):
-        _, labels, _ranges = geometry.get((zone.group_id, lo, "labels"))
-        for (state, source, pid, confidence), offset, bits in labels:
-            signal = int(len(masks) > 1 and state == "present" and source != "human")
-            seen = ((masks[signal][block] >> offset) & bits).bit_count() * CELL_SECONDS
+    """Update fixed-width disk counters a block at a time: each counter starts from its
+    stored value and takes the same additions in the same order, written once per block."""
+    for found in _seen(geometry, zone, masks):
+        pending = {}
+        for pid, confidence, seen in found:
+            if pid not in pending:
+                counters.seek(pid * _SEEN.size)
+                pending[pid] = _SEEN.unpack(counters.read(_SEEN.size))
+            previous, weighted = pending[pid]
+            pending[pid] = previous + seen, weighted + seen * confidence
+        for pid, values in pending.items():
             counters.seek(pid * _SEEN.size)
-            previous, weighted = _SEEN.unpack(counters.read(_SEEN.size))
-            counters.seek(pid * _SEEN.size)
-            counters.write(_SEEN.pack(previous + seen, weighted + seen * confidence))
+            counters.write(_SEEN.pack(*values))
 
 
 def timed_coordinate_costs(problem, store, pattern, rid, channel, candidates, *, attenuate=False):

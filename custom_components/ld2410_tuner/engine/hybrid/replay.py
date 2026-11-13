@@ -345,22 +345,32 @@ class Records:
         self.file.flush()
         self.file.seek(0)
 
-    def read(self):
-        lo, hi, count, rids, streams = _STEP.unpack(self.file.read(_STEP.size))
-        lists = [self._list() for _ in range(count)]
+    def read(self, streams=None):
+        """The next step: ``(lo, hi, coverage, outputs)``. With ``streams``, only those streams'
+        outputs (and the coverage) are decoded: a scoring pass reads a few of every recorded
+        stream. A list stored once is one object wherever it is read."""
+        lo, hi, count, rids, stored = _STEP.unpack(self.file.read(_STEP.size))
+        raws = [self._raw() for _ in range(count)]
         rid_index = _native(array("I", self.file.read(4 * rids)))
-        stream_index = _native(array("I", self.file.read(4 * streams)))
-        coverage = {rid: lists[i] for rid, i in zip(self.rids, rid_index, strict=True)}
+        stream_index = _native(array("I", self.file.read(4 * stored)))
+        decoded = {}
+
+        def at(i):
+            found = decoded.get(i)
+            if found is None:
+                found = decoded[i] = _decoded(raws[i])
+            return found
+
+        coverage = {rid: at(i) for rid, i in zip(self.rids, rid_index, strict=True)}
         outputs = {}
         for k, key in enumerate(self.streams):
-            at = 3 * k
-            outputs[key] = tuple(lists[i] for i in stream_index[at : at + 3])
+            if streams is None or key in streams:
+                outputs[key] = tuple(at(i) for i in stream_index[3 * k : 3 * k + 3])
         return lo, hi, coverage, outputs
 
-    def _list(self):
+    def _raw(self):
         n = _COUNT.unpack(self.file.read(_COUNT.size))[0]
-        values = _native(array("d", self.file.read(16 * n)))
-        return Disjoint(zip(values[0::2], values[1::2], strict=True))
+        return self.file.read(16 * n)
 
     @property
     def spilled_bytes(self):
@@ -368,6 +378,11 @@ class Records:
 
     def close(self):
         self.file.close()
+
+
+def _decoded(raw):
+    values = _native(array("d", raw))
+    return Disjoint(zip(values[0::2], values[1::2], strict=True))
 
 
 def replay(problem, providers, regions, wanted, models, directory):

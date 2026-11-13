@@ -123,9 +123,9 @@ class _Overlap:
 
     def __init__(self, intervals):
         self.items = intervals
-        self.starts = [a for a, _ in intervals]
-        self.ends = [b for _, b in intervals]
-        self.mass = list(accumulate((b - a for a, b in intervals), initial=0.0))
+        self.starts = list(map(itemgetter(0), intervals))
+        self.ends = list(map(itemgetter(1), intervals))
+        self.mass = list(accumulate(map(sub, self.ends, self.starts), initial=0.0))
 
     def _range(self, lo, hi):
         return bisect_right(self.ends, lo), bisect_left(self.starts, hi)

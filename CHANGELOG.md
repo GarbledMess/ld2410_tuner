@@ -1,5 +1,15 @@
 # Release notes
 
+## 1.34.5 - 2026-11-13
+
+- Learn for a single radar uses about a quarter less CPU and about 40% less memory, with
+  identical results. On a synthetic 200,000-row history, a first Learn fell from 26.5 to
+  20 CPU seconds and from 170 to 93 MiB, and a Learn after a label change from 12.5 to
+  9.7 CPU seconds. Scoring now reads only the replayed detections it scores.
+- Searching radars with known on/off timing counts each label's detections from its own
+  part of the history, about 4.5 times faster per cost evaluation.
+- Room Learns give identical results with about the same CPU.
+
 ## 1.34.4 - 2026-11-13
 
 - The open panel's 3-second refresh no longer resends every room's whole label history. The
