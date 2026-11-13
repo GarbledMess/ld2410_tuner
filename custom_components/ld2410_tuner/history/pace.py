@@ -52,6 +52,16 @@ async def run(hass, fn, *args):
     return await asyncio.shield(work)
 
 
+async def offload(fn, *args, **kwargs):
+    """Run ``fn`` on the integration's own low-priority thread and await it on the event loop:
+    no Home Assistant executor thread is borrowed, even to wait. Cancelling the caller leaves
+    running work to finish (or ``stop`` at its next ``rest``)."""
+    import asyncio
+
+    generation = _generation[0]
+    return await asyncio.wrap_future(_submit(_perform, fn, args, kwargs, generation))
+
+
 def _finished(turn, work):
     turn.release()
     if not work.cancelled():

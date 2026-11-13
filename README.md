@@ -592,11 +592,11 @@ or rounding. A gate with no recorded value shows **Missing**; gaps between rows 
 not filled. Rows are shown 100 at a time.
 
 **Download day CSV** writes every row of the day, with movement and still values
-for all nine gates; missing values are empty cells. The download reads the day in
-pages pinned to one snapshot, so it never mixes two versions of a day. If the
-recording is rewritten meanwhile, the export stops and asks you to reload. Progress
-is shown and **Cancel export** (or leaving the panel) stops it without saving a
-partial file. A dense day takes roughly a minute or two on a Home Assistant Green.
+for all nine gates; missing values are empty cells. Home Assistant writes the file
+in one pass over the day as the page showed it, pinned to one snapshot, so it never
+mixes two versions of a day. If the recording is rewritten meanwhile, the export
+stops and asks you to reload. **Cancel export** (or leaving the panel) before the
+file is ready downloads nothing.
 
 ## What learning measures
 

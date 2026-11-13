@@ -1,4 +1,3 @@
-import { rawCsvPage } from "./recorded_csv.js";
 import { recordedHtml } from "./recorded_view.js";
 
 export const panelRecordedData = {
@@ -57,7 +56,7 @@ export const panelRecordedData = {
     if ("rawDownload" in data) void this._rawDownload(id);
     if ("rawCancel" in data) {
       s.export.cancelled = true;
-      s.exportStatus = "Cancelling export after the current page…";
+      s.exportStatus = "Cancelling export…";
       this._renderRecordedData(id);
     }
   },
@@ -157,18 +156,20 @@ export const panelRecordedData = {
     s.exportStatus = "Preparing CSV…";
     this._renderRecordedData(id);
     try {
-      const chunks = await this._rawExportPages(id, task, {
-        device_id: device,
-        date,
-        end: page.end,
-        revision: page.revision,
-      });
+      // The server writes the whole day once; the panel downloads the file it made.
+      const file = await this._call(
+        "recording_csv",
+        { device_id: device, date, end: page.end, revision: page.revision },
+        180000,
+      );
+      // Leaving the panel while the file is written cancels the download.
+      if (!this.isConnected) task.cancelled = true;
       if (task.cancelled)
         s.exportStatus = "Export cancelled. No partial file was downloaded.";
       else {
-        this._download(
-          new Blob(chunks, { type: "text/csv;charset=utf-8" }),
-          `ld2410-${device}-${date}.csv`,
+        await this._downloadLink(
+          file.url,
+          file.filename,
           "text/csv;charset=utf-8",
         );
         s.exportStatus = `CSV ready: ${date} (UTC), all 18 gate values. Missing values are empty cells.`;
@@ -179,37 +180,5 @@ export const panelRecordedData = {
       s.export = null;
       this._renderRecordedData(id);
     }
-  },
-
-  async _rawExportPages(id, task, parameters) {
-    const chunks = [];
-    let offset = 0;
-    while (offset !== null && !task.cancelled) {
-      const page = await this._queueChartCall(
-        () => {
-          if (task.cancelled || !this.isConnected) {
-            task.cancelled = true;
-            return null;
-          }
-          return this._call(
-            "recording_rows",
-            { ...parameters, offset, limit: 10000 },
-            180000,
-          );
-        },
-        { background: true },
-      );
-      // Leaving the panel while a page is in flight cancels the whole file.
-      if (!this.isConnected) task.cancelled = true;
-      if (task.cancelled) break;
-      if (page.next_offset !== null && page.next_offset <= offset)
-        throw new Error("Recording page did not advance");
-      chunks.push(rawCsvPage(page, offset === 0));
-      offset = page.next_offset;
-      this._recordedState(id).exportStatus =
-        `Exporting ${page.offset + page.rows.length} of ${page.total} rows…`;
-      this._renderRecordedData(id);
-    }
-    return chunks;
   },
 };

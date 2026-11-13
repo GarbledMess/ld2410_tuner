@@ -58,6 +58,19 @@ def _websocket_routes():
             False,
         ),
         (
+            "recording_csv",
+            {
+                **device,
+                vol.Required("date"): str,
+                vol.Optional("end", default=None): vol.Any(vol.Coerce(float), None),
+                vol.Optional("revision", default=None): vol.Any(int, None),
+            },
+            "async_recording_csv",
+            ("device_id", "date", "end", "revision"),
+            "invalid_request",
+            False,
+        ),
+        (
             "learn_set",
             {vol.Required("set_id"): str},
             "learn_set",

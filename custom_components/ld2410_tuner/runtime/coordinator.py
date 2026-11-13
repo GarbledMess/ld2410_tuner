@@ -18,7 +18,7 @@ from ..const import STORE_DELAY
 from ..history import labels as manual_training
 from ..history import recording, storage
 from ..presence import autolabelling, bermuda, rebuilds, sources
-from ..presentation import charts, recordings
+from ..presentation import charts, recorded_csv, recordings
 from ..presentation import snapshots as presentation
 from ..rooms import application as room_application
 from ..rooms import groups as room_groups
@@ -226,6 +226,7 @@ class TunerRuntime:
     _history_view = recording._history_view
     async_recording_days = recordings.async_recording_days
     async_recording_rows = recordings.async_recording_rows
+    async_recording_csv = recorded_csv.async_export
     async_history_series = charts.async_history_series
     async_room_series = charts.async_room_series
     start_learning = calibration.start_learning

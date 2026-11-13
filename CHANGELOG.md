@@ -1,5 +1,15 @@
 # Release notes
 
+## 1.34.6 - 2026-11-13
+
+- **Download day CSV** is now written by Home Assistant in one pass and downloaded as a file,
+  instead of the panel fetching the day in fifteen worker pages and assembling it. The file
+  is byte for byte the same. For a day of 142,000 readings in a constrained test container,
+  the export took 6 s instead of 15, used 1.3 s of Home Assistant CPU instead of 6.9, and
+  Home Assistant's 95th-percentile response time during it was 48 ms instead of 177 ms.
+- Both exports are written on the integration's own low-priority thread; no Home Assistant
+  executor thread waits for them.
+
 ## 1.34.5 - 2026-11-13
 
 - Learn for a single radar uses about a quarter less CPU and about 40% less memory, with

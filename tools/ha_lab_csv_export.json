@@ -1,0 +1,21 @@
+{
+  "profile": {
+    "memory_mib": 2048,
+    "vcpus": 2,
+    "container_cpus": 0.5,
+    "container_memory_mib": 1536,
+    "disk_gib": 24,
+    "port": 0
+  },
+  "source_paths": [
+    "custom_components",
+    "tests/lab/export_checks.py",
+    "tests/lab/csv_export_checks.py"
+  ],
+  "domains": ["ld2410_tuner"],
+  "command_timeout": 1800,
+  "commands": {
+    "csv_export": "chroot /work/os docker exec ha-lab python3 /workspace/project/tests/lab/csv_export_checks.py",
+    "ha_logs": "chroot /work/os /bin/sh -c 'docker logs ha-lab 2>&1 | grep -i -E \"ld2410|error|traceback\" | tail -40'"
+  }
+}

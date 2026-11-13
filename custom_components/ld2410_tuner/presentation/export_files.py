@@ -34,12 +34,23 @@ def folder(hass):
 
 async def create(runtime, device_id, exported):
     """Write ``exported`` (the radar's metadata) with the radar's day files; its download."""
+    filename = f"ld2410-tuner-{safe(device_id)}.json"
+    write = partial(_write, exported=exported, days=runtime._days, device_id=device_id)
+    return await publish(runtime, filename, ".json", write)
+
+
+def safe(name):
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+
+
+async def publish(runtime, filename, suffix, write):
+    """Write the export with ``write(path)`` (returns its size) on the integration's own
+    low-priority thread, in place of any earlier one; its signed download link."""
     hass = runtime.hass
     await discard(runtime)
     token = secrets.token_hex(16)
-    path = folder(hass) / f"{token}.json"
-    size = await hass.async_add_executor_job(_write, path, exported, runtime._days, device_id)
-    filename = "ld2410-tuner-{}.json".format(re.sub(r"[^A-Za-z0-9_.-]", "_", device_id))
+    path = folder(hass) / f"{token}{suffix}"
+    size = await pace.offload(write, path)  # The low-priority lane; no HA thread waits.
     timer = asyncio.get_running_loop().call_later(EXPIRY_SECONDS, _expire, runtime, token)
     runtime._export_file = {"token": token, "path": path, "filename": filename, "timer": timer}
     url = async_sign_path(hass, URL.format(token=token), timedelta(seconds=EXPIRY_SECONDS))

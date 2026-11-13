@@ -149,6 +149,7 @@ RUNTIME_FILES = (
     "presentation/__init__.py",
     "presentation/charts.py",
     "presentation/export_files.py",
+    "presentation/recorded_csv.py",
     "presentation/recordings.py",
     "worker/recordings.py",
     "presentation/snapshots.py",

@@ -73,6 +73,18 @@ module.exports = async function testRecordedData(page, screenshotDir) {
           revision: 7,
         };
       }
+      if (message.type.endsWith("/recording_csv")) {
+        // As the server: one file of the whole day, pinned to the page's end and revision.
+        rawCalls.push(message);
+        const content = "start_utc,end_utc\r\n" + "row\r\n".repeat(3);
+        window.rawCsvContent = content;
+        return {
+          url: URL.createObjectURL(new Blob([content], { type: "text/csv" })),
+          filename: `ld2410-${message.device_id}-${message.date}.csv`,
+          bytes: content.length,
+          rows: 3,
+        };
+      }
       return rawOriginalWS(message);
     };
   });
@@ -135,26 +147,25 @@ module.exports = async function testRecordedData(page, screenshotDir) {
     const downloaded = page.waitForEvent("download");
     await card.locator("[data-raw-download]").click();
     const download = await downloaded;
+    assert.equal(download.suggestedFilename(), "ld2410-a-2026-10-21.csv");
     const content = await fs.readFile(await download.path(), "utf8");
-    assert.match(content, /g8_still/);
-    assert.match(content, /12\.125/);
     assert.equal(
-      content.trim().split("\n").length,
-      4,
-      "CSV contains every row, not just current page",
+      content,
+      await page.evaluate(() => rawCsvContent),
+      "the panel downloads the file the server wrote",
     );
-    assert.match(content, /2026-10-21T00:40:00\.125Z/);
     const exportCalls = await page.evaluate(() =>
-      rawCalls.filter((m) => m.limit === 10000),
+      rawCalls.filter((m) => m.type.endsWith("/recording_csv")),
     );
-    assert.deepEqual(
-      exportCalls.map((m) => m.offset),
-      [0, 2],
-    );
+    assert.equal(exportCalls.length, 1, "one request for the whole day");
     assert.ok(
-      exportCalls.every((m) => m.end === 1792627200 && m.revision === 7),
-      "CSV pages pin the same recording snapshot",
+      exportCalls.every(
+        (m) =>
+          m.date === "2026-10-21" && m.end === 1792627200 && m.revision === 7,
+      ),
+      "the CSV pins the recording snapshot the pages showed",
     );
+    assert.match(await card.innerText(), /CSV ready: 2026-10-21/);
     await page.evaluate(async () => {
       await panel._rawDays("b");
     });
@@ -235,16 +246,11 @@ async function testCancelledExport(page, card, detach = false) {
     window.rawRelease = null;
     window.rawBaseWS = panel._hass.callWS;
     panel._hass.callWS = async (message) => {
-      if (message.type.endsWith("/recording_rows") && message.limit === 10000)
+      if (message.type.endsWith("/recording_csv"))
         await new Promise((resolve) => {
           window.rawRelease = resolve;
         });
-      const result = await rawBaseWS(message);
-      if (message.limit === 10000) {
-        result.rows = rawFixture;
-        result.next_offset = null;
-      }
-      return result;
+      return rawBaseWS(message);
     };
   });
   await card.locator("[data-raw-download]").click();
