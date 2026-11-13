@@ -10,6 +10,7 @@ finish, ends coverage left open by a crash at the last stored record, and finish
 """
 
 import datetime
+import math
 import shutil
 import tempfile
 import threading
@@ -425,15 +426,16 @@ class DayStore:
         with self._lock:
             return [key for key, live in self._live.items() if live.is_open()]
 
-    def day(self, device_id, date, until=None):
+    def day(self, device_id, date, until=None, rows_since=None):
         """The recorded ``date`` (None: nothing recorded). The live day is read as it stands,
-        its open coverage ending at ``until`` (default: now)."""
+        its open coverage ending at ``until`` (default: now); with ``rows_since`` only the
+        live rows still held after it are copied (``DayBuilder.view``)."""
         with self._lock:
             live = self._live.get(device_id)
             if live is not None and live.date == date:
                 start, end = bounds(date)
                 limit = max(time.time(), live.seen) if until is None else until
-                return live.builder.view(min(max(limit, start), end))
+                return live.builder.view(min(max(limit, start), end), rows_since=rows_since)
             late = list(self._late.get(device_id, {}).get(date, ()))
             pending = self._pending.get((device_id, date))
             if pending is not None:
@@ -473,7 +475,7 @@ class DayStore:
                 or (device_id, date) in self._cache
             )
         if resident:
-            day = self.day(device_id, date, until=until)
+            day = self.day(device_id, date, until=until, rows_since=math.inf)  # Runs, no rows.
             return [] if day is None else list(day.guesses)
         try:
             return dayfile.decode_guesses(self._path(device_id, date, ".day").read_bytes())

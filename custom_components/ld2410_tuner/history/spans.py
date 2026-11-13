@@ -56,7 +56,8 @@ def _selected_days(view, device_id, start, end):
         low, high = daystore.bounds(date)
         selected = [(max(a, low), min(b, high)) for a, b in windows if a < high and b > low]
         if selected:
-            day = view._days.day(device_id, date, until=until)
+            since = min(low for low, _high in selected)  # A live day copies only these rows.
+            day = view._days.day(device_id, date, until=until, rows_since=since)
             if day is not None:
                 yield day, selected
 
@@ -86,7 +87,12 @@ def _observed(view, device_id, date, windows):
     selected = [(max(a, low), min(b, high)) for a, b in windows if a < high and b > low]
     if not selected:
         return []
-    day = view._days.day(device_id, date, until=getattr(view, "_history_until", None))
+    day = view._days.day(
+        device_id,
+        date,
+        until=getattr(view, "_history_until", None),
+        rows_since=min(low for low, _high in selected),
+    )
     if day is None:
         return []
     return [found for a, b in selected if (found := _column_bounds(day, a, b)) is not None]

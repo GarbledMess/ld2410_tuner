@@ -1,5 +1,12 @@
 # Release notes
 
+## 1.34.3 - 2026-11-13
+
+- Reading recent history no longer copies the whole day recorded so far. The 5-second
+  recording poll, the room estimate and other live readers now copy only the rows they need.
+  On a synthetic busy day of 700,000 readings, the poll's read fell from about 8.6 ms to
+  1.3 ms, and refreshing a room estimate from about 0.8 s to 0.15 s, with identical results.
+
 ## 1.34.2 - 2026-11-13
 
 - Recording no longer starts a worker process every few seconds. New readings are appended to

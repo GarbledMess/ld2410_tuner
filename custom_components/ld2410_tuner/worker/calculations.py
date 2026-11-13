@@ -165,7 +165,8 @@ class ReadOnlyDays:
             return path.parent
         return path.parent.parent
 
-    def day(self, device_id, date, until=None):
+    def day(self, device_id, date, until=None, rows_since=None):
+        # ``rows_since`` limits copies of a live day; these days are decoded and shared whole.
         key = device_id, date
         entry = self.entries.get(key)
         if entry is None:

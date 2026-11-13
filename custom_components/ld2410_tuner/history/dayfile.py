@@ -365,21 +365,41 @@ class DayBuilder:
         ]
         self.confirmed += [(record.time, run) for run in added]
 
-    def view(self, until, recorded=None):
+    def view(self, until, recorded=None, rows_since=None):
         """The day as of ``until``: rows and runs starting after it are left out, and what is
         still open at ``until`` ends there; guess spans count once recorded (by ``recorded``,
-        default ``until``). The builder stays open."""
-        recorded = until if recorded is None else recorded
+        default ``until``). The builder stays open.
+
+        ``rows_since`` copies only the rows still held after it (every guess run is kept): a
+        reader of a window copies its rows, not the whole day. Such a view is not the whole
+        day, so it never stands in for one in the day-summary cache."""
+        first, count, ends = self._rows(until, rows_since)
+        columns = [
+            bytes(memoryview(c)[first:count]) if isinstance(c, bytearray) else c[first:count]
+            for c in self.columns
+        ]
+        runs = self._runs(until, until if recorded is None else recorded)
+        day = Day(self.start, self.end, self.times[first:count], ends, columns, runs)
+        if rows_since is None:
+            day._summary_owner = self
+            day._summary_version = self._summary_version
+        return day
+
+    def _rows(self, until, rows_since):
+        """``(first, count, ends)`` of the rows a view holds, with the last end clipped."""
         count = bisect_right(self.times, until)
+        open_row = self.current is not None and count == len(self.times)
+        first = 0 if rows_since is None else bisect_right(self.ends, rows_since, 0, count)
+        if open_row and count:
+            first = min(first, count - 1)  # The open row's stored end is not yet its end.
         # A row ends where the next begins (or earlier), so only the last row up to ``until``
         # can reach past it: one copy, no step per row (the live day is viewed every poll).
-        ends = self.ends[:count]
-        if count:
-            ends[-1] = (
-                until
-                if count == len(self.times) and self.current is not None
-                else min(ends[-1], until)
-            )
+        ends = self.ends[first:count]
+        if count > first:
+            ends[-1] = until if open_row else min(ends[-1], until)
+        return first, count, ends
+
+    def _runs(self, until, recorded):
         runs = [
             (start, min(end, until), *rest)
             for start, end, *rest in _joined(
@@ -389,14 +409,7 @@ class DayBuilder:
         ]
         if self.run is not None and self.run[0] <= until:  # Started now: the current guess.
             runs.append((self.run[0], until, *self.run[1:]))
-        columns = [
-            bytes(c[:count]) if isinstance(c, bytearray) else array("f", c[:count])
-            for c in self.columns
-        ]
-        day = Day(self.start, self.end, array("d", self.times[:count]), ends, columns, runs)
-        day._summary_owner = self
-        day._summary_version = self._summary_version
-        return day
+        return runs
 
     def day(self):
         """The finished day: anything still open is covered to the day's end, with every guess
@@ -419,6 +432,8 @@ def gaps(start, end, covered):
 def splice(day, spans):
     """``day`` with each guess span filling only its unguessed time within the day (a span
     recorded on a later day about this one). Applying a span twice adds nothing."""
+    if not spans:
+        return day  # Every read of a cached day comes here; almost none has a late span.
     covered = [(run[0], run[1]) for run in day.guesses]
     added = []
     for span in spans:

@@ -130,7 +130,7 @@ class Days:
     def live_date(self, _device_id):
         return None
 
-    def day(self, _device_id, _date, until=None):
+    def day(self, _device_id, _date, until=None, rows_since=None):
         return self.found
 
 
