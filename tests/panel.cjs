@@ -194,8 +194,20 @@ const { execFileSync } = require("node:child_process");
       panel.hass = {
         callWS: async (message) => {
           window.requests.push(message);
-          if (message.type.endsWith("snapshot"))
-            return structuredClone(window.fixture);
+          if (message.type.endsWith("snapshot")) {
+            const snapshot = structuredClone(window.fixture);
+            // As the server does: a room's labels are left out when the panel holds them.
+            for (const [gid, group] of Object.entries(
+              snapshot.rooms?.groups || {},
+            )) {
+              group.labels_token = JSON.stringify(group.labels || []);
+              if (message.room_label_tokens?.[gid] === group.labels_token) {
+                delete group.labels;
+                group.labels_unchanged = true;
+              }
+            }
+            return snapshot;
+          }
           if (message.type.endsWith("room_series")) {
             // One room request answered per radar, so tests can fail or slow one radar.
             const charts = {},

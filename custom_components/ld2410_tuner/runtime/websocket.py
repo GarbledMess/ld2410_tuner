@@ -13,7 +13,14 @@ def _websocket_routes():
     device = {vol.Required("device_id"): str}
     state = {vol.Required("state"): vol.In(TRAINING_STATES)}
     return [
-        ("snapshot", {}, "snapshot", (), None, False),
+        (
+            "snapshot",
+            {vol.Optional("room_label_tokens", default=None): vol.Any({str: str}, None)},
+            "snapshot",
+            ("room_label_tokens",),
+            None,
+            False,
+        ),
         ("bermuda_devices", {}, "bermuda_devices", (), None, False),
         (
             "configure_bermuda",

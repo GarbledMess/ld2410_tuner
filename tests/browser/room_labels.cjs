@@ -684,8 +684,50 @@ async function testHelpAndMobile(page) {
   await page.setViewportSize({ width: 1400, height: 1000 });
 }
 
+async function testKnownLabelsAreNotResent(page) {
+  // Polls send the tokens held; unchanged rooms come back without labels and keep them.
+  await page.evaluate(() => panel._load(true));
+  await page.evaluate(() => panel._load(true));
+  const sent = await lastRequest(page, "snapshot");
+  assert.ok(
+    sent.room_label_tokens?.["area:office"],
+    "the panel sends its tokens",
+  );
+  const kept = await page.evaluate(() => ({
+    labels: panel._data.rooms.groups["area:office"].labels,
+    expected: window.fixture.rooms.groups["area:office"].labels,
+    flag: panel._data.rooms.groups["area:office"].labels_unchanged,
+  }));
+  assert.deepEqual(kept.labels, kept.expected, "unchanged labels are restored");
+  assert.equal(kept.flag, undefined);
+  // A reply omitting labels the panel never held is refetched in full, never drawn empty.
+  await page.evaluate(() => {
+    panel._roomLabelCache = {};
+    window.forgetOnce = true;
+    window.beforeForget = panel._hass.callWS;
+    panel._hass.callWS = async (message) => {
+      const answer = await window.beforeForget(message);
+      if (window.forgetOnce && message.type.endsWith("snapshot")) {
+        window.forgetOnce = false;
+        for (const group of Object.values(answer.rooms.groups)) {
+          delete group.labels;
+          group.labels_unchanged = true;
+        }
+      }
+      return answer;
+    };
+    return panel._load(true);
+  });
+  const refetched = await page.evaluate(() => {
+    panel._hass.callWS = window.beforeForget;
+    return panel._data.rooms.groups["area:office"].labels;
+  });
+  assert.ok(refetched.length > 0, "a room is never drawn without its labels");
+}
+
 module.exports = async function testRoomLabels(page) {
   await installFixture(page);
+  await testKnownLabelsAreNotResent(page);
   await testTimelineLabelsARange(page);
   await testEditAndRemoveManualPeriod(page);
   await testSeenByChips(page);

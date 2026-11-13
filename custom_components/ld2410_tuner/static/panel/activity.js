@@ -140,6 +140,41 @@ export const panelActivity = {
     return this._loadPromise;
   },
 
+  // Room labels are most of a snapshot and rarely change: the server omits a room's labels
+  // when the token sent matches, and they are restored from the last copy it did send.
+  async _snapshotWithRoomLabels() {
+    const kept = this._roomLabelCache || {};
+    const tokens = Object.fromEntries(
+      Object.entries(kept).map(([gid, item]) => [gid, item.token]),
+    );
+    const known = Object.keys(tokens).length
+      ? { room_label_tokens: tokens }
+      : {};
+    let data = await this._call("snapshot", known);
+    let restored = this._restoreRoomLabels(data, kept);
+    if (!restored) {
+      // Never draw a room without its labels: ask again for every room's labels.
+      data = await this._call("snapshot");
+      restored = this._restoreRoomLabels(data, {});
+    }
+    this._roomLabelCache = restored;
+    return data;
+  },
+
+  _restoreRoomLabels(data, kept) {
+    const next = {};
+    for (const [gid, group] of Object.entries(data?.rooms?.groups || {})) {
+      if (group.labels_unchanged) {
+        if (kept[gid]?.token !== group.labels_token) return null;
+        group.labels = kept[gid].labels;
+        delete group.labels_unchanged;
+      }
+      if (group.labels_token)
+        next[gid] = { token: group.labels_token, labels: group.labels };
+    }
+    return next;
+  },
+
   async _loadSnapshot() {
     this._loading = true;
     const status = this.shadowRoot?.querySelector("#snapshot-status");
@@ -153,7 +188,7 @@ export const panelActivity = {
     // Routine polls stay quiet; initial loading and explicit actions have indicators.
     const timer = this._loaded ? null : setTimeout(show, 0);
     try {
-      this._data = await this._call("snapshot");
+      this._data = await this._snapshotWithRoomLabels();
       this._drawWorkers();
       this._drawHistorySaveWarning();
       this._ensureComparisons();

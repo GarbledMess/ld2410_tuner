@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from contextlib import asynccontextmanager
 from functools import cache
@@ -106,7 +107,7 @@ def _recorded_days(runtime, device_id):
     return export_files.day_files(runtime._days, device_id)
 
 
-def snapshot(runtime) -> dict[str, Any]:
+def snapshot(runtime, room_label_tokens=None) -> dict[str, Any]:
     registry = er.async_get(runtime.hass)
     runtime.refresh_devices(registry)
     result = {
@@ -141,7 +142,31 @@ def snapshot(runtime) -> dict[str, Any]:
     )
     result["learning_sets"] = room_jobs.learning_sets(runtime, definitions)
     result["room_attribution"] = seen_by.snapshot(runtime, definitions)
+    _known_room_labels(result["rooms"].get("groups", {}), room_label_tokens or {})
     return result
+
+
+def _labels_token(labels):
+    """The labels' content as a short token: equal tokens, equal labels (to a 64-bit hash).
+    Built-in hashing is a tenth of the cost of serialising them; its per-process seed only
+    means one full resend after a restart."""
+    try:
+        found = hash(tuple(map(tuple, map(dict.items, labels))))
+    except TypeError:  # An unhashable value: hash its text instead.
+        content = repr([sorted(label.items()) for label in labels]).encode()
+        found = int.from_bytes(hashlib.blake2b(content, digest_size=8).digest(), "big")
+    return f"{len(labels)}:{found & 0xFFFFFFFFFFFFFFFF:x}"
+
+
+def _known_room_labels(groups, tokens):
+    """Leave out the labels of every room whose token the panel already holds: the panel
+    polls every few seconds and room labels were most of each snapshot."""
+    for group_id, group in groups.items():
+        token = _labels_token(group.get("labels", []))
+        group["labels_token"] = token
+        if tokens.get(group_id) == token:
+            del group["labels"]
+            group["labels_unchanged"] = True
 
 
 def worker_status(runtime):

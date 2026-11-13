@@ -10,11 +10,17 @@ def _history_label_reader(device, groups=True, *, cache=None):
     """Resolve labels once, keeping last-label-wins semantics in logarithmic time."""
     if cache is None:
         return index_reader(label_index(device, groups))
+    own, shared = device.get("history_labels"), device.get("group_labels")
     signature = (
         device.get("label_revision", 0),
         device.get("training_label_start"),
         device.get("training_expires_at"),
         device.get("training_state", "unknown"),
+        # A list installed or grown without a revision (maintenance) is never read stale.
+        id(own),
+        len(own or ()),
+        id(shared),
+        len(shared or ()),
     )
     saved = cache.get(groups)
     if saved is None or saved[0] is not device or saved[1] != signature:

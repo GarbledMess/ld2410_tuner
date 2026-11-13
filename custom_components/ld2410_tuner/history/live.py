@@ -12,7 +12,7 @@ import math
 from ..calibration.constants import SAMPLE_SECONDS
 from ..const import HISTOGRAM_BINS, HISTORY_KEYS, HISTORY_SAMPLE_INTERVAL
 from ..presence import reference_training
-from . import guesses, ingest, spans
+from . import guesses, ingest, label_lookup, spans
 
 # Live reference evidence is folded in batches: references are long-term distributions, and
 # folding every poll re-encoded the open period and rebuilt the classifier's reference pool.
@@ -33,8 +33,10 @@ def poll(runtime, device_id, device, values, now, guess):
         observations[guess[0]] = observations.get(guess[0], 0) + 1
     if previous is not None:
         pending = state.setdefault("reference_spans", [])
+        # Indexed, not a scan of up to HISTORY_LABELS_MAX labels for every span.
+        label_at = label_lookup._history_label_reader(device, cache=state.setdefault("labels", {}))
         for span in spans.events(runtime, device_id, start=previous, end=now):
-            _observe(runtime, device, span, guess)
+            _observe(runtime, device, span, label_at)
             pending.append((span, guess))
     _apply_batch(runtime, device_id, device, now)
 
@@ -65,8 +67,8 @@ def settle(runtime):
             pending.clear()
 
 
-def _observe(runtime, device, span, guess):
-    label = runtime._history_label_at(device, span.start)
+def _observe(runtime, device, span, label_at):
+    label = label_at(span.start)
     if label in ("present", "not_present"):
         _add_duration(runtime, device, label, span)
 

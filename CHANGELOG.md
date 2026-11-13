@@ -1,5 +1,17 @@
 # Release notes
 
+## 1.34.4 - 2026-11-13
+
+- The open panel's 3-second refresh no longer resends every room's whole label history. The
+  panel says which labels it already has, and a room's labels are sent again only when their
+  content changes, including a sensor label that is still growing. On a twelve-radar test
+  home, each refresh fell from 562 KB to 116 KB and from about 16 ms to 11 ms of Home
+  Assistant time.
+- The recording poll finds the human label of each new reading through an index instead of
+  scanning every saved label.
+- Fixed: a radar's label list that storage maintenance replaced could be read stale by
+  reference training until the next label edit.
+
 ## 1.34.3 - 2026-11-13
 
 - Reading recent history no longer copies the whole day recorded so far. The 5-second
