@@ -50,8 +50,9 @@ class CachedDays:
 def rows_for(segments, seed=1):
     """1 s rows; ``segments`` = [(seconds, kind)] with kind empty|busy|quiet.
 
-    Channel 0 carries the signal (empty 0-9, busy 40-70, quiet 15-25: weak but
-    above every empty reading); the other channels are 0-9 noise in every state.
+    Channel 1 (still gate 0, the presence carrier) holds the signal (empty 0-9, busy 40-70,
+    quiet 15-25: weak but above every empty reading); the other channels are 0-9 noise in every
+    state, move included: move is set by its own rule, the audit guards the still search.
     """
     rng = random.Random(seed)
     rows, spans, t = [], [], float(B + 3600)
@@ -60,9 +61,9 @@ def rows_for(segments, seed=1):
         for _ in range(int(seconds)):
             values = []
             for c in range(18):  # the prototype fixture's exact draw order
-                if c == 0 and kind == "busy":
+                if c == 1 and kind == "busy":
                     values.append(rng.randint(40, 70))
-                elif c == 0 and kind == "quiet":
+                elif c == 1 and kind == "quiet":
                     values.append(rng.randint(15, 25))
                 else:
                     values.append(rng.randint(0, 9))

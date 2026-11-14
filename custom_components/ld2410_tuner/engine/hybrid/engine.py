@@ -6,6 +6,13 @@ when occupied evidence is short), scores every compared pattern at one fidelity
 with its quiet-presence pass, and selects with the evidence band and guards.
 Reported ``before``/``after`` are pure training error costs; the quiet prior and
 selection costs are separate diagnostics. Temporary files never outlive the fit.
+
+Move and still have different roles. A radar with still channels gets its move gates from the
+gap rule (``move_rule``: catch arrivals, clear of the empty room's noise) and its still gates
+from the search on a still-only problem: the search never sees or weighs a move column, and
+its presence labels leave out the presence only move sees (still at its empty noise there).
+A radar tuning only move gates has nothing else to carry presence, so its move gates are
+searched. Reports and checks score the full pattern, move and still together.
 """
 
 import tempfile
@@ -24,6 +31,7 @@ from .constants import (
 from .domains import normalize_pattern
 from .evaluate import Evaluators, evaluate_patterns, plan_scores, score_regions
 from .evidence import evidence_horizon
+from .move_rule import move_plan, still_truth
 from .search import _unique, collect_training, quiet_candidates, run_search
 from .search_data import pure_cells
 from .training import TrainingStore
@@ -116,7 +124,7 @@ class FitSession:
 
     def training(self, problem):
         """Training rows of ``problem``, compiled unless the last fit's rows are the same."""
-        compiled = problem.start, problem.end, problem.zones, id(problem.rows), _channels(problem)
+        compiled = problem.start, problem.end, problem.zones, _sources(problem), _channels(problem)
         if compiled == self._compiled:
             self._store.__dict__.clear()
             self._store.__dict__.update(self._clean)
@@ -137,6 +145,14 @@ class FitSession:
         self.release_records()
         self._evaluators = Evaluators(problem, plan, directory=self.directory)
         return self._evaluators
+
+
+def _sources(problem):
+    """Which row sources ``problem`` reads, seen through a still-only channel view."""
+    return tuple(
+        (rid, id(rows.source if isinstance(rows, _ChannelRows) else rows))
+        for rid, rows in sorted(problem.rows.items())
+    )
 
 
 def _detects_alike(one, other):
@@ -444,10 +460,84 @@ def fit(problem, *, audit=True, session=None):
     A ``session`` lets fits of the same rows under another policy reuse their work.
     """
     problem = prepared(problem)
+    plan = move_plan(still_carried(problem))
+    searched = still_only(still_truth(problem, plan))
     if session is not None:
-        return _fit(problem, audit, session)
+        return with_moves(_fit(searched, audit, session), problem, plan.thresholds)
     with FitSession() as own:
-        return _fit(problem, audit, own)
+        return with_moves(_fit(searched, audit, own), problem, plan.thresholds)
+
+
+def _still_channels(radar):
+    return tuple(c for c in radar.channels if c % 2)
+
+
+def still_carried(problem):
+    """Only the radars whose presence a still gate carries: their move gates follow the rule."""
+    radars = {rid: r for rid, r in problem.radars.items() if _still_channels(r)}
+    return replace(problem, radars=radars)
+
+
+class _ChannelRows:
+    """A row source whose windows carry only ``channels``; everything else is the source's."""
+
+    def __init__(self, source, channels):
+        self.source, self.channels = source, channels
+
+    def window(self, lo, hi):
+        times, ends, columns = self.source.window(lo, hi)
+        return times, ends, {c: columns[c] for c in self.channels}
+
+    def __getattr__(self, name):
+        return getattr(self.source, name)
+
+
+class _ChannelDays:
+    """Day digests read with each radar's full channels, so a still-only fit shares the
+    digests and caches every other pass reads; consumers index only the channels they fit."""
+
+    def __init__(self, days, channels):
+        self.days, self.channels = days, channels
+
+    def digest(self, device_id, date, _channels):
+        return self.days.digest(device_id, date, self.channels[device_id])
+
+    def __getattr__(self, name):
+        return getattr(self.days, name)
+
+
+def still_only(problem):
+    """``problem`` without the move channels of radars that have still channels."""
+    full = {rid: radar.channels for rid, radar in problem.radars.items()}
+    radars, rows = {}, dict(problem.rows)
+    for rid, radar in problem.radars.items():
+        keep = _still_channels(radar) or radar.channels
+        if keep == radar.channels:
+            radars[rid] = radar
+            continue
+        radars[rid] = replace(
+            radar,
+            channels=keep,
+            domains={c: radar.domains[c] for c in keep},
+            current={c: radar.current[c] for c in keep},
+        )
+        if rid in rows and hasattr(rows[rid], "window"):
+            rows[rid] = _ChannelRows(rows[rid], keep)
+    if radars == problem.radars:
+        return problem
+    days = _ChannelDays(problem.days, full) if problem.days is not None else None
+    return replace(problem, radars=radars, rows=rows, days=days)
+
+
+def with_moves(found, problem, moves):
+    """The full pattern: current values, then the still search's, then the move rule's."""
+    current = normalize_pattern(problem.radars)
+    thresholds = {
+        rid: {**current[rid], **found.thresholds.get(rid, {}), **moves.get(rid, {})}
+        for rid in problem.radars
+    }
+    diagnostics = {**found.diagnostics, "move_rule": moves}
+    return replace(found, thresholds=thresholds, diagnostics=diagnostics)
 
 
 def _fit(problem, audit, session):

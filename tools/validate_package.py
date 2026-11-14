@@ -43,6 +43,7 @@ RUNTIME_FILES = (
     "engine/hybrid/held.py",
     "engine/hybrid/room_bundles.py",
     "engine/hybrid/fit_memo.py",
+    "engine/hybrid/move_rule.py",
     "engine/hybrid/facade.py",
     "history/fit_rows.py",
     "history/cell_cache.py",

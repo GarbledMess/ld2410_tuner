@@ -698,6 +698,18 @@ penalty or margin preference.
 Their proportion never rejects a recommendation; human labels and explicit UNKNOWN
 ranges override stored estimates for the same period.
 
+Move and still gates have different roles. Move gates catch arrivals; still gates hold
+presence. Each move gate is set by a rule rather than searched: one third of the way from
+its empty-room noise to the level real arrivals reach, rounded up to an allowed value.
+Empty-room noise is the 99th percentile of half-hour maxima over trusted empty time:
+human empty labels, plus automatic empty labels with two minutes trimmed from each edge,
+pieces under five minutes dropped, and pieces whose still energy looks occupied set aside.
+Human empty labels set a floor under that noise even when they are a small share of the
+time. A move gate that never rises above its noise at arrivals is turned off (100). The
+search then sets the still gates on still energy alone, without being asked to catch the
+presence that only move sees. A radar with only move gates enabled keeps the search for
+them. Results and reports always score move and still together.
+
 When the labelled episodes allow it, learning first checks its policy chronologically: it
 cuts the history between whole episodes, near 80% of them, with both states on each side;
 learns two candidates from the earlier part (one where automatic evidence only breaks ties,

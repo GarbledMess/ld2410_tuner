@@ -1,5 +1,17 @@
 # Release notes
 
+## 1.36.0 - 2026-11-14
+
+- Learn gives move and still gates different roles. Move gates are no longer searched: each
+  is set a third of the way between its empty-room noise and what real arrivals reach, and a
+  move gate that does not rise at arrivals is turned off. The still search runs on still
+  gates only. On a real eight-radar recording, move-caused false presence fell on every
+  radar (one radar's move-caused false starts on unseen time fell from 81 to 0), a held-out
+  human-labelled room had fewer false triggers with no extra missed presence, and cold
+  Learn used 13% less CPU in total (up to 24% less per radar) with equal or lower memory.
+  Where human empty labels contain the energy of a neighbouring zone, move gates rise above
+  it, which can cost a little presence near that zone.
+
 ## 1.35.0 - 2026-11-13
 
 - The day graphs in **Past presence labels** and **Room presence** can zoom into part of the
