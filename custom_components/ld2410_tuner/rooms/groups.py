@@ -48,8 +48,12 @@ def definitions(runtime):
                 "device_ids": ids,
                 "automatic": True,
             }
+    devices = runtime.data["devices"]
     for key, saved in runtime.data.get("room_groups", {}).items():
-        groups[key] = {**saved, "automatic": False}
+        # An excluded radar is left out of its saved zones until it is included again.
+        ids = [item for item in saved["device_ids"] if not devices.get(item, {}).get("excluded")]
+        if ids:
+            groups[key] = {**saved, "device_ids": ids, "automatic": False}
     return areas, members, groups
 
 

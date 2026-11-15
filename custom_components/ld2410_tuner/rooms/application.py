@@ -29,7 +29,15 @@ def selected(runtime, set_id, result_id, source):
     return learned
 
 
+def _members_included(runtime, learned):
+    from ..runtime import exclusion
+
+    for key in learned["thresholds"]:
+        exclusion.require_included(runtime, key)
+
+
 def guard(runtime, learned, applied, source=None):
+    _members_included(runtime, learned)
     # Resolve through a member zone: the set's id changes when another zone joins it.
     if list(groups.learning_set(runtime, _group_ids(learned)[0])[2]) != _group_ids(learned):
         raise ValueError("The learning set's zones or membership changed; learn again")

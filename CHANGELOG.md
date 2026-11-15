@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.37.0 - 2026-11-15
+
+- A radar can be excluded: **Exclude radar** on its card leaves it out of recording,
+  learning, Apply and rooms until **Include again** under **Excluded radars** brings it back.
+  Nothing stored for it is deleted, and the radar itself is not changed.
+
 ## 1.36.0 - 2026-11-14
 
 - Learn gives move and still gates different roles. Move gates are no longer searched: each

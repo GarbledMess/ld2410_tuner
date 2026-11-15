@@ -16,7 +16,7 @@ export const panelStorage = {
       ? "Recording history and training evidence"
       : "Paused · existing data kept";
     if (blocked) status = "Paused · storage limit needs attention";
-    return `<div class="recording-control"><label><input type="checkbox" role="switch" data-action="recording" ${enabled ? "checked" : ""}> Record data</label><span class="muted">${status}</span></div>`;
+    return `<div class="recording-control"><label><input type="checkbox" role="switch" data-action="recording" ${enabled ? "checked" : ""}> Record data</label><span class="muted">${status}</span><button type="button" class="secondary" data-action="exclude" title="Leave this radar out of recording, learning, Apply and rooms until it is included again">Exclude radar</button></div>`;
   },
 
   _wireRecording(card, id, d) {
@@ -34,6 +34,62 @@ export const panelStorage = {
         }
         await this._load(true);
       });
+    const exclude = card.querySelector('[data-action="exclude"]');
+    exclude.onclick = () => {
+      const name = d.name || id;
+      if (
+        !confirm(
+          `Exclude ${name}? It is left out of recording, learning, Apply and rooms until you include it again. Nothing stored for it is deleted.`,
+        )
+      )
+        return;
+      this._action(exclude, async () => {
+        await this._setExcluded(id, true);
+      });
+    };
+  },
+
+  async _setExcluded(id, excluded) {
+    await this._call("set_excluded", { device_id: id, excluded });
+    await this._load(true);
+  },
+
+  // Excluded radars, tucked away at the bottom of the layout, each with a way back.
+  _excludedElement() {
+    const excluded = this._data?.excluded_radars || [];
+    const details = document.createElement("details");
+    details.className = "excluded-radars";
+    details.dataset.excludedRadars = "";
+    details.open = !!this._sectionState.get("excluded-radars");
+    details.addEventListener("toggle", () =>
+      this._sectionState.set("excluded-radars", details.open),
+    );
+    const summary = document.createElement("summary");
+    summary.textContent = `Excluded radars (${excluded.length})`;
+    const description = document.createElement("span");
+    description.className = "section-description";
+    description.textContent =
+      "Left out of recording, learning, Apply and rooms. Their stored data is kept.";
+    summary.append(description);
+    details.append(summary);
+    for (const item of excluded) {
+      const row = document.createElement("div");
+      row.className = "excluded-radar";
+      row.dataset.deviceId = item.device_id;
+      const name = document.createElement("span");
+      name.textContent = item.name || item.device_id;
+      const include = document.createElement("button");
+      include.type = "button";
+      include.dataset.action = "include";
+      include.textContent = "Include again";
+      include.onclick = () =>
+        this._action(include, async () => {
+          await this._setExcluded(item.device_id, false);
+        });
+      row.append(name, include);
+      details.append(row);
+    }
+    return details;
   },
 
   _storageStatusHtml() {

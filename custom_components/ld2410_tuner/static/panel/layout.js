@@ -585,6 +585,10 @@ export const panelLayout = {
     footer.querySelector('[data-room-action="add-group"]').onclick = () =>
       this._openGroupEditor({});
     this._wireRoomEditor(footer);
+    // Rebuilt on every draw: the footer's own HTML is only rewritten when it changes.
+    footer.querySelector("[data-excluded-radars]")?.remove();
+    if ((this._data?.excluded_radars || []).length)
+      footer.append(this._excludedElement());
     return footer;
   },
 

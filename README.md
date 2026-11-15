@@ -67,6 +67,17 @@ in HACS under **Custom repositories** using
 **LD2410 Tuner**, restart Home Assistant, and add the integration as above.
 Adding a custom repository does not require submitting it to the default catalogue.
 
+## Excluding a radar
+
+**Exclude radar** on a radar's card leaves that radar out of everything the tuner does:
+recording, Learn (including overnight learning), Apply and Automatic Apply, area groups,
+saved zones and room assessments. Use it for a radar whose readings you no longer trust,
+for example one moved behind metal, without removing it from Home Assistant. The radar and
+its entities are not changed. Excluded radars are listed under **Excluded radars** at the
+bottom of the layout; **Include again** brings one back with its recording setting as it
+was. Nothing stored for an excluded radar is deleted: its history, labels and saved results
+are kept, and storage retention still applies to them.
+
 ## Rooms, zones and shared radars
 
 The **Rooms and zones** card is organized as a layout tree: each Home Assistant

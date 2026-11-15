@@ -26,7 +26,7 @@ from ..rooms import jobs as room_jobs
 from ..rooms import learning as room_learning
 from ..rooms import room_labels, room_sources
 from ..worker import priority
-from . import discovery, history_save, schedule
+from . import discovery, exclusion, history_save, schedule
 
 _LOGGER = logging.getLogger(__name__)
 STATE_SAVE_SECONDS = 300  # Recording state saves; history goes to the day logs.
@@ -184,6 +184,7 @@ class TunerRuntime:
     configure_storage = storage.configure
     trim_storage = storage.trim
     set_recording = storage.set_recording
+    set_excluded = exclusion.set_excluded
     bermuda_devices = bermuda.devices
     configure_bermuda = bermuda.configure
     configure_presence_sources = sources.configure

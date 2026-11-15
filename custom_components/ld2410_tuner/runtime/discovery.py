@@ -52,9 +52,13 @@ def refresh_devices(runtime, registry: er.EntityRegistry) -> None:
             existing["entities"] = {}
             ingest.end(runtime, existing_id, time.time())  # Removed: nothing more is observed.
     for device_id, info in devices.items():
-        runtime.data["devices"].setdefault(device_id, {"recording_enabled": False})
-        runtime.data["devices"][device_id]["entities"] = dict(info["entities"])
-        runtime.data["devices"][device_id].setdefault("training_state", "unknown")
+        device = runtime.data["devices"].setdefault(device_id, {"recording_enabled": False})
+        if device.get("excluded"):  # Left out of everything, as if its entities were gone.
+            device["entities"] = {}
+            ingest.end(runtime, device_id, time.time())
+        else:
+            device["entities"] = dict(info["entities"])
+        device.setdefault("training_state", "unknown")
 
     if before != {key: value.get("entities", {}) for key, value in runtime.data["devices"].items()}:
         runtime._schedule_save()

@@ -20,6 +20,9 @@ def start(runtime, device_id, source="user"):
     if device is None:
         raise ValueError("Unknown device")
     from ..rooms import groups, learning
+    from ..runtime import exclusion
+
+    exclusion.require_included(runtime, device_id)
 
     set_id = groups.for_device(runtime, device_id)
     if set_id:

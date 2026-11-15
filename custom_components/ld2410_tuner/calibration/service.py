@@ -186,6 +186,9 @@ def _threshold_configuration(runtime, device_id, *, state_get=None):
 async def apply(
     runtime, device_id: str, slot=None, result_id=None, expected=None
 ) -> dict[str, Any]:
+    from ..runtime import exclusion
+
+    exclusion.require_included(runtime, device_id)
     with device_io.device_operation(runtime, device_id):
         try:
             result = await runtime._apply_validated(device_id, slot, result_id, expected)

@@ -162,6 +162,7 @@ RUNTIME_FILES = (
     "runtime/tasks.py",
     "runtime/discovery.py",
     "runtime/engineering.py",
+    "runtime/exclusion.py",
     "runtime/websocket.py",
     "rooms/__init__.py",
     "rooms/adaptive.py",

@@ -22,6 +22,8 @@ def set_recording(runtime, device_id, enabled):
     device = runtime.data["devices"].get(device_id)
     if device is None:
         raise ValueError("Unknown device")
+    if enabled and device.get("excluded"):
+        raise ValueError("This radar is excluded; include it again first")
     if device.get("recording_enabled", True) == enabled:
         return {"enabled": enabled}
     if not enabled:

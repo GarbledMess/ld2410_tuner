@@ -160,6 +160,14 @@ def _websocket_routes():
             False,
         ),
         (
+            "set_excluded",
+            {**device, vol.Required("excluded"): bool},
+            "set_excluded",
+            ("device_id", "excluded"),
+            "invalid_request",
+            False,
+        ),
+        (
             "configure_storage",
             {vol.Required("settings"): dict},
             "configure_storage",
