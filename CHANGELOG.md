@@ -1,5 +1,12 @@
 # Release notes
 
+## 1.39.0 - 2026-11-15
+
+- **Label several rooms and radars**, a new card, labels one period Present, Not present or
+  Unknown on any mix of rooms, zones and radars at once, each at its own level (a room's
+  Empty is Empty for each of its radars). Every room is ticked the first time; after that
+  the last selection is remembered, and selections can be saved under a name.
+
 ## 1.38.0 - 2026-11-15
 
 - Guesses a radar's labels prove uninformative no longer train Learn or decide room truth,

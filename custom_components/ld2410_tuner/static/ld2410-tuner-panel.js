@@ -4,6 +4,7 @@ import { panelComparison } from "./panel/comparison.js";
 import { panelSources } from "./panel/sources.js";
 import { panelTimingSettings } from "./panel/timing_settings.js";
 import { panelBermuda } from "./panel/bermuda.js";
+import { panelBulkLabels } from "./panel/bulk_labels.js";
 import { panelRecordedData } from "./panel/recorded_data.js";
 import { panelStorage } from "./panel/storage.js";
 import { panelJobs } from "./panel/jobs.js";
@@ -283,6 +284,7 @@ Object.assign(
   panelStorage,
   panelRecordedData,
   panelBermuda,
+  panelBulkLabels,
   panelSources,
   panelJobs,
   panelWorkers,

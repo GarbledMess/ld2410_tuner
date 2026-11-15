@@ -67,6 +67,22 @@ in HACS under **Custom repositories** using
 **LD2410 Tuner**, restart Home Assistant, and add the integration as above.
 Adding a custom repository does not require submitting it to the default catalogue.
 
+## Labelling several rooms and radars at once
+
+**Label several rooms and radars**, a card of its own, marks one period Present, Not
+present or Unknown on any mix of rooms, zones and radars in one go. Each is labelled at its
+own level, exactly as its own chart would label it: a room or zone label covers its radars
+(Empty is Empty for each of them; Present counts for the radar that saw it), while a
+radar's own label says that radar itself should or should not have detected. So a quiet
+house is best marked by its rooms, and a radar is ticked on its own only to correct it.
+
+Rooms are listed with their zones and radars under them, then radars in no room. The first
+time every room is ticked, with every radar in no room; after that the card starts with the
+last selection. **Save selection** keeps what is ticked under a name, and choosing a saved
+selection ticks it again. Selections are kept with the integration, so every browser sees
+the same ones; radars excluded and rooms removed since are left out. If any chosen item
+cannot be labelled, none is.
+
 ## Excluding a radar
 
 **Exclude radar** on a radar's card leaves that radar out of everything the tuner does:

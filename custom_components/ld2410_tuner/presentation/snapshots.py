@@ -22,7 +22,7 @@ from ..history import pace, policy, recording, storage
 from ..presence import bermuda, rebuilds, sources
 from ..rooms import jobs as room_jobs
 from ..rooms import layout, seen_by
-from ..runtime import exclusion, history_save
+from ..runtime import bulk_labels, exclusion, history_save
 from ..runtime.schedule import settings
 from ..worker import bridge, codec
 from ..worker.display import check_export
@@ -133,6 +133,7 @@ def snapshot(runtime, room_label_tokens=None) -> dict[str, Any]:
     result["excluded_radars"] = exclusion.listed(
         runtime, lambda device_id: _snapshot_identity(runtime, device_id)
     )
+    result["label_selections"] = bulk_labels.listed(runtime)
     rooms, areas, members, definitions = room_jobs.snapshot_with_inventory(runtime)
     result["rooms"] = rooms
     result["layout"] = layout.build(

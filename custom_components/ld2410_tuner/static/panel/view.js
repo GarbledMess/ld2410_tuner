@@ -330,6 +330,11 @@ export const panelView = {
         .room-estimate { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
         .room-conflicts ul { margin:6px 0 0; }
         .room-conflicts li span { overflow-wrap:anywhere; }
+        .bulk-radars { border:1px solid var(--divider-color,#ddd); border-radius:8px; margin:12px 0; padding:8px 12px; min-width:0; }
+        .bulk-tree { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:8px 16px; }
+        .bulk-children { display:flex; flex-direction:column; gap:2px; margin:2px 0 0 22px; }
+        .bulk-item { display:flex; gap:6px; align-items:center; overflow-wrap:anywhere; }
+        .bulk-actions, .bulk-templates { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin:8px 0; }
         ${CARD_STYLES}
         ${RECORDED_STYLES}
       </style>
@@ -353,6 +358,10 @@ export const panelView = {
         </details>
         <details class="panel-card layout-help"><summary><h2>How rooms and zones work</h2><span class="section-description">Coverage, shared radars and how presence labels combine.</span></summary>
           <p>Label a room or zone when it is occupied or empty; its radars learn from it. A zone inside a room makes the room occupied. See the README for how labels combine.</p>
+        </details>
+        <details id="bulk-labels" class="panel-card bulk-labels-card">
+          <summary><h2>Label several rooms and radars</h2><span class="section-description">Mark one period on any number of rooms, zones and radars at once.</span></summary>
+          <div data-bulk-content></div>
         </details>
         <div id="layout"></div>
         <details id="bermuda" class="panel-card bermuda-card">
@@ -417,6 +426,7 @@ export const panelView = {
     this._drawLearningSchedule();
     this._drawStorage();
     this._drawTimingSettings();
+    this._drawBulkLabels();
     this._drawLayout();
     this._drawBermuda();
   },
