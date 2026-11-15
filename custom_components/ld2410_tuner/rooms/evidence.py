@@ -316,7 +316,12 @@ def agreed(present, members):
 
 
 def combine(labels):
-    """The room's label from its members' ``labels`` (``device_label`` of each)."""
+    """The room's label from its members' ``labels`` (``device_label`` of each). A member
+    whose guess was discarded (``guesses.ABSTAIN``) neither votes nor vetoes; a member with
+    no guess still vetoes Empty."""
+    labels = [item for item in labels if item is not guesses.ABSTAIN]
+    if not labels:
+        return None
     present = [item for item in labels if item and item[0] == "present"]
     if present:
         # A confirmed occupied coverage area proves room occupancy. It says

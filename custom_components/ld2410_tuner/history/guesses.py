@@ -23,6 +23,10 @@ DELTA = round(GUESS_CONFIDENCE_DELTA * 100)  # Percent a sample may differ from 
 FLOOR = round(MIN_AUTO_CONFIDENCE * 100)  # Percent under which a guess is not trained on.
 CODES = {"present": 1, "not_present": 2}
 UNKNOWN, REFERENCE, EXTERNAL = range(3)  # Where a guess came from; UNKNOWN: migrated rows.
+# A run the radar's labels prove uninformative (``guess_check``): read, never recorded. It is
+# at level 0, under every floor, and reads as ``ABSTAIN``: no evidence and no veto.
+DISCARDED = 3
+ABSTAIN = ("abstain", "automatic", 0.0)
 
 
 def level(percent):
@@ -88,7 +92,9 @@ class Guesses:
         if self._labels is None:
             known = {}
             self._labels = [
-                known.setdefault((run[2], run[3]), _label(run))
+                ABSTAIN
+                if run[4] == DISCARDED
+                else known.setdefault((run[2], run[3]), _label(run))
                 if confidence(run[3]) >= MIN_AUTO_CONFIDENCE
                 else None
                 for run in self.runs
@@ -190,19 +196,30 @@ def recorded(runtime, device_id, since=float("-inf")):
     days = getattr(runtime, "_days", None)
     if days is None:
         return []
-    until = getattr(runtime, "_history_until", None)
     found = []
     for date in days.days(device_id):
         if daystore.bounds(date)[1] > since:
-            runs = day_results.remembered(
-                days,
-                device_id,
-                date,
-                "guesses",
-                (),
-                lambda date=date: _day_runs(days, device_id, date, until),
-            )
-            found.extend(run for run in runs if run[1] >= since)
+            found.extend(run for run in _remembered(runtime, device_id, date) if run[1] >= since)
+    return _merged(found)
+
+
+def _remembered(runtime, device_id, date):
+    days, until = runtime._days, getattr(runtime, "_history_until", None)
+    return day_results.remembered(
+        days, device_id, date, "guesses", (), lambda: _day_runs(days, device_id, date, until)
+    )
+
+
+def _reaching(runtime, device_id, spans):
+    """The recorded runs of the days that ``spans`` (``(start, end, state)``) reach."""
+    days = getattr(runtime, "_days", None)
+    if days is None or not spans:
+        return []
+    found = []
+    for date in days.days(device_id):
+        low, high = daystore.bounds(date)
+        if any(start < high and end > low for start, end, _ in spans):
+            found.extend(_remembered(runtime, device_id, date))
     return _merged(found)
 
 
@@ -215,8 +232,18 @@ def _day_runs(days, device_id, date, until):
 
 
 def of(runtime, device_id, since=float("-inf")):
-    """``Guesses`` of ``device_id``: its recorded runs ending at or after ``since``."""
-    return Guesses(recorded(runtime, device_id, since))
+    """``Guesses`` of ``device_id``: its recorded runs ending at or after ``since``, those its
+    labels prove uninformative as abstentions (``guess_check``)."""
+    return Guesses(checked(runtime, device_id, recorded(runtime, device_id, since)))
+
+
+def checked(runtime, device_id, runs):
+    """``runs`` of ``device_id`` with the discarded ones marked (``guess_check.checked``)."""
+    from . import guess_check
+
+    return guess_check.checked(
+        runtime, device_id, runs, lambda spans: _reaching(runtime, device_id, spans)
+    )
 
 
 def evidence(runtime, device_id, since=float("-inf")):
@@ -225,9 +252,10 @@ def evidence(runtime, device_id, since=float("-inf")):
     runs that no longer reach the floor are gone, and neighbours that now match are one run."""
     device = runtime.data["devices"].get(device_id) or {}
     kept = [
-        (*run[:3], level(found * 100), run[4])
+        run if run[4] == DISCARDED else (*run[:3], level(found * 100), run[4])
         for run in of(runtime, device_id, since).runs
-        if (found := _trusted(run[2], confidence(run[3]), run[4])) is not None
+        if run[4] == DISCARDED
+        or (found := _trusted(run[2], confidence(run[3]), run[4])) is not None
     ]
     limits = trust.ceilings(device.get("histograms"))
     return Guesses(_merged(kept if limits is None else _loud(kept, runtime, device, limits)))
@@ -241,7 +269,7 @@ def _loud(runs, runtime, device, limits):
     device_id = next(key for key, value in runtime.data["devices"].items() if value is device)
     result = []
     for run in runs:
-        if run[2] != "present" or run[4] == EXTERNAL:
+        if run[2] != "present" or run[4] in (EXTERNAL, DISCARDED):
             result.append(run)
         else:
             result.extend(_loud_parts(run, _quiet(runtime, device_id, run, limits)))

@@ -8,6 +8,7 @@ long human labels exist, the recorder has outages, and the newest day is still o
 import datetime
 from types import SimpleNamespace
 
+from real_rows import agreeing
 from tuner_under_test.history import dayfile
 from tuner_under_test.worker import history
 from tuner_under_test.worker.calculations import ReadOnlyDays
@@ -89,7 +90,7 @@ def _guesses(start, rows):
     ]
 
 
-def _write_day(path, day, rows, irregular):
+def _write_day(path, day, rows, irregular, labelled):
     if path.exists():
         return
     start = day * DAY
@@ -97,6 +98,9 @@ def _write_day(path, day, rows, irregular):
     _add_rows(builder, day, start, rows, irregular)
     physical = builder.day()
     physical.guesses = _guesses(start, rows)
+    if labelled:  # The radar guessed what the humans labelled (``real_rows.agreeing``).
+        windows = [(x["start"], x["end"], x["state"]) for x in _human_labels(day)]
+        physical.guesses = agreeing(physical.guesses, windows)
     path.write_bytes(dayfile.encode_day(physical))
 
 
@@ -127,7 +131,9 @@ def recorded(root, days=60, *, irregular=False, open_rows=2400, human_every=10):
     entries, labels = [], []
     for day in range(days + 1):
         path = folder / f"{day}.day"
-        _write_day(path, day, ROWS_A_DAY if day < days else open_rows, irregular)
+        _write_day(
+            path, day, ROWS_A_DAY if day < days else open_rows, irregular, day % human_every == 0
+        )
         entries.append(_entry(path, day, days))
         if day % human_every == 0:
             labels.extend(_human_labels(day))

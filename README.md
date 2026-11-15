@@ -185,6 +185,19 @@ reference training) therefore reads them through one function, `guesses.evidence
   radar's own Empty-labelled readings (their 99.9th percentile plus 3). A radar with no
   Empty labels has no ceiling and nothing to veto with.
 - A room is present on automatic evidence only when two members say so.
+- A radar records each guess against the references it had then, so guesses from before
+  its labels existed can say one state whatever happens. Each guess source (state,
+  recorded confidence and origin) is checked against what humans labelled the radar: its
+  own labels, else the labels of a room or zone it alone records in, else Empty where a
+  room or zone covering it is labelled Empty (an empty room is empty for each of its
+  radars; a shared room's presence is not presence each radar must see). Labelled time is
+  cut into hour-long trials. A source counts only while, at even odds, how often it says
+  its state in labels of that state against how often it says it in labels of the other
+  state leaves it right at least 0.55 of the time. One right trial is assumed in its
+  favour, so a guess is never discarded for want of evidence: it takes about five
+  labelled hours of being wrong throughout, or being right no more often than wrong.
+  A discarded guess is no evidence anywhere, and in a room it neither votes nor vetoes:
+  the other members decide, where a member with no guess at all still prevents Empty.
 - A radar's own guesses still count: they train its references and its learner
   evidence under the same rules. Sources outside the radar (entities, room sensors)
   keep the confidence they were given.

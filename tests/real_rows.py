@@ -208,12 +208,33 @@ def _day_rows(blocks, start, end):
     return times, ends, [bytes(column) for column in columns]
 
 
+def agreeing(runs, windows):
+    """``runs`` restated inside human ``windows`` (``(start, end, state)``): the radar guessed
+    what humans labelled there, as a working radar does. Guesses that contradict every label
+    carry no information and are discarded (``history.guess_check``)."""
+    result = []
+    for run in runs:
+        pieces = [run[:3]]
+        for low, high, state in windows:
+            split = []
+            for start, end, said in pieces:
+                if high <= start or low >= end:
+                    split.append((start, end, said))
+                    continue
+                split += [(start, low, said), (max(start, low), min(end, high), state)]
+                split.append((high, end, said))
+            pieces = [piece for piece in split if piece[1] > piece[0]]
+        result.extend((*piece, *run[3:]) for piece in pieces)
+    return result
+
+
 def _day_guesses(truth, start, end):
-    return [
+    runs = [
         (max(s.start, start), min(s.end, end), s.state, GUESS_LEVEL, 0)
         for s in truth
         if s.source != "human" and s.start < end and s.end > start
     ]
+    return agreeing(runs, [(s.start, s.end, s.state) for s in truth if s.source == "human"])
 
 
 def _write_days(folder, problem):

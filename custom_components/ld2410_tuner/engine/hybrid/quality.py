@@ -266,7 +266,7 @@ def recorded_guesses(view, device_id, start, end):
         low, high = daystore.bounds(date)
         if low < end and high > start:
             found.extend(days.guess_runs(device_id, date, until=end))
-    return guesses.Guesses(guesses._merged(found))
+    return guesses.Guesses(guesses.checked(view, device_id, guesses._merged(found)))
 
 
 def collect_quality(

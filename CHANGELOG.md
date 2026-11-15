@@ -1,5 +1,22 @@
 # Release notes
 
+## 1.38.0 - 2026-11-15
+
+- Guesses a radar's labels prove uninformative no longer train Learn or decide room truth,
+  for every radar. A radar records guesses against the references it had at the time, so
+  guesses made before its labels existed could say present through every labelled empty hour
+  and still count. Each guess source is now checked against the radar's own, zone and room
+  labels (an empty room or zone is empty for each of its radars); one that is right no more
+  often than chance is discarded, and in a room it no longer vetoes the other radars' Empty.
+  On a real eight-radar recording, scored at each radar's own timeout with no other hold: a
+  two-radar room's false light on confidently empty time fell from 78 to 10 minutes and its
+  false starts from 421 to 118, for 36 more seconds of missed labelled presence over 16.7
+  hours (1.5 to 2.1 minutes; 20 dark spells instead of 5, the longest 44 seconds instead of
+  40); a single-radar room's missed labelled presence fell from 154 minutes to none, for 62
+  minutes of false light and 62 false starts over 87 confidently empty hours; every other
+  radar detects exactly as before. Cold Learn used the same or less CPU on every target (up
+  to 54% less) with the same or less memory.
+
 ## 1.37.0 - 2026-11-15
 
 - A radar can be excluded: **Exclude radar** on its card leaves it out of recording,

@@ -113,6 +113,7 @@ RUNTIME_FILES = (
     "entity_index.py",
     "history/__init__.py",
     "history/cleanup.py",
+    "history/guess_check.py",
     "history/guesses.py",
     "history/trust.py",
     "history/policy.py",

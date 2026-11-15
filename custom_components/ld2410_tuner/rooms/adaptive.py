@@ -42,6 +42,8 @@ class CorrectedReader:
         self.raw = model.context.raw_reader()
 
     def _label(self, label, timestamp):
+        if label is guesses.ABSTAIN:
+            return label
         if label is None or not MIN_AUTO_CONFIDENCE <= label[2] <= 1:
             return None
         return (

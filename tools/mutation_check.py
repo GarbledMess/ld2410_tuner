@@ -230,6 +230,27 @@ BUGS = (
         "            raw = dayfile.encode_day(day)\n",
         "            continue\n",
     ),
+    Bug(
+        "uninformative-guesses-kept",
+        "A guess that says one state whatever the labels say still trains Learn",
+        "history/guess_check.py",
+        "        if hit / (hit + false) < MIN_AUTO_CONFIDENCE:",
+        "        if False:",
+    ),
+    Bug(
+        "room-empty-not-radar-empty",
+        "An empty shared room is not human truth for its radars",
+        "history/guess_check.py",
+        '    return "not_present" if any(state == "not_present" for state, _ in groups) else None',
+        "    return None",
+    ),
+    Bug(
+        "discarded-guess-vetoes",
+        "A radar whose guesses were discarded still vetoes the other radars' Empty",
+        "rooms/evidence.py",
+        "    labels = [item for item in labels if item is not guesses.ABSTAIN]",
+        "    labels = list(labels)",
+    ),
 )
 
 
