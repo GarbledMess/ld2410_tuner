@@ -1,5 +1,19 @@
 # Release notes
 
+## 1.39.2 - 2026-11-15
+
+- One set of words for a presence status everywhere in the panel: **Present**, **Empty** and
+  **Unknown** (instead of "Not present", "NOT PRESENT", "Not Present" and "Unknown /
+  exclude" in different places).
+- The card for labelling many rooms at once is now **Label a time period**, in two parts:
+  the rooms and radars (with saved selections), then the period. Like the other label
+  editors, the period has From, To and a Status dropdown, and nothing is labelled until
+  **Label time range** is pressed. Its title sits beside the chevron like the other cards'.
+- That card lists every radar under its own area. A radar that records nothing is not a
+  member of its area's room, so it was listed (and ticked by default) as if it were in no
+  room; it now shows under its area, marked "not recording", and is never ticked by
+  default. An area with no recording radar shows its radars under its name.
+
 ## 1.39.1 - 2026-11-15
 
 - The main worker no longer works on **Seen by** for rooms that are closed. While the panel

@@ -1,30 +1,36 @@
 // "Label several rooms and radars": one period labelled on any mix of rooms, zones and radars
 // in one request, each at its own level (a room's Empty is Empty for each of its radars; a
 // radar's own label means "this radar should have detected here"). The first time every
-// room is ticked, with any radar in no room; afterwards the last selection (kept by the
+// room is ticked, with any recording radar in no area; afterwards the last selection (kept by the
 // integration, so every browser sees it). Named selections can be saved and applied.
-const STATES = [
-  ["present", "Present"],
-  ["not_present", "Not present"],
-  ["unknown", "Unknown"],
-];
 
 const byName = (a, b) =>
   a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
 
+import { STATUS_NAMES } from "./history.js";
+
 export const panelBulkLabels = {
-  // Rooms (groups without a parent), each with its zones and radars; then radars in no room.
+  // Rooms (groups without a parent), each with its zones and radars, then areas without a
+  // room (only radars that record nothing: a radar joins its area's room once it records),
+  // then radars in no area. Every radar is listed where Home Assistant places it.
   _bulkTree() {
     const devices = this._data?.devices || {};
-    const groups = this._roomsData().groups;
-    const radar = (id) => ({ id, name: devices[id]?.name || id });
-    const entries = Object.entries(groups).map(([id, g]) => ({ id, ...g }));
-    const isZone = (g) =>
-      g.kind === "zone" &&
-      entries.some(
-        (room) => room.kind === "area" && room.area_id === g.area_id,
-      );
-    const rooms = entries
+    const rooms = this._roomsData();
+    const members = rooms.members || {};
+    const radar = (id) => ({
+      id,
+      name: devices[id]?.name || id,
+      recording: devices[id]?.recording_enabled !== false,
+    });
+    const entries = Object.entries(rooms.groups).map(([id, g]) => ({
+      id,
+      ...g,
+    }));
+    const areaRoom = (areaId) =>
+      entries.find((room) => room.kind === "area" && room.area_id === areaId);
+    const isZone = (g) => g.kind === "zone" && !!areaRoom(g.area_id);
+    const placed = new Set();
+    const nodes = entries
       .filter((g) => !isZone(g))
       .map((room) => {
         const zones = entries.filter(
@@ -34,25 +40,45 @@ export const panelBulkLabels = {
         const ids = new Set(
           [room, ...zones].flatMap((g) => g.device_ids || []),
         );
+        if (room.kind === "area")
+          for (const [id, member] of Object.entries(members))
+            if (member.area_id === room.area_id) ids.add(id);
         return {
           id: room.id,
           name: room.name || room.id,
           zones: zones
             .map((g) => ({ id: g.id, name: g.name || g.id }))
             .sort(byName),
-          radars: [...ids]
-            .filter((id) => devices[id])
-            .map(radar)
-            .sort(byName),
+          ids,
         };
-      })
-      .sort(byName);
-    const placed = new Set(entries.flatMap((g) => g.device_ids || []));
+      });
+    const roomless = new Map();
+    for (const [id, member] of Object.entries(members))
+      if (member.area_id && !areaRoom(member.area_id)) {
+        if (!roomless.has(member.area_id))
+          roomless.set(member.area_id, {
+            id: null,
+            area: member.area_id,
+            name: rooms.areas?.[member.area_id] || member.area_id,
+            zones: [],
+            ids: new Set(),
+          });
+        roomless.get(member.area_id).ids.add(id);
+      }
+    const finish = (node) => {
+      const radars = [...node.ids].filter(
+        (id) => devices[id] && !placed.has(id),
+      );
+      radars.forEach((id) => placed.add(id));
+      return { ...node, radars: radars.map(radar).sort(byName) };
+    };
+    const tree = [...nodes].sort(byName).map(finish);
+    const areas = [...roomless.values()].sort(byName).map(finish);
     const loose = Object.keys(devices)
       .filter((id) => !placed.has(id))
       .map(radar)
       .sort(byName);
-    return { rooms, loose };
+    return { rooms: tree, areas, loose };
   },
 
   // The card's own state survives every poll's redraw: the period, the name and, once
@@ -67,6 +93,7 @@ export const panelBulkLabels = {
         to: this._toLocalInputValue(now),
         name: "",
         template: "",
+        state: "present",
         status: "",
       };
     }
@@ -77,14 +104,18 @@ export const panelBulkLabels = {
         ...room.zones.map((zone) => zone.id),
       ]),
       device_ids: [
-        ...tree.rooms.flatMap((room) => room.radars.map((radar) => radar.id)),
+        ...[...tree.rooms, ...tree.areas].flatMap((node) =>
+          node.radars.map((radar) => radar.id),
+        ),
         ...tree.loose.map((radar) => radar.id),
       ],
     };
     const wanted = draft.chosen ??
       this._data?.label_selections?.last ?? {
         group_ids: tree.rooms.map((room) => room.id),
-        device_ids: tree.loose.map((radar) => radar.id),
+        device_ids: tree.loose
+          .filter((radar) => radar.recording)
+          .map((radar) => radar.id),
       };
     draft.groups = new Set(
       (wanted.group_ids || []).filter((id) => known.group_ids.includes(id)),
@@ -100,6 +131,19 @@ export const panelBulkLabels = {
     return `<label class="bulk-item"><input type="checkbox" ${attribute}="${this._esc(id)}" ${checked ? "checked" : ""}> ${this._esc(name)}</label>`;
   },
 
+  _bulkRadarsHtml(radars, draft) {
+    return radars
+      .map((radar) =>
+        this._bulkBox(
+          "radar",
+          radar.id,
+          radar.recording ? radar.name : `${radar.name} (not recording)`,
+          draft.radars.has(radar.id),
+        ),
+      )
+      .join("");
+  },
+
   _bulkTreeHtml(tree, draft) {
     const rooms = tree.rooms
       .map(
@@ -113,31 +157,20 @@ export const panelBulkLabels = {
                 draft.groups.has(zone.id),
               ),
             )
-            .join("")}${room.radars
-            .map((radar) =>
-              this._bulkBox(
-                "radar",
-                radar.id,
-                radar.name,
-                draft.radars.has(radar.id),
-              ),
-            )
-            .join("")}</div></div>`,
+            .join("")}${this._bulkRadarsHtml(room.radars, draft)}</div></div>`,
+      )
+      .join("");
+    // An area whose radars record nothing has no room to label: its radars only.
+    const areas = tree.areas
+      .map(
+        (area) =>
+          `<div class="bulk-room" data-bulk-area="${this._esc(area.area)}"><span class="muted">${this._esc(area.name)}</span><div class="bulk-children">${this._bulkRadarsHtml(area.radars, draft)}</div></div>`,
       )
       .join("");
     const loose = tree.loose.length
-      ? `<div class="bulk-room"><span class="muted">Not in a room</span><div class="bulk-children">${tree.loose
-          .map((radar) =>
-            this._bulkBox(
-              "radar",
-              radar.id,
-              radar.name,
-              draft.radars.has(radar.id),
-            ),
-          )
-          .join("")}</div></div>`
+      ? `<div class="bulk-room"><span class="muted">Not in an area</span><div class="bulk-children">${this._bulkRadarsHtml(tree.loose, draft)}</div></div>`
       : "";
-    return rooms + loose;
+    return rooms + areas + loose;
   },
 
   _drawBulkLabels() {
@@ -146,34 +179,65 @@ export const panelBulkLabels = {
     const tree = this._bulkTree();
     const draft = this._bulkState(tree);
     const templates = this._data?.label_selections?.templates || [];
-    const count = draft.groups.size + draft.radars.size;
     const options = templates
       .map(
         (t) =>
           `<option value="${this._esc(t.name)}" ${draft.template === t.name ? "selected" : ""}>${this._esc(t.name)}</option>`,
       )
       .join("");
+    const summary = this._bulkCountText(draft);
     this._updateHtml(
       container,
-      `<p class="muted">A room or zone label covers its radars: Empty is Empty for each of them, and Present counts for the radar that saw it. Tick a radar itself only when that radar should or should not have detected.</p>
-      <div class="storage-fields">
-        <label>From<input type="datetime-local" data-role="bulk-from" value="${this._esc(draft.from)}"></label>
-        <label>To<input type="datetime-local" data-role="bulk-to" value="${this._esc(draft.to)}"></label>
-      </div>
-      <fieldset class="bulk-radars"><legend>Rooms, zones and radars (${count} ticked)</legend>
-        <div class="bulk-actions"><button type="button" class="secondary" data-action="bulk-all">All rooms</button><button type="button" class="secondary" data-action="bulk-none">Clear</button></div>
-        <div class="bulk-tree">${this._bulkTreeHtml(tree, draft)}</div>
-      </fieldset>
-      <div class="bulk-templates">
-        <label>Saved selection<select data-role="bulk-template"><option value="">Choose…</option>${options}</select></label>
-        <button type="button" class="secondary" data-action="bulk-delete" ${draft.template ? "" : "disabled"}>Delete</button>
-        <label>Name<input type="text" data-role="bulk-name" maxlength="60" value="${this._esc(draft.name)}" placeholder="e.g. Upstairs"></label>
-        <button type="button" class="secondary" data-action="bulk-save">Save selection</button>
-      </div>
-      <div class="bulk-actions">${STATES.map(([state, label]) => `<button type="button" data-bulk-state="${state}">${label}</button>`).join("")}</div>
-      <div class="settings-action-status muted" role="status">${this._esc(draft.status)}</div>`,
+      `<section class="bulk-step">
+        <div class="bulk-step-head">
+          <h3>Rooms and radars</h3>
+          <div class="bulk-quick"><button type="button" class="secondary" data-action="bulk-all">All rooms</button><button type="button" class="secondary" data-action="bulk-none">Clear</button></div>
+        </div>
+        <p class="field-note">A room's label covers its radars: Empty counts for each of them, Present for the radar that saw it. Tick a radar on its own only to correct that radar.</p>
+        <div class="bulk-tree" role="group" aria-label="Rooms, zones and radars">${this._bulkTreeHtml(tree, draft)}</div>
+        <div class="bulk-selections">
+          <div class="bulk-saved">
+            <label>Saved selection<select data-role="bulk-template"><option value="">Choose…</option>${options}</select></label>
+            <button type="button" class="secondary" data-action="bulk-delete" ${draft.template ? "" : "disabled"}>Delete</button>
+          </div>
+          <div class="bulk-save">
+            <label>Save this selection as<input type="text" data-role="bulk-name" maxlength="60" value="${this._esc(draft.name)}" placeholder="e.g. Upstairs"></label>
+            <button type="button" class="secondary" data-action="bulk-save">Save</button>
+          </div>
+        </div>
+      </section>
+      <section class="bulk-step">
+        <h3>Period</h3>
+        <div class="history-fields">
+          <label>From<input type="datetime-local" step="1" data-role="bulk-from" value="${this._esc(draft.from)}"></label>
+          <label>To<input type="datetime-local" step="1" data-role="bulk-to" value="${this._esc(draft.to)}"></label>
+          <label>Status<select data-role="bulk-state">${Object.entries(
+            STATUS_NAMES,
+          )
+            .map(
+              ([state, name]) =>
+                `<option value="${state}" ${draft.state === state ? "selected" : ""}>${name}</option>`,
+            )
+            .join("")}</select></label>
+        </div>
+        <p class="field-note bulk-count">${this._esc(summary)}</p>
+        <div class="history-buttons"><button type="button" class="primary" data-action="bulk-apply">Label time range</button></div>
+        <div class="settings-action-status muted" role="status">${this._esc(draft.status)}</div>
+      </section>`,
     );
     this._wireBulkLabels(container, draft, tree, templates);
+  },
+
+  _bulkCountText(draft) {
+    const rooms = draft.groups.size;
+    const radars = draft.radars.size;
+    if (!rooms && !radars) return "Nothing ticked yet.";
+    const parts = [
+      rooms &&
+        `${rooms} room${rooms === 1 ? "" : "s"} or zone${rooms === 1 ? "" : "s"}`,
+      radars && `${radars} radar${radars === 1 ? "" : "s"}`,
+    ].filter(Boolean);
+    return `Labels ${parts.join(" and ")}.`;
   },
 
   _bulkChosen(draft) {
@@ -205,7 +269,9 @@ export const panelBulkLabels = {
       draft.template = "";
       pick({
         group_ids: tree.rooms.map((room) => room.id),
-        device_ids: tree.loose.map((radar) => radar.id),
+        device_ids: tree.loose
+          .filter((radar) => radar.recording)
+          .map((radar) => radar.id),
       });
     };
     container.querySelector('[data-action="bulk-none"]').onclick = () => {
@@ -229,11 +295,13 @@ export const panelBulkLabels = {
       else redraw();
     };
     this._wireBulkSaving(container, draft, redraw);
-    for (const button of container.querySelectorAll("[data-bulk-state]"))
-      button.onclick = () =>
-        this._action(button, () =>
-          this._bulkLabel(draft, button.dataset.bulkState, redraw),
-        );
+    const state = container.querySelector('[data-role="bulk-state"]');
+    state.onchange = () => {
+      draft.state = state.value;
+    };
+    const apply = container.querySelector('[data-action="bulk-apply"]');
+    apply.onclick = () =>
+      this._action(apply, () => this._bulkLabel(draft, draft.state, redraw));
   },
 
   _wireBulkSaving(container, draft, redraw) {
@@ -286,7 +354,7 @@ export const panelBulkLabels = {
         `${rooms} room${rooms === 1 ? "" : "s"} or zone${rooms === 1 ? "" : "s"}`,
       radars && `${radars} radar${radars === 1 ? "" : "s"}`,
     ].filter(Boolean);
-    const label = STATES.find(([value]) => value === state)[1];
+    const label = STATUS_NAMES[state];
     await this._load(true);
     redraw(`Labelled ${parts.join(" and ")} ${label}.`);
   },

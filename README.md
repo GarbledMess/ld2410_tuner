@@ -67,18 +67,21 @@ in HACS under **Custom repositories** using
 **LD2410 Tuner**, restart Home Assistant, and add the integration as above.
 Adding a custom repository does not require submitting it to the default catalogue.
 
-## Labelling several rooms and radars at once
+## Labelling a time period on many rooms at once
 
-**Label several rooms and radars**, a card of its own, marks one period Present, Not
-present or Unknown on any mix of rooms, zones and radars in one go. Each is labelled at its
+**Label a time period**, a card of its own, marks one period Present, Empty or Unknown on
+any mix of rooms, zones and radars in one go: choose the rooms and radars, then the period
+and its status as in the other label editors, and press **Label time range**. Each is labelled at its
 own level, exactly as its own chart would label it: a room or zone label covers its radars
 (Empty is Empty for each of them; Present counts for the radar that saw it), while a
 radar's own label says that radar itself should or should not have detected. So a quiet
 house is best marked by its rooms, and a radar is ticked on its own only to correct it.
 
-Rooms are listed with their zones and radars under them, then radars in no room. The first
-time every room is ticked, with every radar in no room; after that the card starts with the
-last selection. **Save selection** keeps what is ticked under a name, and choosing a saved
+Rooms are listed with their zones and radars under them, then areas whose radars record
+nothing (they have no room to label, only radars), then radars in no area. A radar that
+records nothing is marked so and never ticked by default. The first time every room is
+ticked, with every recording radar in no area; after that the card starts with the last
+selection. **Save selection** keeps what is ticked under a name, and choosing a saved
 selection ticks it again. Selections are kept with the integration, so every browser sees
 the same ones; radars excluded and rooms removed since are left out. If any chosen item
 cannot be labelled, none is.
@@ -131,7 +134,7 @@ You can label a room or zone Present, Empty or Unknown directly on its timeline.
 Radar and room status charts show time-aligned **Human (manual)**, **Entity / sensor**
 and **Guessed (automatic)** evidence lanes. Buttons below the chart show or hide
 these kinds and remember your choice in this browser. Solid, dashed and dotted
-strokes mean Present, Not present and Unknown; gaps mean no recorded evidence.
+strokes mean Present, Empty and Unknown; gaps mean no recorded evidence.
 Room charts show guesses separately for each radar, before combining room truth.
 These rows include low-confidence guesses; they do not indicate which automatic
 evidence qualifies for learning. Older automatic records without provenance appear
@@ -515,7 +518,7 @@ retains failures.
    switch reports off; otherwise
    enable it in ESPHome. Entity IDs must retain the existing `*_g0_move_energy` /
    `*_g0_move_threshold` naming convention (gates 0–8, move/still).
-2. Label the empty room NOT PRESENT with the normal fans, curtains and background
+2. Label the empty room Empty with the normal fans, curtains and background
    activity. Use the timeout to avoid accidentally leaving a label running.
 3. Label people PRESENT, including walking and sitting very still at each location
    that matters. Collect multiple sessions, not just a short walk past the sensor.
@@ -815,7 +818,7 @@ Existing saved results gain these diagnostics after a new Learn run.
 **Past presence labels**. The graph and draggable label bar share both their time
 window and horizontal plotting edges, including after selecting a saved period,
 zooming or resizing the panel. Correct the status if you know the label was wrong,
-or choose **Unknown / exclude** when occupancy is uncertain, then save and learn
+or choose **Unknown** when occupancy is uncertain, then save and learn
 again. Reviewing a suggestion never changes labels or removes recordings.
 
 A brief empty-room burst is not automatically an invalid reading. A person, pet or
@@ -1080,7 +1083,7 @@ a matching result. Desktop keyboard users can use arrow keys and Enter; Escape
 closes results. Direct entity ID entry remains available. The list shows up to 30
 matches; keep typing to narrow it. Unsaved choices survive polling.
 
-Any positive source starts or continues a Present period. **Mark “Not Present”
+Any positive source starts or continues a Present period. **Mark “Empty”
 defaults to OFF**. When enabled, it requires at least one boolean source and every
 boolean source must explicitly report absence. Missing, unavailable, unknown or
 non-boolean states do not count as absence. Bermuda never supplies absence; with
@@ -1099,7 +1102,7 @@ keeps provisional boundary readings out of a Learn started during the period.
 
 Raw energy readings remain available for graphs and manual labels. These buffers
 only affect automatic Present labels from external sources; they do not delay
-radar detection or change opt-in Not Present labels. Radar guessing does not
+radar detection or change opt-in Empty labels. Radar guessing does not
 fill in the excluded positive boundaries. Set both trims to 0 to disable them.
 Changes affect future periods, not historical labels. Source changes, recording
 pauses, missing energy readings and sampling gaps restart the buffer. After an

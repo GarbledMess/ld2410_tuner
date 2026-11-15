@@ -7,7 +7,7 @@ const KINDS = {
 };
 const STATES = {
   present: ["Present", "#2e7d32", ""],
-  not_present: ["Not present", "#777", "5 2"],
+  not_present: ["Empty", "#777", "5 2"],
   unknown: ["Unknown", "#b58900", "1 2"],
 };
 const STORAGE = "ld2410_tuner.presence-lanes";
@@ -104,7 +104,7 @@ export const panelPresenceLanes = {
       )
       .join(
         "",
-      )}</div><p class="muted">Presence evidence: solid = Present; dashed = Not present; dotted = Unknown. Gaps mean no evidence. Automatic evidence is not confirmed truth.</p></div>`;
+      )}</div><p class="muted">Presence evidence: solid = Present; dashed = Empty; dotted = Unknown. Gaps mean no evidence. Automatic evidence is not confirmed truth.</p></div>`;
   },
 
   _wirePresenceLanes(root) {

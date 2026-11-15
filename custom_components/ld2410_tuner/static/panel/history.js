@@ -1,16 +1,11 @@
-const STATUS = {
-  present: "Present",
-  not_present: "Not present",
-  unknown: "Unknown / excluded",
-  unlabelled: "No manual label",
-};
-
-// Room states read as occupancy of a whole room.
-export const ROOM_STATUS = {
+// The one set of names for a presence status, wherever one is shown or chosen.
+export const STATUS_NAMES = {
   present: "Present",
   not_present: "Empty",
   unknown: "Unknown",
 };
+
+const STATUS = { ...STATUS_NAMES, unlabelled: "No manual label" };
 
 export const panelHistory = {
   _historyStateFor(id) {
@@ -105,7 +100,11 @@ export const panelHistory = {
       <div class="history-fields">
         <label>From<input data-action="history-start" type="datetime-local" step="1"></label>
         <label>To<input data-action="history-end" type="datetime-local" step="1"></label>
-        <label>Status<select data-action="history-state"><option value="present">Present</option><option value="not_present">Not present</option><option value="unknown">Unknown / exclude</option></select></label>
+        <label>Status<select data-action="history-state">${Object.entries(
+          STATUS_NAMES,
+        )
+          .map(([state, name]) => `<option value="${state}">${name}</option>`)
+          .join("")}</select></label>
       </div>
       <div class="history-buttons">
         <button type="button" data-action="history-apply" class="primary">${ui.edit ? "Save changes" : "Label time range"}</button>
@@ -335,7 +334,7 @@ export const panelHistory = {
         ...this._labelOverlaps(
           pick(group, "manual", state),
           pick(group, "sensor", other),
-          `room ${ROOM_STATUS[state]} vs sensor ${ROOM_STATUS[other]}`,
+          `room ${STATUS_NAMES[state]} vs sensor ${STATUS_NAMES[other]}`,
         ),
       );
     conflicts.push(...this._areaConflicts(gid, group, pick));

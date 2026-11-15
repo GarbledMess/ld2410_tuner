@@ -42,11 +42,11 @@ export const panelSources = {
       <div class="source-rows">${(config.sources || []).map((source, index) => this._sourceRowHtml(id, source, index, !!groupId)).join("")}</div>
       <button data-action="source-add" type="button" ${full ? `disabled aria-describedby="${limitId}"` : ""}>Add source</button>
       ${full ? `<p class="field-note" id="${limitId}">Up to 16 sources can be used. Remove one to add another.</p>` : ""}
-      <div class="storage-fields"><label class="source-negative"><input type="checkbox" data-source-negative ${config.mark_not_present ? "checked" : ""}> Mark “Not Present”</label>
+      <div class="storage-fields"><label class="source-negative"><input type="checkbox" data-source-negative ${config.mark_not_present ? "checked" : ""}> Mark “Empty”</label>
       <label>Source confidence (%)<input type="number" data-source-confidence min="1" max="100" value="${this._esc(config.confidence ?? 90)}" required></label></div>
       <div class="storage-fields"><label>Trim start of presence (seconds)<input type="number" data-source-buffer="start_buffer_seconds" min="0" max="3600" step="any" value="${this._esc(config.start_buffer_seconds ?? 10)}" required></label>
       <label>Trim end of presence (seconds)<input type="number" data-source-buffer="end_buffer_seconds" min="0" max="3600" step="any" value="${this._esc(config.end_buffer_seconds ?? 10)}" required></label></div>
-      <p class="muted">Trim removes seconds from each end of a source's presence. With Mark "Not Present", every source reporting absence labels the room empty.</p>
+      <p class="muted">Trim removes seconds from each end of a source's presence. With Mark "Empty", every source reporting absence labels the room empty.</p>
       <p class="muted">${this._esc(status)}${d.recording_enabled === false ? " Recording is paused." : ""}</p>
       ${(d.presence_sources?.readings || []).map((source) => this._sourceReadingHtml(source)).join("")}
       <button data-action="sources-save" type="button">Save presence sources</button></details>`;
@@ -58,7 +58,7 @@ export const panelSources = {
     const current = sources?.state || "unknown";
     if (current === "unknown")
       return "No external label; radar guessing continues.";
-    const label = current === "present" ? "Present" : "Not Present";
+    const label = current === "present" ? "Present" : "Empty";
     return `External label: ${label}.`;
   },
 

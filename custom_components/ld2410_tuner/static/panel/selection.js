@@ -35,7 +35,7 @@ export const panelSelection = {
       </div>
       <div class="selection-buttons">
         <button type="button" class="fb-btn" data-action="selection-label" data-label="present">Present</button>
-        <button type="button" class="fb-btn" data-action="selection-label" data-label="not_present">Not present</button>
+        <button type="button" class="fb-btn" data-action="selection-label" data-label="not_present">Empty</button>
         <button type="button" class="fb-btn" data-action="selection-label" data-label="unknown">Unknown</button>
         <button type="button" class="fb-btn" data-action="selection-exit">Exit</button>
       </div>

@@ -53,7 +53,7 @@ export const panelChart = {
       <div class="chart-canvas" data-chart-canvas="${id}"><div class="muted">Loading…</div></div>
       <div class="chart-legend">
         <span><i class="swatch present"></i>Present (labelled)</span>
-        <span><i class="swatch not_present"></i>Not present (labelled)</span>
+        <span><i class="swatch not_present"></i>Empty (labelled)</span>
         <span><i class="swatch unknown"></i>Unknown (labelled)</span>
         <span><i class="lineswatch current"></i>Current threshold</span>
         <span><i class="lineswatch learned"></i>Learned threshold</span>

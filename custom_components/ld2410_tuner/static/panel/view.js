@@ -330,11 +330,22 @@ export const panelView = {
         .room-estimate { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
         .room-conflicts ul { margin:6px 0 0; }
         .room-conflicts li span { overflow-wrap:anywhere; }
-        .bulk-radars { border:1px solid var(--divider-color,#ddd); border-radius:8px; margin:12px 0; padding:8px 12px; min-width:0; }
-        .bulk-tree { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:8px 16px; }
-        .bulk-children { display:flex; flex-direction:column; gap:2px; margin:2px 0 0 22px; }
-        .bulk-item { display:flex; gap:6px; align-items:center; overflow-wrap:anywhere; }
-        .bulk-actions, .bulk-templates { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin:8px 0; }
+        .bulk-labels-card > summary { cursor:pointer; min-height:44px; align-content:center; }
+        .bulk-labels-card > summary h2 { display:inline; margin:0 0 6px; font-size:16px; }
+        .bulk-step { border-top:1px solid var(--divider-color); padding-top:12px; margin-top:12px; }
+        .bulk-step h3 { margin:0 0 8px; font-size:15px; }
+        .bulk-step-head { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; }
+        .bulk-step-head h3 { margin:0; }
+        .bulk-quick, .bulk-saved, .bulk-save { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; }
+        .bulk-selections { display:flex; flex-wrap:wrap; gap:8px 24px; margin-top:8px; }
+        .bulk-saved, .bulk-save { flex:1 1 300px; flex-wrap:nowrap; }
+        .bulk-saved label, .bulk-save label { display:flex; flex-direction:column; gap:4px; flex:1 1 auto; min-width:0; }
+        .bulk-saved button, .bulk-save button { flex:none; }
+        .bulk-tree { border:1px solid var(--divider-color,#ddd); border-radius:8px; padding:8px 12px; display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px 16px; }
+        .bulk-room > .bulk-item, .bulk-room > .muted { font-weight:600; }
+        .bulk-children { display:flex; flex-direction:column; gap:2px; margin:2px 0 0 24px; }
+        .bulk-item { display:flex; gap:8px; align-items:center; min-height:32px; overflow-wrap:anywhere; }
+        .bulk-count { margin:12px 0 8px; }
         ${CARD_STYLES}
         ${RECORDED_STYLES}
       </style>
@@ -360,7 +371,7 @@ export const panelView = {
           <p>Label a room or zone when it is occupied or empty; its radars learn from it. A zone inside a room makes the room occupied. See the README for how labels combine.</p>
         </details>
         <details id="bulk-labels" class="panel-card bulk-labels-card">
-          <summary><h2>Label several rooms and radars</h2><span class="section-description">Mark one period on any number of rooms, zones and radars at once.</span></summary>
+          <summary><h2>Label a time period</h2><span class="section-description">Mark when rooms were occupied or empty, many at once.</span></summary>
           <div data-bulk-content></div>
         </details>
         <div id="layout"></div>

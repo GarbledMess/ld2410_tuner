@@ -8,9 +8,20 @@ module.exports = async function testBulkLabels(page) {
     window.bulkBefore = structuredClone(fixture);
     window.bulkWS = panel._hass.callWS;
     delete fixture.label_selections;
+    // c sits in an area with no room (it records nothing); d is in no area at all.
+    fixture.devices.d = {
+      ...structuredClone(fixture.devices.c),
+      name: "Room d",
+    };
+    fixture.devices.c.recording_enabled = false;
     fixture.rooms = {
-      areas: { lounge: "Lounge" },
-      members: {},
+      areas: { lounge: "Lounge", hall: "Hall" },
+      members: {
+        a: { name: "Room a", area_id: "lounge", recording_enabled: true },
+        b: { name: "Room b", area_id: "lounge", recording_enabled: true },
+        c: { name: "Room c", area_id: "hall", recording_enabled: false },
+        d: { name: "Room d", area_id: null, recording_enabled: true },
+      },
       groups: {
         "area:lounge": {
           name: "Lounge",
@@ -78,13 +89,20 @@ module.exports = async function testBulkLabels(page) {
   );
   assert.equal(
     await card.locator("[data-bulk-radar]").count(),
-    3,
+    4,
     "every radar",
   );
   assert.deepEqual(
     await ticked(),
-    { groups: ["area:lounge"], radars: ["c"] },
-    "every room the first time, and the radar in no room",
+    { groups: ["area:lounge"], radars: ["d"] },
+    "every room the first time, and the recording radar in no area",
+  );
+  const hall = card.locator('[data-bulk-area="hall"]');
+  assert.match(await hall.innerText(), /Hall/);
+  assert.match(
+    await hall.innerText(),
+    /Room c \(not recording\)/,
+    "a radar is listed under its area even where the area has no room",
   );
   const room = card.locator('[data-bulk-node="area:lounge"]');
   assert.equal(await room.locator('[data-bulk-group="zone:sofa"]').count(), 1);
@@ -95,32 +113,52 @@ module.exports = async function testBulkLabels(page) {
   );
 
   await page.evaluate(async () => {
-    window.bulkGone = fixture.devices.c;
-    delete fixture.devices.c;
+    window.bulkGone = fixture.devices.d;
+    delete fixture.devices.d;
     await panel._load();
-    fixture.devices.c = bulkGone;
+    fixture.devices.d = bulkGone;
     await panel._load();
   });
   assert.deepEqual(
     (await ticked()).radars,
-    ["c"],
+    ["d"],
     "until a selection is chosen, a radar that comes back is ticked too",
   );
 
+  // As every other label editor: a Status dropdown, then "Label time range". Choosing a
+  // status alone sends nothing.
+  const mark = async (state) => {
+    const before = (await sent()).length;
+    await card.locator('[data-role="bulk-state"]').selectOption(state);
+    assert.equal(
+      (await sent()).length,
+      before,
+      "choosing a status sends nothing",
+    );
+    await card.locator('[data-action="bulk-apply"]').click();
+  };
+  assert.equal(
+    await card.locator('[data-action="bulk-apply"]').innerText(),
+    "Label time range",
+  );
+  assert.deepEqual(
+    await card.locator('[data-role="bulk-state"] option').allInnerTexts(),
+    ["Present", "Empty", "Unknown"],
+  );
   const sent = () =>
     page.evaluate(() =>
       requests.filter((m) => m.type.endsWith("label_several")),
     );
   await card.locator('[data-bulk-group="zone:sofa"]').check();
-  await card.locator('[data-bulk-radar="c"]').uncheck();
+  await card.locator('[data-bulk-radar="d"]').uncheck();
   await card.locator('[data-role="bulk-from"]').fill("2026-11-10T09:00");
   await card.locator('[data-role="bulk-to"]').fill("2026-11-10T08:00");
-  await card.locator('[data-bulk-state="not_present"]').click();
+  await mark("not_present");
   assert.equal((await sent()).length, 0, "an end before the start is refused");
   assert.match(await card.locator('[role="status"]').innerText(), /after/);
 
   await card.locator('[data-role="bulk-to"]').fill("2026-11-10T10:30");
-  await card.locator('[data-bulk-state="not_present"]').click();
+  await mark("not_present");
   await page.waitForFunction(() =>
     requests.some((m) => m.type.endsWith("label_several")),
   );
@@ -153,7 +191,7 @@ module.exports = async function testBulkLabels(page) {
 
   await card.locator('[data-action="bulk-none"]').click();
   assert.deepEqual(await ticked(), { groups: [], radars: [] });
-  await card.locator('[data-bulk-state="present"]').click();
+  await mark("present");
   assert.equal((await sent()).length, 1, "nothing ticked, nothing sent");
 
   await card.locator('[data-bulk-radar="b"]').check();

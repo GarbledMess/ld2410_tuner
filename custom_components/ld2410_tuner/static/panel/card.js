@@ -1,3 +1,5 @@
+import { STATUS_NAMES } from "./history.js";
+
 export const panelCards = {
   _createCard(id, d, previousCard, placement, options = {}) {
     d = this._learningView(id, d);
@@ -127,17 +129,17 @@ export const panelCards = {
     const expiry = d.training_expires_at
       ? `<span class="area">Expires ${this._timeLeft(d.training_expires_at)}</span>`
       : "";
-    return `<div class="training"><label>Presence now</label><select data-action="state" ${lock}><option value="unknown" ${state === "unknown" ? "selected" : ""}>UNKNOWN</option><option value="present" ${state === "present" ? "selected" : ""}>PRESENT</option><option value="not_present" ${state === "not_present" ? "selected" : ""}>NOT PRESENT</option></select><label>Keep label for</label><div class="duration"><input data-action="timeout-hours" ${lock} aria-label="Label duration in hours" type="number" min="0" step="1" inputmode="numeric" placeholder="Hours"><span>h</span><input data-action="timeout-minutes" ${lock} aria-label="Label duration in minutes" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="Minutes"><span>m</span></div>${expiry}${reason}</div>`;
+    return `<div class="training"><label>Presence now</label><select data-action="state" ${lock}><option value="unknown" ${state === "unknown" ? "selected" : ""}>${STATUS_NAMES.unknown}</option><option value="present" ${state === "present" ? "selected" : ""}>${STATUS_NAMES.present}</option><option value="not_present" ${state === "not_present" ? "selected" : ""}>${STATUS_NAMES.not_present}</option></select><label>Keep label for</label><div class="duration"><input data-action="timeout-hours" ${lock} aria-label="Label duration in hours" type="number" min="0" step="1" inputmode="numeric" placeholder="Hours"><span>h</span><input data-action="timeout-minutes" ${lock} aria-label="Label duration in minutes" type="number" min="0" max="59" step="1" inputmode="numeric" placeholder="Minutes"><span>m</span></div>${expiry}${reason}</div>`;
   },
 
   _autoInfo(auto) {
     const al = auto.last;
     const autoState = al?.state || "unknown";
-    let autoPill = "AUTO NOT PRESENT";
+    let autoPill = "AUTO EMPTY";
     if (autoState === "unknown") autoPill = "UNKNOWN";
     else if (autoState === "present") autoPill = "AUTO PRESENT";
     if (al?.basis === "external" && autoState !== "unknown")
-      autoPill = `SOURCE ${autoState === "present" ? "PRESENT" : "NOT PRESENT"}`;
+      autoPill = `SOURCE ${autoState === "present" ? "PRESENT" : "EMPTY"}`;
     const canFeedback =
       al?.basis !== "external" &&
       (autoState === "present" || autoState === "not_present");
@@ -158,7 +160,7 @@ export const panelCards = {
       );
     if (calib.absent_bias)
       calibBits.push(
-        `not present threshold +${Number(calib.absent_bias).toFixed(2)}`,
+        `empty threshold +${Number(calib.absent_bias).toFixed(2)}`,
       );
     return calibBits.length
       ? ` · Calibration from feedback: ${calibBits.join(", ")}`
@@ -183,7 +185,7 @@ export const panelCards = {
         "adaptive-guided": "Age-weighted room references",
         "human-guided": "Labelled examples",
       }[al?.basis] || "Background estimate";
-    return `<div class="auto-head"><span class="pill ${autoState}">${autoPill}</span><span class="muted">Confidence-weighted time; human labels take priority</span></div><div class="auto-details"><div><span>Estimated confidence</span>${confidence}</div><div><span>Evidence source</span>${source}</div><div><span>Segments</span>${auto.segments || 0}</div></div><div class="muted" style="margin-top:7px">${this._esc(top)}</div><div class="muted">${auto.observations || 0} estimates stored. Confidence is an estimate, not measured accuracy.</div>${this._referenceHtml(auto, info.refreshing)}<div class="feedback-row"><span class="muted">Was this reading right?</span><button class="fb-btn correct" data-action="auto-feedback" data-correct="true" ${canFeedback ? "" : "disabled"}>✓ Correct</button><button class="fb-btn incorrect" data-action="auto-feedback" data-correct="false" ${canFeedback ? "" : "disabled"}>✗ Incorrect</button></div><div class="muted" style="margin-top:5px">Feedback accuracy — present: ${this._feedbackText(auto.feedback, "present")}, not present: ${this._feedbackText(auto.feedback, "not_present")}${calibNote}</div>`;
+    return `<div class="auto-head"><span class="pill ${autoState}">${autoPill}</span><span class="muted">Confidence-weighted time; human labels take priority</span></div><div class="auto-details"><div><span>Estimated confidence</span>${confidence}</div><div><span>Evidence source</span>${source}</div><div><span>Segments</span>${auto.segments || 0}</div></div><div class="muted" style="margin-top:7px">${this._esc(top)}</div><div class="muted">${auto.observations || 0} estimates stored. Confidence is an estimate, not measured accuracy.</div>${this._referenceHtml(auto, info.refreshing)}<div class="feedback-row"><span class="muted">Was this reading right?</span><button class="fb-btn correct" data-action="auto-feedback" data-correct="true" ${canFeedback ? "" : "disabled"}>✓ Correct</button><button class="fb-btn incorrect" data-action="auto-feedback" data-correct="false" ${canFeedback ? "" : "disabled"}>✗ Incorrect</button></div><div class="muted" style="margin-top:5px">Feedback accuracy — present: ${this._feedbackText(auto.feedback, "present")}, empty: ${this._feedbackText(auto.feedback, "not_present")}${calibNote}</div>`;
   },
 
   _referenceHtml(auto, refreshing) {
@@ -233,6 +235,6 @@ export const panelCards = {
       0,
     );
     const { rows, mobile } = this._gateTables(d);
-    return `<div class="stats"><div class="stat">Human gate samples · present<b>${totalPresent}</b></div><div class="stat">Human gate samples · absent<b>${totalAbsent}</b></div></div><div class="table-scroll"><table><thead><tr><th>Gate</th><th>Move now</th><th>Move learned</th><th>Move P/N</th><th>Still now</th><th>Still learned</th><th>Still P/N</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="mobile-gates">${mobile.join("")}</div>`;
+    return `<div class="stats"><div class="stat">Human gate samples · present<b>${totalPresent}</b></div><div class="stat">Human gate samples · empty<b>${totalAbsent}</b></div></div><div class="table-scroll"><table><thead><tr><th>Gate</th><th>Move now</th><th>Move learned</th><th>Move P/N</th><th>Still now</th><th>Still learned</th><th>Still P/N</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="mobile-gates">${mobile.join("")}</div>`;
   },
 };

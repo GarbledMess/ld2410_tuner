@@ -45,7 +45,7 @@ export const panelLearning = {
     });
     return `<div class="evidence-conflict"><b>Earlier sample-based assessment: occupied and empty readings overlap.</b>
       <p>Under the earlier model’s sample limits, no gate combination met both raw-crossing targets. This does not assess the current time-based cost, radar hold or firmware filters. ${this._esc(explanation)}</p>
-      <p>Review the highlighted periods. Correct a label only if you know it is wrong; choose Unknown / exclude when occupancy is uncertain. If the empty label is correct (including dog-only activity), keep it: excluding it would hide false triggers.</p>
+      <p>Review the highlighted periods. Correct a label only if you know it is wrong; choose Unknown when occupancy is uncertain. If the empty label is correct (including dog-only activity), keep it: excluding it would hide false triggers.</p>
       <div class="review-periods">${periods.join(" ")}</div></div>`;
   },
 
@@ -283,7 +283,7 @@ export const panelLearning = {
         : "";
     return `${influence}<details class="evidence-review" data-detail="evidence-review"><summary>Review ${review.period_count} ${review.period_count === 1 ? "period that disagrees with its label" : "periods that disagree with their labels"}<span class="section-description">Label disagreements that may affect learning.</span></summary>
       <p>These are review suggestions, not proof of incorrect labels. Brief activity could be a person, a pet or noise; energy readings alone cannot tell which. No period below was automatically excluded.</p>
-      <p>Open a period on the graph, check its times, then correct its status or choose Unknown / exclude. Learn again after saving.</p>
+      <p>Open a period on the graph, check its times, then correct its status or choose Unknown. Learn again after saving.</p>
       <ul class="review-periods">${review.periods.map((period) => this._reviewPeriodHtml(period)).join("")}</ul>
       ${this._paragraphHtml(limited)}
       <details data-detail="review-sessions"><summary>By recording session<span class="section-description">Disagreements grouped by recording session.</span></summary><ul>${this._listItemsHtml(sessions)}</ul></details></details>`;

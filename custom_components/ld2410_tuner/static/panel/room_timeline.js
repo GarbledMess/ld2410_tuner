@@ -3,7 +3,7 @@
 // "Seen by" chips of each occupied episode (4.3), the room estimate with
 // "Was this right?" (4.4) and the room presence sources (4.5). Timeline state
 // lives in the shared history state under "room:<group id>".
-import { ROOM_STATUS } from "./history.js";
+import { STATUS_NAMES } from "./history.js";
 
 // "high" attribution confidence; below it a chip reads "low".
 const HIGH_CONFIDENCE = 0.8;
@@ -35,7 +35,7 @@ export const panelRoomTimeline = {
       .map((label) => this._roomPeriodHtml(label))
       .join("");
     const fields = this._roomFieldValues(ui);
-    const options = Object.entries(ROOM_STATUS)
+    const options = Object.entries(STATUS_NAMES)
       .map(
         ([state, name]) =>
           `<option value="${state}" ${fields.state === state ? "selected" : ""}>${name}</option>`,
@@ -104,7 +104,7 @@ export const panelRoomTimeline = {
     const to = new Date(label.end * 1000).toLocaleString();
     return `<button type="button" class="history-period" data-room-label-action="edit" data-start="${Number(label.start)}" data-end="${Number(label.end)}">
       <span>${this._esc(from)} → ${this._esc(to)}</span>
-      <b class="history-status ${this._esc(label.state)}">${this._esc(ROOM_STATUS[label.state])}</b><span>Edit</span>
+      <b class="history-status ${this._esc(label.state)}">${this._esc(STATUS_NAMES[label.state])}</b><span>Edit</span>
     </button>`;
   },
 
@@ -166,7 +166,7 @@ export const panelRoomTimeline = {
   _roomEstimateHtml(gid, group) {
     const estimate = group.estimate;
     if (!estimate) return "";
-    return `<div class="room-estimate notice">Room estimate: ${ROOM_STATUS[estimate.state]} (${Math.round(estimate.confidence * 100)}%) since ${this._esc(this._historyTime(estimate.start))}. Was this right?
+    return `<div class="room-estimate notice">Room estimate: ${STATUS_NAMES[estimate.state]} (${Math.round(estimate.confidence * 100)}%) since ${this._esc(this._historyTime(estimate.start))}. Was this right?
       <button type="button" class="fb-btn correct" data-room-estimate="true">Yes</button>
       <button type="button" class="fb-btn incorrect" data-room-estimate="false">No</button></div>`;
   },
@@ -189,9 +189,7 @@ export const panelRoomTimeline = {
       return "";
     const name = this._esc(device.name || "this radar");
     const count = device.history?.labels?.length || 0;
-    const live = { present: "Present", not_present: "Not present" }[
-      device.training_state
-    ];
+    const live = STATUS_NAMES[device.training_state];
     const parts = [
       live && device.training_label_start != null
         ? `${name} has a live ${live} label of its own, which takes priority.`
@@ -326,7 +324,7 @@ export const panelRoomTimeline = {
     ).value;
     if (
       !confirm(
-        `${edit ? "Update this saved room period" : "Label this room range"} as ${ROOM_STATUS[state]}? Overlapping manual room labels in the chosen range will be replaced.`,
+        `${edit ? "Update this saved room period" : "Label this room range"} as ${STATUS_NAMES[state]}? Overlapping manual room labels in the chosen range will be replaced.`,
       )
     )
       return;
