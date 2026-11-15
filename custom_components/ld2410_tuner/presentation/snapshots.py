@@ -21,7 +21,8 @@ from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
 from ..history import pace, policy, recording, storage
 from ..presence import bermuda, rebuilds, sources
 from ..rooms import jobs as room_jobs
-from ..rooms import layout, seen_by
+from ..rooms import layout
+from ..rooms import seen_by as room_seen_by
 from ..runtime import bulk_labels, exclusion, history_save
 from ..runtime.schedule import settings
 from ..worker import bridge, codec
@@ -107,7 +108,7 @@ def _recorded_days(runtime, device_id):
     return export_files.day_files(runtime._days, device_id)
 
 
-def snapshot(runtime, room_label_tokens=None) -> dict[str, Any]:
+def snapshot(runtime, room_label_tokens=None, seen_by=None) -> dict[str, Any]:
     registry = er.async_get(runtime.hass)
     runtime.refresh_devices(registry)
     result = {
@@ -145,7 +146,8 @@ def snapshot(runtime, room_label_tokens=None) -> dict[str, Any]:
         {key: item["area_id"] for key, item in members.items()},
     )
     result["learning_sets"] = room_jobs.learning_sets(runtime, definitions)
-    result["room_attribution"] = seen_by.snapshot(runtime, definitions)
+    shown = None if seen_by is None else set(seen_by)
+    result["room_attribution"] = room_seen_by.snapshot(runtime, definitions, shown)
     _known_room_labels(result["rooms"].get("groups", {}), room_label_tokens or {})
     return result
 

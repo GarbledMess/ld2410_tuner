@@ -147,14 +147,16 @@ export const panelActivity = {
     const tokens = Object.fromEntries(
       Object.entries(kept).map(([gid, item]) => [gid, item.token]),
     );
+    // "Seen by" shows only inside an open room: the server attributes no other room.
+    const seenBy = { seen_by: [...(this._groupOpen || [])] };
     const known = Object.keys(tokens).length
-      ? { room_label_tokens: tokens }
-      : {};
+      ? { room_label_tokens: tokens, ...seenBy }
+      : seenBy;
     let data = await this._call("snapshot", known);
     let restored = this._restoreRoomLabels(data, kept);
     if (!restored) {
       // Never draw a room without its labels: ask again for every room's labels.
-      data = await this._call("snapshot");
+      data = await this._call("snapshot", seenBy);
       restored = this._restoreRoomLabels(data, {});
     }
     this._roomLabelCache = restored;

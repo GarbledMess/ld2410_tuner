@@ -4,7 +4,8 @@ Chips come from ``attribution.radar_attribution``, the function the learner's
 ``room_targets`` and ``auto_targets`` use, so they show what training uses.
 
 Cost: attribution reads every member's full history, and the snapshot is polled every few
-seconds. Each group's result is cached against a signature of its inputs (group definitions,
+seconds. Only the groups open on the panel (the snapshot's ``seen_by``) are checked; a
+closed group costs nothing until it is opened. Each group's result is cached against a signature of its inputs (group definitions,
 manual and sensor room label revisions of the related groups, member label revisions and
 live-training fields, and every member's stored history block set). A poll only compares
 signatures; on a mismatch it copies each member's history view on the event loop (list
@@ -278,21 +279,29 @@ def _stale(entry, current, now):
     return changed and now - entry["built_at"] >= HISTORY_REBUILD_SECONDS
 
 
-def snapshot(runtime, definitions) -> dict[str, list]:
-    """``{group_id: episodes}`` from the cache, starting a rebuild where inputs changed."""
+def snapshot(runtime, definitions, shown=None) -> dict[str, list]:
+    """``{group_id: episodes}`` from the cache, starting a rebuild where inputs changed. Only
+    the groups ``shown`` (None: every group) are checked and rebuilt: "Seen by" appears only
+    inside a room open on the panel, so a closed room keeps its last result and costs no
+    work until it is opened again."""
     cache = runtime._room_attribution
     for key in set(cache) - set(definitions):
         cache.pop(key)
     now = _clock()
-    result = {}
     for group_id in definitions:
-        current = signature(runtime, definitions, group_id)
-        entry = cache.get(group_id)
-        if _stale(entry, current, now):
-            _refresh(runtime, definitions, group_id, current, now)
-            entry = cache.get(group_id)
-        result[group_id] = entry["episodes"] if entry else []
-    return result
+        if shown is None or group_id in shown:
+            _check(runtime, definitions, group_id, now)
+    return {
+        group_id: cache[group_id]["episodes"] if group_id in cache else []
+        for group_id in definitions
+    }
+
+
+def _check(runtime, definitions, group_id, now):
+    """Start a rebuild of ``group_id`` where its inputs changed."""
+    current = signature(runtime, definitions, group_id)
+    if _stale(runtime._room_attribution.get(group_id), current, now):
+        _refresh(runtime, definitions, group_id, current, now)
 
 
 def _has_recording(runtime, definitions, group_id):

@@ -15,9 +15,12 @@ def _websocket_routes():
     return [
         (
             "snapshot",
-            {vol.Optional("room_label_tokens", default=None): vol.Any({str: str}, None)},
+            {
+                vol.Optional("room_label_tokens", default=None): vol.Any({str: str}, None),
+                vol.Optional("seen_by", default=None): vol.Any([str], None),
+            },
             "snapshot",
-            ("room_label_tokens",),
+            ("room_label_tokens", "seen_by"),
             None,
             False,
         ),

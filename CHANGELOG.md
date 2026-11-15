@@ -1,5 +1,12 @@
 # Release notes
 
+## 1.39.1 - 2026-11-15
+
+- The main worker no longer works on **Seen by** for rooms that are closed. While the panel
+  was open, every room and zone re-attributed its last 72 hours every five minutes, though
+  **Seen by** only shows inside an open room; now only the rooms open on the panel are
+  attributed, and a closed room keeps its last result until it is opened again.
+
 ## 1.39.0 - 2026-11-15
 
 - **Label several rooms and radars**, a new card, labels one period Present, Not present or

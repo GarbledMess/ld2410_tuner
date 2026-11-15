@@ -541,6 +541,36 @@ class RoomAttributionTests(unittest.IsolatedAsyncioTestCase):
             await self.poll()
             self.assertEqual(len(spy.call_args_list), 10, "a label change never waits")
 
+    async def test_only_the_rooms_open_on_the_panel_are_attributed(self):
+        """Regression: every poll attributed every room, so the worker never rested while
+        the panel was open, though "Seen by" shows only inside an open room."""
+        from tuner_under_test.rooms import room_labels, seen_by
+
+        self.office()
+        starts = self.record(3)
+
+        async def poll(open_groups):
+            snapshot = self.runtime.snapshot(seen_by=open_groups)
+            await asyncio.gather(*self.runtime._room_attribution_jobs.values())
+            return snapshot
+
+        with patch.object(seen_by, "build", wraps=seen_by.build) as spy:
+            closed = await poll([])
+            self.assertEqual(self.built(spy), [], "nothing open, nothing attributed")
+            self.assertEqual(closed["room_attribution"][self.zone], [])
+            await poll([self.zone])
+            self.assertEqual(self.built(spy), [self.zone], "only the open room")
+            shown = (await poll([self.zone]))["room_attribution"][self.zone]
+            self.assertEqual(len(shown), 3)
+            room_labels.label_room_range(
+                self.runtime, self.zone, starts[0], starts[0] + 6, "unknown"
+            )
+            kept = (await poll([]))["room_attribution"][self.zone]
+            self.assertEqual(kept, shown, "a closed room keeps its last result")
+            self.assertEqual(self.built(spy), [self.zone], "and is not rebuilt")
+            await poll([self.zone])
+            self.assertEqual(self.built(spy), [self.zone, self.zone], "reopened, it catches up")
+
     async def test_a_shared_radar_is_attributed_once_for_all_the_groups_of_a_poll(self):
         """Regression: a poll that finds several groups stale prepared every group's views before
         any build had landed, so a radar in three groups was attributed three times in a row."""
