@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.39.4 - 2026-11-16
+
+- A range selected on a radar's graph is labelled like everywhere else: From, To and a
+  Status dropdown, then **Label time range** (or **Cancel**). Choosing a status no longer
+  labels the range at once.
+
 ## 1.39.3 - 2026-11-16
 
 - Learn leaves out presence only move gates see without repeating the same interval work

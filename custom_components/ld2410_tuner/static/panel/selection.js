@@ -1,4 +1,5 @@
 import { CHART_W, CHART_MARGIN } from "./constants.js";
+import { STATUS_NAMES } from "./history.js";
 
 export const panelSelection = {
   _toLocalInputValue(ts) {
@@ -28,16 +29,24 @@ export const panelSelection = {
         <button type="button" class="fb-btn" data-action="selection-cancel">Cancel</button>
       </div>`;
     }
+    // As every other label editor: From, To and a Status dropdown, then "Label time range".
+    const state = cs.selectionState || "present";
     return `<div class="selection-toolbar selection-panel">
-      <div class="history-fields" style="grid-template-columns:1fr 1fr;">
+      <div class="history-fields">
         <label>From<input type="datetime-local" data-role="selection-from" value="${this._toLocalInputValue(cs.selection.start)}"></label>
         <label>To<input type="datetime-local" data-role="selection-to" value="${this._toLocalInputValue(cs.selection.end)}"></label>
+        <label>Status<select data-role="selection-state">${Object.entries(
+          STATUS_NAMES,
+        )
+          .map(
+            ([value, name]) =>
+              `<option value="${value}" ${value === state ? "selected" : ""}>${name}</option>`,
+          )
+          .join("")}</select></label>
       </div>
-      <div class="selection-buttons">
-        <button type="button" class="fb-btn" data-action="selection-label" data-label="present">Present</button>
-        <button type="button" class="fb-btn" data-action="selection-label" data-label="not_present">Empty</button>
-        <button type="button" class="fb-btn" data-action="selection-label" data-label="unknown">Unknown</button>
-        <button type="button" class="fb-btn" data-action="selection-exit">Exit</button>
+      <div class="history-buttons">
+        <button type="button" class="primary" data-action="selection-apply">Label time range</button>
+        <button type="button" data-action="selection-exit">Cancel</button>
       </div>
     </div>`;
   },
@@ -275,25 +284,30 @@ export const panelSelection = {
           toInput.value = this._toLocalInputValue(cs.selection.end);
       };
 
-    container
-      .querySelectorAll('[data-action="selection-label"]')
-      .forEach((btn) => {
-        btn.onclick = () =>
-          this._action(btn, async () => {
-            const { start, end } = cs.selection;
-            await this._call("label_history", {
-              device_id: id,
-              start: Math.floor(start),
-              end: Math.floor(end),
-              state: btn.dataset.label,
-            });
-            cs.selection = null;
-            cs.panelOpen = false;
-            cs.data = null;
-            cs.cache?.clear();
-            await this._load(true);
+    const stateSelect = container.querySelector(
+      '[data-role="selection-state"]',
+    );
+    if (stateSelect)
+      stateSelect.onchange = () => {
+        cs.selectionState = stateSelect.value;
+      };
+    const applyBtn = container.querySelector('[data-action="selection-apply"]');
+    if (applyBtn)
+      applyBtn.onclick = () =>
+        this._action(applyBtn, async () => {
+          const { start, end } = cs.selection;
+          await this._call("label_history", {
+            device_id: id,
+            start: Math.floor(start),
+            end: Math.floor(end),
+            state: cs.selectionState || "present",
           });
-      });
+          cs.selection = null;
+          cs.panelOpen = false;
+          cs.data = null;
+          cs.cache?.clear();
+          await this._load(true);
+        });
   },
 
   _updateGateChipHighlight(card, gate) {

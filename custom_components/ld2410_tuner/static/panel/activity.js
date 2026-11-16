@@ -88,7 +88,7 @@ export const panelActivity = {
         "refresh-references": "Queueing a reference refresh…",
         "history-apply": "Saving presence labels…",
         "history-remove": "Removing presence label…",
-        "selection-label": "Saving presence labels…",
+        "selection-apply": "Saving presence labels…",
       }[action] || "Saving training settings…"
     );
   },
