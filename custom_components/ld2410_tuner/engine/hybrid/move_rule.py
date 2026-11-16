@@ -69,6 +69,22 @@ def _subtract(spans, cut):
     return _intersect(_merged(spans), _complement(_merged(cut)))
 
 
+def _outside(start, end, covered, ends):
+    """``[start, end)`` less the merged ``covered`` spans (``ends`` their ends): what
+    ``_subtract`` gives for one span, reading only the covered spans it overlaps."""
+    out, cursor = [], start
+    index = bisect_right(ends, start)
+    while index < len(covered) and covered[index][0] < end:
+        low, high = covered[index]
+        if low > cursor:
+            out.append((cursor, low))
+        cursor = max(cursor, high)
+        index += 1
+    if cursor < end:
+        out.append((cursor, end))
+    return out
+
+
 def _zone_empty(zone):
     """(trusted empty, of which human) for one zone."""
     human = _merged((s.start, s.end) for s in zone.truth if s.source == "human")
@@ -336,6 +352,7 @@ def still_truth(problem, plan):
     zones = []
     for zone in problem.zones:
         covered = _merged(i for r in zone.members for i in plan.coverage.get(r, ()))
+        ends = [high for _, high in covered]
         truth = []
         for span in zone.truth:
             if span.state != "present" or not covered:
@@ -343,7 +360,7 @@ def still_truth(problem, plan):
                 continue
             truth += [
                 replace(span, start=a, end=b)
-                for a, b in _subtract([(span.start, span.end)], covered)
+                for a, b in _outside(span.start, span.end, covered, ends)
             ]
         zones.append(replace(zone, truth=tuple(truth)))
     return replace(problem, zones=tuple(zones))

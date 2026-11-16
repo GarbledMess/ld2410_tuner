@@ -282,3 +282,22 @@ def test_empty_noise_reads_only_cells_wholly_inside_the_label():
     # and the cell straddling each empty end holds the next arrival's burst (80).
     shifted = [span(s.start + 3, s.end + 3, s.state) for s in truth]
     assert move_thresholds(problem(rows, shifted))["r"][0] == 40
+
+
+def test_a_span_cut_by_coverage_matches_subtracting_it_whole():
+    """still_truth cuts each present span by the merged coverage (binary search); the result
+    is exactly ``_subtract`` of that span, edges and touching intervals included."""
+    from tuner_under_test.engine.hybrid import move_rule
+
+    rng = random.Random(11)
+    for _ in range(400):
+        raw = [
+            (a, a + rng.choice((0, 1, 2, 5, 9)))
+            for a in (rng.randint(0, 120) for _ in range(rng.randint(0, 12)))
+        ]
+        covered = move_rule._merged(raw)
+        ends = [b for _, b in covered]
+        a = rng.randint(-5, 125)
+        b = a + rng.choice((0, 1, 3, 10, 40, 200))
+        expected = move_rule._subtract([(a, b)], covered)
+        assert move_rule._outside(a, b, covered, ends) == expected, (a, b, covered)

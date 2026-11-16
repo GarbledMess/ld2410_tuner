@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.39.3 - 2026-11-16
+
+- Learn leaves out presence only move gates see without repeating the same interval work
+  for every labelled period: on a real recording a two-radar room's cold Learn used 10%
+  less CPU (about 98 to 88 seconds on a desktop), with identical thresholds.
+
 ## 1.39.2 - 2026-11-15
 
 - One set of words for a presence status everywhere in the panel: **Present**, **Empty** and
