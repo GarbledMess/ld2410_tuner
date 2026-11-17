@@ -11,6 +11,7 @@ DEFAULTS = {
     "human_days": 30,
     "max_mib": 100,
 }
+TRIM_HEADROOM = 0.10  # Trim now without a target trims to 90% of the ceiling.
 
 
 def settings(data):

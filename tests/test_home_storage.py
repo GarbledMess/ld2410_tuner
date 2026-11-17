@@ -140,3 +140,58 @@ def test_an_impossible_storage_setting_is_refused_and_changes_nothing(play):
         assert home.runtime.data["storage_settings"] == before
 
     play(scenario)
+
+
+def test_raising_the_ceiling_is_kept_when_its_cleanup_fails(play):
+    from tuner_under_test.history import storage
+
+    async def scenario(home):
+        runtime = home.runtime
+        raised = {**runtime.data["storage_settings"]}
+        raised["max_mib"] = raised["max_mib"] + 50
+
+        async def cleanup_fails(*_args, **_kwargs):
+            raise OSError("worker could not stage a day")
+
+        with patch.object(storage, "_save_days", cleanup_fails):
+            with pytest.raises(WebsocketError, match="ceiling was saved.*could not stage a day"):
+                await home.ws("configure_storage", settings=raised)
+        assert runtime.data["storage_settings"]["max_mib"] == raised["max_mib"]
+        path = home.config / real_shape.STORE_FOLDER / f"{real_shape.DOMAIN}.data"
+        saved = json.loads(path.read_text(encoding="utf8"))["data"]
+        assert saved["storage_settings"]["max_mib"] == raised["max_mib"]
+
+    play(scenario)
+
+
+def test_a_worker_failure_reaches_the_panel_as_its_reason(play):
+    from tuner_under_test.history import storage
+
+    async def scenario(home):
+        async def cleanup_fails(*_args, **_kwargs):
+            raise TimeoutError("maintenance worker timed out")
+
+        with patch.object(storage, "_save_days", cleanup_fails):
+            with pytest.raises(WebsocketError, match="maintenance worker timed out"):
+                await home.ws("trim_storage")
+
+    play(scenario)
+
+
+def test_trim_without_a_target_leaves_headroom_below_the_ceiling(play):
+    from tuner_under_test.history import policy, storage
+
+    async def scenario(home):
+        ceiling = home.runtime.data["storage_settings"]["max_mib"] * policy.MIB
+        targets = []
+
+        async def record(_runtime, *, clean=False, target=None, **_kwargs):
+            targets.append(target)
+            return {}
+
+        with patch.object(storage, "_persist", record):
+            await home.ws("trim_storage")
+            await home.ws("trim_storage", target_mib=5)
+        assert targets == [int(ceiling * 0.9), 5 * policy.MIB]
+
+    play(scenario)

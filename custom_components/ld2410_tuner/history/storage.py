@@ -6,6 +6,7 @@ from copy import deepcopy
 
 from ..const import TRAINING_FIELDS
 from ..rooms import groups, membership
+from ..worker.supervisor import Busy, Closed
 from . import budget, commit, ingest, label_counts, pace, policy, summary_cache
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,17 +46,54 @@ def set_recording(runtime, device_id, enabled):
 
 async def configure(runtime, values):
     values = policy.validate(values)
-    return await _persist(runtime, values=values, clean=True)
+    if not _only_raises_ceiling(policy.settings(runtime.data), values):
+        return await _panel_errors(_persist(runtime, values=values, clean=True))
+    # A higher ceiling removes nothing, so it needs no cleanup to take effect. Keep it even
+    # when the cleanup fails: that failure is often the very reason for raising it.
+    async with runtime._storage_lock:
+        runtime.data["storage_settings"] = dict(values)
+        runtime._history_cache.clear()
+        await runtime.store.async_save(budget.copy_data(runtime.data))
+    try:
+        return await _persist(runtime, values=values, clean=True)
+    except (Busy, Closed):
+        raise
+    except Exception as error:
+        raise ValueError(
+            f"The {values['max_mib']:g} MiB ceiling was saved, but the cleanup could not "
+            f"finish: {_reason(error) or 'unknown error'}"
+        ) from error
+
+
+def _only_raises_ceiling(current, values):
+    return values["max_mib"] >= current["max_mib"] and all(
+        values[key] == current[key] for key in values if key != "max_mib"
+    )
 
 
 async def trim(runtime, target_mib=None):
     maximum = policy.settings(runtime.data)["max_mib"]
-    if target_mib is not None:
-        if type(target_mib) not in (int, float) or not 1 <= target_mib <= maximum:
-            raise ValueError("Trim target must be between 1 MiB and the configured limit")
-    return await _persist(
-        runtime, clean=True, target=None if target_mib is None else int(target_mib * policy.MIB)
-    )
+    if target_mib is None:
+        # Trimming to the ceiling itself leaves no room: the next recorded minutes would put
+        # every save back over it. Leave headroom unless the owner names a target.
+        target = int(maximum * policy.MIB * (1 - policy.TRIM_HEADROOM))
+    elif type(target_mib) not in (int, float) or not 1 <= target_mib <= maximum:
+        raise ValueError("Trim target must be between 1 MiB and the configured limit")
+    else:
+        target = int(target_mib * policy.MIB)
+    return await _panel_errors(_persist(runtime, clean=True, target=target))
+
+
+async def _panel_errors(work):
+    """Storage actions report worker and disk failures as their reason, not "Unknown error"."""
+    try:
+        return await work
+    except (Busy, Closed, ValueError):
+        raise
+    except Exception as error:
+        raise ValueError(
+            f"Storage cleanup could not finish: {_reason(error) or 'unknown error'}"
+        ) from error
 
 
 async def async_save(runtime):
