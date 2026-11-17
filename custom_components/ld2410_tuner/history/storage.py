@@ -90,7 +90,7 @@ async def _persist(runtime, *, values=None, clean=False, target=None, persist=Tr
 async def _record_failure(runtime, error, clean, values, target):
     if not clean and values is None and target is None:
         try:
-            await retry_failure(runtime)
+            await retry_failure(runtime, error)
         except Exception as retry_error:
             try:
                 error.add_note(f"Retry bookkeeping also failed: {retry_error}")
@@ -108,17 +108,14 @@ async def _prepare_and_save(runtime, values, clean, target, persist=True):
         if report is not None:
             if persist:
                 await runtime.store.async_save(candidate)
-            runtime._storage_status.pop("error", None)
-            runtime._storage_status.pop("blocked", None)
+            _clear_failure(runtime)
             runtime._storage_status.update(report)
             return report
-        if time.time() < runtime.data.get("maintenance_retry", {}).get("after", 0):
-            previous = runtime._storage_status.get("last_failure") or runtime._storage_status.get(
-                "error", "unknown failure"
-            )
+        retry = runtime.data.get("maintenance_retry", {})
+        if time.time() < retry.get("after", 0):
             raise budget.BudgetExceeded(
-                f"Storage maintenance is in failure backoff after {previous[:512]}; "
-                "Trim retries now"
+                f"{BACKOFF} after {_failure_cause(runtime, retry)}. Automatic cleanup retries "
+                f"at {_local_time(retry['after'])}; Trim now retries immediately."
             )
     return await _save_days(runtime, values, clean, target, persist)
 
@@ -251,6 +248,11 @@ def _accept_labels(runtime, prepared, keys):
         runtime._label_counts.pop(key, None)
 
 
+def _clear_failure(runtime):
+    for key in ("error", "blocked", "last_failure"):
+        runtime._storage_status.pop(key, None)
+
+
 def _record_maintenance(runtime, prepared, report, clean):
     if clean:
         for key, device in prepared["devices"].items():
@@ -258,8 +260,7 @@ def _record_maintenance(runtime, prepared, report, clean):
                 runtime.data["devices"][key]["history_cleanup"] = deepcopy(
                     device.get("history_cleanup", {})
                 )
-    runtime._storage_status.pop("error", None)
-    runtime._storage_status.pop("blocked", None)
+    _clear_failure(runtime)
     runtime._storage_status.update(report)
     if clean or report["removed_automatic"] or report["removed_human"]:
         runtime._storage_status["last_trim"] = report
@@ -389,18 +390,53 @@ def _accept_progress(runtime, prepared, result, clean):
         runtime.data["maintenance_progress"] = deepcopy(progress)
 
 
-async def retry_failure(runtime):
+async def retry_failure(runtime, error=None):
     """Persist the claim while the caller owns the storage lock."""
     saved = runtime.data.get("maintenance_retry", {})
     if time.time() < saved.get("after", 0):
         return
     delay = min(7 * policy.DAY, saved.get("delay", policy.DAY // 2) * 2)
-    runtime.data["maintenance_retry"] = {"delay": delay, "after": time.time() + delay}
+    runtime.data["maintenance_retry"] = backoff(delay, error)
     await runtime.store.async_save(budget.copy_data(runtime.data))
 
 
+BACKOFF = "Storage maintenance is in failure backoff"
+
+
+def backoff(delay, error=None):
+    """The persisted retry claim. It keeps the cause, so the message survives a restart."""
+    claim = {"delay": delay, "after": time.time() + delay}
+    reason = _reason(error)
+    if reason:
+        claim["reason"] = reason
+    return claim
+
+
+def _reason(error):
+    """``error`` as a cause: never a backoff refusal itself, which would nest on every save."""
+    if error is None or BACKOFF in str(error):
+        return None
+    text = str(error).strip() or type(error).__name__
+    return text[:512]
+
+
+def _failure_cause(runtime, retry):
+    for cause in (
+        retry.get("reason"),
+        runtime._storage_status.get("last_failure"),
+        runtime._storage_status.get("error"),
+    ):
+        if cause and BACKOFF not in cause:
+            return cause[:512].rstrip(". ")
+    return "an earlier failure (its details were not kept across a restart)"
+
+
+def _local_time(timestamp):
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
+
+
 def _failed_status(runtime, error, values, target):
-    if "failure backoff" not in str(error):
+    if BACKOFF not in str(error):
         runtime._storage_status["last_failure"] = str(error)
     runtime._storage_status.update(
         error=str(error),

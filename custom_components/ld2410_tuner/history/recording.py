@@ -83,10 +83,10 @@ async def async_clean_history(runtime, *, persist=True):
 
     try:
         report = await storage._persist(runtime, clean=True, persist=persist)
-    except (ValueError, OSError, WorkerFailed, TimeoutError):
+    except (ValueError, OSError, WorkerFailed, TimeoutError) as error:
         previous = runtime.data.get("maintenance_retry", {}).get("delay", CLEAN_EVERY // 2)
         delay = min(7 * CLEAN_EVERY, previous * 2)
-        runtime.data["maintenance_retry"] = {"delay": delay, "after": time.time() + delay}
+        runtime.data["maintenance_retry"] = storage.backoff(delay, error)
         await storage.save_directly(runtime)
         raise
     runtime.data.pop("maintenance_retry", None)
