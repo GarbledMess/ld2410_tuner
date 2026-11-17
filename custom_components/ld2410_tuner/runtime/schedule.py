@@ -10,8 +10,9 @@ from zoneinfo import ZoneInfoNotFoundError
 from homeassistant.core import callback
 from homeassistant.util import dt as dt_util
 
-from ..calibration import automatic
+from ..calibration import automatic, timeout_apply
 from ..calibration.service import LearningEvidenceChanged
+from ..calibration.timeout_suggestion import KEEP_PERCENT
 from ..history import storage
 from ..presence import rebuilds
 from ..worker import priority
@@ -31,6 +32,9 @@ def settings(runtime):
         "enabled": saved.get("enabled", False),
         "auto_apply": saved.get("auto_apply", True),
         "auto_apply_scope": saved.get("auto_apply_scope", "overnight"),
+        "timeout_apply": saved.get("timeout_apply", False),
+        "timeout_apply_scope": saved.get("timeout_apply_scope", "overnight"),
+        "timeout_keep": saved.get("timeout_keep", KEEP_PERCENT),
         "time": saved.get("time", "03:00"),
         "timezone": getattr(getattr(runtime.hass, "config", None), "time_zone", "UTC"),
         "last_day": saved.get("last_day"),
@@ -38,22 +42,44 @@ def settings(runtime):
     }
 
 
-def configure(runtime, enabled, at, auto_apply=None, auto_apply_scope=None):
+def _check_options(chosen):
+    """What Learn applies by itself, and the share of the best timeout's improvement kept."""
+    keep = chosen["timeout_keep"]
+    if keep is not None and (type(keep) is not int or not 50 <= keep <= 100):
+        raise ValueError("Keep between 50% and 100% of the best timeout's improvement")
+    for kind in ("auto_apply", "timeout_apply"):
+        if chosen[kind] is not None and not isinstance(chosen[kind], bool):
+            raise ValueError("Choose whether Learn applies its results automatically")
+        if chosen[f"{kind}_scope"] not in (None, "overnight", "all"):
+            raise ValueError("Choose overnight only or every completed Learn for automatic Apply")
+
+
+def configure(
+    runtime,
+    enabled,
+    at,
+    auto_apply=None,
+    auto_apply_scope=None,
+    timeout_apply=None,
+    timeout_apply_scope=None,
+    timeout_keep=None,
+):
     if (
         not isinstance(enabled, bool)
         or not isinstance(at, str)
         or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", at)
     ):
         raise ValueError("Choose an enabled state and a valid HH:MM time")
-    if auto_apply is not None and not isinstance(auto_apply, bool):
-        raise ValueError("Choose whether to automatically apply better results")
-    if auto_apply_scope is not None and auto_apply_scope not in ("overnight", "all"):
-        raise ValueError("Choose overnight only or every completed Learn for automatic Apply")
+    chosen = {
+        "auto_apply": auto_apply,
+        "auto_apply_scope": auto_apply_scope,
+        "timeout_apply": timeout_apply,
+        "timeout_apply_scope": timeout_apply_scope,
+        "timeout_keep": timeout_keep,
+    }
+    _check_options(chosen)
     saved = runtime.data.setdefault("learning_schedule", {})
-    if auto_apply_scope is not None:
-        saved["auto_apply_scope"] = auto_apply_scope
-    if auto_apply is not None:
-        saved["auto_apply"] = auto_apply
+    saved.update({key: value for key, value in chosen.items() if value is not None})
     saved.update(enabled=enabled, time=at)
     runtime._schedule_save()
     return settings(runtime)
@@ -326,6 +352,8 @@ async def _learn_device(runtime, device_id, device, day):
             assessment=_assessment(learned),
         )
         await _apply_result(runtime, device_id, device, learned, attempt)
+        members = learned["joint"]["device_ids"] if learned.get("joint") else [device_id]
+        await timeout_apply.after_learn(runtime, members, attempt, "automatic")
         attempt["status"] = learned["status"]
     except asyncio.CancelledError:
         attempt.update(status="interrupted", error="Learning interrupted by integration shutdown")

@@ -11,7 +11,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from ..calibration import automatic, comparison_jobs, timing_config
+from ..calibration import automatic, comparison_jobs, timeout_apply, timing_config
 from ..calibration import service as calibration
 from ..calibration import settings as learning_settings
 from ..const import STORE_DELAY
@@ -194,6 +194,7 @@ class TunerRuntime:
     configure_learning_schedule = schedule.configure
     configure_automatic_weight = learning_settings.configure
     configure_device_auto_apply = automatic.configure_device
+    configure_device_timeout_apply = timeout_apply.configure_device
     nightly_tick = schedule.tick
 
     subscribe_state_changes = discovery.subscribe_state_changes

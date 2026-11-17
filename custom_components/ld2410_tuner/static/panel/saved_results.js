@@ -357,6 +357,19 @@ export const panelSavedResults = {
     };
   },
 
+  _timeoutApplyForm(container) {
+    return {
+      timeout_apply: container.querySelector('[data-action="timeout-apply"]')
+        .checked,
+      timeout_apply_scope: container.querySelector(
+        '[data-action="timeout-apply-scope"]',
+      ).value,
+      timeout_keep: Number(
+        container.querySelector('[data-action="timeout-keep"]').value,
+      ),
+    };
+  },
+
   _automaticApplyPolicyText(config = this._data?.learning_schedule || {}) {
     if (config.auto_apply === false)
       return "Automatic Apply is off. Learn saves a preview for manual Apply.";
@@ -382,6 +395,11 @@ export const panelSavedResults = {
       <label><input data-action="nightly-auto-apply" type="checkbox" ${(form.auto_apply ?? true) ? "checked" : ""}> Global default: automatically apply better results</label>
       <label>Default scope <select data-action="auto-apply-scope" aria-describedby="auto-apply-scope-reason" ${form.auto_apply === false ? "disabled" : ""}><option value="overnight" ${form.auto_apply_scope !== "all" ? "selected" : ""}>Overnight learning only</option><option value="all" ${form.auto_apply_scope === "all" ? "selected" : ""}>Every completed Learn</option></select></label>
       <p class="field-note" id="auto-apply-scope-reason" ${form.auto_apply === false ? "" : "hidden"}>Turn on automatic Apply above to choose when it applies.</p>
+      <label><input data-action="timeout-apply" type="checkbox" ${form.timeout_apply ? "checked" : ""}> Global default: automatically set cheaper radar timeouts</label>
+      <label>Timeout scope <select data-action="timeout-apply-scope" aria-describedby="timeout-apply-scope-reason" ${form.timeout_apply ? "" : "disabled"}><option value="overnight" ${form.timeout_apply_scope !== "all" ? "selected" : ""}>Overnight learning only</option><option value="all" ${form.timeout_apply_scope === "all" ? "selected" : ""}>Every completed Learn</option></select></label>
+      <p class="field-note" id="timeout-apply-scope-reason" ${form.timeout_apply ? "hidden" : ""}>Turn on automatic timeouts above to choose when Learn sets them.</p>
+      <label>Timeout improvement to keep (%) <input data-action="timeout-keep" type="number" min="50" max="100" step="1" required aria-describedby="timeout-keep-reason" value="${this._esc(form.timeout_keep ?? 80)}"></label>
+      <p class="field-note" id="timeout-keep-reason">Learn suggests the shortest radar timeout that keeps at least this share of the best timeout's reduction in missed presence and false light. 100% picks the best.</p>
       <label>Automatic evidence weight <input data-action="automatic-weight" type="number" min="0" max="1" step="any" required value="${this._esc(form.automatic_weight ?? this._automaticWeight(config))}"></label>
       <details class="inline-help" data-preserve-open><summary>How automatic evidence is used<span class="section-description">How automatic estimates contribute alongside your labels.</span></summary><p>How much automatic guesses count beside your labels: 0 only breaks ties; 1 counts up to a quarter of your labels. Automatic Apply still requires an improvement on human labels. The room blend is not yet validated on real data.</p></details>
       <button data-action="nightly-save">Save learning settings</button>
@@ -394,6 +412,12 @@ export const panelSavedResults = {
       container.querySelector('[data-action="auto-apply-scope"]').disabled =
         !automatic;
       container.querySelector("#auto-apply-scope-reason").hidden = automatic;
+      const timeouts = container.querySelector(
+        '[data-action="timeout-apply"]',
+      ).checked;
+      container.querySelector('[data-action="timeout-apply-scope"]').disabled =
+        !timeouts;
+      container.querySelector("#timeout-apply-scope-reason").hidden = timeouts;
       this._scheduleDraft = {
         enabled: container.querySelector('[data-action="nightly-enabled"]')
           .checked,
@@ -407,6 +431,7 @@ export const panelSavedResults = {
         automatic_weight: container.querySelector(
           '[data-action="automatic-weight"]',
         ).value,
+        ...this._timeoutApplyForm(container),
       };
     };
     const save = container.querySelector('[data-action="nightly-save"]');
@@ -416,7 +441,9 @@ export const panelSavedResults = {
         '[data-action="automatic-weight"]',
       );
       // Validate before the action starts: busy (disabled) controls skip validation.
+      const keep = container.querySelector('[data-action="timeout-keep"]');
       if (!at.reportValidity() || !weight.reportValidity()) return;
+      if (!keep.reportValidity()) return;
       return this._action(save, async () => {
         await this._call("configure_learning_schedule", {
           enabled: container.querySelector('[data-action="nightly-enabled"]')
@@ -428,6 +455,7 @@ export const panelSavedResults = {
           auto_apply: container.querySelector(
             '[data-action="nightly-auto-apply"]',
           ).checked,
+          ...this._timeoutApplyForm(container),
         });
         if (Number(weight.value) !== this._automaticWeight(config))
           await this._call("configure_automatic_weight", {

@@ -15,6 +15,7 @@ const OPERATIONS = {
   recount: "Recount",
   charts: "Charts",
   recording_rows: "Recording rows",
+  timeout_suggestion: "Timeout suggestion",
   startup: "Startup",
   maintenance: "Storage maintenance",
   flush: "History save",

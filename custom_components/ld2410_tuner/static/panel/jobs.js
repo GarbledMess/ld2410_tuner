@@ -11,6 +11,7 @@ export const panelJobs = {
         job.automatic_apply?.status === "applying"
           ? "Applying improved thresholds"
           : "Comparing against live settings",
+      timeout: "Checking radar timeouts",
     };
     const title = running
       ? stages[job.stage] || "Learning thresholds"

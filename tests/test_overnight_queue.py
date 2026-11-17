@@ -54,6 +54,8 @@ class Overnight(unittest.IsolatedAsyncioTestCase):
             self.states[entity_id] = types.SimpleNamespace(state="2" if "max" in name else "10")
 
     async def fit(self, request):
+        if request.get("operation") == "timeout_suggestion":
+            return None  # Learn's timeout step: these radars have no labelled presence.
         key = codec.decode(request["parameters"])["device_id"]
         self.fits.append(key)
         return {**deepcopy(self.learned), "status": self.statuses.get(key, "ok")}

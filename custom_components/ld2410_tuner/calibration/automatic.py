@@ -8,15 +8,17 @@ from ..worker import bridge
 from . import comparison, comparison_cache, comparison_jobs, device_io
 from .scoring import improves
 
+# What Learn may apply by itself: its thresholds (on unless turned off) and the radar timeout
+# it suggests (off unless turned on). Each has a global default and per-radar overrides.
+KINDS = {"auto_apply": True, "timeout_apply": False}
 
-def policy(runtime, device_id=None):
+
+def policy(runtime, device_id=None, kind="auto_apply"):
     """Resolve one global default and an optional device override without copying defaults."""
     config = runtime.data.get("learning_schedule", {})
-    default = (
-        config.get("auto_apply_scope", "overnight") if config.get("auto_apply", True) else "off"
-    )
+    default = config.get(f"{kind}_scope", "overnight") if config.get(kind, KINDS[kind]) else "off"
     device = runtime.data.get("devices", {}).get(device_id, {})
-    override = device.get("auto_apply_override", "inherit")
+    override = device.get(f"{kind}_override", "inherit")
     return {
         "override": override,
         "global": default,
@@ -24,22 +26,22 @@ def policy(runtime, device_id=None):
     }
 
 
-def configure_device(runtime, device_id, mode):
+def configure_device(runtime, device_id, mode, kind="auto_apply"):
     if mode not in ("inherit", "off", "overnight", "all"):
         raise ValueError("Choose inherit global, off, overnight only, or every Learn")
     device = runtime.data["devices"].get(device_id)
     if device is None:
         raise ValueError("Unknown device")
     if mode == "inherit":
-        device.pop("auto_apply_override", None)
+        device.pop(f"{kind}_override", None)
     else:
-        device["auto_apply_override"] = mode
+        device[f"{kind}_override"] = mode
     runtime._schedule_save()
-    return policy(runtime, device_id)
+    return policy(runtime, device_id, kind)
 
 
-def enabled(runtime, source="automatic", device_id=None):
-    mode = policy(runtime, device_id)["effective"]
+def enabled(runtime, source="automatic", device_id=None, kind="auto_apply"):
+    mode = policy(runtime, device_id, kind)["effective"]
     if mode == "off":
         return False
     if source == "user":

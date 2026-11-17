@@ -33,6 +33,7 @@ export const panelControls = {
     this._wireActions(card, id, d);
     this._wireSavedResults(card, id);
     this._wireComparison(card, id);
+    this._wireTimeoutSuggestion(card, id);
     this._wireLearningJob(card, id, d);
     this._wireRecording(card, id, d);
     this._wireRecordedData(card, id);

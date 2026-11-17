@@ -303,6 +303,7 @@ def execute(request):
         "recount",
         "charts",
         "recording_rows",
+        "timeout_suggestion",
     ):
         raise ValueError("Unsupported worker operation")
     parameters = codec.decode(request.get("parameters", request))
@@ -346,6 +347,17 @@ def _other(operation, views, parameters):
         return build(views, parameters["definitions"], parameters["group_id"])
     if operation == "references":
         return _references(views, parameters["jobs"])
+    if operation == "timeout_suggestion":
+        from ..calibration.timeout_suggestion import KEEP_PERCENT, suggest
+
+        device_id = parameters["device_id"]
+        return suggest(
+            views[device_id],
+            device_id,
+            parameters["thresholds"],
+            parameters.get("current"),
+            parameters.get("keep", KEEP_PERCENT / 100),
+        )
     from .recount import calculate
 
     return calculate(views[parameters["device_id"]], **parameters)

@@ -7,7 +7,7 @@ from time import time
 from uuid import uuid4
 
 from ..runtime.tasks import finish_task
-from . import automatic, results
+from . import automatic, results, timeout_apply
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +72,9 @@ async def _run(runtime, device_id, device, report):
         saved = {}
         _save_results(device, report, learned, saved)
         await _apply_manual_result(runtime, device_id, report, saved)
+        if "user" in report["sources"]:
+            stage(runtime, device_id, "timeout")
+            await timeout_apply.after_learn(runtime, [device_id], report, "user")
         # Another caller may join while comparison or writes are awaiting I/O.
         _save_results(device, report, learned, saved)
         report["status"] = "completed"

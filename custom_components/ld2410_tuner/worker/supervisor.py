@@ -35,6 +35,7 @@ _OPERATIONS = frozenset(
         "recount",
         "charts",
         "recording_rows",
+        "timeout_suggestion",
         "startup",
         "maintenance",
         "flush",

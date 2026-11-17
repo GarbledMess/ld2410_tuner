@@ -452,7 +452,7 @@ export const panelLearning = {
         : this._validationHtml(learning, d.timing_configuration);
     return `<div class="recovery-progress">${this._recoveryHtml(d)}</div>${this._nightlyReportHtml(d)}${this._savedResultsHtml(id, d)}${this._learnApplyHtml(id, d, outcome, set)}${validation}
       <details class="learning-details" data-detail="learning-details"><summary>Details<span class="section-description">Comparison, automatic Apply, timing and gate thresholds.</span></summary>
-      ${this._comparisonHtml(id, d)}${this._deviceApplySettingsHtml(d)}${this._timingHtml(learning, d.timing_configuration)}
+      ${this._comparisonHtml(id, d)}${this._deviceApplySettingsHtml(d)}${this._timingHtml(learning, d.timing_configuration)}${this._timeoutSuggestionHtml(id, d)}
       <details class="gate-results"><summary>Gate thresholds and sample counts<span class="section-description">Current and learned gate levels, with supporting samples.</span></summary>${this._detailsHtml(d)}</details></details>`;
   },
 

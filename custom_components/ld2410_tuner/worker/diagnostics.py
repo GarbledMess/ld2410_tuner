@@ -145,6 +145,7 @@ def describe(request, request_bytes):
         "recount",
         "charts",
         "recording_rows",
+        "timeout_suggestion",
         "startup",
         "maintenance",
         "flush",

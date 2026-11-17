@@ -5,7 +5,7 @@ import time
 from copy import deepcopy
 from uuid import uuid4
 
-from ..calibration import ownership, recovery, results, settings
+from ..calibration import ownership, recovery, results, settings, timeout_apply
 from ..calibration.constants import METHOD
 from ..history import pace
 from ..runtime.tasks import finish_task
@@ -125,6 +125,8 @@ async def _run(runtime, set_id, chosen, report):
         )
         saved = _save(runtime, learned, report)
         await _manual_apply(runtime, learned, report)
+        if "user" in report["sources"]:
+            await timeout_apply.after_learn(runtime, sorted(learned["thresholds"]), report, "user")
         saved = _save(runtime, learned, report, saved)
         report.update(status="completed", results=dict.fromkeys(report["sources"], learned["id"]))
         return saved

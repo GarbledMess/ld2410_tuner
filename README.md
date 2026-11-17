@@ -494,6 +494,30 @@ when available; amber means caveats or uncertainty, while red identifies a job
 error or poor measured results. Open the report for timing assumptions, estimated
 ranges, and the distinction between human and automatically labelled evidence.
 
+### Radar timeout
+
+A radar keeps reporting presence for its timeout after its last reading above a threshold.
+A longer timeout bridges a still person's short dips; it also holds every false detection a
+little longer. Every Learn, after any automatic Apply of its thresholds, scores 1, 2, 3, 5,
+8, 12, 15, 20 and 30 seconds and the radar's own timeout on the radar's recordings at its
+live thresholds: missed labelled presence (and the dark spells it falls into), and false
+light and false starts in its empty time (human Empty labels of the radar, its zones and
+rooms, and its trusted Empty guesses). Each is priced as Learn prices presence against false
+time. The suggestion is the shortest timeout that keeps at least **Timeout improvement to
+keep** (learning settings, 80% by default, 50 to 100%) of the best timeout's reduction in
+that price over the shortest one; 100% picks the cheapest. The scores show under **Radar
+timeout** in the radar's learning **Details**, the suggested, cheapest and current ones
+marked. It needs presence labelled on the radar itself, on a zone it is the only member of,
+or on a room it is the only radar in.
+
+Automatic timeouts are off by default. Turn them on in the learning settings
+(**Global default: automatically set cheaper radar timeouts**, for overnight learning only
+or every completed Learn) or per radar (**Automatic timeout for this sensor**: inherit,
+off, overnight only or every Learn). Where on, Learn sets the suggested timeout on the
+radar's timeout number when it differs from the radar's own, then checks the radar reports
+it. The next Learn tunes the thresholds for the new timeout. A changed timeout makes saved
+results learned at the old one stale.
+
 ## ESPHome recovery
 
 For missing settings after boot, Query Params / Radar Restart buttons, and Apply

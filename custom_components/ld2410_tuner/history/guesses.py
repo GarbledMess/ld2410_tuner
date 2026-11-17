@@ -187,6 +187,12 @@ def _trusted(state, recorded, basis):
     return found if found >= MIN_AUTO_CONFIDENCE else None
 
 
+def counted_empty(run):
+    """Whether an Empty guess run counts as evidence (``_trusted``); the quiet veto only ever
+    cuts present guesses, so no history needs reading."""
+    return run[4] != DISCARDED and _trusted(run[2], confidence(run[3]), run[4]) is not None
+
+
 def _vetoed(row, limits):
     return limits is not None and trust.quiet(row, limits)
 

@@ -9,7 +9,9 @@ _mode = ContextVar("tuner_worker_priority", default="normal")
 
 def is_background(operation=None):
     mode = _mode.get()
-    return mode == "background" or (mode == "normal" and operation in {"seen_by", "references"})
+    return mode == "background" or (
+        mode == "normal" and operation in {"seen_by", "references", "timeout_suggestion"}
+    )
 
 
 @contextmanager

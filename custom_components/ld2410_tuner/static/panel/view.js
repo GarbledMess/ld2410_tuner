@@ -285,7 +285,13 @@ export const panelView = {
         .own-score summary { cursor:pointer; }
         .own-score p { margin:6px 0 0; }
         .comparison-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
-        .pattern-comparison { margin:14px 0; padding:12px; border:1px solid var(--divider-color,#444); border-radius:10px; }
+        .timeout-table { width:100%; min-width:0; border-collapse:collapse; font-size:13px; }
+        .timeout-table th, .timeout-table td { padding:6px 4px; text-align:right; border-bottom:1px solid var(--divider-color); }
+        .timeout-table td { white-space:nowrap; }
+        .timeout-table thead th { font-weight:600; font-size:12px; vertical-align:bottom; white-space:normal; overflow-wrap:normal; word-break:normal; }
+        .timeout-table tbody th .pill { display:block; width:max-content; margin-top:2px; font-size:11px; }
+        .timeout-table th:first-child { text-align:left; }
+        .pattern-comparison, .timeout-suggestion { margin:14px 0; padding:12px; border:1px solid var(--divider-color,#444); border-radius:10px; }
         .comparison-table { width:100%; min-width:0; font-size:12px; }
         .comparison-table th,.comparison-table td { white-space:normal; vertical-align:top; text-align:left; overflow-wrap:normal; }
         .comparison-table th { min-width:74px; }
@@ -294,7 +300,7 @@ export const panelView = {
         .pattern-comparison details { margin-top:8px; }
         .pattern-comparison p { line-height:1.5; }
         @media (max-width:700px) {
-          .pattern-comparison .table-scroll { display:block; }
+          .pattern-comparison .table-scroll, .timeout-suggestion .table-scroll { display:block; }
           .comparison-table,.comparison-table tbody { display:block; }
           .comparison-table thead { display:none; }
           .comparison-table tr { display:grid; grid-template-columns:minmax(0,1fr) auto; padding:10px 0; border-bottom:1px solid var(--divider-color); }

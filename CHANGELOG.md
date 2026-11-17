@@ -1,5 +1,21 @@
 # Release notes
 
+## 1.40.0 - 2026-11-17
+
+- **Learn suggests each radar's timeout.** Every Learn (manual or overnight, one radar or a
+  room) scores 1 to 30 seconds and the radar's own timeout on the radar's recordings at its
+  live thresholds, priced as Learn prices missed presence against false light, and suggests
+  the shortest timeout that keeps at least 80% (configurable, 50 to 100%) of the best
+  timeout's improvement. The dark spells, missed time, false light and false starts of each
+  show under **Radar timeout** in the radar's learning details. On a real eight-radar
+  recording, the one radar it would change (1 to 8 seconds) took the dark spells in labelled
+  presence from 45 to 34 and missed presence from 5.6 to 4.8 minutes, with no more false
+  light in labelled or confidently empty time.
+- **Automatic radar timeouts**, off by default: a global default in the learning settings
+  (overnight learning only or every completed Learn) and a per-radar override. Where on,
+  Learn sets the suggested timeout on the radar's timeout number and checks the radar
+  reports it; the next Learn tunes the thresholds for it.
+
 ## 1.39.4 - 2026-11-16
 
 - A range selected on a radar's graph is labelled like everywhere else: From, To and a

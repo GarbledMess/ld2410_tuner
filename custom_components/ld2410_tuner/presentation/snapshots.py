@@ -257,6 +257,8 @@ def _snapshot_device(runtime, device_id, device, registry):
         "area_id": area_id,
         "recording_enabled": device.get("recording_enabled", True),
         "automatic_apply_policy": automatic.policy(runtime, device_id),
+        "timeout_apply_policy": automatic.policy(runtime, device_id, "timeout_apply"),
+        "timeout_suggestion": device.get("timeout_suggestion"),
         "presence_sources": sources.summary(runtime, device),
         "training_state": device.get("training_state", "unknown"),
         "training_expires_at": device.get("training_expires_at"),
