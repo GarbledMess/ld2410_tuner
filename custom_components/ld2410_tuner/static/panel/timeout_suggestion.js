@@ -1,5 +1,5 @@
-// "Radar timeout": every Learn scores this radar's timeouts on its labelled presence and empty
-// time at its live thresholds. Where automatic timeouts are on, Learn sets a cheaper one on the
+// "Radar timeout": every Learn scores this radar's timeouts on its own and its rooms' labelled
+// presence and empty time at its live thresholds. Where automatic timeouts are on, Learn sets a cheaper one on the
 // radar; the next Learn tunes the thresholds for it.
 function minutes(seconds) {
   return `${(Number(seconds || 0) / 60).toFixed(1)}m`;
@@ -28,13 +28,13 @@ export const panelTimeoutSuggestion = {
         ? ""
         : `, the shortest that keeps ${Math.round(suggestion.keep * 100)}% of the best timeout's improvement`;
     if (!found)
-      return "Learn scores this radar's timeouts on its labelled presence and empty time at its live thresholds.";
+      return "Learn scores this radar's timeouts on its own and its rooms' labelled presence and empty time at its live thresholds.";
     if (found.status === "error")
       return found.reason || "Could not check timeouts.";
     if (found.status === "applied")
       return `Learn set the radar's timeout to ${found.applied_timeout} s (was ${found.previous_timeout} s)${share}. The next Learn tunes the thresholds for it.`;
     if (!suggestion)
-      return "This radar needs labelled presence before Learn can suggest a timeout.";
+      return "This radar, or a room it is in, needs labelled presence before Learn can suggest a timeout.";
     if (found.status === "kept")
       return `The radar keeps its timeout (${now} s)${share}.`;
     const reason = found.reason ? ` ${found.reason}` : "";

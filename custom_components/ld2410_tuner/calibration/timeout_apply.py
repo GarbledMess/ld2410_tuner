@@ -12,6 +12,8 @@ import asyncio
 from copy import deepcopy
 from time import time
 
+from ..history import guess_check
+from ..rooms import attribution
 from ..worker import bridge
 from . import automatic, device_io
 from .timeout_suggestion import KEEP_PERCENT
@@ -42,26 +44,74 @@ def keep(runtime):
 async def after_learn(runtime, device_ids, report, source):
     """Score (and where permitted set) each radar's timeout; never fails the Learn."""
     found = report.setdefault("timeouts", {})
+    try:
+        inputs, suggestions = await _suggestions(runtime, device_ids)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        inputs, suggestions = {}, error
     for device_id in device_ids:
-        entry = await _one(runtime, device_id, source)
+        entry = await _one(runtime, device_id, source, inputs.get(device_id), suggestions)
         found[device_id] = entry
         runtime.data["devices"][device_id]["timeout_suggestion"] = deepcopy(entry)
         runtime._schedule_save()
 
 
-async def _one(runtime, device_id, source):
-    entry = {"at": time(), "source": source, "status": "unavailable"}
+def _inputs(runtime, device_id):
+    """``(timing, live thresholds)`` of the radar, or None when they cannot be read."""
     try:
         timing = read_timing(runtime, device_id)
-        current = timing["reported"]["timeout"]
         _entities, live = runtime._threshold_configuration(device_id)
-        thresholds = {key: value for key, value in (live or {}).items() if value is not None}
-        suggestion = await bridge.device(
-            runtime,
-            "timeout_suggestion",
-            device_id,
-            {"thresholds": thresholds, "current": current, "keep": keep(runtime)},
-        )
+    except Exception:
+        return None
+    return timing, {key: value for key, value in (live or {}).items() if value is not None}
+
+
+async def _suggestions(runtime, device_ids):
+    """Each radar's inputs, and the worker's suggestions for them, scored with the other
+    radars of every room they share (``timeout_suggestion.suggest_room``)."""
+    radars = list(device_ids)
+    for device_id in device_ids:
+        for _key, members, _present in guess_check.shared_presence(runtime, device_id):
+            radars.extend(member for member in members if member not in radars)
+    inputs = {key: found for key in radars if (found := _inputs(runtime, key)) is not None}
+    targets = [key for key in device_ids if key in inputs]
+    if not targets:
+        return inputs, {}
+
+    def prepare():
+        shared = {}
+        with attribution.shared_copies(runtime):
+            views = {key: attribution.prepared_view(runtime, key, shared) for key in inputs}
+        return {
+            "views": views,
+            "parameters": {
+                "targets": targets,
+                "thresholds": {key: live for key, (_timing, live) in inputs.items()},
+                "current": {
+                    key: timing["reported"]["timeout"] for key, (timing, _live) in inputs.items()
+                },
+                "keep": keep(runtime),
+            },
+        }
+
+    return inputs, (await bridge.calculate(runtime, "timeout_suggestion", prepare) or {})
+
+
+def _scored(device_id, inputs, suggestions):
+    """``(timing, reported timeout, suggestion)`` of the radar; raises what went wrong."""
+    if isinstance(suggestions, Exception):
+        raise suggestions
+    if inputs is None:
+        raise ValueError("Could not read this radar's timeout or thresholds.")
+    timing, _live = inputs
+    return timing, timing["reported"]["timeout"], suggestions.get(device_id)
+
+
+async def _one(runtime, device_id, source, inputs, suggestions):
+    entry = {"at": time(), "source": source, "status": "unavailable"}
+    try:
+        timing, current, suggestion = _scored(device_id, inputs, suggestions)
         entry.update(current_timeout=current, suggestion=suggestion)
         if suggestion is None:
             return entry

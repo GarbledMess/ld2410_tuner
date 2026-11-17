@@ -1,5 +1,16 @@
 # Release notes
 
+## 1.40.1 - 2026-11-17
+
+- **Radar timeouts in rooms with several radars.** A room or zone's labelled presence now
+  counts for each of its radars: it is missed only where none of them holds presence, and a
+  room Learn tunes the room's radars together. A saving under 3% of the cost is treated as
+  noise and keeps the shorter timeout. On the real recording, the two-radar living room
+  (which got no suggestion before) would set one radar to 30 seconds and keep the other at
+  1: across every Learn target, missed presence fell from 2.2 to 0.6 minutes and dark
+  spells from 24 to 6, with labelled-empty false light unchanged (9.7 minutes), false
+  starts 1,507 to 1,492, and confident-empty false light up from 249 to 273 minutes.
+
 ## 1.40.0 - 2026-11-17
 
 - **Learn suggests each radar's timeout.** Every Learn (manual or overnight, one radar or a

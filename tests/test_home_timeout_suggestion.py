@@ -9,6 +9,7 @@ import real_home  # noqa: F401
 from real_home import WebsocketError
 from real_shape import DAY, TODAY
 from tuner_under_test.calibration import timeout_apply
+from tuner_under_test.rooms import groups
 
 RADAR = "hall_1"
 
@@ -249,8 +250,12 @@ def test_keeping_all_of_the_improvement_sets_the_cheapest_timeout(play):
         assert shown["learning_schedule"]["timeout_keep"] == 100
         _job, report = await home.learn(RADAR)
         suggestion = report["timeouts"][RADAR]["suggestion"]
-        cheapest = min(suggestion["candidates"], key=lambda row: (row["cost"], row["timeout"]))
-        assert suggestion["timeout"] == cheapest["timeout"]
+        assert suggestion["keep"] == 1.0
+        rows = suggestion["candidates"]
+        cheapest = min(rows, key=lambda row: (row["cost"], row["timeout"]))
+        # The cheapest, unless it saves too little over the shortest to be more than noise.
+        noise = rows[0]["cost"] - cheapest["cost"] < 0.03 * rows[0]["cost"]
+        assert suggestion["timeout"] == (rows[0] if noise else cheapest)["timeout"]
 
     play(scenario)
 
@@ -261,5 +266,76 @@ def test_the_share_of_the_improvement_to_keep_is_at_least_half(play):
             await home.ws("configure_learning_schedule", enabled=False, at="03:00", timeout_keep=40)
         shown = await home.ws("snapshot")
         assert shown["learning_schedule"]["timeout_keep"] == 80
+
+    play(scenario)
+
+
+def test_a_shared_room_s_labels_give_each_of_its_radars_a_timeout(play):
+    async def scenario(home):
+        start = TODAY - DAY
+        for low, high, state in (
+            (start, start + 3 * 3600, "present"),
+            (start + 4 * 3600, start + 7 * 3600, "not_present"),
+        ):
+            await home.ws(
+                "label_room_range", group_id="area:kitchen", start=low, end=high, state=state
+            )
+        members = groups.definitions(home.runtime)[2]["area:kitchen"]["device_ids"]
+        assert len(members) == 2
+        for radar in members:
+            home.runtime.data["devices"][radar]["history_labels"] = []
+        _job, report = await home.learn(members[0])
+        for radar in members:
+            suggestion = report["timeouts"][radar]["suggestion"]
+            assert suggestion is not None, radar
+            assert {row["timeout"] for row in suggestion["candidates"]} >= {1.0, 30.0}
+
+    play(scenario)
+
+
+def test_a_failed_timeout_check_is_an_error_for_each_radar_and_the_learn_completes(play):
+    async def scenario(home):
+        await _labelled(home, RADAR)
+        calculate = timeout_apply.bridge.calculate
+
+        async def failing(runtime, operation, prepare):
+            if operation == "timeout_suggestion":
+                raise RuntimeError("worker stopped")
+            return await calculate(runtime, operation, prepare)
+
+        timeout_apply.bridge.calculate = failing
+        try:
+            _job, report = await home.learn(RADAR)
+        finally:
+            timeout_apply.bridge.calculate = calculate
+        assert report["timeouts"][RADAR] | {"at": 0} == {
+            "at": 0,
+            "source": "user",
+            "status": "error",
+            "reason": "worker stopped",
+        }
+        assert report["status"] == "completed"
+
+    play(scenario)
+
+
+def test_a_radar_whose_timeout_cannot_be_read_is_an_error(play):
+    async def scenario(home):
+        await _labelled(home, RADAR)
+        read_timing = timeout_apply.read_timing
+
+        def unreadable(runtime, device_id):
+            if device_id == RADAR:
+                raise KeyError(device_id)
+            return read_timing(runtime, device_id)
+
+        timeout_apply.read_timing = unreadable
+        try:
+            _job, report = await home.learn(RADAR)
+        finally:
+            timeout_apply.read_timing = read_timing
+        found = report["timeouts"][RADAR]
+        assert found["status"] == "error"
+        assert found["reason"] == "Could not read this radar's timeout or thresholds."
 
     play(scenario)

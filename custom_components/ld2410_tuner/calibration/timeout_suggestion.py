@@ -1,17 +1,20 @@
-"""A radar timeout suggested from the radar's own history (read-only: nothing is written).
+"""Radar timeouts suggested from the radars' own history (read-only: nothing is written).
 
 A radar holds its presence output for its timeout after the last reading above a threshold:
 a longer timeout bridges a still person's short dips, and holds every false detection that
-much longer. For each candidate timeout, the radar's recorded detections at ``thresholds``
+much longer. For each candidate timeout, the radar's recorded detections at its thresholds
 are held for it and priced as Learn prices them: each second of missed labelled presence at
 ``PRESENCE_PRICE`` seconds of false light, each false start at ``FALSE_TRIGGER_SECONDS``.
-Presence is what humans labelled the radar (``guess_check.human_truth``: its own labels,
-lone rooms', and Empty of any room or zone covering it). Empty time adds the radar's trusted
-Empty guesses (``guesses.evidence``) outside those labels. The radar's own timeout is always
-a candidate. The suggestion is the shortest candidate that keeps at least ``keep`` of the
-best candidate's cost reduction over the shortest one: a timeout that works nearly as well
-as the cheapest, held no longer than it needs. ``keep`` 1 is the cheapest, the shorter on a
-tie. Without labelled presence there is nothing to weigh.
+A radar's own presence is what humans labelled it (``guess_check.human_truth``: its own
+labels, lone rooms', and Empty of any room or zone covering it); a room or zone shared with
+other radars adds its labelled presence, missed only where none of its radars holds
+presence (``guess_check.shared_presence``). Empty time adds the radar's trusted Empty
+guesses (``guesses.evidence``) outside those labels. The radar's own timeout is always a
+candidate. The suggestion is the shortest candidate that keeps at least ``keep`` of the best
+candidate's cost reduction over the shortest one: a timeout that works nearly as well as the
+cheapest, held no longer than it needs; a reduction under ``NOISE_SHARE`` of the cost is
+noise and keeps the shortest. ``keep`` 1 is the cheapest, the shorter on a tie. Without
+labelled presence there is nothing to weigh.
 """
 
 from __future__ import annotations
@@ -28,6 +31,8 @@ from ..history import guess_check, guesses, pace, spans
 CANDIDATES = (1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 15.0, 20.0, 30.0)
 KEEP_PERCENT = 80  # The default share of the best timeout's improvement to keep.
 MINIMUM_PRESENCE_SECONDS = 600.0
+NOISE_SHARE = 0.03  # A saving under this share of the cost is noise, not a reason to hold longer.
+ROUNDS = 4  # Tuning a room's radars in turn settles in a pass or two.
 SLICE_SECONDS = 21600.0  # History is read at most this much at a time: bounded memory.
 _RUN = re.compile(rb"+")
 
@@ -162,33 +167,151 @@ def _candidate(timeout, detections, present, empty):
 
 
 def _chosen(rows, keep):
-    """The shortest of ``rows`` (in timeout order) keeping ``keep`` of the best reduction."""
+    """The shortest of ``rows`` (in timeout order) keeping ``keep`` of the best reduction; the
+    shortest itself where the best saves under ``NOISE_SHARE`` of its cost."""
     shortest = rows[0]["cost"]
     best = shortest - min(row["cost"] for row in rows)
+    if best < NOISE_SHARE * shortest:
+        return rows[0]
     return next(row for row in rows if shortest - row["cost"] >= keep * best - 1e-9)
 
 
 def suggest(view, device_id, thresholds, current=None, keep=KEEP_PERCENT / 100):
-    """``{"timeout", "candidates"}`` (each candidate's missed seconds, dark spells, false
-    seconds, false starts and cost), or None without enough labelled presence. ``current``,
-    the radar's timeout, is scored beside the candidates."""
+    """``suggest_room`` for one radar with no other radar's history at hand."""
+    found = suggest_room(
+        {device_id: view}, [device_id], {device_id: thresholds}, {device_id: current}, keep
+    )
+    return found[device_id]
+
+
+def _own(view, device_id):
+    """``(present, empty)``: what humans labelled the radar itself (``human_truth``)."""
     truth = guess_check.human_truth(view, device_id)
-    present = [(a, b) for a, b, state in truth if state == "present"]
-    if sum(b - a for a, b in present) < MINIMUM_PRESENCE_SECONDS:
-        return None
-    empty = _empty(view, device_id, truth)
-    timeouts = sorted({*CANDIDATES, *([] if current is None else [float(current)])})
-    windows = _merged(present + empty)
-    detections, covered = _detections(view, device_id, thresholds, windows, timeouts[-1])
-    # Labelled time the radar did not record says nothing about it.
-    present, empty = _intersect(_merged(present), covered), _intersect(empty, covered)
-    if sum(b - a for a, b in present) < MINIMUM_PRESENCE_SECONDS:
-        return None
-    rows = [_candidate(timeout, detections, present, empty) for timeout in timeouts]
-    cheapest = min(rows, key=lambda row: (row["cost"], row["timeout"]))
-    return {
-        "timeout": _chosen(rows, keep)["timeout"],
-        "cheapest": cheapest["timeout"],
-        "keep": keep,
-        "candidates": rows,
+    present = _merged((a, b) for a, b, state in truth if state == "present")
+    return present, _empty(view, device_id, truth)
+
+
+def _seconds(spans_):
+    return sum(b - a for a, b in spans_)
+
+
+def _shared(views, targets, thresholds, current):
+    """``{room: (members, present)}`` of the rooms ``targets`` share with other radars, where
+    every member's history and thresholds are at hand and each one not being tuned has a
+    timeout to be held at."""
+    found = {}
+    for key in targets:
+        for group, members, present in guess_check.shared_presence(views[key], key):
+            if all(
+                member in views
+                and member in thresholds
+                and (member in targets or current.get(member) is not None)
+                for member in members
+            ):
+                found[group] = (members, present)
+    return found
+
+
+class _Room:
+    """The radars of ``targets``' rooms: their detections, each candidate timeout's held
+    output, and the labelled presence of every room shared by more than one of them."""
+
+    def __init__(self, views, targets, thresholds, current):
+        self.own = {key: _own(views[key], key) for key in targets}
+        self.rooms = _shared(views, targets, thresholds, current)
+        radars = sorted({*targets, *(m for members, _ in self.rooms.values() for m in members)})
+        self.timeouts = {
+            key: sorted({*CANDIDATES, *([] if current.get(key) is None else [float(current[key])])})
+            for key in radars
+        }
+        lead_in = max(timeouts[-1] for timeouts in self.timeouts.values())
+        self.detections, covered = {}, {}
+        for key in radars:
+            present, empty = self.own.get(key, ([], []))
+            windows = _merged(
+                present
+                + empty
+                + [span for members, room in self.rooms.values() if key in members for span in room]
+            )
+            self.detections[key], covered[key] = _detections(
+                views[key], key, thresholds[key], windows, lead_in
+            )
+        # Labelled time a radar did not record says nothing about it; a room's, nothing
+        # unless all of its radars recorded.
+        self.own = {
+            key: (_intersect(present, covered[key]), _intersect(empty, covered[key]))
+            for key, (present, empty) in self.own.items()
+        }
+        for group, (members, present) in list(self.rooms.items()):
+            for member in members:
+                present = _intersect(_merged(present), covered[member])
+            self.rooms[group] = (members, present)
+        self._active = {}
+
+    def presence(self, key):
+        """The labelled presence ``key`` is scored on: its own, and its shared rooms'."""
+        return _seconds(self.own[key][0]) + sum(
+            _seconds(room) for members, room in self.rooms.values() if key in members
+        )
+
+    def active(self, key, timeout):
+        if (key, timeout) not in self._active:
+            self._active[key, timeout] = _merged((a, b + timeout) for a, b in self.detections[key])
+        return self._active[key, timeout]
+
+    def row(self, key, timeout, held):
+        """``key``'s candidate ``timeout`` with the other radars held at ``held``."""
+        present, empty = self.own[key]
+        found = _candidate(timeout, self.detections[key], present, empty)
+        for members, room in self.rooms.values():
+            if key in members:
+                lit = _merged(
+                    span
+                    for member in members
+                    for span in self.active(member, timeout if member == key else held[member])
+                )
+                missed, dark = _missed(lit, room)
+                found["missed_seconds"] += missed
+                found["dark_spells"] += dark
+                found["cost"] += PRESENCE_PRICE * missed
+        return found
+
+    def rows(self, key, held):
+        return [self.row(key, timeout, held) for timeout in self.timeouts[key]]
+
+
+def suggest_room(views, targets, thresholds, current, keep=KEEP_PERCENT / 100):
+    """``{radar: {"timeout", "cheapest", "keep", "candidates"} or None}`` for each radar of
+    ``targets``. Each candidate is scored on the radar's own labelled presence and empty time,
+    and on the labelled presence of each room it shares with other radars, lit where any of
+    them holds presence (the others held at their timeouts). The radars of ``targets`` are
+    tuned one at a time, each to the shortest candidate keeping ``keep`` of its best one's
+    improvement, until none changes. ``views``, ``thresholds`` and ``current`` (each radar's
+    own timeout, a candidate beside the others) are by radar: the targets' and their room
+    mates'. A radar without enough labelled presence gets None and keeps its timeout."""
+    room = _Room(views, targets, thresholds, current)
+    tuned = [key for key in targets if room.presence(key) >= MINIMUM_PRESENCE_SECONDS]
+    held = {
+        key: float(current[key]) if current.get(key) is not None else CANDIDATES[0]
+        for key in room.timeouts
     }
+    for _ in range(ROUNDS):
+        changed = False
+        for key in tuned:
+            pace.rest()
+            chosen = _chosen(room.rows(key, held), keep)["timeout"]
+            changed |= chosen != held[key]
+            held[key] = chosen
+        if not changed:
+            break
+    found = dict.fromkeys(targets)
+    for key in tuned:
+        rows = room.rows(key, held)
+        cheapest = min(rows, key=lambda row: (row["cost"], row["timeout"]))
+        found[key] = {
+            "timeout": _chosen(rows, keep)["timeout"],
+            "cheapest": cheapest["timeout"],
+            "keep": keep,
+            "candidates": rows,
+        }
+    return found

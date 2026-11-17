@@ -123,20 +123,55 @@ def _at(reader, timestamp):
     return (state, reader[2]) if len(reader) > 2 else state
 
 
-def _group_indexes(saved, device_id):
-    """``(times, states, alone)`` of the manual labels of each group covering the radar."""
-    groups = saved.get("groups", {})
-    labels = saved.get("room_labels", {})
+def _covering(groups, device_id):
+    """The groups holding the radar, and the room around each such zone."""
     covering = [key for key, item in groups.items() if device_id in item.get("device_ids", ())]
     for key in list(covering):
         parent = _parent(groups, key)
         if parent and parent not in covering:
             covering.append(parent)
-    for key in covering:
-        manual = [item for item in labels.get(key, ()) if item.get("source") == "manual"]
-        if manual:
+    return covering
+
+
+def _manual(saved, key):
+    return [
+        item for item in saved.get("room_labels", {}).get(key, ()) if item.get("source") == "manual"
+    ]
+
+
+def _group_indexes(saved, device_id):
+    """``(times, states, alone)`` of the manual labels of each group covering the radar."""
+    groups = saved.get("groups", {})
+    for key in _covering(groups, device_id):
+        if manual := _manual(saved, key):
             alone = list(groups[key].get("device_ids", ())) == [device_id]
             yield (*_label_index(_label_events(manual)), alone)
+
+
+def shared_presence(runtime, device_id):
+    """``(key, members, present spans)`` of each room or zone covering the radar with other
+    radars in it: its labelled presence is the room's, seen where any of its radars sees it
+    (``human_truth`` leaves it out: no one radar of a shared room must see it)."""
+    saved = _snapshot(runtime, device_id)
+    if not saved:
+        return []
+    groups = saved.get("groups", {})
+    until = getattr(runtime, "_history_until", None) or time.time()
+    found = []
+    for key in _covering(groups, device_id):
+        members = tuple(sorted({*groups[key].get("device_ids", ()), device_id}))
+        manual = _manual(saved, key)
+        if len(members) < 2 or not manual:
+            continue
+        times, states = _label_index(_label_events(manual))
+        present = [
+            (low, min(high, until))
+            for low, high, state in zip(times, times[1:], states, strict=False)
+            if state == "present" and min(high, until) > low
+        ]
+        if present:
+            found.append((key, members, present))
+    return found
 
 
 def _parent(groups, key):

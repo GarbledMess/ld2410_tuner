@@ -505,10 +505,15 @@ light and false starts in its empty time (human Empty labels of the radar, its z
 rooms, and its trusted Empty guesses). Each is priced as Learn prices presence against false
 time. The suggestion is the shortest timeout that keeps at least **Timeout improvement to
 keep** (learning settings, 80% by default, 50 to 100%) of the best timeout's reduction in
-that price over the shortest one; 100% picks the cheapest. The scores show under **Radar
-timeout** in the radar's learning **Details**, the suggested, cheapest and current ones
-marked. It needs presence labelled on the radar itself, on a zone it is the only member of,
-or on a room it is the only radar in.
+that price over the shortest one; 100% picks the cheapest. A saving under 3% of the
+shortest timeout's price is treated as noise and keeps the shortest. The scores show under
+**Radar timeout** in the radar's learning **Details**, the suggested, cheapest and current
+ones marked. It needs labelled presence: on the radar itself, or on a room or zone it is in.
+A room or zone with several radars is lit while any of them reports presence, so its
+labelled presence is missed only where none of them does. Each radar there is scored with
+the others held at their own timeouts, and a room Learn tunes the room's radars one at a
+time until none changes: where one radar already covers the room, the others keep short
+timeouts.
 
 Automatic timeouts are off by default. Turn them on in the learning settings
 (**Global default: automatically set cheaper radar timeouts**, for overnight learning only

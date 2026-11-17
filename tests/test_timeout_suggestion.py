@@ -1,7 +1,7 @@
 """A radar timeout suggested from the radar's own history: the one whose missed labelled
 presence and false light, priced as Learn prices them, cost least."""
 
-import test_tuner  # noqa: F401
+import test_tuner
 from small_views import view
 from tuner_under_test.calibration import timeout_suggestion
 
@@ -135,6 +135,17 @@ def test_without_any_improvement_the_shortest_timeout_is_suggested():
     assert found["timeout"] == 1.0
 
 
+def test_an_improvement_within_the_noise_keeps_the_shortest_timeout():
+    rows = [
+        {"timeout": 1.0, "cost": 1000.0},
+        {"timeout": 3.0, "cost": 975.0},  # 2.5% cheaper: noise, not a reason to hold longer.
+        {"timeout": 8.0, "cost": 990.0},
+    ]
+    assert timeout_suggestion._chosen(rows, 0.8)["timeout"] == 1.0
+    rows[1]["cost"] = 960.0  # 4% cheaper: a real improvement.
+    assert timeout_suggestion._chosen(rows, 0.8)["timeout"] == 3.0
+
+
 def test_without_a_suggestion_or_a_reported_timeout_nothing_is_written():
     from tuner_under_test.calibration import timeout_apply
 
@@ -144,3 +155,79 @@ def test_without_a_suggestion_or_a_reported_timeout_nothing_is_written():
     }
     assert timeout_apply.decision(None, 1.0) is None
     assert timeout_apply.decision(best, None) is None
+
+
+LOUNGE = {"area:lounge": {"kind": "area", "area_id": "lounge", "device_ids": ["a", "b"]}}
+ROOM_LABELS = {
+    "area:lounge": [
+        {"start": BASE, "end": BASE + 2 * HOUR, "state": "present", "source": "manual"},
+        {
+            "start": BASE + 2 * HOUR,
+            "end": BASE + 4 * HOUR,
+            "state": "not_present",
+            "source": "manual",
+        },
+    ]
+}
+
+
+def _lounge_radar(device_id, present_value, dip):
+    """A radar of the two-radar lounge (labelled only as a room): two hours of presence
+    reading ``present_value`` with a ``dip``-second drop every minute, then two empty hours
+    with a one-second blip every ten minutes."""
+    from test_rooms import member
+
+    events = []
+    for second in range(int(2 * HOUR)):
+        dark = 30 <= second % 60 < 30 + dip
+        events.append((BASE + second, _reading(0 if dark else present_value)))
+    for second in range(int(2 * HOUR)):
+        events.append((BASE + 2 * HOUR + second, _reading(50 if second % 600 == 300 else 0)))
+    result = member(device_id, [], [])["view"]
+    test_tuner.recorded(result, device_id, events, BASE + 4 * HOUR)
+    result.hass = None
+    result.data["room_snapshot"] = {
+        "device_id": device_id,
+        "own": ["area:lounge"],
+        "groups": LOUNGE,
+        "room_labels": ROOM_LABELS,
+        "members": {key: {"history_labels": []} for key in ("a", "b")},
+    }
+    return result
+
+
+def _lounge(b_value, b_dip):
+    views = {"a": _lounge_radar("a", 50, 3), "b": _lounge_radar("b", b_value, b_dip)}
+    return views, dict.fromkeys(views, THRESHOLDS), dict.fromkeys(views, 1.0)
+
+
+def test_a_shared_room_s_presence_is_missed_only_where_none_of_its_radars_sees_it():
+    # The lounge's other radar reads nothing: the room's presence is this radar's to bridge.
+    views, thresholds, current = _lounge(b_value=0, b_dip=0)
+    found = timeout_suggestion.suggest_room(views, ["a"], thresholds, current)["a"]
+    rows = {row["timeout"]: row for row in found["candidates"]}
+    assert rows[1.0]["dark_spells"] == 120 and rows[3.0]["dark_spells"] == 0
+    assert found["timeout"] == 3.0
+
+
+def test_a_radar_whose_room_mate_covers_the_room_keeps_its_timeout_short():
+    views, thresholds, current = _lounge(b_value=50, b_dip=0)
+    found = timeout_suggestion.suggest_room(views, ["a"], thresholds, current)["a"]
+    rows = {row["timeout"]: row for row in found["candidates"]}
+    assert rows[1.0]["missed_seconds"] == 0
+    assert found["timeout"] == 1.0
+
+
+def test_a_room_learn_tunes_its_radars_together():
+    # Both radars drop out at the same moments: one of them bridging the dips lights the room.
+    views, thresholds, current = _lounge(b_value=50, b_dip=3)
+    found = timeout_suggestion.suggest_room(views, ["a", "b"], thresholds, current)
+    assert sorted(found[key]["timeout"] for key in ("a", "b")) == [1.0, 3.0]
+
+
+def test_a_radar_without_any_labelled_presence_gets_no_suggestion_in_a_room():
+    views, thresholds, current = _lounge(b_value=50, b_dip=0)
+    for item in views.values():
+        item.data["room_snapshot"]["room_labels"] = {"area:lounge": ROOM_LABELS["area:lounge"][1:]}
+    found = timeout_suggestion.suggest_room(views, ["a", "b"], thresholds, current)
+    assert found == {"a": None, "b": None}

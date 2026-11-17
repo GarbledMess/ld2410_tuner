@@ -348,14 +348,13 @@ def _other(operation, views, parameters):
     if operation == "references":
         return _references(views, parameters["jobs"])
     if operation == "timeout_suggestion":
-        from ..calibration.timeout_suggestion import KEEP_PERCENT, suggest
+        from ..calibration.timeout_suggestion import KEEP_PERCENT, suggest_room
 
-        device_id = parameters["device_id"]
-        return suggest(
-            views[device_id],
-            device_id,
+        return suggest_room(
+            views,
+            parameters["targets"],
             parameters["thresholds"],
-            parameters.get("current"),
+            parameters["current"],
             parameters.get("keep", KEEP_PERCENT / 100),
         )
     from .recount import calculate
