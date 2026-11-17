@@ -1,9 +1,11 @@
 """A radar timeout suggested from the radar's own history: the one whose missed labelled
 presence and false light, priced as Learn prices them, cost least."""
 
+import pytest
 import test_tuner
 from small_views import view
 from tuner_under_test.calibration import timeout_suggestion
+from tuner_under_test.engine.hybrid.constants import PRESENCE_PRICE
 
 BASE = 1_700_000_000.0
 HOUR = 3600.0
@@ -231,3 +233,30 @@ def test_a_radar_without_any_labelled_presence_gets_no_suggestion_in_a_room():
         item.data["room_snapshot"]["room_labels"] = {"area:lounge": ROOM_LABELS["area:lounge"][1:]}
     found = timeout_suggestion.suggest_room(views, ["a", "b"], thresholds, current)
     assert found == {"a": None, "b": None}
+
+
+def _costs(found):
+    return {row["timeout"]: (row["cost"], row["missed_seconds"]) for row in found["candidates"]}
+
+
+def test_a_radar_s_presence_priority_scales_the_price_of_its_missed_presence():
+    history = _history(dip=3)
+    default = _costs(timeout_suggestion.suggest(history, "any-name", THRESHOLDS))
+    priorities = {"radars": {"any-name": 4.0}}
+    raised = _costs(
+        timeout_suggestion.suggest(history, "any-name", THRESHOLDS, priorities=priorities)
+    )
+    assert default[1.0][1] > 0
+    for timeout, (cost, missed) in default.items():
+        assert raised[timeout][0] == pytest.approx(cost + 3 * PRESENCE_PRICE * missed)
+
+
+def test_a_shared_room_s_priority_prices_the_room_s_missed_presence():
+    views, thresholds, current = _lounge(b_value=0, b_dip=0)
+    default = timeout_suggestion.suggest_room(views, ["a"], thresholds, current)["a"]
+    priorities = {"rooms": {"area:lounge": 0.1}, "radars": {"b": 5.0}}
+    lowered = timeout_suggestion.suggest_room(
+        views, ["a"], thresholds, current, priorities=priorities
+    )["a"]
+    for timeout, (cost, missed) in _costs(default).items():
+        assert _costs(lowered)[timeout][0] == pytest.approx(cost - 0.9 * PRESENCE_PRICE * missed)

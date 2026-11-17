@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from array import array
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from dataclasses import replace as _replace
 from datetime import date
 from typing import TYPE_CHECKING, Protocol
 
-from .constants import AUTOMATIC_HORIZON_DAYS, HUMAN_EVIDENCE_HOURS
+from .constants import AUTOMATIC_HORIZON_DAYS, HUMAN_EVIDENCE_HOURS, MISSED_WEIGHT
 
 if TYPE_CHECKING:
     from .digest import DayDigest
@@ -57,6 +58,16 @@ class EvidencePolicy:
     quality: dict
     automatic_horizon_days: float | None = AUTOMATIC_HORIZON_DAYS
     human_evidence_hours: float | None = HUMAN_EVIDENCE_HOURS
+    # The weight of a missed presence fraction against a false-active one for the zone this
+    # policy scores; ``missed_weights`` holds each zone's own (its presence priority).
+    missed_weight: float = MISSED_WEIGHT
+    missed_weights: dict = field(default_factory=dict)
+
+    def for_zone(self, group_id):
+        """This policy with ``group_id``'s missed weight (a report variant uses its base zone)."""
+        base = group_id.split("\x00", 1)[0] if isinstance(group_id, str) else group_id
+        weight = self.missed_weights.get(base, self.missed_weight)
+        return self if weight == self.missed_weight else _replace(self, missed_weight=weight)
 
 
 @dataclass(frozen=True, slots=True)

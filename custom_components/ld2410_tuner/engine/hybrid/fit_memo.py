@@ -79,6 +79,8 @@ def _key(problem):
         policy.automatic_horizon_days,
         policy.human_evidence_hours,
         quality,
+        policy.missed_weight,
+        sorted(policy.missed_weights.items()),
     )
     digest.update(repr(settings).encode())
     for rid in sorted(problem.radars):

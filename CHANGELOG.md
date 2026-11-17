@@ -1,5 +1,18 @@
 # Release notes
 
+## 1.41.0 - 2026-11-17
+
+- **Presence priority for each room and zone.** Choose how Learn trades missed presence
+  against false presence, room by room: from **Avoid false presence** (a missed second
+  costs as much as a false one) through **Balanced** (5×, the previous behaviour and the
+  default) to **Never miss presence** (50×). The priority scales the missed-time cost, the
+  presence price and floor, and the quiet-presence prior. A room that favours presence
+  drops the guard against more mostly-false-active empty periods; a room that favours
+  empty time drops the guard against more mostly-missed episodes. Radar-timeout
+  suggestions price missed presence at the room's priority too. Reports show the
+  missed-time cost each room actually used. Changing a priority marks the room's results
+  out of date.
+
 ## 1.40.1 - 2026-11-17
 
 - **Radar timeouts in rooms with several radars.** A room or zone's labelled presence now

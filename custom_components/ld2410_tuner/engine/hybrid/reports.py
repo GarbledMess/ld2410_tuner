@@ -15,6 +15,7 @@ from itertools import compress
 
 from ...calibration.constants import METHOD, MIN_RECALL, ROOM_METHOD, ROOM_SCORER_VERSION
 from ...const import HISTORY_KEYS
+from .constants import MISSED_WEIGHT
 from .diagnostics import SampleSlots, diagnostics
 from .types import FitProblem, FitResult
 
@@ -35,6 +36,13 @@ EXTRA = (
     "time_term",
     "episode_term",
 )
+
+
+def _missed_cost(metrics):
+    """What a missed presence fraction cost against a false one: 5 unless the room's
+    presence priority changed it."""
+    weight = metrics.get("missed_weight", MISSED_WEIGHT)
+    return 5 if weight == MISSED_WEIGHT else weight
 
 
 def _required(bundle, key):
@@ -79,7 +87,7 @@ def measurement(metrics, mode):
         "unscored_presence_samples": 0,
         "unscored_empty_samples": 0,
         "basis": "six_second_cells" if mode == "cells" else "physical_interval_time",
-        "missed_time_cost": 5,
+        "missed_time_cost": _missed_cost(metrics),
         "longest_missed_seconds": longest,
         "longest_missed_seconds_upper": longest,
         "error_cost": metrics["cost"],
@@ -435,7 +443,7 @@ def _assessment(metrics, bundle, mode):
         target_met=recall is not None and recall >= MIN_RECALL,
         basis="human" if set(sources.values()) == {"human"} else "estimated",
         scoring_mode=mode,
-        missed_time_cost=5,
+        missed_time_cost=_missed_cost(metrics),
         **{key: metrics[key] for key in EXTRA},
     )
 

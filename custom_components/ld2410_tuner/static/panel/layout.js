@@ -16,6 +16,16 @@ const FOOTER = "footer";
 
 const EMPTY_ROOMS = { areas: {}, members: {}, groups: {} };
 
+// A room's presence priority multiplies what Learn charges for a missed second
+// of presence against a second of false presence (1 is the tuned default).
+const PRESENCE_PRIORITIES = [
+  [0.2, "Avoid false presence"],
+  [0.5, "Lean towards empty"],
+  [1, "Balanced (default)"],
+  [3, "Lean towards presence"],
+  [10, "Never miss presence"],
+];
+
 // Fields captured as drafts live in these sections.
 const DRAFT_SECTIONS = '[data-section="history"], [data-section="training"]';
 
@@ -516,8 +526,27 @@ export const panelLayout = {
       <div class="chart-controls"><label>History <select data-room-hours><option value="24">24 hours</option><option value="72">3 days</option><option value="168">7 days</option></select></label>
       <button data-room-action="assess" ${busy ? 'disabled class="is-busy"' : ""}>Assess current settings</button>
       <button data-room-action="edit">Edit members</button>${removeButton}${addZone}</div>
+      ${this._presencePriorityHtml(group)}
       <div role="status" class="muted ${busy ? "is-busy" : ""}">${this._esc(status)}</div>
       ${editor}${this._roomReportHtml(report, rooms.members)}${this._roomSourcesHtml(id, group)}</details>${this._groupLearningHtml(id, group, rooms)}`;
+  },
+
+  // How strongly this room's Learn favours catching presence over avoiding
+  // false presence: a multiplier on what a missed second costs (1 = default).
+  _presencePriorityHtml(group) {
+    const value = Number(group.presence_priority ?? 1);
+    const choices = PRESENCE_PRIORITIES.some(([v]) => v === value)
+      ? PRESENCE_PRIORITIES
+      : [...PRESENCE_PRIORITIES, [value, `Custom (×${value})`]];
+    const options = choices
+      .map(
+        ([v, label]) =>
+          `<option value="${v}" ${v === value ? "selected" : ""}>${this._esc(label)}</option>`,
+      )
+      .join("");
+    const missed = 5 * value;
+    return `<div class="chart-controls presence-priority"><label>Presence priority <select data-room-priority data-action="room-priority">${options}</select></label></div>
+      <p class="muted">Learn weighs a missed second of presence at ${Number(missed.toPrecision(3))}× a second of false presence here. Raise it where presence must never be missed (lights in a bathroom, a study); lower it where false presence is the bigger problem (heating, alarms). Changing it marks this room's learned results out of date.</p>`;
   },
 
   // Removing a zone or manual group deletes its room labels; restoring an
@@ -543,6 +572,16 @@ export const panelLayout = {
     hours.onchange = () => this._roomHours.set(id, hours.value);
     header.querySelector('[data-room-action="edit"]').onclick = () =>
       this._openGroupEditor({ group_id: id });
+    const priority = header.querySelector("[data-room-priority]");
+    if (priority)
+      priority.onchange = () =>
+        this._action(priority, async () => {
+          await this._call("configure_room_priority", {
+            group_id: id,
+            priority: Number(priority.value),
+          });
+          await this._load(true);
+        });
     const addZone = header.querySelector('[data-room-action="add-zone"]');
     if (addZone)
       addZone.onclick = () => this._openGroupEditor({ area_id: group.area_id });

@@ -290,7 +290,8 @@ def cost_from_statistics(statistics, policy):
     """
     components = {}
     time = episode = 0.0
-    for state, factor in (("present", MISSED_WEIGHT), ("not_present", 1)):
+    missed_weight = getattr(policy, "missed_weight", MISSED_WEIGHT)
+    for state, factor in (("present", missed_weight), ("not_present", 1)):
         ct, ce = _class_cost(statistics, policy, state)
         components[state] = {"time_fraction": ct, "episode_fraction": ce}
         time += factor * ct
@@ -308,6 +309,7 @@ def cost_from_statistics(statistics, policy):
         "time_term": time,
         "episode_term": episode,
         "class_components": components,
+        "missed_weight": missed_weight,
     }
 
 
@@ -452,6 +454,7 @@ class SliceScorer:
         support = policy.quality.get("zones", {}).get(zone.group_id.split("\x00", 1)[0])
         if support is not None:
             policy = replace(policy, quality={**policy.quality, **support})
+        policy = policy.for_zone(zone.group_id)
         self.zone, self.policy, self.window = zone, policy, window
         self.attribution = attribution
         labels = EpisodeLabels(_labels(zone.truth)) if labels is None else labels

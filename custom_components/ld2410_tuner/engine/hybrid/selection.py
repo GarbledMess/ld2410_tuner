@@ -8,6 +8,10 @@ start in any zone (observed episode counts, never weighted fractions). The start
 is kept unless the best allowed selection cost beats it by more than the band;
 within the band the most central gap margin wins, then lower thresholds, then
 cost and candidate order. The quiet prior never enters a reported error cost.
+
+A zone's presence priority (its metrics' ``missed_weight`` over ``MISSED_WEIGHT``) scales
+its quiet prior, its presence price and its presence floor alike; at 1 they are unchanged.
+Above 1 the zone drops its false-active guard, below 1 its missed-episode guard.
 """
 
 from .constants import (
@@ -31,11 +35,27 @@ def quiet_weight(occupied_seconds: float) -> float:
     return ROBUST_WEIGHT * min(1.0, QUIET_SECONDS / max(1.0, occupied_seconds))
 
 
+def priority(metrics: dict) -> float:
+    """A zone's presence priority: its missed weight over the default one."""
+    return metrics.get("missed_weight", MISSED_WEIGHT) / MISSED_WEIGHT
+
+
+def _attenuated(metrics, term, kind):
+    """``term`` as if missed presence weighed ``MISSED_WEIGHT``, divided by that weight."""
+    if metrics.get("missed_weight", MISSED_WEIGHT) == MISSED_WEIGHT:
+        return metrics[term] / MISSED_WEIGHT
+    parts = metrics["class_components"]
+    return parts["present"][kind] + parts["not_present"][kind] / MISSED_WEIGHT
+
+
 def quiet_cost(metrics: dict) -> float:
-    """500 x (attenuated missed fraction beyond the slack + mostly missed fraction)."""
-    missed = metrics["time_term"] / MISSED_WEIGHT
-    mostly = metrics["episode_term"] / MISSED_WEIGHT
-    return 500 * (max(0.0, missed - QUIET_SLACK) + mostly)
+    """500 x (attenuated missed fraction beyond the slack + mostly missed fraction),
+    times the zone's presence priority."""
+    missed = _attenuated(metrics, "time_term", "time_fraction")
+    mostly = _attenuated(metrics, "episode_term", "episode_fraction")
+    cost = 500 * (max(0.0, missed - QUIET_SLACK) + mostly)
+    factor = priority(metrics)
+    return cost if factor == 1 else factor * cost
 
 
 def occupied_seconds(problem, zone):
@@ -76,6 +96,17 @@ def selection_costs(problem, scores, quiet):
     return out
 
 
+def _guards(metrics):
+    """The guards a zone keeps: one that favours presence accepts more mostly false-active
+    empty periods, one that favours empty time more mostly missed episodes."""
+    factor = priority(metrics)
+    if factor > 1:
+        return ("mostly_missed_episodes",)
+    if factor < 1:
+        return ("empty_periods_mostly_false_active",)
+    return GUARDS
+
+
 def _allowed(scores):
     start = {
         gid: metrics.get("guard_counts", metrics) for gid, metrics in _zones(scores[0]).items()
@@ -86,7 +117,7 @@ def _allowed(scores):
         if all(
             metrics.get("guard_counts", metrics)[g] <= start[gid][g]
             for gid, metrics in _zones(score).items()
-            for g in GUARDS
+            for g in _guards(metrics)
         )
     ]
 
@@ -98,7 +129,7 @@ def _presence_price(score):
         values = metrics["sufficient_statistics"].get("present/human")
         if values and values[0]:
             found = True
-            total += PRESENCE_PRICE * values[1]
+            total += PRESENCE_PRICE * priority(metrics) * values[1]
         total += metrics["false_active_seconds"]
         total += FALSE_TRIGGER_SECONDS * metrics["false_triggers"]
     return total if found else None
@@ -113,9 +144,14 @@ def presence_shift(scores):
 
 
 def _human_recall(metrics):
+    """Human-labelled recall, its shortfall scaled by the zone's presence priority, so the
+    floor allows ``PRESENCE_FLOOR / priority`` less recall than the best candidate."""
     # Automatic guesses are weaker evidence: they may spend margin, never force a threshold.
     values = metrics.get("sufficient_statistics", {}).get("present/human")
-    return 1 - values[1] / values[0] if values and values[0] else None
+    if not values or not values[0]:
+        return None
+    factor = priority(metrics)
+    return 1 - values[1] / values[0] if factor == 1 else 1 - factor * values[1] / values[0]
 
 
 def _recall(score):
