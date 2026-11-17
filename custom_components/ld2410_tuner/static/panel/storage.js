@@ -122,7 +122,7 @@ export const panelStorage = {
       <p>Older automatic readings are thinned first; human-labelled readings are kept longest.</p>
       <div class="storage-fields">${STORAGE_FIELDS.map(([key, label, min, max, fallback]) => `<label>${label}<input type="number" data-storage="${key}" min="${min}" max="${max}" step="any" required value="${this._esc(values[key] ?? fallback)}"></label>`).join("")}</div>
       <button data-action="storage-save">Save settings and clean now</button>
-      <div class="storage-trim"><label>Trim to (MiB, optional)<input type="number" data-action="trim-target" min="1" step="any" value="${this._esc(this._trimTarget || "")}" placeholder="Current ceiling"></label><button data-action="storage-trim">Trim now</button></div>
+      <div class="storage-trim"><label>Trim to (MiB, optional)<input type="number" data-action="trim-target" min="1" step="any" value="${this._esc(this._trimTarget || "")}" placeholder="90% of the ceiling"></label><button data-action="storage-trim">Trim now</button></div>
       <p class="muted">The ceiling covers all radars. Export recordings you want to keep before trimming.</p>
       <div class="storage-action-status muted" role="status"></div>
     </details>`,

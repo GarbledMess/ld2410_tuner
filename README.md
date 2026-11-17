@@ -1045,8 +1045,9 @@ after automatic time is exhausted does size trimming remove human-labelled time,
 first. Size pressure may remove data before its normal age expiry.
 
 **Save settings and clean now** applies the global policy immediately. **Trim now**
-uses the saved policy and can target a smaller file size without changing the
-ongoing ceiling. Both actions ask for confirmation and report removed automatic
+uses the saved policy and trims to 90% of the ceiling, leaving room for new recordings,
+unless you enter a target size; neither changes the ongoing ceiling. Raising only the
+ceiling takes effect even if the cleanup that follows it fails. Both actions ask for confirmation and report removed automatic
 and human-labelled recorded time. Removed history cannot be restored without an export or
 backup. Saved recommendations and device settings are preserved; their earlier
 accuracy reports may become stale when evidence is removed.

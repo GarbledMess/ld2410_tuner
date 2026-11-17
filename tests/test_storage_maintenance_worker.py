@@ -81,6 +81,44 @@ def test_failure_backoff_reports_previous_cause(tmp_path, monkeypatch):
         asyncio.run(storage._prepare_and_save(runtime, None, False, None))
 
 
+def test_failure_backoff_does_not_nest_its_own_refusals(tmp_path, monkeypatch):
+    from tuner_under_test.history import storage
+
+    runtime = SimpleNamespace(
+        data={"devices": {}, "maintenance_retry": {"after": time.time() + 60}},
+        _days=daystore.DayStore(tmp_path),
+        _storage_status={},
+        hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
+    )
+    monkeypatch.setattr(storage, "_routine_report", lambda *_args: None)
+    messages = []
+    for _save in range(3):
+        with pytest.raises(budget.BudgetExceeded) as raised:
+            asyncio.run(storage._prepare_and_save(runtime, None, False, None))
+        storage._failed_status(runtime, raised.value, None, None)
+        messages.append(str(raised.value))
+    assert len(set(messages)) == 1
+    assert messages[0].count(storage.BACKOFF) == 1
+    assert "unknown failure" not in messages[0]
+    assert "restart" in messages[0]
+
+
+def test_failure_backoff_cause_survives_restart(tmp_path, monkeypatch):
+    from tuner_under_test.history import storage
+
+    claim = storage.backoff(60, OSError("disk full while staging day"))
+    runtime = SimpleNamespace(
+        data={"devices": {}, "maintenance_retry": claim},
+        _days=daystore.DayStore(tmp_path),
+        _storage_status={},  # In-memory status is lost on restart; the claim is persisted.
+        hass=SimpleNamespace(async_add_executor_job=asyncio.to_thread),
+    )
+    monkeypatch.setattr(storage, "_routine_report", lambda *_args: None)
+    with pytest.raises(budget.BudgetExceeded, match="disk full while staging day"):
+        asyncio.run(storage._prepare_and_save(runtime, None, False, None))
+    assert storage.backoff(60, budget.BudgetExceeded(f"{storage.BACKOFF} x")).get("reason") is None
+
+
 def test_retry_bookkeeping_failure_preserves_maintenance_error(monkeypatch):
     from tuner_under_test.history import live, storage
 
