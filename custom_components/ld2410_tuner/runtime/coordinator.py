@@ -172,6 +172,7 @@ class TunerRuntime:
     async_save = storage.async_save
     configure_room = room_groups.configure
     remove_room = room_groups.remove
+    configure_room_priority = room_groups.configure_priority
     label_room_range = room_labels.label_room_range
     edit_room_label = room_labels.edit_room_label
     room_estimate_feedback = room_labels.room_estimate_feedback

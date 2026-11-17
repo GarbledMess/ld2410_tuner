@@ -146,6 +146,13 @@ async function installFixture(page) {
         };
         return { state: "running" };
       }
+      if (message.type.endsWith("configure_room_priority")) {
+        window.requests.push(message);
+        const group = window.fixture.rooms.groups[message.group_id];
+        if (message.priority === 1) delete group.presence_priority;
+        else group.presence_priority = message.priority;
+        return {};
+      }
       if (message.type.endsWith("remove_room")) {
         window.requests.push(message);
         Object.assign(window.fixture.rooms.groups[message.group_id], {
@@ -390,6 +397,36 @@ async function testAssess(page) {
     };
   });
   assert.deepEqual(stable, { same: true, mutations: 0 });
+}
+
+async function testPresencePriority(page) {
+  const desk = header(page, "zone:desk");
+  const select = desk.locator("[data-room-priority]");
+  assert.equal(await select.inputValue(), "1", "Balanced by default");
+  assert.match(await desk.innerText(), /missed second of presence at 5×/);
+  await select.selectOption("10");
+  await page.waitForFunction(
+    () => panel._data.rooms.groups["zone:desk"].presence_priority === 10,
+  );
+  const request = await page.evaluate(() =>
+    requests.findLast((r) => r.type.endsWith("configure_room_priority")),
+  );
+  assert.deepEqual(
+    { group_id: request.group_id, priority: request.priority },
+    { group_id: "zone:desk", priority: 10 },
+  );
+  assert.equal(await select.inputValue(), "10");
+  assert.match(await desk.innerText(), /missed second of presence at 50×/);
+  await page.evaluate(() => {
+    fixture.rooms.groups["zone:desk"].presence_priority = 7;
+    return panel._load(true);
+  });
+  assert.equal(await select.inputValue(), "7", "an unlisted value is kept");
+  assert.match(await select.innerText(), /Custom \(×7\)/);
+  await select.selectOption("1");
+  await page.waitForFunction(
+    () => !("presence_priority" in panel._data.rooms.groups["zone:desk"]),
+  );
 }
 
 async function testReport(page) {
@@ -1747,6 +1784,7 @@ module.exports = async function testRooms(page) {
   await testEditMembers(page);
   await testAddZone(page);
   await testAssess(page);
+  await testPresencePriority(page);
   await testReport(page);
   await testJointApply(page);
   await testOpenJointResult(page);

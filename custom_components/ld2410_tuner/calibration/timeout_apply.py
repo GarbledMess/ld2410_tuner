@@ -67,6 +67,29 @@ def _inputs(runtime, device_id):
     return timing, {key: value for key, value in (live or {}).items() if value is not None}
 
 
+def priorities(runtime, radars):
+    """Each room's non-default presence priority, and each radar's: the highest of its rooms'
+    (a radar serving a room that must never miss presence is tuned for that room)."""
+    from ..rooms import groups
+
+    definitions = groups.definitions(runtime)[2]
+    rooms = {
+        key: item["presence_priority"]
+        for key, item in definitions.items()
+        if "presence_priority" in item
+    }
+    found = {}
+    for key in radars:
+        values = [
+            item.get("presence_priority", 1.0)
+            for item in definitions.values()
+            if key in item["device_ids"]
+        ]
+        if values and max(values) != 1.0:
+            found[key] = max(values)
+    return {"radars": found, "rooms": rooms}
+
+
 async def _suggestions(runtime, device_ids):
     """Each radar's inputs, and the worker's suggestions for them, scored with the other
     radars of every room they share (``timeout_suggestion.suggest_room``)."""
@@ -92,6 +115,7 @@ async def _suggestions(runtime, device_ids):
                     key: timing["reported"]["timeout"] for key, (timing, _live) in inputs.items()
                 },
                 "keep": keep(runtime),
+                "priorities": priorities(runtime, inputs),
             },
         }
 

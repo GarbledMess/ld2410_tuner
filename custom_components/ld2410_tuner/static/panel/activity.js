@@ -89,6 +89,7 @@ export const panelActivity = {
         "history-apply": "Saving presence labels…",
         "history-remove": "Removing presence label…",
         "selection-apply": "Saving presence labels…",
+        "room-priority": "Saving presence priority…",
       }[action] || "Saving training settings…"
     );
   },

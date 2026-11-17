@@ -15,6 +15,9 @@ candidate's cost reduction over the shortest one: a timeout that works nearly as
 cheapest, held no longer than it needs; a reduction under ``NOISE_SHARE`` of the cost is
 noise and keeps the shortest. ``keep`` 1 is the cheapest, the shorter on a tie. Without
 labelled presence there is nothing to weigh.
+
+A room's presence priority multiplies ``PRESENCE_PRICE`` as it does in Learn: for the room's
+shared presence, that room's; for a radar's own labels, the highest of the rooms it is in.
 """
 
 from __future__ import annotations
@@ -151,7 +154,7 @@ def _starts_in(active, empty):
     return count
 
 
-def _candidate(timeout, detections, present, empty):
+def _candidate(timeout, detections, present, empty, priority=1.0):
     active = _merged((a, b + timeout) for a, b in detections)
     missed, dark = _missed(active, present)
     false = _overlap(active, empty)
@@ -162,7 +165,7 @@ def _candidate(timeout, detections, present, empty):
         "dark_spells": dark,
         "false_seconds": false,
         "false_starts": starts,
-        "cost": PRESENCE_PRICE * missed + false + FALSE_TRIGGER_SECONDS * starts,
+        "cost": PRESENCE_PRICE * priority * missed + false + FALSE_TRIGGER_SECONDS * starts,
     }
 
 
@@ -176,10 +179,15 @@ def _chosen(rows, keep):
     return next(row for row in rows if shortest - row["cost"] >= keep * best - 1e-9)
 
 
-def suggest(view, device_id, thresholds, current=None, keep=KEEP_PERCENT / 100):
+def suggest(view, device_id, thresholds, current=None, keep=KEEP_PERCENT / 100, priorities=None):
     """``suggest_room`` for one radar with no other radar's history at hand."""
     found = suggest_room(
-        {device_id: view}, [device_id], {device_id: thresholds}, {device_id: current}, keep
+        {device_id: view},
+        [device_id],
+        {device_id: thresholds},
+        {device_id: current},
+        keep,
+        priorities,
     )
     return found[device_id]
 
@@ -216,7 +224,10 @@ class _Room:
     """The radars of ``targets``' rooms: their detections, each candidate timeout's held
     output, and the labelled presence of every room shared by more than one of them."""
 
-    def __init__(self, views, targets, thresholds, current):
+    def __init__(self, views, targets, thresholds, current, priorities=None):
+        priorities = priorities or {}
+        self.radar_priority = priorities.get("radars", {})
+        self.room_priority = priorities.get("rooms", {})
         self.own = {key: _own(views[key], key) for key in targets}
         self.rooms = _shared(views, targets, thresholds, current)
         radars = sorted({*targets, *(m for members, _ in self.rooms.values() for m in members)})
@@ -262,8 +273,9 @@ class _Room:
     def row(self, key, timeout, held):
         """``key``'s candidate ``timeout`` with the other radars held at ``held``."""
         present, empty = self.own[key]
-        found = _candidate(timeout, self.detections[key], present, empty)
-        for members, room in self.rooms.values():
+        priority = self.radar_priority.get(key, 1.0)
+        found = _candidate(timeout, self.detections[key], present, empty, priority)
+        for group, (members, room) in self.rooms.items():
             if key in members:
                 lit = _merged(
                     span
@@ -273,14 +285,14 @@ class _Room:
                 missed, dark = _missed(lit, room)
                 found["missed_seconds"] += missed
                 found["dark_spells"] += dark
-                found["cost"] += PRESENCE_PRICE * missed
+                found["cost"] += PRESENCE_PRICE * self.room_priority.get(group, 1.0) * missed
         return found
 
     def rows(self, key, held):
         return [self.row(key, timeout, held) for timeout in self.timeouts[key]]
 
 
-def suggest_room(views, targets, thresholds, current, keep=KEEP_PERCENT / 100):
+def suggest_room(views, targets, thresholds, current, keep=KEEP_PERCENT / 100, priorities=None):
     """``{radar: {"timeout", "cheapest", "keep", "candidates"} or None}`` for each radar of
     ``targets``. Each candidate is scored on the radar's own labelled presence and empty time,
     and on the labelled presence of each room it shares with other radars, lit where any of
@@ -288,8 +300,9 @@ def suggest_room(views, targets, thresholds, current, keep=KEEP_PERCENT / 100):
     tuned one at a time, each to the shortest candidate keeping ``keep`` of its best one's
     improvement, until none changes. ``views``, ``thresholds`` and ``current`` (each radar's
     own timeout, a candidate beside the others) are by radar: the targets' and their room
-    mates'. A radar without enough labelled presence gets None and keeps its timeout."""
-    room = _Room(views, targets, thresholds, current)
+    mates'. ``priorities`` is ``{"radars": {radar: priority}, "rooms": {room: priority}}``
+    (absent: 1). A radar without enough labelled presence gets None and keeps its timeout."""
+    room = _Room(views, targets, thresholds, current, priorities)
     tuned = [key for key in targets if room.presence(key) >= MINIMUM_PRESENCE_SECONDS]
     held = {
         key: float(current[key]) if current.get(key) is not None else CANDIDATES[0]

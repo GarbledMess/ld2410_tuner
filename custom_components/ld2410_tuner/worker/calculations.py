@@ -356,6 +356,7 @@ def _other(operation, views, parameters):
             parameters["thresholds"],
             parameters["current"],
             parameters.get("keep", KEEP_PERCENT / 100),
+            parameters.get("priorities"),
         )
     from .recount import calculate
 

@@ -8,6 +8,11 @@ CELL_SECONDS = 6
 CHANNELS = 18
 MISSING = 255
 MISSED_WEIGHT = 5.0
+# A room's presence priority scales every trade of missed presence against false presence
+# its fit makes: the missed-time weight, the presence price and the presence floor. 1 is the
+# tuned default; higher misses less presence and accepts more false time, lower the reverse.
+DEFAULT_PRESENCE_PRIORITY = 1.0
+PRESENCE_PRIORITY_RANGE = (0.1, 20.0)
 TOLERANCE = 0.5
 EVIDENCE_POINTS = 20.0
 SHORTLIST = 16

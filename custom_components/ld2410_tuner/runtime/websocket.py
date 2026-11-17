@@ -107,6 +107,14 @@ def _websocket_routes():
             False,
         ),
         (
+            "configure_room_priority",
+            {vol.Required("group_id"): str, vol.Required("priority"): vol.Coerce(float)},
+            "configure_room_priority",
+            ("group_id", "priority"),
+            "invalid_request",
+            False,
+        ),
+        (
             "remove_room",
             {vol.Required("group_id"): str},
             "remove_room",

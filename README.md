@@ -97,6 +97,40 @@ bottom of the layout; **Include again** brings one back with its recording setti
 was. Nothing stored for an excluded radar is deleted: its history, labels and saved results
 are kept, and storage retention still applies to them.
 
+## Presence priority: missed presence or false presence
+
+Each room and zone has a **Presence priority** under **Assessment & room settings**. It
+decides how Learn trades missed presence (the room going dark with someone in it) against
+false presence (the room lit while empty):
+
+| Choice | Multiplier | A missed second costs |
+| --- | --- | --- |
+| Avoid false presence | ×0.2 | 1× a false second |
+| Lean towards empty | ×0.5 | 2.5× |
+| Balanced (default) | ×1 | 5× |
+| Lean towards presence | ×3 | 15× |
+| Never miss presence | ×10 | 50× |
+
+The multiplier scales every presence trade-off Learn makes for that room:
+
+- the cost of a missed second
+- the price it pays when lowering thresholds to catch quiet presence
+- how much labelled recall a candidate may give up against the best one
+- the quiet-presence prior
+
+A room above ×1 may also accept candidates that are mostly lit in more empty periods than
+the current thresholds; below ×1, it may accept candidates that mostly miss more presence
+episodes. The radar-timeout suggestion prices missed presence the same way:
+
+- for a room's own presence, at that room's priority
+- for a radar's own labels, at the highest priority of the rooms it serves
+
+Use **Never miss presence** where a miss is unacceptable, for example lights in a bathroom
+or stairs. Use **Avoid false presence** where a false detection costs more than a late
+one, for example heating, or an alarm that arms when a room is empty. Zones learned together keep their own priorities.
+Changing a priority marks the room's assessment and learned results out of date; learn again
+to use it. Balanced leaves Learn exactly as before.
+
 ## Rooms, zones and shared radars
 
 The **Rooms and zones** card is organized as a layout tree: each Home Assistant

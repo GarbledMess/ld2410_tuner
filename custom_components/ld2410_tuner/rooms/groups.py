@@ -1,10 +1,12 @@
 """Area defaults and explicit coverage zones; never change Home Assistant areas."""
 
+from math import isfinite
 from uuid import uuid4
 
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 
+from ..engine.hybrid.constants import DEFAULT_PRESENCE_PRIORITY, PRESENCE_PRIORITY_RANGE
 from . import sets
 
 
@@ -54,7 +56,40 @@ def definitions(runtime):
         ids = [item for item in saved["device_ids"] if not devices.get(item, {}).get("excluded")]
         if ids:
             groups[key] = {**saved, "device_ids": ids, "automatic": False}
+    _with_priorities(groups, runtime.data.get("room_presence_priority", {}))
     return areas, members, groups
+
+
+def _with_priorities(groups, saved):
+    """Only a non-default priority is added, so a room left at Balanced keeps its signatures."""
+    for key, value in saved.items():
+        if key in groups and value != DEFAULT_PRESENCE_PRIORITY:
+            groups[key] = {**groups[key], "presence_priority": value}
+
+
+def configure_priority(runtime, group_id, priority):
+    """Set how strongly a room or zone's Learn favours catching presence over avoiding false
+    presence: it multiplies what a missed second costs against a false-active one. 1 is the
+    default balance; saved results and assessments of the room then need learning again."""
+    groups = definitions(runtime)[2]
+    if group_id not in groups:
+        raise ValueError("This group no longer exists; refresh the panel")
+    low, high = PRESENCE_PRIORITY_RANGE
+    if (
+        isinstance(priority, bool)
+        or not isinstance(priority, int | float)
+        or not isfinite(priority)
+        or not low <= priority <= high
+    ):
+        raise ValueError(f"Choose a presence priority between {low:g} and {high:g}")
+    stored = runtime.data.setdefault("room_presence_priority", {})
+    if float(priority) == DEFAULT_PRESENCE_PRIORITY:
+        stored.pop(group_id, None)
+    else:
+        stored[group_id] = float(priority)
+    runtime.data.setdefault("room_assessments", {}).pop(group_id, None)
+    runtime._schedule_save()
+    return {"id": group_id, "presence_priority": float(priority)}
 
 
 def configure(runtime, group_id, name, area_id, device_ids):
@@ -90,6 +125,7 @@ def remove(runtime, group_id):
         runtime.data.get("room_labels", {}).pop(group_id, None)
         runtime.data.get("room_label_revision", {}).pop(group_id, None)
         runtime.data.get("room_sensor_revision", {}).pop(group_id, None)
+        runtime.data.get("room_presence_priority", {}).pop(group_id, None)
         _forget_sources(runtime, group_id)
     _membership_changed(runtime, before)
     runtime._schedule_save()

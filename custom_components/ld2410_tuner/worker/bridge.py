@@ -39,6 +39,7 @@ def preflight(runtime):
             "room_groups",
             "room_labels",
             "room_presence_sources",
+            "room_presence_priority",
             "learning_schedule",
             "storage_settings",
         )

@@ -288,6 +288,34 @@ class GroupTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn(zone["id"], groups.definitions(self.runtime)[2])
 
+    def test_presence_priority_is_saved_per_room_and_stales_learning(self):
+        self.office()
+        zone = groups.configure(self.runtime, None, "Desk", "office", ["a"])["id"]
+        before = jobs.set_context(self.runtime, [zone])[1]
+        self.assertNotIn("presence_priority", groups.definitions(self.runtime)[2][zone])
+        groups.configure_priority(self.runtime, zone, 10)
+        definitions = groups.definitions(self.runtime)[2]
+        self.assertEqual(definitions[zone]["presence_priority"], 10.0)
+        self.assertNotIn("presence_priority", definitions["area:office"])
+        self.assertNotEqual(jobs.set_context(self.runtime, [zone])[1], before)
+        self.assertEqual(truth.view(self.runtime, zone)["groups"][zone]["presence_priority"], 10)
+        from tuner_under_test.calibration import timeout_apply
+
+        self.assertEqual(
+            timeout_apply.priorities(self.runtime, ["a", "b"]),
+            {"radars": {"a": 10.0}, "rooms": {zone: 10.0}},
+        )
+        groups.configure_priority(self.runtime, zone, 1)
+        self.assertEqual(jobs.set_context(self.runtime, [zone])[1], before)
+        for bad in (0, 25, float("nan"), True):
+            with self.assertRaises(ValueError):
+                groups.configure_priority(self.runtime, zone, bad)
+        with self.assertRaises(ValueError):
+            groups.configure_priority(self.runtime, "zone:missing", 2)
+        groups.configure_priority(self.runtime, zone, 0.2)
+        groups.remove(self.runtime, zone)
+        self.assertNotIn(zone, self.runtime.data["room_presence_priority"])
+
     def test_snapshot_layout_places_every_snapshot_device(self):
         self.office()
         for key in ("a", "b"):

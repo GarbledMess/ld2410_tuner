@@ -109,7 +109,7 @@ def _episode_statistics(problem, store, zone, coordinate, order, folded, attenua
 def zone_policy(problem, zone):
     quality = problem.policy.quality
     support = quality.get("zones", {}).get(zone.group_id, quality)
-    return replace(problem.policy, quality=support)
+    return replace(problem.policy, quality=support).for_zone(zone.group_id)
 
 
 def conditional_costs(problem, store, pattern, rid, channel, domain, *, attenuate=False):
@@ -165,6 +165,7 @@ def linear_cost(store, zone, statistics, policy):
         zone,
         policy.automatic_weight,
         policy.reference,
+        policy.missed_weight,
         id(policy.quality),
         tuple((k, round(v[0], 9), round(v[2], 9)) for k, v in sorted(statistics.items())),
     )

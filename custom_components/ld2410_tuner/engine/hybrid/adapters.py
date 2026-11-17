@@ -13,6 +13,7 @@ from ...history.fit_days import FittingDays
 from ...history.fit_rows import CapturedRowSource
 from ...history.label_lookup import _history_label_reader
 from ...rooms import adaptive, attribution, evidence, truth
+from .constants import DEFAULT_PRESENCE_PRIORITY, MISSED_WEIGHT, PRESENCE_PRIORITY_RANGE
 from .digest import fold_day
 from .domains import normalize_pattern
 from .quality import collect_quality, learn_quality
@@ -158,14 +159,37 @@ def _append_span(result, low, high, label, owner, dependencies):
     result.append(TruthSpan(low, high, state, source, confidence, episode, dependencies))
 
 
-def _policy(models, weight, reference, zones=()):
+def _policy(models, weight, reference, zones=(), missed=None):
     if not isfinite(weight) or not 0 <= weight <= 1:
         raise ValueError("Automatic weight must be between zero and one")
     quality = {"models": models, "audits": {key: model.audit() for key, model in models.items()}}
     quality["zones"] = {zone.group_id: _support(models, zone) for zone in zones}
+    missed = missed or {}
+    single = MISSED_WEIGHT
     if len(zones) == 1:
         quality.update(quality["zones"][zones[0].group_id])
-    return EvidencePolicy(weight, reference, quality)
+        single = missed.get(zones[0].group_id, MISSED_WEIGHT)
+    return EvidencePolicy(weight, reference, quality, missed_weight=single, missed_weights=missed)
+
+
+def presence_priority(room):
+    """The presence priority a room truth view's own group carries (1 when it has none)."""
+    group = (room or {}).get("groups", {}).get((room or {}).get("group_id"), {})
+    value = group.get("presence_priority", DEFAULT_PRESENCE_PRIORITY)
+    low, high = PRESENCE_PRIORITY_RANGE
+    if not isinstance(value, int | float) or not isfinite(value) or not low <= value <= high:
+        raise ValueError(f"Presence priority must be between {low:g} and {high:g}")
+    return float(value)
+
+
+def missed_weights(groups, rooms):
+    """``{group_id: missed weight}`` of the zones whose presence priority is not the default."""
+    found = {gid: presence_priority((rooms or {}).get(gid)) for gid in groups}
+    return {
+        gid: MISSED_WEIGHT * value
+        for gid, value in found.items()
+        if value != DEFAULT_PRESENCE_PRIORITY
+    }
 
 
 def _support(models, zone):
@@ -332,5 +356,5 @@ def room_problem(groups, start, end, rooms, weight, *, quality_contexts=None, re
         end,
         _Days(views, start - 1800, end),
         rows,
-        _policy(models, weight, reference, zones),
+        _policy(models, weight, reference, zones, missed_weights(groups, rooms)),
     )
