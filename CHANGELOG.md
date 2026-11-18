@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.41.4 - 2026-11-18
+
+- **The score explanation mentions presence priority.** "What the score means" said missed
+  presence always costs 5 points. Where the scored room or zone has a presence priority
+  other than 1, both missed-presence costs are multiplied by it, and the note now says so.
+
 ## 1.41.3 - 2026-11-18
 
 - **Room Learn says what it does with timeouts.** The notes under a zone learning together
