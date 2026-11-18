@@ -1,5 +1,12 @@
 # Release notes
 
+## 1.41.3 - 2026-11-18
+
+- **Room Learn says what it does with timeouts.** The notes under a zone learning together
+  and under linked zones said each radar keeps its own timeout and only thresholds are
+  written. Room Learn also checks each member radar's timeout and, where automatic timeouts
+  are on, sets the suggested one, shorter or longer. The notes now say so.
+
 ## 1.41.2 - 2026-11-18
 
 - **A lighter panel, especially on phones.** The panel refreshes every 3 seconds, and each
