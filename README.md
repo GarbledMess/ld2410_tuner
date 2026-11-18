@@ -354,7 +354,8 @@ change is stored as received, at millisecond resolution, and nothing in between.
   human-labelled time is only removed after that. **Trim now** trims to 90% of the
   ceiling immediately. Removed history cannot be restored without a backup or export.
 
-If the ceiling can't be met, recording pauses and the panel says why. Details:
+If the ceiling can't be met even with all history removed, recording pauses and the
+panel says why; any other storage failure leaves recording running until the retry. Details:
 [Storage](docs/storage.md).
 
 ## ESPHome

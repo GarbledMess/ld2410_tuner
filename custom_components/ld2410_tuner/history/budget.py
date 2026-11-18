@@ -15,7 +15,18 @@ from .policy import DAY, MIB, settings
 
 
 class BudgetExceeded(ValueError):
-    """The protected metadata alone cannot fit the requested ceiling."""
+    """Storage could not be brought within the requested size."""
+
+
+class LimitImpossible(BudgetExceeded):
+    """The protected metadata alone cannot fit the ceiling: only this pauses recording. Any
+    other failure leaves recording running, briefly over the ceiling, rather than losing it."""
+
+
+IMPOSSIBLE = (
+    "The size limit is below the remaining settings, summaries and saved results. Increase "
+    "the limit or clear unused devices; no oversized file was written."
+)
 
 
 def copy_data(data, max_nodes=1024 * 1024, max_depth=20):
@@ -65,7 +76,7 @@ def _finished_dates(store, key):
     return [date for date in store.days(key) if date != live]
 
 
-def plan(store, data, now, policy, target=None, spool=None):
+def plan(store, data, now, policy, target=None, spool=None, required=None):
     """Plan finished-day range cuts; live days are immutable to maintenance. Each day's
     ranges are kept until the day or its labels change (``_retention``), so an hourly plan
     reads no unchanged day."""
@@ -77,7 +88,7 @@ def plan(store, data, now, policy, target=None, spool=None):
         if expired:
             cuts[key, date] = _cut_union(expired)
     if target is not None:
-        _ceiling_plan(store, data, cuts, target, spool=spool)
+        _ceiling_plan(store, data, cuts, target, spool=spool, required=required)
     return [(key, date, ranges) for (key, date), ranges in cuts.items()]
 
 
@@ -186,10 +197,12 @@ class _Planned:
     every day cut so far. Each day's latest replacement is kept with its encoding (``replaced``)
     for the cleanup to stage; the original counts as the file it is."""
 
-    def __init__(self, store, data, cuts, spool=None):
+    def __init__(self, store, data, cuts, spool=None, base=None):
         self.store = store
         self.spool = spool
-        self.base = None if data is None else store.size() + storage_bytes(data)
+        if base is None and data is not None:
+            base = store.size() + storage_bytes(data)
+        self.base = base
         self.original, self.change, self.replaced = {}, {}, {}
         for token, ranges in cuts.items():
             self.cut(token, ranges)
@@ -248,31 +261,65 @@ def _day_candidates(store, data, *, persist=False):
                 yield human, confidence, low, key, date, high
 
 
-def _ceiling_plan(store, data, cuts, target, spool=None):
-    from .cleanup import _cut_union
-
+def _ceiling_plan(store, data, cuts, target, spool=None, required=None):
+    """Add the fewest candidates (automatic before human, lower confidence and older first)
+    that bring the store within ``target``. Headroom (``target`` below ``required``, the
+    ceiling) is taken from automatic time only: human-labelled time goes only as far as the
+    ceiling itself needs."""
     candidates = sorted(_day_candidates(store, data, persist=spool is not None))
+    search = _CeilingSearch(store, data, cuts, candidates, spool)
+    if not candidates or search.fits(0, target):
+        return cuts
+    # Built on the cuts already made (the age plan's, an earlier attempt's) before they are
+    # replaced: cuts only ever grow, so the planning in ``_bounded_days`` always ends.
+    chosen = search.selected(_ceiling_count(search, candidates, target, required))
+    cuts.clear()
+    cuts.update(chosen)
+    return cuts
 
-    def selected(count):
-        chosen = {token: list(ranges) for token, ranges in cuts.items()}
-        for _human, _confidence, low, key, date, high in candidates[:count]:
+
+def _ceiling_count(search, candidates, target, required):
+    """How many of the ordered ``candidates`` to cut."""
+    count = len(candidates)
+    automatic = sum(not candidate[0] for candidate in candidates)
+    if required is None or required <= target or automatic == count:
+        return search.fewest(1, count, target)
+    if search.fits(automatic, target):
+        return search.fewest(1, automatic, target)
+    # Automatic time alone cannot make the headroom: the ceiling decides how much
+    # human-labelled time goes, and none goes when automatic time reaches it.
+    if search.fits(automatic, required):
+        return automatic
+    return search.fewest(automatic + 1, count, required)
+
+
+class _CeilingSearch:
+    """Sizes of the store with the first ``count`` candidates cut, on top of ``cuts``."""
+
+    def __init__(self, store, data, cuts, candidates, spool):
+        self.store, self.cuts, self.candidates, self.spool = store, cuts, candidates, spool
+        self.base = store.size() + storage_bytes(data)  # Once: each step changes only days.
+
+    def selected(self, count):
+        from .cleanup import _cut_union
+
+        chosen = {token: list(ranges) for token, ranges in self.cuts.items()}
+        for _human, _confidence, low, key, date, high in self.candidates[:count]:
             chosen.setdefault((key, date), []).append((low, high))
         return {token: _cut_union(ranges) for token, ranges in chosen.items()}
 
-    base = _Planned(store, data, cuts, spool)
-    if base.total <= target or not candidates:
-        return cuts
-    low, high = 1, len(candidates)
-    while low < high:
-        middle = (low + high) // 2
-        planned = _Planned(store, data, selected(middle), spool)
-        if planned.total <= target:
-            high = middle
-        else:
-            low = middle + 1
-    cuts.clear()
-    cuts.update(selected(low))
-    return cuts
+    def fits(self, count, limit):
+        planned = _Planned(self.store, None, self.selected(count), self.spool, self.base)
+        return planned.total <= limit
+
+    def fewest(self, low, high, limit):
+        while low < high:
+            middle = (low + high) // 2
+            if self.fits(middle, limit):
+                high = middle
+            else:
+                low = middle + 1
+        return low
 
 
 def _replacement_days(store, data, cuts, planned):
@@ -287,8 +334,20 @@ def _replacement_days(store, data, cuts, planned):
 
 
 def _bounded_days(
-    store, data, cuts, now, target, counts=None, encoded=None, spool=None, profile=None
+    store,
+    data,
+    cuts,
+    now,
+    target,
+    counts=None,
+    encoded=None,
+    spool=None,
+    profile=None,
+    required=None,
 ):
+    """Replacements within ``target``; short of it, still accepted within ``required`` (the
+    ceiling, when ``target`` aims below it for headroom)."""
+    required = target if required is None else max(target, required)
     while True:
         _stage(profile, "replacements", True)
         planned = _Planned(store, None, cuts, spool)
@@ -306,13 +365,14 @@ def _bounded_days(
             return prepared, changes, automatic, human, used
         previous = {key: list(ranges) for key, ranges in cuts.items()}
         _stage(profile, "ceiling", True)
-        _ceiling_plan(store, prepared, cuts, target, spool=spool)
+        _ceiling_plan(store, prepared, cuts, target, spool=spool, required=required)
         _stage(profile, "ceiling")
         data = prepared
         if cuts == previous:
-            raise BudgetExceeded(
-                "The size limit is below the remaining settings, summaries and saved results. Increase the limit or clear unused devices; no oversized file was written."
-            )
+            if used <= required:
+                _keep_encodings(encoded, spool, planned)
+                return prepared, changes, automatic, human, used
+            raise LimitImpossible(IMPOSSIBLE)
 
 
 def _stage(profile, name, starting=False):
@@ -362,25 +422,45 @@ def prepare_days(
     histograms, as ``label_counts.adopt`` keeps them; ``encoded`` (a dict) each replacement
     day's encoding, for ``DayStore.stage``."""
     ceiling = int(settings(data)["max_mib"] * MIB)
+    explicit = target is not None
     target = ceiling if target is None else min(ceiling, target)
     before = store.size() + storage_bytes(data) if before is None else before
     if not clean and before <= target:
         return data, [], _report(before, before, ceiling, now, 0.0, 0.0)
     if clean:
         data = _marked_clean(data, now)
+    required = target
+    if not explicit and before > ceiling:
+        # Trimming exactly to the ceiling leaves no room: the next minutes recorded put the
+        # following save over it again, and every save would run a whole trim.
+        target = headroom(ceiling)
     # Cuts only shrink the store: the ceiling needs planning only when it is exceeded already.
     _stage(profile, "retention", True)
     planned = plan(
-        store, data, now, settings(data), target=target if before > target else None, spool=spool
+        store,
+        data,
+        now,
+        settings(data),
+        target=target if before > target else None,
+        spool=spool,
+        required=required,
     )
     _stage(profile, "retention")
     cuts = {(key, date): ranges for key, date, ranges in planned}
     prepared, changes, automatic, human, used = _bounded_days(
-        store, data, cuts, now, target, counts, encoded, spool, profile
+        store, data, cuts, now, target, counts, encoded, spool, profile, required
     )
     if clean:  # After planning: the removed time is reported under the labels it had.
         _expire_labels(prepared, now - settings(data)["human_days"] * DAY)
     return prepared, changes, _report(before, used, ceiling, now, automatic, human)
+
+
+def headroom(ceiling):
+    """Where a size trim aims when no target is named: below the ceiling, leaving room for
+    the recordings that follow (``policy.TRIM_HEADROOM``)."""
+    from .policy import TRIM_HEADROOM
+
+    return int(ceiling * (1 - TRIM_HEADROOM))
 
 
 def _marked_clean(data, now):

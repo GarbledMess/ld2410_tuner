@@ -17,6 +17,7 @@ MESSAGE_NODES = 1024 * 1024
 # The store only ever replaces these atomically, so a private hard link cannot
 # be written through. Logs are appended in place and must be copied.
 LINKED = (".day", ".sum", ".count", ".ret")
+PRIVATE_PREFIX = ".ld2410-storage-"  # Beside the history folder, on its filesystem.
 
 
 def _message(kind, data):
@@ -125,9 +126,7 @@ def _prepare(holder, root, operation, data, now, snapshot, fs_lock):
     # home's data takes about 0.1 s.
     storage_values.validate(data, max_bytes=MESSAGE_BYTES, max_nodes=MESSAGE_NODES)
     root.parent.mkdir(parents=True, exist_ok=True)
-    directory = holder["directory"] = Path(
-        tempfile.mkdtemp(prefix=".ld2410-storage-", dir=root.parent)
-    )
+    directory = holder["directory"] = Path(tempfile.mkdtemp(prefix=PRIVATE_PREFIX, dir=root.parent))
     request = {
         "operation": operation,
         "root": str(directory / "history"),
@@ -191,9 +190,9 @@ async def _consume_result(runtime, holder, accept, raw):
         runtime.hass.async_add_executor_job(_read, directory / "result.json", "result")
     )
     if "error" in result:
-        from ..history.budget import BudgetExceeded
+        from ..history.budget import BudgetExceeded, LimitImpossible
 
-        raise BudgetExceeded(result["error"])
+        raise (LimitImpossible if result.get("impossible") else BudgetExceeded)(result["error"])
     holder["accepting"] = True
     try:
         accepted = await accept(result, directory)
@@ -233,11 +232,11 @@ def execute(request):
     try:
         result = calculate(request)
     except ValueError as error:
-        from ..history.budget import BudgetExceeded
+        from ..history.budget import BudgetExceeded, LimitImpossible
 
         if not isinstance(error, BudgetExceeded):
             raise
-        result = {"error": str(error)[:2048]}
+        result = {"error": str(error)[:2048], "impossible": isinstance(error, LimitImpossible)}
     Path(request["directory"], "result.json").write_bytes(_message("result", result))
     return protocol.pack("result", {"storage": True})
 

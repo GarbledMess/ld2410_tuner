@@ -304,7 +304,10 @@ def _record_maintenance(runtime, prepared, report, clean):
         runtime._storage_status["last_trim"] = report
 
 
-def _days_unchanged(runtime, original, marks, versions, changes, keys, guard_keys):
+def _days_unchanged(runtime, original, marks, versions, changes, keys):
+    """Whether the cleanup still applies: its settings, the days it rewrites, each radar's
+    labels and the day being recorded are as it read them. Recording within the live day
+    does not matter: cleanup never touches that day, and a radar is always recording."""
     if runtime.data.get("storage_settings") != original.get("storage_settings"):
         return False
     if any(
@@ -314,11 +317,7 @@ def _days_unchanged(runtime, original, marks, versions, changes, keys, guard_key
         return False
     return all(
         key in runtime.data["devices"]
-        and (
-            _observation_mark(runtime, key) == marks[key]
-            if key in guard_keys
-            else _live_date(_observation_mark(runtime, key)) == _live_date(marks[key])
-        )
+        and _live_date(_observation_mark(runtime, key)) == _live_date(marks[key])
         and all(runtime.data["devices"][key].get(field) == before.get(field) for field in GUARDED)
         for key, before in original["devices"].items()
         if key in keys
@@ -334,17 +333,57 @@ def _live_date(mark):
     return None if state is None else state[0]
 
 
-def _accept_days(runtime, prepared, changes, values, metadata_keys=()):
+def _accept_days(runtime, prepared, changes, values, metadata_keys=(), current=None):
+    """Install the cleanup's days and metadata. A batch (``current`` given) counts a radar's
+    histograms only in its last batch (``metadata_keys``), from a copy taken when it started:
+    they are installed for the radars whose histograms are still that copy (``current``), and
+    counted again (``labels._rebuild_soon``, the keys returned) for those that recorded
+    labelled time meanwhile. Earlier batches leave the histograms as they are."""
     if values is not None:
         runtime.data["storage_settings"] = dict(values)
-    for key in {key for key, _date, _day in changes} | set(metadata_keys):
+    final = set(metadata_keys)
+    rebuild = []
+    for key in {key for key, _date, _day in changes} | final:
         device = runtime.data["devices"][key]
         device["label_revision"] = prepared["devices"][key].get("label_revision", 0)
-        device["histograms"] = deepcopy(prepared["devices"][key].get("histograms", {}))
+        if not _accept_histograms(
+            device, prepared["devices"][key], current is None or key in current
+        ):
+            rebuild += [key] if key in final else []
         device.pop("last_learning", None)
         runtime._label_counts.pop(key, None)
     if changes or values is not None:
         runtime._history_cache.clear()
+    return rebuild
+
+
+def _accept_histograms(device, prepared, counted):
+    """Install the cleanup's histograms if they still count the radar's time (``counted``);
+    else keep the radar's (the batch's copy would drop the labelled time recorded since)."""
+    if counted:
+        device["histograms"] = deepcopy(prepared.get("histograms", {}))
+    else:
+        prepared["histograms"] = deepcopy(device.get("histograms", {}))
+    return counted
+
+
+def _current_histograms(runtime, original, result):
+    """A batch's radars whose histograms are still those it copied (None: not a batch)."""
+    if "guard_keys" not in result:
+        return None
+    return {
+        key
+        for key in result.get("metadata_keys", ())
+        if runtime.data["devices"][key].get("histograms")
+        == original["devices"][key].get("histograms")
+    }
+
+
+def _rebuild_histograms(runtime, keys):
+    from . import labels
+
+    for key in keys:
+        labels._rebuild_soon(runtime, key)
 
 
 def _prune_indexes(root):
@@ -376,12 +415,15 @@ def _accept_worker(runtime, original, marks, versions, values, clean, persist):
         relabelled = _relabelled(original, prepared)
         guard_keys = set(result.get("guard_keys", ()))
         touched = {key for key, _date, _day in changes} | relabelled | guard_keys
+        rebuild = []
 
         def valid():
-            return _days_unchanged(runtime, original, marks, versions, changes, touched, guard_keys)
+            return _days_unchanged(runtime, original, marks, versions, changes, touched)
 
         def install():
-            _accept_days(runtime, prepared, changes, values, result.get("metadata_keys", ()))
+            final = result.get("metadata_keys", ())
+            current = _current_histograms(runtime, original, result)
+            rebuild.extend(_accept_days(runtime, prepared, changes, values, final, current))
             _accept_labels(runtime, prepared, relabelled)
             _record_maintenance(runtime, prepared, report, clean)
             _accept_progress(runtime, prepared, result, clean)
@@ -400,6 +442,7 @@ def _accept_worker(runtime, original, marks, versions, values, clean, persist):
             )
         )
         await _adopt_counts(runtime, prepared, result.get("counts", {}), marks, touched)
+        _rebuild_histograms(runtime, rebuild)
         report["used_bytes"] = await owned_preparation(
             runtime.hass.async_add_executor_job(_accepted_size, runtime._days, prepared)
         )
@@ -413,9 +456,9 @@ def _accept_worker(runtime, original, marks, versions, values, clean, persist):
 
 
 def _accept_progress(runtime, prepared, result, clean):
-    if clean:
-        runtime.data.pop("maintenance_retry", None)
-        prepared.pop("maintenance_retry", None)
+    # Maintenance finished: a later failure backs off from the start again.
+    runtime.data.pop("maintenance_retry", None)
+    prepared.pop("maintenance_retry", None)
     if "guard_keys" not in result:
         if clean:
             runtime.data.pop("maintenance_progress", None)
@@ -430,12 +473,22 @@ def _accept_progress(runtime, prepared, result, clean):
 
 async def retry_failure(runtime, error=None):
     """Persist the claim while the caller owns the storage lock."""
-    saved = runtime.data.get("maintenance_retry", {})
-    if time.time() < saved.get("after", 0):
+    if time.time() < runtime.data.get("maintenance_retry", {}).get("after", 0):
         return
-    delay = min(7 * policy.DAY, saved.get("delay", policy.DAY // 2) * 2)
-    runtime.data["maintenance_retry"] = backoff(delay, error)
+    runtime.data["maintenance_retry"] = backoff(next_delay(runtime.data), error)
     await runtime.store.async_save(budget.copy_data(runtime.data))
+
+
+FIRST_RETRY = 3600
+LAST_RETRY = policy.DAY
+
+
+def next_delay(data):
+    """The wait before maintenance tries again: an hour, doubling with each failure in a row
+    up to a day. Never longer: the daily cleanup must not skip days, and a failure is most
+    often passing (a worker busy or stopped, a radar recording meanwhile)."""
+    previous = data.get("maintenance_retry", {}).get("delay")
+    return FIRST_RETRY if previous is None else min(LAST_RETRY, max(FIRST_RETRY, previous * 2))
 
 
 BACKOFF = "Storage maintenance is in failure backoff"
@@ -474,12 +527,18 @@ def _local_time(timestamp):
 
 
 def _failed_status(runtime, error, values, target):
-    if BACKOFF not in str(error):
-        runtime._storage_status["last_failure"] = str(error)
-    runtime._storage_status.update(
-        error=str(error),
-        blocked=isinstance(error, budget.BudgetExceeded) and values is None and target is None,
-    )
+    """Only a limit the protected metadata cannot meet pauses recording (``blocked``). Any
+    other failure, and a refusal while backing off, leaves recording running: the store is
+    briefly over its ceiling, and the next cleanup trims it, instead of radars going
+    unrecorded until a restart."""
+    status = runtime._storage_status
+    status["error"] = str(error)
+    if BACKOFF in str(error):
+        _LOGGER.debug("Storage maintenance deferred: %s", error)
+        return
+    status["last_failure"] = str(error)
+    if isinstance(error, budget.LimitImpossible) and values is None and target is None:
+        status["blocked"] = True
     _LOGGER.exception("Storage maintenance could not finish")
 
 

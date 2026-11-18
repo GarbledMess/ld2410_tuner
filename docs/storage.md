@@ -35,9 +35,10 @@ History lives beside Home Assistant's JSON store, so backups include it:
   their own, are limited to 64 MiB, are rebuilt when missing or damaged, and are the first
   thing removed under size pressure.
 
-At startup, leftovers of an interrupted day finish are removed and earlier days' logs are
-finished. Recovery files from an interrupted storage transaction are listed separately in
-**Recorded data**.
+At startup, leftovers of an interrupted day finish are removed, the private working folders
+of storage transactions that never finished (`.storage/ld2410_tuner/.ld2410-storage-*`) are
+deleted, and earlier days' logs are finished. Until then, recovery files from an
+interrupted storage transaction are listed separately in **Recorded data**.
 
 ## Recording
 
@@ -53,6 +54,9 @@ not repeat it), the retention policy in **Global settings → Recording storage*
 applied in the background. Thinning removes whole time ranges from finished days, leaving
 an explicit gap; it never removes single changes and never touches today's file. Human
 labels decide which rule applies to a stretch; otherwise its guess run and confidence do.
+A large store is cleaned a batch of days at a time while radars keep recording. A failed
+cleanup is retried after an hour, then two, doubling up to a day, so a failure never skips
+more than one daily cleanup.
 
 | Setting | Default |
 | --- | --- |
@@ -78,12 +82,18 @@ their accuracy reports may become stale.
 The size counted is the history folder (day files, today's log and summaries) plus the
 JSON store. The panel shows the size at the last save. Exports, backups and temporary
 copies are outside it. Every save checks the budget. A requested limit smaller than the
-protected metadata is rejected. If an existing limit becomes impossible, recording pauses
-and the panel explains how to raise it or clear unused data; no oversized file is
-written. Raising only the ceiling takes effect even if the cleanup after it fails.
+protected metadata is rejected. A save that finds the store over the ceiling trims it to
+90% of the ceiling, so the recordings that follow fit again; that headroom comes from
+automatic time only, and human-labelled time goes only as far as the ceiling itself needs.
+If an existing limit becomes impossible, recording pauses and the panel explains how to
+raise it or clear unused data; no oversized file is written. That is the only storage
+failure that pauses recording: after any other (a worker timing out, a disk error),
+recording continues, briefly over the ceiling, until the retry trims it. Raising only the
+ceiling takes effect even if the cleanup after it fails.
 
-Concurrent recording or label edits make cleanup defer or retry rather than overwrite new
-evidence. A label edit, thinning or trim recounts only the time that changed.
+Label edits, or a change to a day being rewritten, make cleanup retry rather than
+overwrite new evidence; recording within today's file does not, since cleanup never
+touches it. A label edit, thinning or trim recounts only the time that changed.
 
 ## Background load
 

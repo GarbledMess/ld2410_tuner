@@ -300,8 +300,10 @@ def read_day(directory, descriptor):
 
 
 def recover_publication(root):
-    """Resolve an interrupted directory swap before cloning startup inputs."""
+    """Resolve an interrupted directory swap before cloning startup inputs, and remove the
+    private trees earlier transactions left (``transactions.PRIVATE_PREFIX``)."""
     root = Path(root)
+    remove_private_trees(root.parent)
     backup = root.with_name(root.name + ".startup-backup")
     if not backup.exists():
         return
@@ -309,6 +311,21 @@ def recover_publication(root):
         shutil.rmtree(backup)
     else:
         backup.replace(root)
+
+
+def remove_private_trees(folder):
+    """Delete the private trees of transactions that did not finish: a restart during one,
+    or an acceptance that failed. Before startup's own transaction none is running, and none
+    holds anything the store needs: a transaction publishes by moving whole files into the
+    store, so the store always holds complete days, and its unpublished copies are what a
+    restart would discard anyway. Their hard links would keep trimmed days on disk."""
+    from .transactions import PRIVATE_PREFIX
+
+    if not folder.is_dir():
+        return
+    for path in folder.glob(PRIVATE_PREFIX + "*"):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def publish(runtime, owner, result, directory):
