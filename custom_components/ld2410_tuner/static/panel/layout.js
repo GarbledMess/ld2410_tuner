@@ -198,24 +198,29 @@ export const panelLayout = {
         className,
         `<summary><${heading}></${heading}><span class="section-description"></span></summary>`,
       );
-      details.open = this._layoutIsOpen(key);
+      details.open = details._drawnOpen = this._layoutIsOpen(key);
       // The toggle event is queued, so a poll could redraw first and undo a
       // click; record the new state when the summary is activated as well.
       details.firstElementChild.addEventListener("click", () =>
         this._layoutOpen.set(key, !details.open),
       );
       details.addEventListener("toggle", () => {
+        // A draw that set this state drew the contents for it already.
+        const drawn = details._drawnOpen === details.open;
+        details._drawnOpen = undefined;
         this._layoutOpen.set(key, details.open);
         if (!details.open) return;
         // Polls leave closed rooms' cards as they were: bring them up to date.
-        if (this._isEditing()) this._redrawPending = true;
+        if (drawn) {
+          // Drawn open: nothing is stale.
+        } else if (this._isEditing()) this._redrawPending = true;
         else this._drawLayout();
         requestAnimationFrame(() => this._resumeRoomGraphs(details));
       });
       return details;
     });
     if (node.open !== this._layoutIsOpen(key))
-      node.open = this._layoutIsOpen(key);
+      node.open = node._drawnOpen = this._layoutIsOpen(key);
     return node;
   },
 

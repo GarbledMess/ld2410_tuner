@@ -214,8 +214,10 @@ def recording_devices(runtime):
 def _recovery_bytes(store):
     if store is None:
         return 0
+    from ..worker.transactions import PRIVATE_PREFIX
+
     total = 0
-    for path in store.root.parent.glob(".ld2410-storage-*"):
+    for path in store.root.parent.glob(PRIVATE_PREFIX + "*"):
         if path.is_dir() and not path.is_symlink():
             total += _directory_bytes(path)
     return total

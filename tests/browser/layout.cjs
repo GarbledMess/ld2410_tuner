@@ -481,6 +481,42 @@ async function testClosedRoomsSkipPolls(page) {
   assert.match(await name(SOFA), /Door radar/, "an opened room keeps polling");
 }
 
+async function testDrawnOpenNeedsNoRedraw(page) {
+  // A draw that opens a remembered room has already drawn its contents; the toggle
+  // event that follows must not draw the whole layout again.
+  const sofa = page.locator('[data-leaf-id="zone:sofa"]');
+  await sofa.locator(":scope > summary").click();
+  await page.waitForFunction(() => !panel._layoutIsOpen("zone:sofa"));
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 50)));
+  const draws = await page.evaluate(async () => {
+    const original = panel._drawLayout;
+    let count = 0;
+    panel._drawLayout = function (...args) {
+      count += 1;
+      return original.apply(this, args);
+    };
+    try {
+      panel._layoutOpen.set("zone:sofa", true);
+      panel._drawLayout();
+      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => requestAnimationFrame(r));
+    } finally {
+      panel._drawLayout = original;
+    }
+    return count;
+  });
+  assert.equal(
+    await sofa.evaluate((node) => node.open),
+    true,
+    "the draw opened the room",
+  );
+  assert.equal(draws, 1, "opening by a draw costs no second draw");
+  await sofa.locator(":scope > summary").click();
+  await page.waitForFunction(() => !panel._layoutIsOpen("zone:sofa"));
+  await sofa.locator(":scope > summary").click();
+  await page.waitForFunction(() => panel._layoutIsOpen("zone:sofa"));
+}
+
 async function testMobile(page, screenshotDir) {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
@@ -608,6 +644,7 @@ module.exports = async function testLayout(page, screenshotDir) {
   await testCollapse(page);
   await testCollapseSemantics(page);
   await testClosedRoomsSkipPolls(page);
+  await testDrawnOpenNeedsNoRedraw(page);
   await testMobile(page, screenshotDir);
   await testFallback(page);
   await page.evaluate(() => {

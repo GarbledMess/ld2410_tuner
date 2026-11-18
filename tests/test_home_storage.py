@@ -164,6 +164,28 @@ def test_raising_the_ceiling_is_kept_when_its_cleanup_fails(play):
     play(scenario)
 
 
+def test_raising_the_ceiling_resumes_recording_when_its_cleanup_fails(play):
+    """Recording paused because the old ceiling could not be met resumes with the raised
+    one; the cleanup failing afterwards does not keep it paused."""
+    from tuner_under_test.history import storage
+
+    async def scenario(home):
+        runtime = home.runtime
+        runtime._storage_status["blocked"] = True
+        raised = {**runtime.data["storage_settings"]}
+        raised["max_mib"] = raised["max_mib"] + 50
+
+        async def cleanup_fails(*_args, **_kwargs):
+            raise OSError("worker could not stage a day")
+
+        with patch.object(storage, "_save_days", cleanup_fails):
+            with pytest.raises(WebsocketError, match="ceiling was saved"):
+                await home.ws("configure_storage", settings=raised)
+        assert not runtime._storage_status.get("blocked")
+
+    play(scenario)
+
+
 def test_a_worker_failure_reaches_the_panel_as_its_reason(play):
     from tuner_under_test.history import storage
 

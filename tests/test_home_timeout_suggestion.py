@@ -339,3 +339,35 @@ def test_a_radar_whose_timeout_cannot_be_read_is_an_error(play):
         assert found["reason"] == "Could not read this radar's timeout or thresholds."
 
     play(scenario)
+
+
+def test_finding_a_room_s_radars_copies_each_input_once(play, monkeypatch):
+    """Finding the radars of each room copies their room inputs once for the whole Learn, as
+    the prepared views do, not once for every radar learned (twelve radars: 144 copies)."""
+    from tuner_under_test.rooms import attribution
+
+    async def scenario(home):
+        start = TODAY - DAY
+        await home.ws(
+            "label_room_range",
+            group_id="area:kitchen",
+            start=start,
+            end=start + 3 * 3600,
+            state="present",
+        )
+        members = groups.definitions(home.runtime)[2]["area:kitchen"]["device_ids"]
+        assert len(members) == 2
+        copies = {}
+        original = attribution.deepcopy
+
+        def counted(value):
+            copies[id(value)] = copies.get(id(value), 0) + 1
+            return original(value)
+
+        monkeypatch.setattr(attribution, "deepcopy", counted)
+        await timeout_apply._suggestions(home.runtime, members)
+        assert copies
+        # Once to find the rooms' radars, once for the prepared views.
+        assert max(copies.values()) <= 2, copies
+
+    play(scenario)

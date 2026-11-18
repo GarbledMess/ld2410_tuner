@@ -54,6 +54,9 @@ async def configure(runtime, values):
         runtime.data["storage_settings"] = dict(values)
         runtime._history_cache.clear()
         await runtime.store.async_save(budget.copy_data(runtime.data))
+        # A pause was for the old ceiling: record again; a routine save that cannot meet
+        # even this one pauses recording again.
+        runtime._storage_status.pop("blocked", None)
     try:
         return await _persist(runtime, values=values, clean=True)
     except (Busy, Closed):
@@ -76,7 +79,7 @@ async def trim(runtime, target_mib=None):
     if target_mib is None:
         # Trimming to the ceiling itself leaves no room: the next recorded minutes would put
         # every save back over it. Leave headroom unless the owner names a target.
-        target = int(maximum * policy.MIB * (1 - policy.TRIM_HEADROOM))
+        target = budget.headroom(int(maximum * policy.MIB))
     elif type(target_mib) not in (int, float) or not 1 <= target_mib <= maximum:
         raise ValueError("Trim target must be between 1 MiB and the configured limit")
     else:

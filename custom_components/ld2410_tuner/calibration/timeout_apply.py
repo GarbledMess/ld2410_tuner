@@ -94,9 +94,11 @@ async def _suggestions(runtime, device_ids):
     """Each radar's inputs, and the worker's suggestions for them, scored with the other
     radars of every room they share (``timeout_suggestion.suggest_room``)."""
     radars = list(device_ids)
-    for device_id in device_ids:
-        for _key, members, _present in guess_check.shared_presence(runtime, device_id):
-            radars.extend(member for member in members if member not in radars)
+    # On the event loop: each room input is copied once for every radar learned, not per radar.
+    with attribution.shared_copies(runtime):
+        for device_id in device_ids:
+            for _key, members, _present in guess_check.shared_presence(runtime, device_id):
+                radars.extend(member for member in members if member not in radars)
     inputs = {key: found for key in radars if (found := _inputs(runtime, key)) is not None}
     targets = [key for key in device_ids if key in inputs]
     if not targets:
