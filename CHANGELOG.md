@@ -1,5 +1,30 @@
 # Release notes
 
+## 1.41.1 - 2026-11-18
+
+- **Storage keeps recording through failed cleanups.** A cleanup that failed for a
+  passing reason (a worker timing out, a disk error, a refusal while backing off) paused
+  recording on every radar until the next restart. Recording now pauses only when the
+  ceiling cannot be met by the settings and saved results alone.
+- **The daily cleanup finishes.** On a store large enough to be cleaned in batches, a batch
+  was discarded whenever its radar recorded anything while it ran (which an active radar
+  always does), then the cleanup backed off for one to seven days. Batches now apply while
+  radars record. A radar's histograms are taken from the batch only if no labelled time
+  was recorded meanwhile; otherwise they are counted again.
+- **Size trims keep the age expiry and always finish.** A trim to the ceiling dropped the
+  age-expiry cuts planned before it, and re-planning could loop without end. Cuts now only
+  grow, so planning ends.
+- **Headroom after an automatic size trim.** A save that finds the store over the ceiling
+  now trims it to 90% of the ceiling, not to the ceiling itself, so the next save does not
+  trim again. The headroom comes from automatic time only: human-labelled time goes only
+  as far as the ceiling needs. Each step of the trim search no longer re-measures the
+  whole JSON store and history folder.
+- **Shorter backoff.** A failed cleanup is retried after an hour, doubling up to a day
+  (was 12 hours doubling up to a week).
+- **Leftover transaction folders are removed.** Private storage folders left by a restart
+  during a transaction, or by a failed acceptance, are deleted at startup. Their hard
+  links kept trimmed days on disk.
+
 ## 1.41.0 - 2026-11-17
 
 - **Presence priority for each room and zone.** Choose how Learn trades missed presence
