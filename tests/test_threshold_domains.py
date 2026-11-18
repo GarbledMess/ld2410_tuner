@@ -221,6 +221,22 @@ class RuntimeThresholdTests(unittest.IsolatedAsyncioTestCase):
         assert comparison_jobs._context(self.runtime, "a")[1] != signature
         assert jobs._context(self.runtime, "zone")[1] != room_signature
 
+    async def test_a_failed_comparison_shows_until_what_it_measured_changes(self):
+        from unittest.mock import AsyncMock, patch
+
+        from tuner_under_test.calibration import comparison_jobs
+
+        entities, current = self.constrained()
+        self.device["last_learning"] = self.runtime._fit_history("a", entities, current)
+        failure = AsyncMock(side_effect=RuntimeError("worker stopped"))
+        with patch.object(comparison_jobs, "_calculate", failure):
+            report = await comparison_jobs.compare_results(self.runtime, "a", force=True)
+        assert (report["state"], report["reason"]) == ("error", "worker stopped")
+        shown = comparison_jobs.summary(self.runtime, "a")
+        assert (shown["state"], shown["reason"]) == ("error", "worker stopped")
+        self.states[entities["g0_move"]].attributes["step"] = 20
+        assert comparison_jobs.summary(self.runtime, "a").get("reason") != "worker stopped"
+
     async def test_joint_off_grid_candidate_is_rejected_before_device_preparation(self):
         from unittest.mock import AsyncMock, patch
 

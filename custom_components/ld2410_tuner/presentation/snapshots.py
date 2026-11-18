@@ -17,7 +17,7 @@ from ..calibration import settings as learning_settings
 from ..calibration.constants import METHOD, ROOM_METHOD
 from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
-from ..const import GATE_RE, HISTOGRAM_BINS, MAX_HISTOGRAM_COUNT
+from ..const import GATE_RE
 from ..history import pace, policy, recording, storage
 from ..presence import bermuda, rebuilds, sources
 from ..rooms import jobs as room_jobs
@@ -249,8 +249,8 @@ def _snapshot_device(runtime, device_id, device, registry):
     state_get = cache(runtime.hass.states.get)
     current = _snapshot_thresholds(runtime, device_id, registry, state_get=state_get)
 
-    histograms = runtime._ensure_histograms(device)
-    sample_counts, histogram_stats = _histogram_details(histograms)
+    # The panel draws sample counts only; percentiles are the export's (``_export_device``).
+    sample_counts = _sample_counts(runtime._ensure_histograms(device))
 
     return {
         "name": name,
@@ -265,12 +265,6 @@ def _snapshot_device(runtime, device_id, device, registry):
         "training_timeout_seconds": device.get("training_timeout_seconds", 0),
         "training_label_start": device.get("training_label_start"),
         "sample_counts": sample_counts,
-        "histogram_stats": histogram_stats,
-        "compression": {
-            "type": "bounded_histogram",
-            "max_effective_samples_per_series": MAX_HISTOGRAM_COUNT,
-            "bins": HISTOGRAM_BINS,
-        },
         "current_thresholds": current,
         "timing_configuration": read_timing(runtime, device_id),
         "comparison": comparison_jobs.summary(runtime, device_id, state_get=state_get),
@@ -367,21 +361,14 @@ def _snapshot_thresholds(runtime, device_id, registry, *, state_get=None):
     return current
 
 
-def _histogram_details(histograms):
-    sample_counts = {}
-    histogram_stats = {}
-    for key, series in histograms.items():
-        present = series.get("present", [0] * HISTOGRAM_BINS)
-        absent = series.get("not_present", [0] * HISTOGRAM_BINS)
-        sample_counts[key] = {
-            "present": sum(present),
-            "not_present": sum(absent),
+def _sample_counts(histograms):
+    return {
+        key: {
+            "present": sum(series.get("present", ())),
+            "not_present": sum(series.get("not_present", ())),
         }
-        histogram_stats[key] = {
-            "present": histogram_summary(present),
-            "not_present": histogram_summary(absent),
-        }
-    return sample_counts, histogram_stats
+        for key, series in histograms.items()
+    }
 
 
 def _threshold_reading(state):

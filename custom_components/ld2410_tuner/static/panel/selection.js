@@ -314,7 +314,9 @@ export const panelSelection = {
     card.querySelectorAll(".gate-chip").forEach((btn) => {
       const selected = Number(btn.dataset.gate) === gate;
       btn.classList.toggle("active", selected);
-      btn.setAttribute("aria-pressed", String(selected));
+      // Charts repaint every copy on each poll: write only a change.
+      if (btn.getAttribute("aria-pressed") !== String(selected))
+        btn.setAttribute("aria-pressed", String(selected));
     });
   },
 };

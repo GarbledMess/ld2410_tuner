@@ -117,3 +117,22 @@ def test_every_radar_and_room_appears_in_the_snapshot_the_panel_is_drawn_from(pl
         json.dumps(snapshot)  # A websocket result: all of it must be JSON.
 
     play(scenario)
+
+
+def test_the_poll_snapshot_leaves_per_gate_statistics_to_the_export(play):
+    """The panel polls every 3 s and draws only sample counts; the statistics CSV takes its
+    percentiles from the export, so the poll does not compute or send them."""
+
+    async def scenario(home):
+        radar = await home.ws("snapshot")
+        radar = radar["devices"]["kitchen_2"]
+        assert "histogram_stats" not in radar and "compression" not in radar
+        exported = (await home.ws("export", device_id="kitchen_2"))["devices"]["kitchen_2"]
+        assert radar["sample_counts"] == exported["sample_counts"]
+        stats = exported["histogram_stats"]["g0_move"]
+        assert set(stats) == {"present", "not_present"}
+        counts = exported["sample_counts"]["g0_move"]
+        assert stats["present"]["count"] == counts["present"]
+        assert stats["not_present"]["count"] == counts["not_present"]
+
+    play(scenario)

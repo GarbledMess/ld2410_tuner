@@ -410,6 +410,77 @@ async function testCollapse(page) {
   assert.equal(await collapsed(DESK), false);
 }
 
+// Every room starts closed, and a home's cards are thousands of nodes: polls
+// leave what no one can see alone, and opening a room shows it current.
+async function testClosedRoomsSkipPolls(page) {
+  const sofa = page.locator('[data-leaf-id="zone:sofa"]');
+  const header = sofa.locator('[data-group-id="zone:sofa"] .group-context');
+  const name = (selector) => page.locator(`${selector} .name`).innerText();
+  await page.evaluate(() => {
+    window.layoutRooms = structuredClone(fixture.rooms);
+    fixture.rooms = {
+      areas: { office: "Office" },
+      members: Object.fromEntries(
+        ["a", "b", "c", "door"].map((id) => [
+          id,
+          { name: id, area_id: "office", recording_enabled: true },
+        ]),
+      ),
+      groups: {
+        "zone:sofa": {
+          name: "Sofa",
+          kind: "zone",
+          area_id: "office",
+          device_ids: ["door", "b"],
+        },
+      },
+    };
+    return panel._load(true);
+  });
+  assert.match(await header.innerText(), /2 radars/);
+  await sofa.locator(":scope > summary").click();
+  await page.waitForFunction(() => !panel._layoutIsOpen("zone:sofa"));
+  const changes = await page.evaluate(async () => {
+    const closed = panel.shadowRoot.querySelector('[data-leaf-id="zone:sofa"]');
+    let count = 0;
+    const observer = new MutationObserver((list) => (count += list.length));
+    observer.observe(closed, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
+    fixture.devices.door.name = "Front door";
+    fixture.rooms.groups["zone:sofa"].device_ids = ["door"];
+    await panel._load(true);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    observer.disconnect();
+    return count;
+  });
+  assert.equal(changes, 0, "a poll leaves a closed room's contents untouched");
+  assert.match(
+    await name(DESK),
+    /Front door/,
+    "an open room's copy is current",
+  );
+  await sofa.locator(":scope > summary").click();
+  await page.waitForFunction(
+    (selector) =>
+      panel.shadowRoot
+        .querySelector(`${selector} .name`)
+        ?.textContent.includes("Front door"),
+    SOFA,
+  );
+  assert.equal(await sofa.evaluate((node) => node.open), true);
+  assert.match(await header.innerText(), /· 1 radar$/, "its header is current");
+  await page.evaluate(() => {
+    fixture.devices.door.name = "Door radar";
+    fixture.rooms = window.layoutRooms;
+    return panel._load(true);
+  });
+  assert.match(await name(SOFA), /Door radar/, "an opened room keeps polling");
+}
+
 async function testMobile(page, screenshotDir) {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
@@ -536,6 +607,7 @@ module.exports = async function testLayout(page, screenshotDir) {
   await testDrafts(page);
   await testCollapse(page);
   await testCollapseSemantics(page);
+  await testClosedRoomsSkipPolls(page);
   await testMobile(page, screenshotDir);
   await testFallback(page);
   await page.evaluate(() => {

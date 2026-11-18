@@ -7,6 +7,13 @@ export const STATUS_NAMES = {
 
 const STATUS = { ...STATUS_NAMES, unlabelled: "No manual label" };
 
+// toLocaleTimeString builds a formatter per call; timelines format hundreds.
+const HISTORY_TIME = new Intl.DateTimeFormat([], {
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
 export const panelHistory = {
   _historyStateFor(id) {
     if (!this._historyState.has(id))
@@ -50,11 +57,7 @@ export const panelHistory = {
   },
 
   _historyTime(timestamp) {
-    return new Date(timestamp * 1000).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      timeZoneName: "short",
-    });
+    return HISTORY_TIME.format(new Date(timestamp * 1000));
   },
 
   _historyInputValue(timestamp) {

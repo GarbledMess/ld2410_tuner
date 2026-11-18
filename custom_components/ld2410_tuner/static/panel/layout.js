@@ -206,8 +206,11 @@ export const panelLayout = {
       );
       details.addEventListener("toggle", () => {
         this._layoutOpen.set(key, details.open);
-        if (details.open)
-          requestAnimationFrame(() => this._resumeRoomGraphs(details));
+        if (!details.open) return;
+        // Polls leave closed rooms' cards as they were: bring them up to date.
+        if (this._isEditing()) this._redrawPending = true;
+        else this._drawLayout();
+        requestAnimationFrame(() => this._resumeRoomGraphs(details));
       });
       return details;
     });
@@ -219,6 +222,7 @@ export const panelLayout = {
   _layoutNodeElement(root, node, devices, cards) {
     if (node.kind === "all")
       return this._layoutLeafElement(root, node, devices, cards);
+    const closed = !this._layoutIsOpen(node.id);
     const details = this._layoutDetails(
       root,
       "data-node-id",
@@ -250,19 +254,22 @@ export const panelLayout = {
     };
     const parts = [
       summary,
-      ...this._groupHeaderElement(details, node),
+      ...this._groupHeaderElement(details, node, closed),
       ...this._nodeBandElements(details, node),
       ...redundant.map((child) =>
         this._hiddenZoneElement(details, node, child),
       ),
     ];
     if (direct.devices.length || !children.length || node.note)
-      parts.push(this._layoutDirectElement(details, direct, devices, cards));
+      parts.push(
+        this._layoutDirectElement(details, direct, devices, cards, closed),
+      );
     // "Elsewhere" has no group; its cards show their role in the area's.
     for (const child of children)
       parts.push(
         this._layoutLeafElement(details, child, devices, cards, {
           roleGroup: child.kind === "rest" ? node.group_id : child.group_id,
+          closed,
         }),
       );
     syncChildren(details, parts);
@@ -337,11 +344,11 @@ export const panelLayout = {
     return band;
   },
 
-  _layoutDirectElement(parent, node, devices, cards) {
+  _layoutDirectElement(parent, node, devices, cards, closed = false) {
     const direct = keyedChild(parent, "data-leaf-id", node.id, () =>
       element("div", "layout-direct"),
     );
-    this._layoutLeafBody(direct, [], node, devices, cards);
+    this._layoutLeafBody(direct, [], node, devices, cards, undefined, closed);
     return direct;
   },
 
@@ -359,13 +366,15 @@ export const panelLayout = {
       summary.lastElementChild,
       `${(leaf.devices || []).length} radars · presence history and tuning.`,
     );
+    const closed = options.closed || !this._layoutIsOpen(leaf.id);
     this._layoutLeafBody(
       details,
-      [summary, ...this._groupHeaderElement(details, leaf)],
+      [summary, ...this._groupHeaderElement(details, leaf, closed)],
       leaf,
       devices,
       cards,
       options.roleGroup,
+      closed,
     );
     return details;
   },
@@ -377,6 +386,7 @@ export const panelLayout = {
     devices,
     cards,
     roleGroup = leaf.group_id,
+    closed = false,
   ) {
     if (leaf.note) {
       const note = keyedChild(container, "data-layout-note", "note", () =>
@@ -393,6 +403,9 @@ export const panelLayout = {
       .filter((id) => id in devices)
       .map((id) => {
         const key = placementKey(leaf.id, id);
+        // Nobody sees a closed room's cards, and rebuilding every one on each
+        // poll is most of a redraw: they are brought up to date on opening.
+        if (closed && cards.has(key)) return cards.get(key);
         return this._createCard(id, devices[id], cards.get(key), key, {
           notRecording: notRecording.has(id),
           groupId: roleGroup,
@@ -412,12 +425,17 @@ export const panelLayout = {
     return this._data?.rooms || EMPTY_ROOMS;
   },
 
-  _groupHeaderElement(parent, node) {
+  _groupHeaderElement(parent, node, closed = false) {
     const rooms = this._roomsData();
     const id = node.group_id;
     const group = id ? rooms.groups[id] : null;
     if (!group) return [];
     this._renderedGroups?.add(id);
+    // As with cards: a closed room's header is brought up to date on opening.
+    const shown = [...parent.children].find(
+      (child) => child.getAttribute("data-group-id") === id,
+    );
+    if (closed && shown && this._roomEditorAt !== id) return [shown];
     const header = keyedChild(parent, "data-group-id", id, () => {
       const details = element(
         "details",

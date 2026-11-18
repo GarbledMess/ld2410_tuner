@@ -1,5 +1,17 @@
 # Release notes
 
+## 1.41.2 - 2026-11-18
+
+- **A lighter panel, especially on phones.** The panel refreshes every 3 seconds, and each
+  refresh rebuilt every radar card and room header, although rooms and zones start closed and
+  almost all of that was out of sight. Cards and headers inside a closed room or zone are now
+  left as they are and brought up to date when it opens. On a twelve-radar home with the CPU
+  slowed to phone speed, a refresh took about 0.67 s of the page's time and now takes about
+  0.08 s (0.11 s to 0.016 s on a desktop).
+- **Smaller refreshes.** Each refresh no longer sends per-gate percentiles the panel never
+  shows (the statistics export still has them): 117 KB to 78 KB on the same home, and about
+  a fifth less work for Home Assistant per refresh.
+
 ## 1.41.1 - 2026-11-18
 
 - **Storage keeps recording through failed cleanups.** A cleanup that failed for a
