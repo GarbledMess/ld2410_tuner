@@ -128,6 +128,11 @@ module.exports = async function testComparison(page, screenshotDir) {
     "the score explanation names its time and episode terms",
   );
   assert.match(
+    await card.locator(".pattern-comparison").innerText(),
+    /multiplied by the presence priority/,
+    "a room's presence priority scales the missed-presence points",
+  );
+  assert.match(
     await card.locator('[data-pattern="live"]').innerText(),
     /Occupied periods mostly missed: 1 of 3 · Empty periods failed: 2/,
   );
