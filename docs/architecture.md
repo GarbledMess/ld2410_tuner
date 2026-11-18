@@ -211,7 +211,7 @@ instructions per CPU-second, so it does not emulate a Green's processor speed.
 
 `tools/validate_hybrid.py` validates private exports offline under `exp2-cv-v2`,
 using held-out folds and the independent `tests/hybrid_referee.py` oracle. See the
-[command and input formats](../README.md#offline-hybrid-validation). It keeps caches
+[command and input formats](development.md#offline-hybrid-validation). It keeps caches
 outside the source history and emits anonymous aggregate reports. Frozen baseline
 thresholds can be re-scored using `--baseline`; equality of fitted outputs requires
 comparing the reports separately from timing measurements and source hashes.
