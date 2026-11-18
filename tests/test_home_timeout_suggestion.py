@@ -342,8 +342,8 @@ def test_a_radar_whose_timeout_cannot_be_read_is_an_error(play):
 
 
 def test_finding_a_room_s_radars_copies_each_input_once(play, monkeypatch):
-    """Finding the radars of each room copies their room inputs once for the whole Learn, as
-    the prepared views do, not once for every radar learned (twelve radars: 144 copies)."""
+    """Finding the radars of each room reads the room inputs without copying them: only the
+    prepared views copy each input, once (it was once more for every radar learned)."""
     from tuner_under_test.rooms import attribution
 
     async def scenario(home):
@@ -367,7 +367,6 @@ def test_finding_a_room_s_radars_copies_each_input_once(play, monkeypatch):
         monkeypatch.setattr(attribution, "deepcopy", counted)
         await timeout_apply._suggestions(home.runtime, members)
         assert copies
-        # Once to find the rooms' radars, once for the prepared views.
-        assert max(copies.values()) <= 2, copies
+        assert max(copies.values()) == 1, copies
 
     play(scenario)

@@ -272,6 +272,17 @@ def snapshot(runtime, device_id):
     return _inputs(runtime, device_id, definitions, _copier(runtime))
 
 
+def read(runtime, device_id):
+    """``snapshot`` without copying, for a caller that only reads it on the event loop and
+    keeps nothing of it past its own step."""
+    from . import groups
+
+    _, _, definitions = groups.definitions(runtime)
+    if device_id not in grouped(definitions):
+        return None
+    return _inputs(runtime, device_id, definitions, _same)
+
+
 @contextmanager
 def shared_copies(runtime):
     """Snapshots taken within share each copied input: a job preparing every radar of a

@@ -198,29 +198,28 @@ export const panelLayout = {
         className,
         `<summary><${heading}></${heading}><span class="section-description"></span></summary>`,
       );
-      details.open = details._drawnOpen = this._layoutIsOpen(key);
+      details.open = this._layoutIsOpen(key);
       // The toggle event is queued, so a poll could redraw first and undo a
       // click; record the new state when the summary is activated as well.
       details.firstElementChild.addEventListener("click", () =>
         this._layoutOpen.set(key, !details.open),
       );
       details.addEventListener("toggle", () => {
-        // A draw that set this state drew the contents for it already.
-        const drawn = details._drawnOpen === details.open;
-        details._drawnOpen = undefined;
         this._layoutOpen.set(key, details.open);
         if (!details.open) return;
-        // Polls leave closed rooms' cards as they were: bring them up to date.
-        if (drawn) {
-          // Drawn open: nothing is stale.
-        } else if (this._isEditing()) this._redrawPending = true;
-        else this._drawLayout();
+        // Polls leave closed rooms' cards as they were (_stale): bring them up
+        // to date. A room last drawn open, by the draw that opened it or a poll
+        // after a click, is current already.
+        if (details._stale) {
+          if (this._isEditing()) this._redrawPending = true;
+          else this._drawLayout();
+        }
         requestAnimationFrame(() => this._resumeRoomGraphs(details));
       });
       return details;
     });
     if (node.open !== this._layoutIsOpen(key))
-      node.open = node._drawnOpen = this._layoutIsOpen(key);
+      node.open = this._layoutIsOpen(key);
     return node;
   },
 
@@ -278,6 +277,7 @@ export const panelLayout = {
         }),
       );
     syncChildren(details, parts);
+    details._stale = closed;
     return details;
   },
 
@@ -381,6 +381,7 @@ export const panelLayout = {
       options.roleGroup,
       closed,
     );
+    details._stale = closed;
     return details;
   },
 

@@ -54,9 +54,6 @@ async def configure(runtime, values):
         runtime.data["storage_settings"] = dict(values)
         runtime._history_cache.clear()
         await runtime.store.async_save(budget.copy_data(runtime.data))
-        # A pause was for the old ceiling: record again; a routine save that cannot meet
-        # even this one pauses recording again.
-        runtime._storage_status.pop("blocked", None)
     try:
         return await _persist(runtime, values=values, clean=True)
     except (Busy, Closed):

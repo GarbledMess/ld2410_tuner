@@ -487,8 +487,14 @@ async function testDrawnOpenNeedsNoRedraw(page) {
   const sofa = page.locator('[data-leaf-id="zone:sofa"]');
   await sofa.locator(":scope > summary").click();
   await page.waitForFunction(() => !panel._layoutIsOpen("zone:sofa"));
-  await page.evaluate(() => new Promise((r) => setTimeout(r, 50)));
   const draws = await page.evaluate(async () => {
+    const room = panel.shadowRoot.querySelector('[data-leaf-id="zone:sofa"]');
+    // Any toggle still queued from the click is dispatched before this one.
+    const toggled = () =>
+      new Promise((resolve) =>
+        room.addEventListener("toggle", resolve, { once: true }),
+      );
+    if (room.open) await toggled();
     const original = panel._drawLayout;
     let count = 0;
     panel._drawLayout = function (...args) {
@@ -496,10 +502,10 @@ async function testDrawnOpenNeedsNoRedraw(page) {
       return original.apply(this, args);
     };
     try {
+      const opened = toggled();
       panel._layoutOpen.set("zone:sofa", true);
       panel._drawLayout();
-      await new Promise((r) => setTimeout(r, 50));
-      await new Promise((r) => requestAnimationFrame(r));
+      await opened;
     } finally {
       panel._drawLayout = original;
     }
@@ -511,10 +517,6 @@ async function testDrawnOpenNeedsNoRedraw(page) {
     "the draw opened the room",
   );
   assert.equal(draws, 1, "opening by a draw costs no second draw");
-  await sofa.locator(":scope > summary").click();
-  await page.waitForFunction(() => !panel._layoutIsOpen("zone:sofa"));
-  await sofa.locator(":scope > summary").click();
-  await page.waitForFunction(() => panel._layoutIsOpen("zone:sofa"));
 }
 
 async function testMobile(page, screenshotDir) {

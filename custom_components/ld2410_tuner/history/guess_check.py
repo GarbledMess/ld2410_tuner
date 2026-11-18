@@ -148,11 +148,13 @@ def _group_indexes(saved, device_id):
             yield (*_label_index(_label_events(manual)), alone)
 
 
-def shared_presence(runtime, device_id):
+def shared_presence(runtime, device_id, *, read_only=False):
     """``(key, members, present spans)`` of each room or zone covering the radar with other
     radars in it: its labelled presence is the room's, seen where any of its radars sees it
-    (``human_truth`` leaves it out: no one radar of a shared room must see it)."""
-    saved = _snapshot(runtime, device_id)
+    (``human_truth`` leaves it out: no one radar of a shared room must see it).
+    ``read_only``: a live runtime's room inputs are read in place, not copied (the caller
+    reads the result on the event loop and keeps none of it)."""
+    saved = _snapshot(runtime, device_id, read_only=read_only)
     if not saved:
         return []
     groups = saved.get("groups", {})
@@ -189,8 +191,9 @@ def _labels_of(runtime, saved, device_id):
     return (saved.get("members") or {}).get(device_id) or {}
 
 
-def _snapshot(runtime, device_id):
-    """The room inputs covering the radar: a history view's own copy, or a live one."""
+def _snapshot(runtime, device_id, *, read_only=False):
+    """The room inputs covering the radar: a history view's own copy, or a live one (read in
+    place when ``read_only``)."""
     data = runtime.data
     if "room_snapshot" in data:
         saved = data["room_snapshot"]
@@ -200,6 +203,8 @@ def _snapshot(runtime, device_id):
         return None
     from ..rooms import attribution
 
+    if read_only:
+        return attribution.read(runtime, device_id)
     return attribution.snapshot(runtime, device_id)
 
 
