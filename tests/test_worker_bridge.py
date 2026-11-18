@@ -350,3 +350,29 @@ def test_cancelling_background_admission_keeps_active_work_owned(monkeypatch):
         await bridge.stop(owner)
 
     asyncio.run(run())
+
+
+def test_a_temporary_folder_that_cannot_be_removed_leaves_the_worker_usable(monkeypatch):
+    """Removing a job's own temporary input folder can fail (a file still open, a busy
+    disk); that leaves a stray folder, not a worker closed until Home Assistant restarts."""
+    removed = []
+
+    def stuck(path, *args, **kwargs):
+        removed.append(path)
+        raise OSError("Device or resource busy")
+
+    async def run():
+        owner = runtime()
+        monkeypatch.setattr(bridge.shutil, "rmtree", stuck)
+        for _ in range(2):
+            # Views the capture refuses: the job fails after its folder was made.
+            with pytest.raises(Exception) as caught:
+                await bridge.calculate(owner, "learn", lambda: {"views": None, "parameters": {}})
+            assert not isinstance(caught.value, supervisor.Closed | supervisor.CleanupFailed)
+        monkeypatch.undo()
+        await bridge.stop(owner)
+        for path in removed:
+            bridge.shutil.rmtree(path, ignore_errors=True)
+
+    asyncio.run(run())
+    assert len(removed) == 2

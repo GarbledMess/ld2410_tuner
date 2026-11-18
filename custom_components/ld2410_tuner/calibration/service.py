@@ -111,7 +111,8 @@ async def _learn_once(runtime, device_id):
 
 def _learning_sources(runtime, device_id):
     """Configuration and explicit revisions, excluding ordinary sensor transitions."""
-    saved = attribution.snapshot(runtime, device_id) or {}
+    # Read in place: only names are kept, and the result below is a copy of its own.
+    saved = attribution.read(runtime, device_id) or {}
     members = {device_id, *saved.get("members", {})}
     related = truth.related_to(saved.get("groups", {}), saved.get("own", []))
     return deepcopy(

@@ -1,6 +1,7 @@
 """Production bridge: one bounded disposable numerical process per runtime."""
 
 import asyncio
+import logging
 import os
 import shutil
 import tempfile
@@ -9,6 +10,8 @@ from pathlib import Path
 from ..const import TRAINING_FIELDS
 from . import priority, protocol
 from .supervisor import Closed, Supervisor, owned_preparation
+
+_LOGGER = logging.getLogger(__name__)
 
 SHORT_DEADLINE = 180  # Someone is waiting: a chart or a save.
 FIT_DEADLINE = 3600  # A fit runs at the lowest priority, so a busy host stretches it.
@@ -79,6 +82,16 @@ def _service(runtime, operation=None):
     return _lane(runtime, "_worker_service", FIT_DEADLINE)
 
 
+def _remove(directory):
+    """Remove a job's temporary input folder. A folder that will not go (a file still open,
+    a busy disk) is left behind with a warning: it holds no history, and closing the worker
+    over it would stop every chart and Learn until Home Assistant restarts."""
+    try:
+        shutil.rmtree(directory)
+    except OSError as error:
+        _LOGGER.warning("Could not remove the worker's temporary folder %s: %s", directory, error)
+
+
 def _build(holder, operation, prepared):
     from . import capture, codec, manifest
 
@@ -120,7 +133,7 @@ async def calculate(runtime, operation, prepare):
 
     async def finish():
         if directory := holder.get("directory"):
-            await owned_preparation(runtime.hass.async_add_executor_job(shutil.rmtree, directory))
+            await owned_preparation(runtime.hass.async_add_executor_job(_remove, directory))
 
     # Queue lightweight identities before preparing views. Each caller owns its
     # request; saturation delays valid work instead of failing an accepted job.

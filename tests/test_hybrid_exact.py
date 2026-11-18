@@ -1139,3 +1139,27 @@ def test_replay_records_index_shared_interval_objects_once(tmp_path):
         assert all(part is coverage["r"] for part in outputs["r", (50,)])
     finally:
         records.close()
+
+
+def test_keeping_every_pattern_skips_the_cell_pre_rank():
+    """A cells-then-exact comparison that keeps every pattern has nothing to rank: the
+    cell pass would be thrown away, so it is not run (the scores are the exact ones)."""
+    from tuner_under_test.engine.hybrid.evaluate import evaluate_patterns
+
+    class Scorer:
+        def __init__(self, mode):
+            self.mode = mode
+
+        def scores(self, patterns, **_):
+            if self.mode == "cells":
+                raise AssertionError("cell pre-rank ran with nothing to rank")
+            return [{"cost": float(i)} for i, _ in enumerate(patterns)]
+
+    class Evaluators:
+        def get(self, mode):
+            return Scorer(mode)
+
+    plan = SimpleNamespace(mode="cells_then_exact", finalist_limit=2)
+    patterns = [{"a": {"g0_move": t}} for t in (10, 20, 30)]
+    found = evaluate_patterns(None, patterns, plan, evaluators=Evaluators(), keep=len(patterns))
+    assert [score["pattern_index"] for score in found] == [0, 1, 2]

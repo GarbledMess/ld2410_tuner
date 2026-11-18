@@ -195,3 +195,23 @@ def test_trim_without_a_target_leaves_headroom_below_the_ceiling(play):
         assert targets == [int(ceiling * 0.9), 5 * policy.MIB]
 
     play(scenario)
+
+
+def test_a_failed_hourly_cleanup_ends_its_task_quietly(play):
+    """The storage code logs a failed cleanup and backs off; the hourly task that ran it
+    ends without an exception nobody retrieves (asyncio would log it a second time)."""
+    from tuner_under_test.history import storage
+
+    async def scenario(home):
+        async def cleanup_fails(*_args, **_kwargs):
+            raise OSError("disk went away")
+
+        for device in home.runtime.data["devices"].values():
+            device.pop("history_cleanup", None)  # Every radar is due a cleanup.
+        with patch.object(storage, "_save_days", cleanup_fails):
+            home.hass.maintenance_due.set()
+            await asyncio.gather(home.runtime._cleanup_task, return_exceptions=True)
+        assert home.runtime._cleanup_task.exception() is None
+        assert "maintenance_retry" in home.runtime.data
+
+    play(scenario)

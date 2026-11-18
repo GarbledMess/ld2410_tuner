@@ -317,7 +317,8 @@ def evaluate_patterns(
     evaluators = Evaluators(problem, plan) if owned else evaluators
     try:
         indexes = list(range(len(patterns)))
-        if plan.mode == "cells_then_exact":
+        # Keeping every pattern leaves the cell pre-rank nothing to choose.
+        if plan.mode == "cells_then_exact" and keep < len(patterns):
             cells = evaluators.get("cells").scores(
                 patterns, quiet=quiet, zones=zones, attribution=attribution
             )

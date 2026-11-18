@@ -55,13 +55,23 @@ async def _retain(runtime):
     if time.time() < runtime.data.get("maintenance_retry", {}).get("after", 0):
         return
     if _cleanup_due(runtime, time.time()):
-        while True:
-            await runtime.async_clean_history()
-            if not runtime.data.get("maintenance_progress"):
-                return
-            await asyncio.sleep(60)  # Release storage and worker admission between durable batches.
+        await _clean_in_batches(runtime)
+        return
     for device_id in list(runtime.data["devices"]):
         await label_counts.ensure(runtime, device_id)
+
+
+async def _clean_in_batches(runtime):
+    while True:
+        try:
+            await runtime.async_clean_history()
+        except _cleanup_failures():
+            # Logged, and backed off, by the cleanup itself: nothing awaits this task to
+            # report it again.
+            return
+        if not runtime.data.get("maintenance_progress"):
+            return
+        await asyncio.sleep(60)  # Release storage and worker admission between durable batches.
 
 
 def _cleanup_due(runtime, now):
@@ -76,14 +86,20 @@ def _cleanup_due(runtime, now):
     )
 
 
+def _cleanup_failures():
+    """What a cleanup logs, then backs off from (``maintenance_retry``), and re-raises."""
+    from ..worker.supervisor import WorkerFailed
+
+    return ValueError, OSError, WorkerFailed, TimeoutError
+
+
 async def async_clean_history(runtime, *, persist=True):
     """Normalize stored history at startup and hourly, without racing writes."""
-    from ..worker.supervisor import WorkerFailed
     from . import storage
 
     try:
         report = await storage._persist(runtime, clean=True, persist=persist)
-    except (ValueError, OSError, WorkerFailed, TimeoutError) as error:
+    except _cleanup_failures() as error:
         runtime.data["maintenance_retry"] = storage.backoff(storage.next_delay(runtime.data), error)
         await storage.save_directly(runtime)
         raise

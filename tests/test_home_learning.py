@@ -177,3 +177,23 @@ def test_a_label_edit_and_a_save_during_a_long_fit_land_and_the_stale_fit_is_ref
         assert any(x["start"] == low for x in stored["devices"][radar]["history_labels"])
 
     play(scenario)
+
+
+def test_learning_sources_read_room_labels_without_copying_them(play, monkeypatch):
+    """What a Learn checks its evidence sources against names the rooms and their radars;
+    it does not copy every room-mate's labels on the event loop to find them."""
+    from tuner_under_test.calibration import service
+    from tuner_under_test.rooms import attribution, groups
+
+    async def scenario(home):
+        members = groups.definitions(home.runtime)[2]["area:kitchen"]["device_ids"]
+        before = service._learning_sources(home.runtime, members[0])
+        assert set(members) <= set(before["members"])
+
+        def no_copy(_value):
+            raise AssertionError("room inputs copied")
+
+        monkeypatch.setattr(attribution, "deepcopy", no_copy)
+        assert service._learning_sources(home.runtime, members[0]) == before
+
+    play(scenario)
