@@ -1,5 +1,19 @@
 # Release notes
 
+## 1.41.5 - 2026-11-18
+
+- **Background work survives a stuck temporary folder.** A worker temporary folder that
+  could not be deleted closed the worker until a restart, taking charts, Learn and the
+  recording pages with it. The folder is now left behind with a warning in the log.
+- **Less work on Home Assistant's main loop during Learn.** Checking Learn's sources and
+  finding a room's other radars for the timeout step copied every room-mate's labels just
+  to read them. They are now read in place.
+- **Faster Learn on large rooms.** A ranking pass whose result was always discarded is
+  skipped. Results are unchanged.
+- **Opening a room redraws once.** Opening a room or zone sometimes redrew the whole layout
+  twice; now only rooms whose contents are out of date are redrawn.
+- **A failed hourly cleanup is logged once**, not twice.
+
 ## 1.41.4 - 2026-11-18
 
 - **The score explanation mentions presence priority.** "What the score means" said missed
