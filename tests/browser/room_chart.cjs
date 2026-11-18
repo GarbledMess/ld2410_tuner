@@ -7,8 +7,22 @@ module.exports = async function testRoomChart(page) {
   const timeline = page.locator(`[data-room-timeline="${gid}"]`);
   const graph = timeline.locator("[data-room-graph]");
   const setup = await page.evaluate(async (gid) => {
-    panel._data.devices.a.current_thresholds = { g3_still: 40, g3_move: 30 };
-    panel._data.devices.b.current_thresholds = { g3_still: 65, g3_move: 35 };
+    // In every snapshot too: a background refresh replaces the panel's data mid-test.
+    const thresholds = {
+      a: { g3_still: 40, g3_move: 30 },
+      b: { g3_still: 65, g3_move: 35 },
+    };
+    window.roomChartWS = panel._hass.callWS;
+    panel._hass.callWS = async (message) => {
+      const result = await roomChartWS(message);
+      if (message.type.endsWith("/snapshot"))
+        for (const [id, value] of Object.entries(thresholds))
+          if (result?.devices?.[id])
+            result.devices[id].current_thresholds = { ...value };
+      return result;
+    };
+    for (const [id, value] of Object.entries(thresholds))
+      panel._data.devices[id].current_thresholds = { ...value };
     const state = panel._roomGraphState(gid);
     state.kind = "still";
     state.gate = 3;
@@ -181,7 +195,7 @@ module.exports = async function testRoomChart(page) {
     }
   } finally {
     await page.evaluate(() => {
-      panel._hass.callWS = slowRadarHistory;
+      panel._hass.callWS = roomChartWS;
     });
   }
 };
