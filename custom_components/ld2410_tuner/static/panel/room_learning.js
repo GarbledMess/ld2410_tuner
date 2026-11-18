@@ -168,7 +168,7 @@ export const panelRoomLearning = {
       ${this._jointResultHtml(id, group, rooms.members)}
       ${this._jointApplicationHtml(state.application)}
       ${this._automaticApplyHtml(state.automatic_apply)}
-      <p class="muted">Each radar keeps its own timeout and delays. All valid readings in shared coverage are used, including noise spikes. Human evidence has priority; confidence-weighted estimates fill missing evidence and break ties. Automatic Apply requires every member to permit this learning source, and a lower joint time-and-period cost on fresh shared recordings. Only thresholds are written.</p></section>`;
+      <p class="muted">All valid readings in shared coverage are used, including noise spikes. Human evidence has priority; confidence-weighted estimates fill missing evidence and break ties. Automatic Apply requires every member to permit this learning source, and a lower joint time-and-period cost on fresh shared recordings. Apply writes thresholds. Learn also checks each radar's timeout: where automatic timeouts are on, it sets the suggested one, shorter or longer. Delays stay as they are.</p></section>`;
   },
 
   _jointLearnButtonHtml(group, rooms, busy) {
@@ -240,7 +240,7 @@ export const panelRoomLearning = {
       ${this._linkedResultHtml(set)}
       ${this._jointApplicationHtml(state.application)}
       ${this._automaticApplyHtml(state.automatic_apply)}
-      <p class="muted">Each radar keeps its own timeout and delays. Automatic Apply requires every member to permit this learning source, every zone to have usable labels, a lower total cost, and no zone getting worse. Only thresholds are written.</p>`;
+      <p class="muted">Automatic Apply requires every member to permit this learning source, every zone to have usable labels, a lower total cost, and no zone getting worse. Apply writes thresholds. Learn also checks each radar's timeout: where automatic timeouts are on, it sets the suggested one, shorter or longer. Delays stay as they are.</p>`;
   },
 
   // Each zone's latest assessed room score; the set has no single score.

@@ -4,6 +4,13 @@ const assert = require("node:assert/strict");
 const header = (page, id) =>
   page.locator(`#layout [data-group-id="${id}"]`).first();
 
+// Room Learn runs each member radar's timeout step; the panel must not claim otherwise.
+function assertTimeoutWording(text, where) {
+  assert.doesNotMatch(text, /Only thresholds are written/, where);
+  assert.doesNotMatch(text, /keeps its own timeout/, where);
+  assert.match(text, /Learn also checks each radar's timeout/, where);
+}
+
 async function installFixture(page) {
   await page.evaluate(() => {
     window.beforeRooms = panel._hass.callWS;
@@ -536,6 +543,7 @@ async function testJointApply(page) {
   });
   assert.match(await desk.innerText(), /Desk radar.*20 → 35/);
   assert.match(await desk.innerText(), /Sofa radar.*20 → 25/);
+  assertTimeoutWording(await desk.innerText(), "a joint zone");
   assert.equal(
     await desk.locator('[data-room-action="apply-joint"]').isDisabled(),
     false,
@@ -976,6 +984,7 @@ async function testLinkedBand(page) {
   assert.match(text, /Desk: 50\.00\/100 → 60\.00\/100/);
   assert.match(text, /Sofa: 70\.00\/100 → 75\.00\/100/);
   assert.match(text, /Total error cost: 9\.000 → 6\.500/);
+  assertTimeoutWording(text, "linked zones");
   assert.match(text, /mostly missed and failed periods/);
   const older = /This joint result used an older learning model/;
   assert.match(text, older, "a joint result from another learner is marked");
