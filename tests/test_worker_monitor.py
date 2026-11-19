@@ -54,7 +54,7 @@ def test_eta_uses_bounded_successful_same_operation_history(script):
         clock = [100.0]
         worker._clock = lambda: clock[0]
 
-        async def completed(prepare, _finish, _consume):
+        async def completed(prepare, _finish, _consume, _operation=None):
             await prepare()
             clock[0] += 20
             return b"ok"

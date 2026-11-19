@@ -52,6 +52,7 @@ RUNTIME_FILES = (
     "worker/__init__.py",
     "worker/supervisor.py",
     "worker/limits.py",
+    "worker/allowance.py",
     "worker/history.py",
     "worker/protocol.py",
     "history/commit.py",

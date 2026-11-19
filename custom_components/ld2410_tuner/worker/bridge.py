@@ -8,13 +8,11 @@ import tempfile
 from pathlib import Path
 
 from ..const import TRAINING_FIELDS
-from . import priority, protocol
+from . import allowance, priority, protocol
 from .supervisor import Closed, Supervisor, owned_preparation
 
 _LOGGER = logging.getLogger(__name__)
 
-SHORT_DEADLINE = 180  # Someone is waiting: a chart or a save.
-FIT_DEADLINE = 3600  # A fit runs at the lowest priority, so a busy host stretches it.
 METADATA_BYTES = 1024 * 1024
 # Each of: all radars' metadata, and shared room inputs. A radar may keep 144 reference periods
 # of a few kilobytes each, so a labelled twelve-radar home legitimately reaches several MiB; the
@@ -57,15 +55,17 @@ def preflight(runtime):
 DISPLAY = frozenset({"charts", "recording_rows"})
 
 
-def _lane(runtime, name, deadline):
+def _lane(runtime, name, wall):
+    """Each lane's limits follow its recent jobs and the host (``allowance``)."""
     if getattr(runtime, "_worker_closed", False):
         raise Closed("Tuner numerical workers are stopped")
     service = getattr(runtime, name, None)
     if service is None:
         service = Supervisor(
             Path(__file__).with_name("entrypoint.py"),
-            deadline=deadline,
+            deadline=allowance.WALL[wall].floor,
             stdout_bytes=METADATA_BYTES,
+            allowance=allowance.Allowances(wall),
         )
         setattr(runtime, name, service)
     return service
@@ -73,13 +73,13 @@ def _lane(runtime, name, deadline):
 
 def _storage_service(runtime):
     """Flushing recordings has its own lane: a fit can run for many minutes."""
-    return _lane(runtime, "_storage_service", SHORT_DEADLINE)
+    return _lane(runtime, "_storage_service", "short")
 
 
 def _service(runtime, operation=None):
     if operation in DISPLAY:
-        return _lane(runtime, "_display_service", SHORT_DEADLINE)
-    return _lane(runtime, "_worker_service", FIT_DEADLINE)
+        return _lane(runtime, "_display_service", "short")
+    return _lane(runtime, "_worker_service", "fit")
 
 
 def _remove(directory):

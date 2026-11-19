@@ -7,7 +7,12 @@ import time
 from pathlib import Path
 
 PREFIX = "TUNER_WORKER "
-STATUS = {"VmRSS": "rss_kib", "VmHWM": "peak_rss_kib", "VmSize": "virtual_kib"}
+STATUS = {
+    "VmRSS": "rss_kib",
+    "VmHWM": "peak_rss_kib",
+    "VmSize": "virtual_kib",
+    "VmPeak": "peak_virtual_kib",  # What the address-space limit bounds.
+}
 
 
 def _read(path):

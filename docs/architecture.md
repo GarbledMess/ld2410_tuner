@@ -193,10 +193,21 @@ job-owned temporary files; cancellation waits for the owned child and preparatio
 work before removing captured inputs.
 
 Production numerical workers are stdlib-only and run with `-I -S -B`. Linux
-controls enforce 512 MiB address space, 120 CPU seconds, 128 MiB per file and 64
-file descriptors before numerical imports. Supervisor ownership covers success,
-failure and cancellation. Unsupported isolation fails explicitly. These hard
-limits are separate from the stricter desktop performance acceptance targets.
+controls enforce an address-space, CPU-time and per-file limit and 64 file descriptors
+before numerical imports; the supervisor enforces a wall-clock deadline. The limits are
+planned per job by `worker/allowance.py` and passed to the child as its last argument.
+Each has a floor (the previous fixed value: fits 1024 MiB, 900 CPU seconds, 128 MiB per
+file and one hour; charts 256 MiB, 120 seconds and three minutes; storage 1024 MiB, 900
+seconds, 192 MiB per file and three minutes) and a ceiling. Between them a job gets three
+times the time, and one and a half times the peak address space, of the last five
+successful jobs of the same operation. A job stopped by a limit (SIGXCPU or
+`CpuBudgetExceeded`, SIGXFSZ, `MemoryError`, or the deadline) doubles that limit for the
+next attempt, up to eight times; a plain SIGKILL is not counted, because it may be the
+kernel's out-of-memory killer. Address space never exceeds half the host's RAM unless the
+floor does. What is learned lives in memory and starts again at the floors after a
+restart. Supervisor ownership covers success, failure and cancellation. Unsupported
+isolation fails explicitly. These limits are separate from the stricter desktop
+performance acceptance targets.
 
 `tests/real_shape.py` builds one synthetic home the shape of a real install: twelve
 radars, sixty retained days, sensor labels off the six-second grid and tens of thousands of

@@ -46,6 +46,7 @@ module.exports = async function testWorkers(page) {
         eta_state: "estimated",
         progress_percent: null,
         resources: { rss_kib: 8192, cpu_seconds: 3 },
+        limits: { memory_mib: 1536, cpu_seconds: 1800, wall_seconds: 3600 },
       },
       foreground: 2,
       background: 1,
@@ -58,6 +59,7 @@ module.exports = async function testWorkers(page) {
   assert.match(text, /3 queued/);
   assert.match(text, /Progress unavailable/);
   assert.match(text, /8 MiB/);
+  assert.match(text, /Limits: 1536 MiB · 30m 0s CPU · 1h 0m total/);
   assert.equal(await card.locator("progress").getAttribute("value"), null);
 
   await page.evaluate(() => {

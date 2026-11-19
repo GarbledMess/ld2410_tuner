@@ -36,6 +36,8 @@ radars, lets you label when rooms were occupied or empty, and learns gate thresh
 
 - Home Assistant running on Linux (heavy jobs run in subprocesses with enforced memory
   and CPU limits; without those controls the job is refused rather than run unprotected).
+  The limits are not fixed: they grow with what recent jobs needed and after a job stops
+  at one, within set bounds, and memory never exceeds half the host's RAM.
   The local brand icon needs Home Assistant 2026.3 or later.
 - LD2410 radars on ESPHome with
   [engineering mode](https://esphome.io/components/sensor/ld2410/#switch) available and
@@ -99,7 +101,7 @@ current.
 From top to bottom:
 
 - **Workers** – live status of the background workers: what is running, queue length,
-  CPU and memory, and estimated time left.
+  CPU and memory, the running job's limits, and estimated time left.
 - **Global settings** – overnight learning schedule, automatic Apply defaults,
   learning timing and recording storage.
 - **How rooms and zones work** – a short in-panel summary of [the rules

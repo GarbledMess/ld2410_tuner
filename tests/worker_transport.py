@@ -14,7 +14,7 @@ class Transport:
         self.requests = []
 
     async def process(self, args):
-        if len(args) == 3 and args[2] == "storage":
+        if len(args) > 2 and args[2] == "storage":  # A planned budget may follow.
             request = transactions._read(args[0], "learn")
             self.requests.append(request)
             if self.before is not None:

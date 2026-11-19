@@ -15,24 +15,34 @@ def _namespace():
     sys.modules[package.__name__] = package
 
 
+def _arguments(argv, allowance):
+    """``request parent [storage|display] [budget=memory,cpu,file]``. The parent plans the
+    budget from the host and recent jobs (``allowance``); without one, the floors apply."""
+    extra = list(argv[3:])
+    token = extra.pop() if extra and extra[-1].startswith(allowance.PREFIX) else None
+    if len(argv) < 3 or len(extra) > 1 or (extra and extra[0] not in ("storage", "display")):
+        raise ValueError("Expected request path and parent PID")
+    mode = extra[0] if extra else None
+    lane = mode or "fit"
+    budget = allowance.defaults(lane) if token is None else allowance.parse(token, lane)
+    return argv[1], int(argv[2]), mode, budget
+
+
 def main():
     """Read one capped request file and emit exactly one versioned result."""
     _namespace()
+    from ld2410_child.worker import allowance
     from ld2410_child.worker.diagnostics import describe, emit, safely
     from ld2410_child.worker.limits import Budget, idle_disk_priority, install
 
-    mode = sys.argv[3] if len(sys.argv) == 4 else None
-    if len(sys.argv) not in (3, 4) or mode not in (None, "storage", "display"):
-        raise ValueError("Expected request path and parent PID")
-    # Display jobs are byte-bounded reads and may run beside a numerical child.
-    memory_mib = 256 if mode == "display" else 1024
-    # Reading children spill one inflated day (history.DAY_BYTES at most) before mapping it.
-    file_mib = 192 if mode == "storage" else 128
-    # Fits are queued at the lowest priority and nobody waits on them; charts and saves stay short.
-    cpu_seconds = 120 if mode == "display" else 900
+    path, parent, mode, budget = _arguments(sys.argv, allowance)
     controls = install(
-        Budget(memory_mib * 1024 * 1024, cpu_seconds, file_mib * 1024 * 1024),
-        expected_parent=int(sys.argv[2]),
+        Budget(
+            budget["memory_mib"] * allowance.MIB,
+            budget["cpu_seconds"],
+            budget["file_mib"] * allowance.MIB,
+        ),
+        expected_parent=parent,
     )
     if mode is None:
         idle_disk_priority()
@@ -42,13 +52,13 @@ def main():
     if mode == "storage":
         from ld2410_child.worker import transactions
 
-        request = transactions._read(sys.argv[1], "learn")
-        emit("storage_calculating", **safely(describe, request, Path(sys.argv[1]).stat().st_size))
+        request = transactions._read(path, "learn")
+        emit("storage_calculating", **safely(describe, request, Path(path).stat().st_size))
         sys.stdout.buffer.write(transactions.execute(request))
         emit("result_ready")
         sys.stdout.buffer.flush()
         return
-    with open(sys.argv[1], "rb") as stream:
+    with open(path, "rb") as stream:
         raw = stream.read(MAX_BYTES + 1)
     request = protocol.unpack(raw, "learn", max_bytes=MAX_BYTES)
     emit("calculating", **safely(describe, request, len(raw)))

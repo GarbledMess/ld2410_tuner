@@ -18,6 +18,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import allowance as allowances
 from .diagnostics import Observation, safely
 
 _LOGGER = logging.getLogger(__name__)
@@ -216,8 +217,19 @@ class Supervisor:
     """
 
     def __init__(
-        self, script, *, max_pending=1, deadline=30, grace=1, stdout_bytes=65536, stderr_bytes=8192
+        self,
+        script,
+        *,
+        max_pending=1,
+        deadline=30,
+        grace=1,
+        stdout_bytes=65536,
+        stderr_bytes=8192,
+        allowance=None,
     ):
+        """``allowance`` (``allowance.Allowances``) plans each job's limits from the host and
+        recent jobs; ``deadline`` is then only its fallback. Without one, every job gets
+        ``deadline`` and the child its own fixed limits."""
         for value in (deadline, grace):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Worker bounds must be finite and positive")
@@ -243,6 +255,8 @@ class Supervisor:
         self._closed, self._closing = False, None
         self._failure = None
         self.last_observation = None
+        self.allowance = allowance
+        self._limits = None
 
     async def run(self, prepare, *, finish=None, consume=None, operation=None):
         """Fail-fast admission; preparation waits for the chosen priority turn."""
@@ -349,6 +363,7 @@ class Supervisor:
                 eta_seconds=eta_seconds,
                 eta_state=eta_state,
                 progress_percent=None,
+                limits=None if self._limits is None else dict(self._limits),
                 resources=None
                 if self._live_observation is None
                 else dict(self._live_observation.last),
@@ -366,7 +381,7 @@ class Supervisor:
             self._waiting.discard(asyncio.current_task())
             self._jobs.add(asyncio.current_task())
             try:
-                result = await self._owned(prepare, finish, consume)
+                result = await self._owned(prepare, finish, consume, operation)
                 if operation is not None and self._active_details is not None:
                     history = self._durations.setdefault(operation, [])
                     history.append(max(0, self._clock() - self._active_details[1]))
@@ -386,24 +401,67 @@ class Supervisor:
                 self._active_operation = None
                 self._stage = None
                 self._live_observation = None
+                self._limits = None
             self._dispatch()
 
-    async def _owned(self, prepare, finish, consume):
-        primary = None
+    async def _owned(self, prepare, finish, consume, operation=None):
+        primary, started = None, self._clock()
+        wall = self.deadline if self.allowance is None else self.allowance.wall(operation)
+        self._limits = {"wall_seconds": wall}
+        scope = asyncio.timeout(wall)
         try:
-            async with asyncio.timeout(self.deadline):
-                args = await prepare()
-                if not isinstance(args, tuple) or not all(isinstance(a, str) for a in args):
-                    raise ValueError("Prepared arguments must be a tuple of strings")
-                raw = await self._process(args)
+            async with scope:
+                try:
+                    args = await self._budgeted(await prepare(), operation)
+                    raw = await self._process(args)
+                except WorkerFailed as error:
+                    self._stopped(operation, allowances.stopped_by(error.returncode, error.stderr))
+                    raise
+                self._succeeded(operation, self._clock() - started)
                 return raw if consume is None else await consume(raw)
         except BaseException as error:
             primary = error
+            # An expired deadline becomes TimeoutError only on leaving its block.
+            if isinstance(error, TimeoutError) and scope.expired():
+                self._stopped(operation, "wall_seconds")
             raise
         finally:
             if finish is not None:
                 self._stage = "finishing"
                 await _finish_owned(finish, primary)
+
+    async def _budgeted(self, args, operation):
+        """Check the prepared arguments and add the child's planned limits to them."""
+        if not isinstance(args, tuple) or not all(isinstance(a, str) for a in args):
+            raise ValueError("Prepared arguments must be a tuple of strings")
+        if self.allowance is None:
+            return args
+        mode = allowances.mode_of(args)
+        # The first plan reads the host's RAM from /proc: off the event loop.
+        budget = await owned_preparation(asyncio.to_thread(self.allowance.child, operation, mode))
+        self._limits.update(budget)
+        return (*args, allowances.argument(budget))
+
+    def _stopped(self, operation, kind):
+        if self.allowance is not None and kind is not None:
+            self.allowance.stopped(operation, kind)
+            _LOGGER.info(
+                "Worker job %s stopped at its %s limit; the next one gets more", operation, kind
+            )
+
+    def _succeeded(self, operation, wall):
+        if self.allowance is None:
+            return
+        sample = (self.last_observation or {}).get("last_sample", {})
+        virtual = sample.get("peak_virtual_kib")
+        self.allowance.succeeded(
+            operation,
+            {
+                "wall_seconds": wall,
+                "cpu_seconds": sample.get("cpu_seconds"),
+                "memory_mib": None if virtual is None else virtual / 1024,
+            },
+        )
 
     async def _process(self, args):
         self._stage = "starting"
@@ -450,7 +508,10 @@ class Supervisor:
             evidence = await owned_preparation(asyncio.to_thread(safely, observation.report))
             self.last_observation = evidence
             if code:
-                evidence.update(pid=process.pid, wall_deadline_seconds=self.deadline)
+                evidence.update(
+                    pid=process.pid,
+                    wall_deadline_seconds=(self._limits or {}).get("wall_seconds", self.deadline),
+                )
                 raise WorkerFailed(code, err, diagnostics=evidence)
             return out
         finally:
