@@ -28,6 +28,7 @@ const testRecordedData = require("./browser/recorded_data.cjs");
 const testDisabledReasons = require("./browser/disabled_reasons.cjs");
 const testDedupe = require("./browser/dedupe.cjs");
 const testTrim = require("./browser/trim.cjs");
+const { pausePolling, assertPollingPaused } = require("./browser/polling.cjs");
 const testTimeline = require("./browser/timeline.cjs");
 const testHistoryGraph = require("./browser/history_graph.cjs");
 const { testRadarZoom } = require("./browser/history_zoom.cjs");
@@ -822,44 +823,46 @@ const { execFileSync } = require("node:child_process");
     assert.equal(await page.evaluate(() => panel._dragging), false);
 
     // Exercise refreshes explicitly below; pause the background timer so it cannot
-    // replace DOM nodes halfway through a visual capture. Reconnect restores it.
-    await page.evaluate(async () => {
-      clearInterval(panel._pollTimer);
-      panel._pollTimer = null;
-      await panel._loadPromise;
-    });
-    await require("./browser/source_lanes.cjs")(page);
-    await testStableRendering(page, screenshotDir);
-    await testTiming(page, screenshotDir);
-    await testTimingSettings(page, screenshotDir);
-    await testComparison(page, screenshotDir);
-    await testApply(page, screenshotDir);
-    await testActivity(page);
-    await testTouchSelection(page);
-    await testHistoryEditor(page);
-    await testTimeline(page);
-    await testHistoryGraph(page, screenshotDir);
-    await testRadarZoom(page, screenshotDir);
-    await testSavedResults(page, screenshotDir);
-    await testAutomaticWeight(page);
-    await testJobs(page, screenshotDir);
-    await testWorkers(page);
-    await testStorage(page, screenshotDir);
-    await testExclude(page);
-    await testTimeoutSuggestion(page);
-    await testSelectionStatus(page);
-    await testSeenByOpenRooms(page);
-    await testBulkLabels(page);
-    await testRecordedData(page, screenshotDir);
-    await testBermuda(page, screenshotDir);
-    await testDisabledReasons(page);
-    await testRooms(page);
-    await testRoomLabels(page);
-    await testCardConsistency(page, screenshotDir);
-    await testDedupe(page);
-    await testTrim(page);
-    await testSources(page, screenshotDir);
-    await testLayout(page, screenshotDir);
+    // replace panel data or DOM nodes halfway through a test. Reconnect restores it.
+    await pausePolling(page);
+    const pausedSteps = [
+      ["testSourceLanes", () => require("./browser/source_lanes.cjs")(page)],
+      ["testStableRendering", () => testStableRendering(page, screenshotDir)],
+      ["testTiming", () => testTiming(page, screenshotDir)],
+      ["testTimingSettings", () => testTimingSettings(page, screenshotDir)],
+      ["testComparison", () => testComparison(page, screenshotDir)],
+      ["testApply", () => testApply(page, screenshotDir)],
+      ["testActivity", () => testActivity(page)],
+      ["testTouchSelection", () => testTouchSelection(page)],
+      ["testHistoryEditor", () => testHistoryEditor(page)],
+      ["testTimeline", () => testTimeline(page)],
+      ["testHistoryGraph", () => testHistoryGraph(page, screenshotDir)],
+      ["testRadarZoom", () => testRadarZoom(page, screenshotDir)],
+      ["testSavedResults", () => testSavedResults(page, screenshotDir)],
+      ["testAutomaticWeight", () => testAutomaticWeight(page)],
+      ["testJobs", () => testJobs(page, screenshotDir)],
+      ["testWorkers", () => testWorkers(page)],
+      ["testStorage", () => testStorage(page, screenshotDir)],
+      ["testExclude", () => testExclude(page)],
+      ["testTimeoutSuggestion", () => testTimeoutSuggestion(page)],
+      ["testSelectionStatus", () => testSelectionStatus(page)],
+      ["testSeenByOpenRooms", () => testSeenByOpenRooms(page)],
+      ["testBulkLabels", () => testBulkLabels(page)],
+      ["testRecordedData", () => testRecordedData(page, screenshotDir)],
+      ["testBermuda", () => testBermuda(page, screenshotDir)],
+      ["testDisabledReasons", () => testDisabledReasons(page)],
+      ["testRooms", () => testRooms(page)],
+      ["testRoomLabels", () => testRoomLabels(page)],
+      ["testCardConsistency", () => testCardConsistency(page, screenshotDir)],
+      ["testDedupe", () => testDedupe(page)],
+      ["testTrim", () => testTrim(page)],
+      ["testSources", () => testSources(page, screenshotDir)],
+      ["testLayout", () => testLayout(page, screenshotDir)],
+    ];
+    for (const [step, run] of pausedSteps) {
+      await run();
+      await assertPollingPaused(page, step);
+    }
     await page.setViewportSize({ width: 390, height: 844 });
     await cards
       .first()

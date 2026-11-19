@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { pausePolling } = require("./polling.cjs");
 const path = require("node:path");
 const fs = require("node:fs/promises");
 
@@ -259,7 +260,10 @@ async function testCancelledExport(page, card, detach = false) {
   else await card.locator("[data-raw-cancel]").click();
   await page.evaluate(() => rawRelease());
   await page.waitForFunction(() => !panel._recordedData.get("a").export);
-  if (detach) await page.evaluate(() => document.body.append(panel));
+  if (detach) {
+    await page.evaluate(() => document.body.append(panel));
+    await pausePolling(page); // Re-attaching restarts the background poll.
+  }
   assert.match(await card.innerText(), /Export cancelled/);
   assert.equal(downloads, 0, "cancelling must not download a partial file");
   page.off("download", countDownload);

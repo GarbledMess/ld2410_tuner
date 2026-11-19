@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { pausePolling } = require("./polling.cjs");
 const path = require("node:path");
 
 module.exports = async function testJobs(page, screenshotDir) {
@@ -205,8 +206,7 @@ module.exports = async function testJobs(page, screenshotDir) {
     panel._hass.callWS = jobsOriginalWS;
     document.body.append(panel);
     await panel._load(true);
-    clearInterval(panel._pollTimer);
-    panel._pollTimer = null;
   });
+  await pausePolling(page);
   await page.setViewportSize({ width: 1400, height: 1000 });
 };
