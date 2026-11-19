@@ -1,5 +1,19 @@
 # Release notes
 
+## 1.42.0 - 2026-11-19
+
+- **Background work makes room for Home Assistant.** The workers' memory limit used to be
+  a fixed number. It now follows what Home Assistant can spare. A job starts only while
+  Home Assistant has free memory beyond a reserve kept for it, and its limit is a share
+  of that room. Learn waits for room as long as it takes, a chart gives up after 30
+  seconds, and a save waits up to 5 minutes, then runs at its old limit.
+- **Jobs pause while Home Assistant is busy.** A running job is paused while Home
+  Assistant falls behind, and resumes once it has been responsive for a few seconds.
+  Paused time does not count against the job's deadline. If memory runs short, a job is
+  stopped and can run later; saves are paused but never stopped.
+- **The Workers section shows each job's limits**, and when a job is waiting for free
+  memory or paused.
+
 ## 1.41.5 - 2026-11-18
 
 - **Background work survives a stuck temporary folder.** A worker temporary folder that
