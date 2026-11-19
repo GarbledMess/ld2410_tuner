@@ -32,12 +32,30 @@ export function lanePaths(labels, bounds, width, y) {
       end: Math.min(bounds.end, l.end),
     }))
     .sort((a, b) => a.start - b.start);
-  const merged = [];
+  // One state per instant: a later-starting label wins where labels overlap, and an
+  // earlier label that outlasts it resumes afterwards. Stacked strokes would let a
+  // solid line show through the gaps of a dashed one.
+  const flat = [];
+  let ahead = [];
   for (const label of clipped) {
+    while (ahead.length && ahead[0].end <= label.start)
+      flat.push(ahead.shift());
+    if (ahead.length && ahead[0].start < label.start)
+      flat.push({ ...ahead[0], end: label.start });
+    ahead = [
+      label,
+      ...ahead
+        .filter((l) => l.end > label.end)
+        .map((l) => ({ ...l, start: Math.max(l.start, label.end) })),
+    ];
+  }
+  flat.push(...ahead);
+  const merged = [];
+  for (const label of flat) {
     const last = merged.at(-1);
     if (last && last.state === label.state && label.start <= last.end)
       last.end = Math.max(last.end, label.end);
-    else merged.push(label);
+    else if (label.end > label.start) merged.push(label);
   }
   const scale = (t) =>
     CHART_MARGIN.left +

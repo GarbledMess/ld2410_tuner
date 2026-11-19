@@ -25,6 +25,29 @@ module.exports = async function testSourceLanes(page) {
   console.log(
     `Source lanes: ${result.count} SVG elements for 10,000 segments in ${result.elapsed.toFixed(1)}ms`,
   );
+  const overlap = await page.evaluate(() => {
+    const node = document.createElement("div");
+    node.innerHTML = `<svg>${panel._presenceLanesSvg(
+      {
+        manual: [
+          { start: 0, end: 10, state: "present" },
+          { start: 3, end: 5, state: "not_present" },
+        ],
+        entity: [],
+        guessed: [],
+      },
+      { start: 0, end: 10 },
+      760,
+    )}</svg>`;
+    return Object.fromEntries(
+      [...node.querySelectorAll("[data-presence-state]")].map((p) => [
+        p.dataset.presenceState,
+        p.getAttribute("d").split("M").length - 1,
+      ]),
+    );
+  });
+  // Overlapping states never stack, so solid Present cannot show through dashed Empty.
+  assert.deepEqual(overlap, { present: 2, not_present: 1 });
   assert.match(result.text, /Human/);
   assert.match(result.text, /Entity/);
   assert.match(result.text, /Guessed/);
