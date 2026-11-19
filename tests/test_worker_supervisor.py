@@ -379,11 +379,13 @@ def test_posix_signals_target_the_owned_process_group(monkeypatch):
     calls = []
     monkeypatch.setattr(supervisor, "_POSIX", True)
     monkeypatch.setattr(supervisor.signal, "SIGKILL", 9, raising=False)
+    monkeypatch.setattr(supervisor.signal, "SIGCONT", 18, raising=False)
     monkeypatch.setattr(supervisor.os, "killpg", lambda *a: calls.append(a), raising=False)
     child = SimpleNamespace(pid=123)
     supervisor._signal(child)
     supervisor._signal(child, force=True)
-    assert calls == [(123, supervisor.signal.SIGTERM), (123, 9)]
+    # A paused group is continued so it can act on SIGTERM.
+    assert calls == [(123, supervisor.signal.SIGTERM), (123, 18), (123, 9)]
 
     def gone(*args):
         raise ProcessLookupError
@@ -481,10 +483,15 @@ def test_posix_cleanup_kills_group_even_after_leader_exit(monkeypatch):
         calls = []
         monkeypatch.setattr(supervisor, "_POSIX", True)
         monkeypatch.setattr(supervisor.signal, "SIGKILL", 9, raising=False)
+        monkeypatch.setattr(supervisor.signal, "SIGCONT", 18, raising=False)
         monkeypatch.setattr(supervisor.os, "killpg", lambda *a: calls.append(a), raising=False)
         child = ControlledProcess(open_pipes=True)
         await supervisor._reap(child, 0.01)
-        assert calls == [(child.pid, supervisor.signal.SIGTERM), (child.pid, 9)]
+        assert calls == [
+            (child.pid, supervisor.signal.SIGTERM),
+            (child.pid, 18),
+            (child.pid, 9),
+        ]
 
     asyncio.run(run())
 

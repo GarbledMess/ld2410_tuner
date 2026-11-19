@@ -194,20 +194,32 @@ work before removing captured inputs.
 
 Production numerical workers are stdlib-only and run with `-I -S -B`. Linux
 controls enforce an address-space, CPU-time and per-file limit and 64 file descriptors
-before numerical imports; the supervisor enforces a wall-clock deadline. The limits are
-planned per job by `worker/allowance.py` and passed to the child as its last argument.
-Each has a floor (the previous fixed value: fits 1024 MiB, 900 CPU seconds, 128 MiB per
-file and one hour; charts 256 MiB, 120 seconds and three minutes; storage 1024 MiB, 900
-seconds, 192 MiB per file and three minutes) and a ceiling. Between them a job gets three
-times the time, and one and a half times the peak address space, of the last five
-successful jobs of the same operation. A job stopped by a limit (SIGXCPU or
-`CpuBudgetExceeded`, SIGXFSZ, `MemoryError`, or the deadline) doubles that limit for the
-next attempt, up to eight times; a plain SIGKILL is not counted, because it may be the
-kernel's out-of-memory killer. Address space never exceeds half the host's RAM unless the
-floor does. What is learned lives in memory and starts again at the floors after a
-restart. Supervisor ownership covers success, failure and cancellation. Unsupported
-isolation fails explicitly. These limits are separate from the stricter desktop
-performance acceptance targets.
+before numerical imports; the supervisor enforces a wall-clock deadline. The limits exist
+to keep background work from hurting Home Assistant, so they follow what Home Assistant
+can spare, never what a job wants (`worker/allowance.py`):
+
+- A child starts only while free memory (the host's `MemAvailable`, or Home Assistant's
+  cgroup headroom where lower) exceeds a reserve kept for Home Assistant (256 MiB or 10%
+  of RAM, whichever is more) by 256 MiB, and memory pressure (PSI `some avg10`) is under
+  10%. Otherwise fits wait as long as it takes, charts give up after 30 seconds (`NoRoom`,
+  a `Busy`) and saves run at their floor after 5 minutes.
+- The child's address-space limit is half of what is free beyond the reserve, between a
+  floor (the previous fixed value: 1024 MiB for fits and storage, 256 MiB for charts,
+  which the largest jobs need to run at all) and a ceiling (2048 and 512 MiB). It is
+  passed to the child as its last argument; the child refuses anything above the ceiling.
+- While the child runs, the supervisor checks Home Assistant four times a second. About
+  a second of event-loop lag over 100 ms pauses the child's process group (SIGSTOP) until
+  the lag stays under 50 ms for 5 seconds; the deadline's clock stops while it is paused,
+  and one job's pauses are bounded by its deadline. Free memory under the reserve, or
+  memory pressure of 10% or more, stops the child (`StoppedForHomeAssistant`); saves are
+  paused but never stopped.
+- CPU time (900 s; 120 s for charts) and file size (128 MiB; 192 MiB for storage) stay
+  fixed: they only stop a runaway job. CPU is kept off Home Assistant by the lowest CPU
+  and disk priority and by the pauses.
+
+Supervisor ownership covers success, failure and cancellation. Unsupported isolation
+fails explicitly. These limits are separate from the stricter desktop performance
+acceptance targets.
 
 `tests/real_shape.py` builds one synthetic home the shape of a real install: twelve
 radars, sixty retained days, sensor labels off the six-second grid and tens of thousands of

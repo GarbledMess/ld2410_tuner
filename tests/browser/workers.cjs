@@ -59,7 +59,7 @@ module.exports = async function testWorkers(page) {
   assert.match(text, /3 queued/);
   assert.match(text, /Progress unavailable/);
   assert.match(text, /8 MiB/);
-  assert.match(text, /Limits: 1536 MiB · 30m 0s CPU · 1h 0m total/);
+  assert.match(text, /Limits: 1536 MiB · 30m 0s CPU · 1h 0m deadline/);
   assert.equal(await card.locator("progress").getAttribute("value"), null);
 
   await page.evaluate(() => {

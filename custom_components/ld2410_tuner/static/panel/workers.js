@@ -24,7 +24,9 @@ const OPERATIONS = {
 const STAGES = {
   preparing: "Preparing",
   starting: "Starting",
+  waiting: "Waiting for free memory",
   running: "Running",
+  paused: "Paused while Home Assistant is busy",
   finishing: "Finishing",
 };
 
@@ -87,12 +89,12 @@ export const panelWorkers = {
           ? `${duration(limits.cpu_seconds)} CPU`
           : null,
         Number.isFinite(limits.wall_seconds)
-          ? `${duration(limits.wall_seconds)} total`
+          ? `${duration(limits.wall_seconds)} deadline`
           : null,
       ]
         .filter(Boolean)
         .join(" · ");
-      return `<div class="worker-row"><strong>${label}</strong><span>${this._esc(OPERATIONS[active.operation] || "Worker job")} · ${this._esc(STAGES[active.stage] || "Working")}</span><span>${duration(active.running_seconds)} elapsed · ${eta}</span><span class="muted">${queue}${resources ? ` · ${resources}` : ""}</span>${allowed ? `<span class="muted" title="Limits for this job. They grow with what recent jobs needed and after a job stops at one.">Limits: ${allowed}</span>` : ""}<div class="worker-progress"><progress aria-label="${label} progress" max="100"${measured ? ` value="${percent}"` : ""}></progress><span class="muted">${measured ? `${percent}%` : "Progress unavailable"}</span></div></div>`;
+      return `<div class="worker-row"><strong>${label}</strong><span>${this._esc(OPERATIONS[active.operation] || "Worker job")} · ${this._esc(STAGES[active.stage] || "Working")}</span><span>${duration(active.running_seconds)} elapsed · ${eta}</span><span class="muted">${queue}${resources ? ` · ${resources}` : ""}</span>${allowed ? `<span class="muted" title="Limits for this job, sized from the memory Home Assistant has free when it started. It is paused while Home Assistant is busy and stopped if memory runs short.">Limits: ${allowed}</span>` : ""}<div class="worker-progress"><progress aria-label="${label} progress" max="100"${measured ? ` value="${percent}"` : ""}></progress><span class="muted">${measured ? `${percent}%` : "Progress unavailable"}</span></div></div>`;
     }).join("");
     this._updateHtml(
       slot,

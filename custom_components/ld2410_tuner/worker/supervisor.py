@@ -57,6 +57,10 @@ class Busy(Exception):
     """The bounded pending queue is full."""
 
 
+class NoRoom(Busy):
+    """Home Assistant has too little memory to spare for this job now; try again later."""
+
+
 class Closed(Exception):
     """Shutdown or a cleanup failure prevents further admission."""
 
@@ -81,6 +85,14 @@ class WorkerFailed(Exception):
         evidence = "" if not self.diagnostics else "; diagnostics=" + json.dumps(self.diagnostics)
         super().__init__(f"Worker exited with status {returncode}{reason}: {detail}{evidence}")
         self.returncode, self.stderr = returncode, stderr
+
+
+class StoppedForHomeAssistant(WorkerFailed):
+    """The guard stopped the child: Home Assistant ran short of memory. It can run later."""
+
+    def __init__(self, returncode, stderr, *, diagnostics=None):
+        super().__init__(returncode, stderr, diagnostics=diagnostics)
+        self.args = ("Worker stopped to leave Home Assistant enough memory. " + self.args[0],)
 
 
 def _exit_reason(code):
@@ -113,6 +125,8 @@ def _signal(process, *, force=False):
     try:
         if _POSIX:
             os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+            if not force:
+                os.killpg(process.pid, signal.SIGCONT)  # A paused group must see SIGTERM.
         elif process.returncode is None:
             if force:
                 process.kill()
@@ -134,6 +148,14 @@ async def _reap(process, grace):
         await asyncio.wait_for(process.wait(), grace)
     except TimeoutError as error:
         raise CleanupFailed("Worker did not exit after termination and kill") from error
+
+
+def _pause(process, paused):
+    """Stop or continue the child's whole process group (POSIX only)."""
+    try:
+        os.killpg(process.pid, signal.SIGSTOP if paused else signal.SIGCONT)
+    except ProcessLookupError:
+        pass
 
 
 def _close_pipes(process):
@@ -227,9 +249,11 @@ class Supervisor:
         stderr_bytes=8192,
         allowance=None,
     ):
-        """``allowance`` (``allowance.Allowances``) plans each job's limits from the host and
-        recent jobs; ``deadline`` is then only its fallback. Without one, every job gets
-        ``deadline`` and the child its own fixed limits."""
+        """With ``allowance`` (``allowance.Policy``), a job waits until Home Assistant can
+        spare its memory, the child's memory limit is sized from what is free, and while it
+        runs the child is paused when Home Assistant's event loop falls behind and stopped
+        when memory runs short (POSIX only). Paused time does not count against
+        ``deadline``. Without one, the child keeps its own fixed limits."""
         for value in (deadline, grace):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("Worker bounds must be finite and positive")
@@ -257,6 +281,9 @@ class Supervisor:
         self.last_observation = None
         self.allowance = allowance
         self._limits = None
+        self._protecting = False
+        self._scope = None
+        self._remaining = None
 
     async def run(self, prepare, *, finish=None, consume=None, operation=None):
         """Fail-fast admission; preparation waits for the chosen priority turn."""
@@ -402,66 +429,100 @@ class Supervisor:
                 self._stage = None
                 self._live_observation = None
                 self._limits = None
+                self._scope = None
             self._dispatch()
 
     async def _owned(self, prepare, finish, consume, operation=None):
-        primary, started = None, self._clock()
-        wall = self.deadline if self.allowance is None else self.allowance.wall(operation)
-        self._limits = {"wall_seconds": wall}
-        scope = asyncio.timeout(wall)
+        primary = None
         try:
-            async with scope:
-                try:
-                    args = await self._budgeted(await prepare(), operation)
-                    raw = await self._process(args)
-                except WorkerFailed as error:
-                    self._stopped(operation, allowances.stopped_by(error.returncode, error.stderr))
-                    raise
-                self._succeeded(operation, self._clock() - started)
+            host = await self._room(operation)
+            async with asyncio.timeout(self.deadline) as scope:
+                args = await self._budgeted(await prepare(), host)
+                self._scope = scope
+                raw = await self._process(args)
                 return raw if consume is None else await consume(raw)
         except BaseException as error:
             primary = error
-            # An expired deadline becomes TimeoutError only on leaving its block.
-            if isinstance(error, TimeoutError) and scope.expired():
-                self._stopped(operation, "wall_seconds")
             raise
         finally:
             if finish is not None:
                 self._stage = "finishing"
                 await _finish_owned(finish, primary)
 
-    async def _budgeted(self, args, operation):
-        """Check the prepared arguments and add the child's planned limits to them."""
+    async def _room(self, operation):
+        """Wait until Home Assistant can spare this job's minimum memory, as its mode allows.
+        Returns the host as last read (None: unreadable, or a save running at its floor)."""
+        if self.allowance is None:
+            return None
+        mode = allowances.mode_for(operation)
+        rules, waited = allowances.MODES[mode], 0.0
+        while True:
+            host = await owned_preparation(asyncio.to_thread(self.allowance.host))
+            if allowances.plan(mode, host) is not None:
+                return host
+            if rules.wait_seconds is not None and waited >= rules.wait_seconds:
+                if rules.run_after_wait:
+                    return None
+                raise NoRoom("Home Assistant has too little free memory for this job now")
+            self._stage = "waiting"
+            await asyncio.sleep(allowances.WAIT_POLL)
+            waited += allowances.WAIT_POLL
+
+    async def _budgeted(self, args, host):
+        """Check the prepared arguments and add the child's limits for what is free."""
         if not isinstance(args, tuple) or not all(isinstance(a, str) for a in args):
             raise ValueError("Prepared arguments must be a tuple of strings")
         if self.allowance is None:
             return args
         mode = allowances.mode_of(args)
-        # The first plan reads the host's RAM from /proc: off the event loop.
-        budget = await owned_preparation(asyncio.to_thread(self.allowance.child, operation, mode))
-        self._limits.update(budget)
+        budget = allowances.plan(mode, host) or allowances.defaults(mode)
+        self._limits = {**budget, "wall_seconds": self.deadline, "mode": mode}
         return (*args, allowances.argument(budget))
 
-    def _stopped(self, operation, kind):
-        if self.allowance is not None and kind is not None:
-            self.allowance.stopped(operation, kind)
-            _LOGGER.info(
-                "Worker job %s stopped at its %s limit; the next one gets more", operation, kind
-            )
+    async def _guard(self, process, scope):
+        """Watch Home Assistant while the child runs: pause, resume or stop it."""
+        loop = asyncio.get_running_loop()
+        stoppable = self._limits.get("mode") != "storage"
+        governor = allowances.Governor(max_pause=self.deadline, stoppable=stoppable)
+        while process.returncode is None:
+            before = loop.time()
+            await asyncio.sleep(allowances.GUARD_INTERVAL)
+            lag = max(0.0, loop.time() - before - allowances.GUARD_INTERVAL)
+            host = await owned_preparation(asyncio.to_thread(self.allowance.host))
+            if process.returncode is None:
+                self._act(process, scope, governor, governor.decide(lag, host, loop.time()))
 
-    def _succeeded(self, operation, wall):
-        if self.allowance is None:
-            return
-        sample = (self.last_observation or {}).get("last_sample", {})
-        virtual = sample.get("peak_virtual_kib")
-        self.allowance.succeeded(
-            operation,
-            {
-                "wall_seconds": wall,
-                "cpu_seconds": sample.get("cpu_seconds"),
-                "memory_mib": None if virtual is None else virtual / 1024,
-            },
-        )
+    def _start_guard(self, process):
+        self._protecting = False
+        if self.allowance is None or self._scope is None or not _POSIX:
+            return None
+        return asyncio.create_task(self._guard(process, self._scope))
+
+    def _act(self, process, scope, governor, action):
+        if action == "stop":
+            self._protecting = True
+            _signal(process, force=True)
+            _LOGGER.info("Stopped a worker job: Home Assistant was running short of memory")
+        elif action == "pause":
+            _pause(process, True)
+            self._stage = "paused"
+            self._hold(scope, True)
+        elif action == "resume":
+            _pause(process, False)
+            self._stage = "running"
+            self._hold(scope, False)
+            if self._limits is not None:
+                self._limits["wall_seconds"] += governor.last_pause
+
+    def _hold(self, scope, paused):
+        """Stop the deadline's clock while paused; restart it with the time that was left."""
+        now = asyncio.get_running_loop().time()
+        if paused:
+            when = scope.when()
+            self._remaining = None if when is None else max(0.0, when - now)
+            scope.reschedule(None)
+        elif self._remaining is not None:
+            scope.reschedule(now + self._remaining)
 
     async def _process(self, args):
         self._stage = "starting"
@@ -491,12 +552,13 @@ class Supervisor:
                 **options,
             )
         )
-        readers = []
+        readers, guard = [], None
         try:
             process = await asyncio.shield(spawning)
             self._stage = "running"
             self._live_observation = observation
             sampler = asyncio.create_task(_observe(observation, process.pid, stopped))
+            guard = self._start_guard(process)
             readers = [
                 asyncio.create_task(_capture(process.stdout, self.stdout_bytes)),
                 asyncio.create_task(_capture(process.stderr, self.stderr_bytes)),
@@ -512,10 +574,14 @@ class Supervisor:
                     pid=process.pid,
                     wall_deadline_seconds=(self._limits or {}).get("wall_seconds", self.deadline),
                 )
-                raise WorkerFailed(code, err, diagnostics=evidence)
+                failure = StoppedForHomeAssistant if self._protecting else WorkerFailed
+                raise failure(code, err, diagnostics=evidence)
             return out
         finally:
             stopped.set()
+            if guard is not None:
+                guard.cancel()
+                await asyncio.gather(guard, return_exceptions=True)
             cleanup = asyncio.create_task(_observed_cleanup(spawning, readers, self.grace, sampler))
             if await _finish_cleanup(cleanup):
                 raise asyncio.CancelledError

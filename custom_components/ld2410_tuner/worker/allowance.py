@@ -1,30 +1,47 @@
-"""Per-job worker limits that follow the host and the work, not fixed numbers.
+"""Worker limits sized from what Home Assistant can spare, and checked while a job runs.
 
-Every limit has a floor and a ceiling. The floor is the old fixed limit, so a job never
-gets less than it used to. The ceiling is the most a job can ever get. Between the two:
+The limits exist so that background work cannot hurt Home Assistant. They are not fixed
+numbers, and they never come from how much a job wants:
 
-- a job gets a few times what recent jobs of the same operation used, so a home that
-  grows gets more room as it grows;
-- after a job stops at a limit, the next attempt gets twice that limit, and twice again
-  after another stop, until the ceiling;
-- address space never goes above half the host's RAM (or the floor, if that is more), so
-  a large home on a small host cannot take what Home Assistant needs.
+- A child starts only while Home Assistant has room to spare: free memory (the host's, or
+  Home Assistant's container's where that has a lower limit) above a reserve kept for
+  Home Assistant plus a margin for the job. Otherwise the job waits for room.
+- The child's memory (address-space) limit is a share of what is free beyond the
+  reserve, between a floor and a ceiling. The floor is the old fixed limit: address
+  space is reserved, not used, so the floor is what the largest jobs need to run at all,
+  not what they take from Home Assistant.
+- While the child runs, the supervisor watches Home Assistant itself (``Governor``). If
+  Home Assistant's event loop falls behind, the child is paused until the loop has been
+  responsive for a while. If memory runs short, the child is stopped and can run later.
 
-The child imports this module before its limits are installed: standard library only.
+CPU-time and file-size limits stay fixed. They only stop a runaway job: a job's CPU is
+kept off Home Assistant by the lowest CPU and disk priority and by the pauses above.
+Standard library only: the child imports this module before its limits are installed.
 """
 
-import math
+import os
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
+from .diagnostics import _group, _memory, _pairs, _read
+
 MIB = 1024 * 1024
-RECENT = 5  # Jobs remembered per operation.
-MAX_BOOST = 8  # Three successive stops at the same limit.
-# How far above the most a recent job used. Address space is mostly reserved up front by
-# the numerical libraries, so it varies less than time does.
-HEADROOM = {"memory_mib": 1.5, "cpu_seconds": 3.0, "wall_seconds": 3.0}
 CHILD = ("memory_mib", "cpu_seconds", "file_mib")
 PREFIX = "budget="
+
+RESERVE_MIB = 256  # Free memory always left to Home Assistant, at least...
+RESERVE_SHARE = 0.10  # ...or this share of all memory, whichever is more.
+START_MIB = 256  # Free beyond the reserve before a child may start.
+MEMORY_SHARE = 0.5  # Of the rest, at most this much becomes the child's limit.
+MEMORY_STALL = 10.0  # Percent of the last 10 s some task waited on memory: stop the child.
+WAIT_POLL = 5.0  # Seconds between checks while a job waits for room.
+
+GUARD_INTERVAL = 0.25  # Seconds between checks of a running child.
+LAG_PAUSE = 0.1  # Event-loop lag (seconds) in every recent check: pause the child.
+LAG_SAMPLES = 4  # So a pause needs about a second of sustained lag.
+LAG_RESUME = 0.05  # Resume once the lag stays under this...
+CALM_SECONDS = 5.0  # ...for this long.
 
 
 @dataclass(frozen=True)
@@ -34,25 +51,31 @@ class Range:
 
 
 @dataclass(frozen=True)
-class Child:
-    memory_mib: Range
-    cpu_seconds: Range
-    file_mib: Range
+class Mode:
+    memory_mib: Range  # Floor: what the largest job needs. Ceiling: never more.
+    cpu_seconds: int
+    file_mib: int
+    wait_seconds: float | None  # Longest wait for room; None waits as long as it takes.
+    run_after_wait: bool  # After the wait, run at the floor (True) or refuse (False).
 
 
-# The child's mode (its third argument) picks its limits; the lane picks the wall deadline.
 MODES = {
-    # Fits are queued at the lowest priority and nobody waits on them.
-    "fit": Child(Range(1024, 4096), Range(900, 7200), Range(128, 512)),
-    # Display jobs are byte-bounded reads and may run beside a numerical child.
-    "display": Child(Range(256, 1024), Range(120, 600), Range(128, 512)),
-    # Storage children spill one inflated day (history.DAY_BYTES at most) before mapping it.
-    "storage": Child(Range(1024, 4096), Range(900, 3600), Range(192, 768)),
+    # Fits are optional and nobody waits on them: they wait for room as long as it takes.
+    "fit": Mode(Range(1024, 2048), 900, 128, None, False),
+    # Someone is looking at a chart: refuse rather than keep them waiting long.
+    "display": Mode(Range(256, 512), 120, 128, 30.0, False),
+    # Saves cannot be skipped: after a while they run at their floor, as they always did.
+    # A storage child maps one inflated day (history.DAY_BYTES at most).
+    "storage": Mode(Range(1024, 2048), 900, 192, 300.0, True),
 }
-WALL = {
-    "fit": Range(3600, 14400),  # A busy host stretches a fit at the lowest priority.
-    "short": Range(180, 900),  # Someone is waiting: a chart or a save.
-}
+STORAGE_OPERATIONS = frozenset({"startup", "maintenance", "flush"})
+DISPLAY_OPERATIONS = frozenset({"charts", "recording_rows"})
+
+
+def mode_for(operation):
+    if operation in STORAGE_OPERATIONS:
+        return "storage"
+    return "display" if operation in DISPLAY_OPERATIONS else "fit"
 
 
 def mode_of(args):
@@ -63,7 +86,11 @@ def mode_of(args):
 def defaults(mode):
     """The floors: what a child gets when its parent names no budget."""
     child = MODES[mode]
-    return {kind: getattr(child, kind).floor for kind in CHILD}
+    return {
+        "memory_mib": child.memory_mib.floor,
+        "cpu_seconds": child.cpu_seconds,
+        "file_mib": child.file_mib,
+    }
 
 
 def argument(budget):
@@ -72,7 +99,7 @@ def argument(budget):
 
 
 def parse(token, mode):
-    """A budget from the child argument; anything outside the mode's ceilings is refused."""
+    """A budget from the child argument; anything above the mode's maximums is refused."""
     if not token.startswith(PREFIX):
         raise ValueError("Expected a worker budget")
     values = token[len(PREFIX) :].split(",")
@@ -80,80 +107,122 @@ def parse(token, mode):
         raise ValueError("Malformed worker budget")
     budget = dict(zip(CHILD, map(int, values), strict=True))
     child = MODES[mode]
-    if not all(0 < budget[kind] <= getattr(child, kind).ceiling for kind in CHILD):
+    highest = {
+        "memory_mib": child.memory_mib.ceiling,
+        "cpu_seconds": child.cpu_seconds,
+        "file_mib": child.file_mib,
+    }
+    if not all(0 < budget[kind] <= highest[kind] for kind in CHILD):
         raise ValueError("Worker budget outside its allowed range")
     return budget
 
 
-def stopped_by(returncode, stderr):
-    """Which limit ended a failed child, if a limit did. A plain kill is not counted: it may
-    be the kernel's out-of-memory killer, which a larger allowance would only make likelier."""
-    if returncode == -24 or b"CpuBudgetExceeded" in stderr:  # SIGXCPU
-        return "cpu_seconds"
-    if returncode == -25 or b"File too large" in stderr:  # SIGXFSZ, EFBIG
-        return "file_mib"
-    if b"MemoryError" in stderr:
-        return "memory_mib"
-    return None
+@dataclass(frozen=True)
+class Host:
+    total_mib: int
+    free_mib: int  # The host's available memory, or the container's headroom if lower.
+    memory_stall: float  # Memory pressure (PSI "some" avg10), 0 where unavailable.
 
 
-def host_mib(meminfo=Path("/proc/meminfo")):
-    """The host's total RAM in MiB, or None where it cannot be read."""
+def _stall(text):
+    """The "some avg10" percentage of a pressure file, 0 where absent or malformed."""
+    some = next((line for line in text.splitlines() if line.startswith("some ")), "")
+    fields = dict(field.split("=", 1) for field in some.split()[1:] if "=" in field)
     try:
-        with meminfo.open("r", encoding="ascii") as stream:
-            text = stream.read(16384)
-    except (OSError, UnicodeError):
+        return float(fields.get("avg10", 0))
+    except ValueError:
+        return 0.0
+
+
+def read_host(proc=Path("/proc"), cgroups=Path("/sys/fs/cgroup")):
+    """What memory Home Assistant has now, or None where it cannot be read (not Linux)."""
+    info = _pairs(proc / "meminfo")
+    if "MemTotal" not in info or "MemAvailable" not in info:
         return None
-    for line in text.splitlines():
-        fields = line.split()
-        if len(fields) >= 2 and fields[0] == "MemTotal:" and fields[1].isdigit():
-            return int(fields[1]) // 1024
-    return None
+    free = info["MemAvailable"] // 1024
+    group = _memory(_group(proc, cgroups))
+    limit, used = group.get("max_bytes"), group.get("current_bytes")
+    if type(limit) is int and type(used) is int:
+        free = min(free, max(0, limit - used) // MIB)
+    return Host(info["MemTotal"] // 1024, free, _stall(_read(proc / "pressure/memory")))
 
 
-class Allowances:
-    """Learned allowances for one supervisor's jobs. Confined to its event loop, apart from
-    ``child``, which reads the host's RAM once and so is first called off the loop."""
+def reserve_mib(host):
+    return max(RESERVE_MIB, int(host.total_mib * RESERVE_SHARE))
 
-    def __init__(self, wall, *, meminfo=Path("/proc/meminfo")):
-        self.wall_range = WALL[wall]
-        self.meminfo = meminfo
-        self._host = None
-        self._used = {}
-        self._boost = {}
 
-    def wall(self, operation):
-        return self._value(operation, "wall_seconds", self.wall_range)
+def short_of_memory(host):
+    """Home Assistant is short of memory: a running child must stop."""
+    return host.free_mib < reserve_mib(host) or host.memory_stall >= MEMORY_STALL
 
-    def child(self, operation, mode):
-        ranges = MODES[mode]
-        budget = {kind: self._value(operation, kind, getattr(ranges, kind)) for kind in CHILD}
-        budget["memory_mib"] = min(budget["memory_mib"], self._memory_cap(ranges.memory_mib))
-        return budget
 
-    def succeeded(self, operation, used):
-        """Remember what a finished job used and drop its boosts: they are now measured."""
-        recent = self._used.setdefault(operation, {})
-        for kind, value in used.items():
-            if value is not None and math.isfinite(value) and value >= 0:
-                history = recent.setdefault(kind, [])
-                history.append(value)
-                del history[:-RECENT]
-        for key in [key for key in self._boost if key[0] == operation]:
-            del self._boost[key]
+def plan(mode, host):
+    """The child's budget for what is free now, or None: not enough room to start yet."""
+    budget = defaults(mode)
+    if host is None:
+        return budget  # Nothing to measure: the floors, as before.
+    spare = host.free_mib - reserve_mib(host)
+    if short_of_memory(host) or spare < START_MIB:
+        return None
+    allowed = MODES[mode].memory_mib
+    budget["memory_mib"] = max(allowed.floor, min(allowed.ceiling, int(spare * MEMORY_SHARE)))
+    return budget
 
-    def stopped(self, operation, kind):
-        """A job of this operation hit this limit: give the next one twice as much."""
-        key = operation, kind
-        self._boost[key] = min(MAX_BOOST, 2 * self._boost.get(key, 1))
 
-    def _value(self, operation, kind, allowed):
-        recent = self._used.get(operation, {}).get(kind, ())
-        headroom = HEADROOM.get(kind, 1.0)
-        wanted = max([allowed.floor, *(math.ceil(value * headroom) for value in recent)])
-        return min(allowed.ceiling, wanted * self._boost.get((operation, kind), 1))
+class Policy:
+    """Where a supervisor reads the host from; tests point it at fake files."""
 
-    def _memory_cap(self, allowed):
-        if self._host is None:
-            self._host = host_mib(self.meminfo) or 0
-        return max(allowed.floor, min(allowed.ceiling, self._host // 2))
+    def __init__(self, *, proc=Path("/proc"), cgroups=Path("/sys/fs/cgroup")):
+        self.proc, self.cgroups = proc, cgroups
+
+    def host(self):
+        return read_host(self.proc, self.cgroups) if os.name == "posix" else None
+
+
+class Governor:
+    """Decides, check by check, whether a running child should pause, resume or stop.
+
+    ``max_pause`` bounds the pausing of one job: past it the child runs on, still at the
+    lowest priority, so a Home Assistant that is always busy cannot stall saves forever.
+    A save is never stopped (``stoppable``): it already waited for room, and an unsaved
+    recording stays in Home Assistant's memory instead.
+    """
+
+    def __init__(self, max_pause, *, stoppable=True):
+        self.max_pause = max_pause
+        self.stoppable = stoppable
+        self.lags = deque(maxlen=LAG_SAMPLES)
+        self.paused_since = None
+        self.calm_since = None
+        self.paused_total = 0.0
+        self.last_pause = 0.0
+
+    def decide(self, lag, host, now):
+        """``"stop"``, ``"pause"``, ``"resume"`` or None."""
+        if self.stoppable and host is not None and short_of_memory(host):
+            return "stop"
+        self.lags.append(lag)
+        if self.paused_since is None:
+            return self._pause(now)
+        return self._resume(lag, now)
+
+    def _pause(self, now):
+        sustained = len(self.lags) == LAG_SAMPLES and min(self.lags) > LAG_PAUSE
+        if sustained and self.paused_total < self.max_pause:
+            self.paused_since, self.calm_since = now, None
+            return "pause"
+        return None
+
+    def _resume(self, lag, now):
+        if lag >= LAG_RESUME:
+            self.calm_since = None
+        elif self.calm_since is None:
+            self.calm_since = now
+        calm = self.calm_since is not None and now - self.calm_since >= CALM_SECONDS
+        if calm or self.paused_total + now - self.paused_since >= self.max_pause:
+            self.last_pause = now - self.paused_since
+            self.paused_total += self.last_pause
+            self.paused_since = None
+            self.lags.clear()
+            return "resume"
+        return None
