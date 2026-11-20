@@ -6,9 +6,9 @@ const KINDS = {
   guessed: "Guessed (automatic)",
 };
 const STATES = {
-  present: ["Present", "#2e7d32", ""],
-  not_present: ["Empty", "#777", "5 2"],
-  unknown: ["Unknown", "#b58900", "1 2"],
+  present: ["Present", "#2e7d32"],
+  not_present: ["Empty", "#777"],
+  unknown: ["Unknown", "#b58900"],
 };
 const STORAGE = "ld2410_tuner.presence-lanes";
 
@@ -32,30 +32,12 @@ export function lanePaths(labels, bounds, width, y) {
       end: Math.min(bounds.end, l.end),
     }))
     .sort((a, b) => a.start - b.start);
-  // One state per instant: a later-starting label wins where labels overlap, and an
-  // earlier label that outlasts it resumes afterwards. Stacked strokes would let a
-  // solid line show through the gaps of a dashed one.
-  const flat = [];
-  let ahead = [];
-  for (const label of clipped) {
-    while (ahead.length && ahead[0].end <= label.start)
-      flat.push(ahead.shift());
-    if (ahead.length && ahead[0].start < label.start)
-      flat.push({ ...ahead[0], end: label.start });
-    ahead = [
-      label,
-      ...ahead
-        .filter((l) => l.end > label.end)
-        .map((l) => ({ ...l, start: Math.max(l.start, label.end) })),
-    ];
-  }
-  flat.push(...ahead);
   const merged = [];
-  for (const label of flat) {
+  for (const label of clipped) {
     const last = merged.at(-1);
     if (last && last.state === label.state && label.start <= last.end)
       last.end = Math.max(last.end, label.end);
-    else if (label.end > label.start) merged.push(label);
+    else merged.push(label);
   }
   const scale = (t) =>
     CHART_MARGIN.left +
@@ -69,8 +51,8 @@ export function lanePaths(labels, bounds, width, y) {
   return Object.entries(paths)
     .filter(([, parts]) => parts.length)
     .map(([state, parts]) => {
-      const [name, color, dash] = STATES[state];
-      return `<path data-presence-state="${state}" d="${parts.join("")}" fill="none" stroke="${color}" stroke-width="8" stroke-dasharray="${dash}"><title>${name}</title></path>`;
+      const [name, color] = STATES[state];
+      return `<path data-presence-state="${state}" d="${parts.join("")}" fill="none" stroke="${color}" stroke-width="8"><title>${name}</title></path>`;
     })
     .join("");
 }
@@ -120,9 +102,16 @@ export const panelPresenceLanes = {
         ([kind, name]) =>
           `<button type="button" data-presence-toggle="${kind}" aria-pressed="${shown[kind]}">${name}: ${shown[kind] ? "Shown" : "Hidden"}</button>`,
       )
+      .join("")}</div><p class="muted">Presence evidence: ${Object.values(
+      STATES,
+    )
+      .map(
+        ([name, color]) =>
+          `<span style="display:inline-block;width:12px;height:8px;background:${color};margin-right:4px" aria-hidden="true"></span>${name}`,
+      )
       .join(
-        "",
-      )}</div><p class="muted">Presence evidence: solid = Present; dashed = Empty; dotted = Unknown. Gaps mean no evidence. Automatic evidence is not confirmed truth.</p></div>`;
+        "; ",
+      )}. Gaps mean no evidence. Automatic evidence is not confirmed truth.</p></div>`;
   },
 
   _wirePresenceLanes(root) {
