@@ -448,9 +448,17 @@ of 100 such as 1, 2, 5, 10, 20, 25, 50 or 100 produce evenly spaced values
 across the full range. Set it to **1** to retain full integer precision. Halfway values round
 up: with 10, 5 becomes 10 and 95 becomes 100.
 
-The exposed threshold numbers forward rounded writes to internal LD2410 driver
-numbers and report the actual driver readback. Existing non-aligned thresholds
-are displayed accurately until changed; boot does not rewrite radar settings.
+The exposed threshold numbers show and accept rounded values; internal LD2410
+driver numbers hold the radar's own threshold. A threshold set to T with step s
+stores `ceil(T - s/2) - 1` on the radar (0 for T = 0), the value just below the
+first raw energy that reports T. The radar triggers on raw energy above its
+threshold, so a gate shown at 30 with rounding 10 stores 24 and passes every raw
+energy that reports 30 or more: a reported energy at or above the shown threshold
+passes. With rounding 1 the radar holds one less than the shown value. Each
+control shows the band its stored threshold opens on its own `min`/`step` grid.
+A stored threshold that is not on that grid, for example after Gate Rounding
+changes, is shown as the nearest band until it is next written; boot does not
+rewrite radar settings.
 Each gate exposes its permitted range and increment through the HA number
 entity's `min`, `max`, and `step` attributes. Caller configurations can restrict
 individual gates using the public control's existing ID:
@@ -468,15 +476,20 @@ Gate min/max restrictions remain in force when Gate Rounding changes. A caller
 step differing from the package's initial rounding default stays fixed; controls
 whose configured step matches that default follow the runtime increment.
 Threshold writes use these final per-gate attributes, rounding to
-`min + n * step` within the configured bounds. Gate bounds must stay within
+`min + n * step` within the configured bounds before storing that band's radar
+threshold. Gate bounds must stay within
 the LD2410's 0–100 range, with integer values and a positive integer step.
 Choose a maximum aligned with the minimum and step; otherwise the highest
 permitted grid value below the maximum is used. Gate-specific threshold
 restrictions do not change the energy reporting increment.
 
-The radar still compares raw energy with its threshold, so rounded energy can
-hide crossings near a threshold and reduce the precision of tuner replay and
-learning. The tuner's timed recording cadence and stored observation count do
+The radar still compares raw energy with its threshold; rounded energy hides how
+far inside a band a reading was, which reduces the precision of tuner replay and
+learning. The tuner recognises these radars by their Gate Rounding control. It
+learns, shows and applies the radar's own threshold (24 in the example above),
+offers only thresholds a rounded control can reach, and writes the control value
+that stores it. A radar flashed with an earlier package that has Gate Rounding
+but shows raw readback must be reflashed with this package. The tuner's timed recording cadence and stored observation count do
 not change. Rebuild and flash once to add the Gate Rounding control; subsequent
 HA changes require no firmware build or flash.
 

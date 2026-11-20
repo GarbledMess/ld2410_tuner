@@ -5,6 +5,7 @@ defaults:
   ld2410_id: ld2410
   ld2410_uart_id: ""
   ld2410_device_id: ""
+  ld2410_name_prefix: ""
 
 substitutions:
   ld2410_presence_name: Presence
@@ -14,6 +15,16 @@ substitutions:
   ld2410_gate_throttle: 2s
   # Initial Gate Rounding value; restored HA setting takes precedence after setup.
   ld2410_gate_rounding: "10"
+  # The radar keeps its Bluetooth setting in its own flash. When "true", the first
+  # time the radar reports Bluetooth on after each ESP boot, it is turned off
+  # (one radar restart). Later toggles from HA are left alone until the next boot.
+  # Set "false" to keep whatever the radar has stored.
+  ld2410_bluetooth_default_off: "true"
+  # Timeout (seconds) a newly installed radar starts at. Applied once, the first time
+  # the radar reports its timeout after this firmware is installed; remembered in the
+  # ESP's flash, so later values (set from HA or by the tuner's Learn) are kept across
+  # reboots. Set "-1" to keep whatever the radar has stored.
+  ld2410_timeout_default: "30"
 
 # A host uart list replaces these single-bus defaults; set all bus options there.
 uart:
@@ -31,28 +42,28 @@ binary_sensor:
     ld2410_id: ${ld2410_id}_radar
     has_target:
       id: ${ld2410_id}_presence
-      name: ${ld2410_presence_name}
+      name: ${ld2410_name_prefix}${ld2410_presence_name}
       device_id: ${ld2410_device_id}
       filters:
         - delayed_on: ${ld2410_presence_on_delay}
         - delayed_off: ${ld2410_presence_off_delay}
     has_moving_target:
       id: ${ld2410_id}_moving_target
-      name: Moving Target
+      name: ${ld2410_name_prefix}Moving Target
       device_id: ${ld2410_device_id}
       trigger_on_initial_state: true
       on_state:
         - script.execute: ${ld2410_id}_capture_presence_edge
     has_still_target:
       id: ${ld2410_id}_still_target
-      name: Still Target
+      name: ${ld2410_name_prefix}Still Target
       device_id: ${ld2410_device_id}
       trigger_on_initial_state: true
       on_state:
         - script.execute: ${ld2410_id}_capture_presence_edge
     out_pin_presence_status:
       id: ${ld2410_id}_out_pin_presence
-      name: Out Pin Presence
+      name: ${ld2410_name_prefix}Out Pin Presence
       device_id: ${ld2410_device_id}
 
   - platform: template
@@ -76,19 +87,19 @@ sensor:
     ld2410_id: ${ld2410_id}_radar
     moving_distance:
       id: ${ld2410_id}_moving_distance
-      name: Moving Distance
+      name: ${ld2410_name_prefix}Moving Distance
       device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
     still_distance:
       id: ${ld2410_id}_still_distance
-      name: Still Distance
+      name: ${ld2410_name_prefix}Still Distance
       device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
     moving_energy:
       id: ${ld2410_id}_moving_energy
-      name: Moving Energy
+      name: ${ld2410_name_prefix}Moving Energy
       accuracy_decimals: 0
       device_id: ${ld2410_device_id}
       filters:
@@ -98,7 +109,7 @@ sensor:
             return ceilf(fminf(100.0f, fmaxf(0.0f, x)));
     still_energy:
       id: ${ld2410_id}_still_energy
-      name: Still Energy
+      name: ${ld2410_name_prefix}Still Energy
       accuracy_decimals: 0
       device_id: ${ld2410_device_id}
       filters:
@@ -108,14 +119,14 @@ sensor:
             return ceilf(fminf(100.0f, fmaxf(0.0f, x)));
     detection_distance:
       id: ${ld2410_id}_detection_distance
-      name: Detection Distance
+      name: ${ld2410_name_prefix}Detection Distance
       device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
     g0:
       move_energy:
         id: ${ld2410_id}_g0_move_energy
-        name: G0 Move Energy
+        name: ${ld2410_name_prefix}G0 Move Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -128,7 +139,7 @@ sensor:
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g0_still_energy
-        name: G0 Still Energy
+        name: ${ld2410_name_prefix}G0 Still Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -142,7 +153,7 @@ sensor:
     g1:
       move_energy:
         id: ${ld2410_id}_g1_move_energy
-        name: G1 Move Energy
+        name: ${ld2410_name_prefix}G1 Move Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -155,7 +166,7 @@ sensor:
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g1_still_energy
-        name: G1 Still Energy
+        name: ${ld2410_name_prefix}G1 Still Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -169,7 +180,7 @@ sensor:
     g2:
       move_energy:
         id: ${ld2410_id}_g2_move_energy
-        name: G2 Move Energy
+        name: ${ld2410_name_prefix}G2 Move Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -182,7 +193,7 @@ sensor:
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g2_still_energy
-        name: G2 Still Energy
+        name: ${ld2410_name_prefix}G2 Still Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -196,7 +207,7 @@ sensor:
     g3:
       move_energy:
         id: ${ld2410_id}_g3_move_energy
-        name: G3 Move Energy
+        name: ${ld2410_name_prefix}G3 Move Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -209,7 +220,7 @@ sensor:
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g3_still_energy
-        name: G3 Still Energy
+        name: ${ld2410_name_prefix}G3 Still Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -223,7 +234,7 @@ sensor:
     g4:
       move_energy:
         id: ${ld2410_id}_g4_move_energy
-        name: G4 Move Energy
+        name: ${ld2410_name_prefix}G4 Move Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -236,7 +247,7 @@ sensor:
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g4_still_energy
-        name: G4 Still Energy
+        name: ${ld2410_name_prefix}G4 Still Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -250,7 +261,7 @@ sensor:
     g5:
       move_energy:
         id: ${ld2410_id}_g5_move_energy
-        name: G5 Move Energy
+        name: ${ld2410_name_prefix}G5 Move Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -263,7 +274,7 @@ sensor:
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g5_still_energy
-        name: G5 Still Energy
+        name: ${ld2410_name_prefix}G5 Still Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -277,7 +288,7 @@ sensor:
     g6:
       move_energy:
         id: ${ld2410_id}_g6_move_energy
-        name: G6 Move Energy
+        name: ${ld2410_name_prefix}G6 Move Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -290,7 +301,7 @@ sensor:
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g6_still_energy
-        name: G6 Still Energy
+        name: ${ld2410_name_prefix}G6 Still Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -304,7 +315,7 @@ sensor:
     g7:
       move_energy:
         id: ${ld2410_id}_g7_move_energy
-        name: G7 Move Energy
+        name: ${ld2410_name_prefix}G7 Move Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -317,7 +328,7 @@ sensor:
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g7_still_energy
-        name: G7 Still Energy
+        name: ${ld2410_name_prefix}G7 Still Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -331,7 +342,7 @@ sensor:
     g8:
       move_energy:
         id: ${ld2410_id}_g8_move_energy
-        name: G8 Move Energy
+        name: ${ld2410_name_prefix}G8 Move Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -344,7 +355,7 @@ sensor:
           - delta: 1
       still_energy:
         id: ${ld2410_id}_g8_still_energy
-        name: G8 Still Energy
+        name: ${ld2410_name_prefix}G8 Still Energy
         accuracy_decimals: 0
         device_id: ${ld2410_device_id}
         filters:
@@ -361,127 +372,151 @@ number:
     ld2410_id: ${ld2410_id}_radar
     timeout:
       id: ${ld2410_id}_timeout
-      name: Timeout
+      name: ${ld2410_name_prefix}Timeout
       device_id: ${ld2410_device_id}
+      on_value:
+        - if:
+            condition:
+              lambda: return !id(${ld2410_id}_timeout_default_applied) && std::isfinite(x);
+            then:
+              - globals.set:
+                  id: ${ld2410_id}_timeout_default_applied
+                  value: 'true'
+              - if:
+                  condition:
+                    lambda: |-
+                      const float target = ${ld2410_timeout_default};
+                      return target >= 0.0f && x != target;
+                  then:
+                    - logger.log: "Setting LD2410 timeout to its default (ld2410_timeout_default)"
+                    - number.set:
+                        id: ${ld2410_id}_timeout
+                        value: !lambda return ${ld2410_timeout_default};
     max_move_distance_gate:
       id: ${ld2410_id}_max_move
-      name: Max Move Distance
+      name: ${ld2410_name_prefix}Max Move Distance
       device_id: ${ld2410_device_id}
     max_still_distance_gate:
       id: ${ld2410_id}_max_still
-      name: Max Still Distance
+      name: ${ld2410_name_prefix}Max Still Distance
       device_id: ${ld2410_device_id}
     g0:
       move_threshold:
         id: ${ld2410_id}_g0_move_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g0_move).publish_state(x);
+          - component.update: ${ld2410_id}_g0_move
       still_threshold:
         id: ${ld2410_id}_g0_still_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g0_still).publish_state(x);
+          - component.update: ${ld2410_id}_g0_still
     g1:
       move_threshold:
         id: ${ld2410_id}_g1_move_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g1_move).publish_state(x);
+          - component.update: ${ld2410_id}_g1_move
       still_threshold:
         id: ${ld2410_id}_g1_still_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g1_still).publish_state(x);
+          - component.update: ${ld2410_id}_g1_still
     g2:
       move_threshold:
         id: ${ld2410_id}_g2_move_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g2_move).publish_state(x);
+          - component.update: ${ld2410_id}_g2_move
       still_threshold:
         id: ${ld2410_id}_g2_still_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g2_still).publish_state(x);
+          - component.update: ${ld2410_id}_g2_still
     g3:
       move_threshold:
         id: ${ld2410_id}_g3_move_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g3_move).publish_state(x);
+          - component.update: ${ld2410_id}_g3_move
       still_threshold:
         id: ${ld2410_id}_g3_still_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g3_still).publish_state(x);
+          - component.update: ${ld2410_id}_g3_still
     g4:
       move_threshold:
         id: ${ld2410_id}_g4_move_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g4_move).publish_state(x);
+          - component.update: ${ld2410_id}_g4_move
       still_threshold:
         id: ${ld2410_id}_g4_still_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g4_still).publish_state(x);
+          - component.update: ${ld2410_id}_g4_still
     g5:
       move_threshold:
         id: ${ld2410_id}_g5_move_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g5_move).publish_state(x);
+          - component.update: ${ld2410_id}_g5_move
       still_threshold:
         id: ${ld2410_id}_g5_still_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g5_still).publish_state(x);
+          - component.update: ${ld2410_id}_g5_still
     g6:
       move_threshold:
         id: ${ld2410_id}_g6_move_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g6_move).publish_state(x);
+          - component.update: ${ld2410_id}_g6_move
       still_threshold:
         id: ${ld2410_id}_g6_still_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g6_still).publish_state(x);
+          - component.update: ${ld2410_id}_g6_still
     g7:
       move_threshold:
         id: ${ld2410_id}_g7_move_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g7_move).publish_state(x);
+          - component.update: ${ld2410_id}_g7_move
       still_threshold:
         id: ${ld2410_id}_g7_still_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g7_still).publish_state(x);
+          - component.update: ${ld2410_id}_g7_still
     g8:
       move_threshold:
         id: ${ld2410_id}_g8_move_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g8_move).publish_state(x);
+          - component.update: ${ld2410_id}_g8_move
       still_threshold:
         id: ${ld2410_id}_g8_still_raw
         internal: true
         on_value:
-          - lambda: id(${ld2410_id}_g8_still).publish_state(x);
+          - component.update: ${ld2410_id}_g8_still
 
   # Public controls round writes; internal driver numbers preserve actual readback.
   - platform: template
     id: ${ld2410_id}_g0_move
-    name: G0 Move Threshold
+    name: ${ld2410_name_prefix}G0 Move Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g0_move_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g0_move_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g0_move).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g0_move).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g0_move_raw
@@ -491,18 +526,26 @@ number:
             const float increment = id(${ld2410_id}_g0_move).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g0_still
-    name: G0 Still Threshold
+    name: ${ld2410_name_prefix}G0 Still Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g0_still_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g0_still_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g0_still).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g0_still).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g0_still_raw
@@ -512,18 +555,26 @@ number:
             const float increment = id(${ld2410_id}_g0_still).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g1_move
-    name: G1 Move Threshold
+    name: ${ld2410_name_prefix}G1 Move Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g1_move_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g1_move_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g1_move).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g1_move).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g1_move_raw
@@ -533,18 +584,26 @@ number:
             const float increment = id(${ld2410_id}_g1_move).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g1_still
-    name: G1 Still Threshold
+    name: ${ld2410_name_prefix}G1 Still Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g1_still_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g1_still_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g1_still).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g1_still).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g1_still_raw
@@ -554,18 +613,26 @@ number:
             const float increment = id(${ld2410_id}_g1_still).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g2_move
-    name: G2 Move Threshold
+    name: ${ld2410_name_prefix}G2 Move Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g2_move_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g2_move_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g2_move).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g2_move).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g2_move_raw
@@ -575,18 +642,26 @@ number:
             const float increment = id(${ld2410_id}_g2_move).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g2_still
-    name: G2 Still Threshold
+    name: ${ld2410_name_prefix}G2 Still Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g2_still_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g2_still_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g2_still).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g2_still).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g2_still_raw
@@ -596,18 +671,26 @@ number:
             const float increment = id(${ld2410_id}_g2_still).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g3_move
-    name: G3 Move Threshold
+    name: ${ld2410_name_prefix}G3 Move Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g3_move_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g3_move_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g3_move).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g3_move).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g3_move_raw
@@ -617,18 +700,26 @@ number:
             const float increment = id(${ld2410_id}_g3_move).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g3_still
-    name: G3 Still Threshold
+    name: ${ld2410_name_prefix}G3 Still Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g3_still_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g3_still_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g3_still).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g3_still).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g3_still_raw
@@ -638,18 +729,26 @@ number:
             const float increment = id(${ld2410_id}_g3_still).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g4_move
-    name: G4 Move Threshold
+    name: ${ld2410_name_prefix}G4 Move Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g4_move_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g4_move_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g4_move).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g4_move).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g4_move_raw
@@ -659,18 +758,26 @@ number:
             const float increment = id(${ld2410_id}_g4_move).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g4_still
-    name: G4 Still Threshold
+    name: ${ld2410_name_prefix}G4 Still Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g4_still_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g4_still_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g4_still).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g4_still).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g4_still_raw
@@ -680,18 +787,26 @@ number:
             const float increment = id(${ld2410_id}_g4_still).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g5_move
-    name: G5 Move Threshold
+    name: ${ld2410_name_prefix}G5 Move Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g5_move_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g5_move_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g5_move).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g5_move).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g5_move_raw
@@ -701,18 +816,26 @@ number:
             const float increment = id(${ld2410_id}_g5_move).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g5_still
-    name: G5 Still Threshold
+    name: ${ld2410_name_prefix}G5 Still Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g5_still_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g5_still_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g5_still).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g5_still).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g5_still_raw
@@ -722,18 +845,26 @@ number:
             const float increment = id(${ld2410_id}_g5_still).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g6_move
-    name: G6 Move Threshold
+    name: ${ld2410_name_prefix}G6 Move Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g6_move_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g6_move_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g6_move).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g6_move).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g6_move_raw
@@ -743,18 +874,26 @@ number:
             const float increment = id(${ld2410_id}_g6_move).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g6_still
-    name: G6 Still Threshold
+    name: ${ld2410_name_prefix}G6 Still Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g6_still_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g6_still_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g6_still).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g6_still).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g6_still_raw
@@ -764,18 +903,26 @@ number:
             const float increment = id(${ld2410_id}_g6_still).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g7_move
-    name: G7 Move Threshold
+    name: ${ld2410_name_prefix}G7 Move Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g7_move_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g7_move_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g7_move).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g7_move).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g7_move_raw
@@ -785,18 +932,26 @@ number:
             const float increment = id(${ld2410_id}_g7_move).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g7_still
-    name: G7 Still Threshold
+    name: ${ld2410_name_prefix}G7 Still Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g7_still_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g7_still_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g7_still).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g7_still).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g7_still_raw
@@ -806,18 +961,26 @@ number:
             const float increment = id(${ld2410_id}_g7_still).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g8_move
-    name: G8 Move Threshold
+    name: ${ld2410_name_prefix}G8 Move Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g8_move_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g8_move_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g8_move).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g8_move).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g8_move_raw
@@ -827,18 +990,26 @@ number:
             const float increment = id(${ld2410_id}_g8_move).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   - platform: template
     id: ${ld2410_id}_g8_still
-    name: G8 Still Threshold
+    name: ${ld2410_name_prefix}G8 Still Threshold
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 0
     max_value: 100
     step: ${ld2410_gate_rounding}
     update_interval: never
-    lambda: return id(${ld2410_id}_g8_still_raw).state;
+    lambda: |-
+      const float raw = id(${ld2410_id}_g8_still_raw).state;
+      if (!std::isfinite(raw)) return raw;
+      // Show the rounding band the radar threshold opens, on this control's own grid.
+      const float minimum = id(${ld2410_id}_g8_still).traits.get_min_value();
+      const float increment = id(${ld2410_id}_g8_still).traits.get_step();
+      return fminf(100.0f, fmaxf(0.0f, minimum + roundf((raw + 1.0f - minimum) / increment) * increment));
     set_action:
       - number.set:
           id: ${ld2410_id}_g8_still_raw
@@ -848,12 +1019,14 @@ number:
             const float increment = id(${ld2410_id}_g8_still).traits.get_step();
             const float last = minimum + floorf((maximum - minimum) / increment) * increment;
             const float rounded = minimum + roundf((x - minimum) / increment) * increment;
-            return fminf(last, fmaxf(minimum, rounded));
+            const float nominal = fminf(last, fmaxf(minimum, rounded));
+            // Integer radar threshold: first raw value in the displayed rounding band must pass.
+            return nominal <= 0.0f ? 0.0f : fmaxf(0.0f, ceilf(nominal - increment / 2.0f) - 1.0f);
 
   # Saved runtime control. Changing it refreshes HA metadata, without radar writes.
   - platform: template
     id: ${ld2410_id}_gate_rounding
-    name: Gate Rounding
+    name: ${ld2410_name_prefix}Gate Rounding
     device_id: ${ld2410_device_id}
     entity_category: config
     min_value: 1
@@ -927,11 +1100,11 @@ select:
     ld2410_id: ${ld2410_id}_radar
     distance_resolution:
       id: ${ld2410_id}_distance_resolution
-      name: Distance Resolution
+      name: ${ld2410_name_prefix}Distance Resolution
       device_id: ${ld2410_device_id}
     baud_rate:
       id: ${ld2410_id}_baud_rate
-      name: Baud Rate
+      name: ${ld2410_name_prefix}Baud Rate
       device_id: ${ld2410_device_id}
 
 switch:
@@ -939,17 +1112,31 @@ switch:
     ld2410_id: ${ld2410_id}_radar
     engineering_mode:
       id: ${ld2410_id}_engineering_mode
-      name: Engineering Mode
+      name: ${ld2410_name_prefix}Engineering Mode
       device_id: ${ld2410_device_id}
     bluetooth:
       id: ${ld2410_id}_bluetooth
-      name: Bluetooth
+      name: ${ld2410_name_prefix}Bluetooth
       device_id: ${ld2410_device_id}
+      on_state:
+        - if:
+            condition:
+              lambda: return !id(${ld2410_id}_bluetooth_default_applied);
+            then:
+              - globals.set:
+                  id: ${ld2410_id}_bluetooth_default_applied
+                  value: 'true'
+              - if:
+                  condition:
+                    lambda: return x && ${ld2410_bluetooth_default_off};
+                  then:
+                    - logger.log: "Turning off LD2410 Bluetooth (ld2410_bluetooth_default_off)"
+                    - switch.turn_off: ${ld2410_id}_bluetooth
 
 text_sensor:
   - platform: template
     id: ${ld2410_id}_recovery_status
-    name: LD2410 Recovery Status
+    name: ${ld2410_name_prefix}LD2410 Recovery Status
     device_id: ${ld2410_device_id}
     entity_category: diagnostic
     update_interval: never
@@ -962,27 +1149,27 @@ text_sensor:
   # frame that found or lost presence.
   - platform: template
     id: ${ld2410_id}_presence_found_gates
-    name: Presence Found Gates
+    name: ${ld2410_name_prefix}Presence Found Gates
     device_id: ${ld2410_device_id}
     entity_category: diagnostic
     update_interval: never
   - platform: template
     id: ${ld2410_id}_presence_lost_gates
-    name: Presence Lost Gates
+    name: ${ld2410_name_prefix}Presence Lost Gates
     device_id: ${ld2410_device_id}
     entity_category: diagnostic
     update_interval: never
   # Read-only metadata: these use the exact substitutions wired to the existing
   # filters above. Exposing them does not alter presence or add a new handler.
   - platform: template
-    name: LD2410 Presence On Delay
+    name: ${ld2410_name_prefix}LD2410 Presence On Delay
     device_id: ${ld2410_device_id}
     id: ${ld2410_id}_presence_on_delay_info
     entity_category: diagnostic
     lambda: return {"${ld2410_presence_on_delay}"};
     update_interval: 60s
   - platform: template
-    name: LD2410 Presence Off Delay
+    name: ${ld2410_name_prefix}LD2410 Presence Off Delay
     device_id: ${ld2410_device_id}
     id: ${ld2410_id}_presence_off_delay_info
     entity_category: diagnostic
@@ -992,17 +1179,17 @@ text_sensor:
     ld2410_id: ${ld2410_id}_radar
     version:
       id: ${ld2410_id}_firmware_version
-      name: Firmware Version
+      name: ${ld2410_name_prefix}Firmware Version
       device_id: ${ld2410_device_id}
     mac_address:
       id: ${ld2410_id}_mac_address
-      name: Mac Address
+      name: ${ld2410_name_prefix}Mac Address
       device_id: ${ld2410_device_id}
 
 button:
   - platform: template
     id: ${ld2410_id}_retry_recovery
-    name: Retry Radar Recovery
+    name: ${ld2410_name_prefix}Retry Radar Recovery
     device_id: ${ld2410_device_id}
     entity_category: config
     on_press:
@@ -1019,11 +1206,11 @@ button:
     ld2410_id: ${ld2410_id}_radar
     query_params:
       id: ${ld2410_id}_query_params
-      name: Query Params
+      name: ${ld2410_name_prefix}Query Params
       device_id: ${ld2410_device_id}
     restart:
       id: ${ld2410_id}_radar_restart
-      name: Radar Restart
+      name: ${ld2410_name_prefix}Radar Restart
       device_id: ${ld2410_device_id}
 
 globals:
@@ -1039,6 +1226,16 @@ globals:
     type: uint32_t
     restore_value: false
     initial_value: '0'
+  # Set once the timeout default has been applied; kept in flash for good.
+  - id: ${ld2410_id}_timeout_default_applied
+    type: bool
+    restore_value: true
+    initial_value: 'false'
+  # Set once the radar first reports its Bluetooth state after boot.
+  - id: ${ld2410_id}_bluetooth_default_applied
+    type: bool
+    restore_value: false
+    initial_value: 'false'
   - id: ${ld2410_id}_restore_engineering
     type: bool
     restore_value: false
@@ -1241,10 +1438,11 @@ script:
           list->publish_state(over.empty() ? std::string("None over threshold") : over);
 
 esphome:
+  # List form so other packages' on_boot entries are appended, not merged.
   on_boot:
-    priority: -100
-    then:
-      - script.execute: ${ld2410_id}_recover_parameters
+    - priority: -100
+      then:
+        - script.execute: ${ld2410_id}_recover_parameters
 
 interval:
   - interval: 60s

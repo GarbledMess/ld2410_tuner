@@ -12,6 +12,8 @@ from contextlib import contextmanager
 
 from homeassistant.helpers import entity_registry as er
 
+from . import thresholds
+
 SETTLE_SECONDS = 1.0
 SERVICE_TIMEOUT = 5.0
 RECOVERY_ATTEMPTS = 2
@@ -139,8 +141,12 @@ async def write_threshold(runtime, device_id, key, value, button):
     required = _required_numbers(runtime, device_id, [key])
     if _missing_numbers(runtime, required):
         raise ValueError("Radar configuration became unavailable; stopped before the next write")
-    if number_value(runtime.hass.states.get(entity_id)) != value:
-        await _call(runtime, "number", "set_value", {"entity_id": entity_id, "value": value})
+    state = runtime.hass.states.get(entity_id)
+    rounded = thresholds.rounded_entity(runtime, entity_id)
+    if thresholds.reading(state, rounded) != value:
+        # A rounded control takes the value it shows, not the radar's own threshold.
+        control = thresholds.control_value(value, thresholds.from_state(state, rounded))
+        await _call(runtime, "number", "set_value", {"entity_id": entity_id, "value": control})
         await asyncio.sleep(SETTLE_SECONDS)
         await refresh_parameters(runtime, button)
     check_reported(runtime, {key: entity_id}, {key: value})
@@ -149,8 +155,10 @@ async def write_threshold(runtime, device_id, key, value, button):
 
 def check_reported(runtime, entities, expected):
     """Do not label service-call success as a matching configuration."""
+    registry = er.async_get(runtime.hass)
     for key, value in expected.items():
-        actual = number_value(runtime.hass.states.get(entities[key]))
+        rounded = thresholds.rounded_entity(runtime, entities[key], registry)
+        actual = thresholds.reading(runtime.hass.states.get(entities[key]), rounded)
         if actual != value:
             raise ValueError(
                 f"{key}: requested {value}, device reports {actual:g}; stopped. Query Params and retry"

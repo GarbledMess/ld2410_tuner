@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from contextlib import asynccontextmanager
 from functools import cache
@@ -14,6 +15,7 @@ from homeassistant.helpers import entity_registry as er
 from .. import entity_index
 from ..calibration import automatic, comparison_jobs, timing_config
 from ..calibration import settings as learning_settings
+from ..calibration import thresholds as threshold_domain
 from ..calibration.constants import METHOD, ROOM_METHOD
 from ..calibration.results import saved_results
 from ..calibration.timing_config import read_timing
@@ -349,13 +351,15 @@ def _snapshot_identity(runtime, device_id):
 def _snapshot_thresholds(runtime, device_id, registry, *, state_get=None):
     state_get = runtime.hass.states.get if state_get is None else state_get
     current = {}
-    for entity in entity_index.read(runtime, registry).by_device.get(device_id, ()):
+    found = entity_index.read(runtime, registry).by_device.get(device_id, ())
+    rounded = threshold_domain.rounded_device(found)
+    for entity in found:
         if entity.domain != "number":
             continue
         match = GATE_RE.match(entity.entity_id.split(".", 1)[1])
         if match and match.group("metric") == "threshold":
             key = f"g{match.group('gate')}_{match.group('kind')}"
-            value = _threshold_reading(state_get(entity.entity_id))
+            value = _threshold_reading(state_get(entity.entity_id), rounded)
             if value is not None:
                 current[key] = value
     return current
@@ -371,10 +375,8 @@ def _sample_counts(histograms):
     }
 
 
-def _threshold_reading(state):
+def _threshold_reading(state, rounded=False):
     if state is None or state.state in ("unknown", "unavailable"):
         return None
-    try:
-        return float(state.state)
-    except ValueError:
-        return None
+    value = threshold_domain.reading(state, rounded)
+    return float(value) if math.isfinite(value) else None

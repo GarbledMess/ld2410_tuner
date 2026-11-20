@@ -32,7 +32,7 @@ def test_found_and_lost_gate_lists_are_inert_diagnostic_text_sensors():
     for edge in EDGES:
         sensor = texts[f"ld2410_presence_{edge}_gates"]
         assert sensor["platform"] == "template"
-        assert sensor["name"] == f"Presence {edge.title()} Gates"
+        assert sensor["name"] == f"${{ld2410_name_prefix}}Presence {edge.title()} Gates"
         assert sensor["entity_category"] == "diagnostic"
         assert sensor["update_interval"] == "never"
         assert sensor["device_id"] == "${ld2410_device_id}"

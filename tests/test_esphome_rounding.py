@@ -42,10 +42,17 @@ def test_threshold_controls_round_before_writing_and_read_actual_values():
             raw = package["number"][0][f"g{gate}"][f"{kind}_threshold"]
             assert raw["id"] == key + "_raw"
             assert raw["internal"] == "true"
-            assert raw["on_value"][0]["lambda"] == f"id({key}).publish_state(x);"
+            # One display formula: a radar readback redraws the control from its lambda.
+            assert raw["on_value"] == [{"component.update": key}]
             control = numbers[key]
             assert control["step"] == "${ld2410_gate_rounding}"
-            assert control["lambda"] == f"return id({key}_raw).state;"
+            # The control shows the rounding band the radar threshold opens, on its own grid.
+            shown = control["lambda"]
+            assert f"id({key}_raw).state" in shown
+            for attribute in ("min_value", "step"):
+                assert f"id({key}).traits.get_{attribute}()" in shown
+            assert "roundf((raw + 1.0f - minimum) / increment)" in shown
+            assert "_gate_rounding).state" not in shown
             assert control["update_interval"] == "never"
             action = control["set_action"][0]["number.set"]
             assert action["id"] == key + "_raw"
@@ -53,11 +60,14 @@ def test_threshold_controls_round_before_writing_and_read_actual_values():
                 assert f"id({key}).traits.get_{attribute}()" in action["value"]
             assert "roundf((x - minimum) / increment)" in action["value"]
             assert "floorf((maximum - minimum) / increment)" in action["value"]
+            # The first raw energy that reports the shown value must pass the radar.
+            assert "ceilf(nominal - increment / 2.0f) - 1.0f" in action["value"]
 
 
 def test_runtime_rounding_is_restored_and_refreshes_metadata_without_radar_writes():
     package = yaml.load(PACKAGE.read_text(), Loader=yaml.BaseLoader)
-    control = next(n for n in package["number"] if n.get("name") == "Gate Rounding")
+    control = next(n for n in package["number"] if n.get("id") == "${ld2410_id}_gate_rounding")
+    assert control["name"] == "${ld2410_name_prefix}Gate Rounding"
     assert control["initial_value"] == "${ld2410_gate_rounding}"
     assert control["restore_value"] == "true"
     assert (control["min_value"], control["max_value"], control["step"]) == ("1", "100", "1")

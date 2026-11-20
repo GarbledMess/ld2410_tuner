@@ -49,13 +49,15 @@ async def set_gate_threshold(runtime, device_id: str, key: str, value: float) ->
     if not math.isfinite(float(value)) or not 0 <= float(value) <= 100:
         raise ValueError("Threshold must be between 0 and 100")
     entity_id = runtime._find_threshold_entity(device_id, key)
-    domain = threshold_domain.from_state(runtime.hass.states.get(entity_id))
-    if not domain["min"] <= float(value) <= domain["max"]:
+    rounded = threshold_domain.rounded_entity(runtime, entity_id)
+    domain = threshold_domain.from_state(runtime.hass.states.get(entity_id), rounded)
+    low, high = threshold_domain.bounds(domain)
+    if not low <= float(value) <= high:
         raise ValueError("Threshold is outside this gate's permitted range")
     value = threshold_domain.normalize(float(value), domain)
     with device_io.device_operation(runtime, device_id):
         button = await device_io.prepare_device(runtime, device_id, [key])
-        if domain != threshold_domain.from_state(runtime.hass.states.get(entity_id)):
+        if domain != threshold_domain.from_state(runtime.hass.states.get(entity_id), rounded):
             raise ValueError("Gate constraints changed while preparing; retry the threshold change")
         return await device_io.write_threshold(runtime, device_id, key, value, button)
 
@@ -317,15 +319,18 @@ def _read_threshold_configuration(
     runtime, device_id, registry, entities, current, limits, state_get=None
 ):
     state_get = runtime.hass.states.get if state_get is None else state_get
-    for entity in entity_index.read(runtime, registry).by_device.get(device_id, ()):
+    found = entity_index.read(runtime, registry).by_device.get(device_id, ())
+    rounded = threshold_domain.rounded_device(found)
+    for entity in found:
         if entity.domain != "number":
             continue
-        value = device_io.number_value(state_get(entity.entity_id))
-        _distance_limit(entity.entity_id, value, limits)
+        state = state_get(entity.entity_id)
+        _distance_limit(entity.entity_id, device_io.number_value(state), limits)
         match = GATE_RE.match(entity.entity_id.split(".", 1)[1])
         if match and match.group("metric") == "threshold":
             key = f"g{match.group('gate')}_{match.group('kind')}"
             entities[key] = entity.entity_id
+            value = threshold_domain.reading(state, rounded)
             if math.isfinite(value):
                 current[key] = device_io.threshold_value(value)
 

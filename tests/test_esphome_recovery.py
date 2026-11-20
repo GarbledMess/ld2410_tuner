@@ -114,7 +114,11 @@ class RecoveryReplay:
         self.actions(self.package["interval"][0]["then"])
 
     def retry(self):
-        button = next(x for x in self.package["button"] if x.get("name") == "Retry Radar Recovery")
+        button = next(
+            x
+            for x in self.package["button"]
+            if x.get("name") == "${ld2410_name_prefix}Retry Radar Recovery"
+        )
         self.actions(button["on_press"])
 
 

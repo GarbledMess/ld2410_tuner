@@ -111,7 +111,7 @@ def _check(config, count, expected_names, override=False):
     _require(len(config["ld2410"]) == count)
     _require(len(config["uart"]) == count)
     _require(len(config["script"]) == 3 * count)
-    _require(len(config["globals"]) == 5 * count)
+    _require(len(config["globals"]) == 7 * count)
     for index, radar in enumerate(config["ld2410"]):
         prefix = f"radar_{index}" if index else "ld2410"
         _require(str(radar["id"]) == f"{prefix}_radar")
