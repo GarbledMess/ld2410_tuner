@@ -6,9 +6,11 @@ const KINDS = {
   guessed: "Guessed (automatic)",
 };
 const STATES = {
-  present: ["Present", "#2e7d32", ""],
-  not_present: ["Empty", "#777", "5 2"],
-  unknown: ["Unknown", "#b58900", "1 2"],
+  // Okabe-Ito blue/orange: distinct under the common colour-vision deficiencies and in
+  // lightness, so Present and Empty never rely on hue alone. Unknown stays neutral.
+  present: ["Present", "#0072B2"],
+  not_present: ["Empty", "#E69F00"],
+  unknown: ["Unknown", "#9e9e9e"],
 };
 const STORAGE = "ld2410_tuner.presence-lanes";
 
@@ -51,8 +53,8 @@ export function lanePaths(labels, bounds, width, y) {
   return Object.entries(paths)
     .filter(([, parts]) => parts.length)
     .map(([state, parts]) => {
-      const [name, color, dash] = STATES[state];
-      return `<path data-presence-state="${state}" d="${parts.join("")}" fill="none" stroke="${color}" stroke-width="8" stroke-dasharray="${dash}"><title>${name}</title></path>`;
+      const [name, color] = STATES[state];
+      return `<path data-presence-state="${state}" d="${parts.join("")}" fill="none" stroke="${color}" stroke-width="8"><title>${name}</title></path>`;
     })
     .join("");
 }
@@ -102,9 +104,16 @@ export const panelPresenceLanes = {
         ([kind, name]) =>
           `<button type="button" data-presence-toggle="${kind}" aria-pressed="${shown[kind]}">${name}: ${shown[kind] ? "Shown" : "Hidden"}</button>`,
       )
+      .join("")}</div><p class="muted">Presence evidence: ${Object.values(
+      STATES,
+    )
+      .map(
+        ([name, color]) =>
+          `<span style="display:inline-block;width:12px;height:8px;background:${color};margin-right:4px" aria-hidden="true"></span>${name}`,
+      )
       .join(
-        "",
-      )}</div><p class="muted">Presence evidence: solid = Present; dashed = Empty; dotted = Unknown. Gaps mean no evidence. Automatic evidence is not confirmed truth.</p></div>`;
+        "; ",
+      )}. Gaps mean no evidence. Automatic evidence is not confirmed truth.</p></div>`;
   },
 
   _wirePresenceLanes(root) {

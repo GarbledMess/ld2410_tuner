@@ -143,7 +143,7 @@ period and **Whole day** resets. Zoomed windows load finer buckets, down to six
 seconds. The line is the bucket mean; the band is the recorded min–max.
 
 Charts show separate evidence lanes for **Human (manual)**, **Entity / sensor** and
-**Guessed (automatic)** labels (solid = Present, dashed = Empty, dotted = Unknown, gap
+**Guessed (automatic)** labels (blue = Present, orange = Empty, grey = Unknown, gap
 = nothing recorded). Toggle them with the buttons below the chart.
 
 ## Rooms, zones and shared radars
