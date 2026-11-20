@@ -550,15 +550,16 @@ export const panelLayout = {
       <div class="chart-controls"><label>History <select data-room-hours><option value="24">24 hours</option><option value="72">3 days</option><option value="168">7 days</option></select></label>
       <button data-room-action="assess" ${busy ? 'disabled class="is-busy"' : ""}>Assess current settings</button>
       <button data-room-action="edit">Edit members</button>${removeButton}${addZone}</div>
-      ${this._presencePriorityHtml(group)}
+      ${this._presencePriorityHtml(id, group)}
       <div role="status" class="muted ${busy ? "is-busy" : ""}">${this._esc(status)}</div>
       ${editor}${this._roomReportHtml(report, rooms.members)}${this._roomSourcesHtml(id, group)}</details>${this._groupLearningHtml(id, group, rooms)}`;
   },
 
   // How strongly this room's Learn favours catching presence over avoiding
   // false presence: a multiplier on what a missed second costs (1 = default).
-  _presencePriorityHtml(group) {
-    const value = Number(group.presence_priority ?? 1);
+  _presencePriorityHtml(id, group) {
+    const saved = Number(group.presence_priority ?? 1);
+    const value = Number(this._pickerValue(`priority:${id}`, saved));
     const choices = PRESENCE_PRIORITIES.some(([v]) => v === value)
       ? PRESENCE_PRIORITIES
       : [...PRESENCE_PRIORITIES, [value, `Custom (×${value})`]];
@@ -568,8 +569,8 @@ export const panelLayout = {
           `<option value="${v}" ${v === value ? "selected" : ""}>${this._esc(label)}</option>`,
       )
       .join("");
-    const missed = 5 * value;
-    return `<div class="chart-controls presence-priority"><label>Presence priority <select data-room-priority data-action="room-priority">${options}</select></label></div>
+    const missed = 5 * saved;
+    return `<div class="chart-controls presence-priority"><label>Presence priority <select data-room-priority data-action="room-priority">${options}</select></label> <button type="button" data-room-action="save-priority">Save presence priority</button></div>
       <p class="muted">Learn weighs a missed second of presence at ${Number(missed.toPrecision(3))}× a second of false presence here. Raise it where presence must never be missed (lights in a bathroom, a study); lower it where false presence is the bigger problem (heating, alarms). Changing it marks this room's learned results out of date.</p>`;
   },
 
@@ -598,14 +599,16 @@ export const panelLayout = {
       this._openGroupEditor({ group_id: id });
     const priority = header.querySelector("[data-room-priority]");
     if (priority)
-      priority.onchange = () =>
-        this._action(priority, async () => {
-          await this._call("configure_room_priority", {
+      this._wirePicker(
+        priority,
+        header.querySelector('[data-room-action="save-priority"]'),
+        `priority:${id}`,
+        (value) =>
+          this._call("configure_room_priority", {
             group_id: id,
-            priority: Number(priority.value),
-          });
-          await this._load(true);
-        });
+            priority: Number(value),
+          }),
+      );
     const addZone = header.querySelector('[data-room-action="add-zone"]');
     if (addZone)
       addZone.onclick = () => this._openGroupEditor({ area_id: group.area_id });

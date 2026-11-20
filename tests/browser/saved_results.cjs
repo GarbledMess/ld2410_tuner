@@ -277,8 +277,25 @@ module.exports = async function testSavedResults(page, screenshotDir) {
     await override.locator("option:checked").innerText(),
     /Inherit global.*Every completed Learn/,
   );
+  const saveOverride = card.locator('[data-action="device-auto-apply-save"]');
+  const overrides = () =>
+    page.evaluate(
+      () =>
+        requests.filter((r) => r.type.endsWith("/configure_device_auto_apply"))
+          .length,
+    );
+  const unsent = await overrides();
+  await override.selectOption("off");
+  await page.evaluate(() => panel._load(true));
+  assert.equal(await overrides(), unsent, "choosing an option saves nothing");
+  assert.equal(
+    await override.inputValue(),
+    "off",
+    "the choice survives a refresh",
+  );
   for (const mode of ["off", "overnight", "all", "inherit"]) {
     await override.selectOption(mode);
+    await saveOverride.click();
     await page.waitForFunction(() => panel._activeActions === 0);
     await page.evaluate(() => panel._load());
     assert.equal(await override.inputValue(), mode);
@@ -299,6 +316,7 @@ module.exports = async function testSavedResults(page, screenshotDir) {
     );
   }
   await override.selectOption("off");
+  await saveOverride.click();
   await page.waitForFunction(() => panel._activeActions === 0);
   assert.match(
     await card.locator('.subsection[data-section="details"]').innerText(),
@@ -308,6 +326,7 @@ module.exports = async function testSavedResults(page, screenshotDir) {
     window.rejectDeviceOverride = true;
   });
   await override.selectOption("all");
+  await saveOverride.click();
   await page.waitForFunction(() => panel._activeActions === 0);
   assert.equal(
     await override.inputValue(),
@@ -322,6 +341,7 @@ module.exports = async function testSavedResults(page, screenshotDir) {
     window.rejectDeviceOverride = false;
   });
   await override.selectOption("inherit");
+  await saveOverride.click();
   await page.waitForFunction(() => panel._activeActions === 0);
   await page.evaluate(() => {
     fixture.devices.a.nightly_learning = {

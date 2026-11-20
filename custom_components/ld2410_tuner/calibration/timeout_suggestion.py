@@ -138,10 +138,27 @@ def _overlap(active, spans_):
     return total
 
 
+def _gaps(active, present):
+    """The parts of the merged ``present`` spans where nothing is ``active``."""
+    return _intersect(present, _complement(active))
+
+
 def _missed(active, present):
     """``(missed seconds, dark spells)`` of the merged ``present`` spans."""
-    gaps = _intersect(present, _complement(active))
+    gaps = _gaps(active, present)
     return sum(b - a for a, b in gaps), len(gaps)
+
+
+def _priced(gaps):
+    """``(missed seconds, dark spells, priced seconds)`` of ``(spans, priority)`` gaps, each
+    second counted once at the highest priority of the labels that miss it (a zone and its
+    area both labelled present miss the same second once)."""
+    covered, priced = [], 0.0
+    for priority in sorted({priority for _, priority in gaps}, reverse=True):
+        spans_ = _merged(span for found, level in gaps if level == priority for span in found)
+        priced += priority * _seconds(_intersect(spans_, _complement(covered)))
+        covered = _merged(covered + spans_)
+    return _seconds(covered), len(covered), priced
 
 
 def _starts_in(active, empty):
@@ -261,8 +278,11 @@ class _Room:
 
     def presence(self, key):
         """The labelled presence ``key`` is scored on: its own, and its shared rooms'."""
-        return _seconds(self.own[key][0]) + sum(
-            _seconds(room) for members, room in self.rooms.values() if key in members
+        return _seconds(
+            _merged(
+                self.own[key][0]
+                + [span for members, room in self.rooms.values() if key in members for span in room]
+            )
         )
 
     def active(self, key, timeout):
@@ -273,8 +293,8 @@ class _Room:
     def row(self, key, timeout, held):
         """``key``'s candidate ``timeout`` with the other radars held at ``held``."""
         present, empty = self.own[key]
-        priority = self.radar_priority.get(key, 1.0)
-        found = _candidate(timeout, self.detections[key], present, empty, priority)
+        found = _candidate(timeout, self.detections[key], [], empty)
+        gaps = [(_gaps(self.active(key, timeout), present), self.radar_priority.get(key, 1.0))]
         for group, (members, room) in self.rooms.items():
             if key in members:
                 lit = _merged(
@@ -282,10 +302,10 @@ class _Room:
                     for member in members
                     for span in self.active(member, timeout if member == key else held[member])
                 )
-                missed, dark = _missed(lit, room)
-                found["missed_seconds"] += missed
-                found["dark_spells"] += dark
-                found["cost"] += PRESENCE_PRICE * self.room_priority.get(group, 1.0) * missed
+                gaps.append((_gaps(lit, room), self.room_priority.get(group, 1.0)))
+        missed, dark, priced = _priced(gaps)
+        found.update(missed_seconds=missed, dark_spells=dark)
+        found["cost"] += PRESENCE_PRICE * priced
         return found
 
     def rows(self, key, held):
