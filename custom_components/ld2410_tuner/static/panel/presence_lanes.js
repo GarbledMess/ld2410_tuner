@@ -6,9 +6,11 @@ const KINDS = {
   guessed: "Guessed (automatic)",
 };
 const STATES = {
-  present: ["Present", "#2e7d32"],
-  not_present: ["Empty", "#777"],
-  unknown: ["Unknown", "#b58900"],
+  // Okabe-Ito blue/orange: distinct under the common colour-vision deficiencies and in
+  // lightness, so Present and Empty never rely on hue alone. Unknown stays neutral.
+  present: ["Present", "#0072B2"],
+  not_present: ["Empty", "#E69F00"],
+  unknown: ["Unknown", "#9e9e9e"],
 };
 const STORAGE = "ld2410_tuner.presence-lanes";
 
