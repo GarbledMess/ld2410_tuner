@@ -260,3 +260,39 @@ def test_a_shared_room_s_priority_prices_the_room_s_missed_presence():
     )["a"]
     for timeout, (cost, missed) in _costs(default).items():
         assert _costs(lowered)[timeout][0] == pytest.approx(cost - 0.9 * PRESENCE_PRICE * missed)
+
+
+def test_a_zone_and_its_area_labelled_present_together_count_each_second_once():
+    # The sofa zone and the lounge both labelled present over the same two hours: a second
+    # the radars miss is one missed second, not one for the zone and one for the area.
+    views, thresholds, current = _lounge(b_value=0, b_dip=0)
+    alone = _costs(timeout_suggestion.suggest_room(views, ["a"], thresholds, current)["a"])
+    sofa = {"kind": "zone", "area_id": "lounge", "device_ids": ["a", "b"]}
+    for item in views.values():
+        snapshot = item.data["room_snapshot"]
+        snapshot["groups"] = {**LOUNGE, "zone:sofa": sofa}
+        snapshot["own"] = ["area:lounge", "zone:sofa"]
+        snapshot["room_labels"] = {**ROOM_LABELS, "zone:sofa": ROOM_LABELS["area:lounge"]}
+    found = timeout_suggestion.suggest_room(views, ["a"], thresholds, current)["a"]
+    assert alone[1.0][1] > 0
+    assert _costs(found) == {key: pytest.approx(value) for key, value in alone.items()}
+    assert {row["timeout"]: row["dark_spells"] for row in found["candidates"]}[1.0] == 120
+
+
+def test_a_second_missed_in_two_rooms_is_priced_at_the_higher_priority():
+    views, thresholds, current = _lounge(b_value=0, b_dip=0)
+    alone = _costs(
+        timeout_suggestion.suggest_room(
+            views, ["a"], thresholds, current, priorities={"rooms": {"area:lounge": 4.0}}
+        )["a"]
+    )
+    sofa = {"kind": "zone", "area_id": "lounge", "device_ids": ["a", "b"]}
+    for item in views.values():
+        snapshot = item.data["room_snapshot"]
+        snapshot["groups"] = {**LOUNGE, "zone:sofa": sofa}
+        snapshot["own"] = ["area:lounge", "zone:sofa"]
+        snapshot["room_labels"] = {**ROOM_LABELS, "zone:sofa": ROOM_LABELS["area:lounge"]}
+    found = timeout_suggestion.suggest_room(
+        views, ["a"], thresholds, current, priorities={"rooms": {"area:lounge": 4.0}}
+    )["a"]
+    assert _costs(found) == {key: pytest.approx(value) for key, value in alone.items()}

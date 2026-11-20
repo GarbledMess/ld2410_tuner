@@ -411,7 +411,22 @@ async function testPresencePriority(page) {
   const select = desk.locator("[data-room-priority]");
   assert.equal(await select.inputValue(), "1", "Balanced by default");
   assert.match(await desk.innerText(), /missed second of presence at 5×/);
+  const sent = () =>
+    page.evaluate(
+      () =>
+        requests.filter((r) => r.type.endsWith("configure_room_priority"))
+          .length,
+    );
+  const before = await sent();
   await select.selectOption("10");
+  await page.evaluate(() => panel._load(true));
+  assert.equal(await sent(), before, "choosing an option saves nothing");
+  assert.equal(
+    await select.inputValue(),
+    "10",
+    "the choice survives a refresh",
+  );
+  await desk.locator('[data-room-action="save-priority"]').click();
   await page.waitForFunction(
     () => panel._data.rooms.groups["zone:desk"].presence_priority === 10,
   );
@@ -431,6 +446,7 @@ async function testPresencePriority(page) {
   assert.equal(await select.inputValue(), "7", "an unlisted value is kept");
   assert.match(await select.innerText(), /Custom \(×7\)/);
   await select.selectOption("1");
+  await desk.locator('[data-room-action="save-priority"]').click();
   await page.waitForFunction(
     () => !("presence_priority" in panel._data.rooms.groups["zone:desk"]),
   );

@@ -73,6 +73,7 @@ export const panelTimeoutSuggestion = {
       global: "off",
       effective: "off",
     };
+    const chosen = this._pickerValue(`timeout-apply:${id}`, policy.override);
     const options = {
       inherit: `Inherit global (${MODES[policy.global]})`,
       ...MODES,
@@ -82,11 +83,11 @@ export const panelTimeoutSuggestion = {
     )
       .map(
         ([value, label]) =>
-          `<option value="${value}" ${policy.override === value ? "selected" : ""}>${this._esc(label)}</option>`,
+          `<option value="${value}" ${chosen === value ? "selected" : ""}>${this._esc(label)}</option>`,
       )
       .join(
         "",
-      )}</select></label><div class="muted">${this._esc(this._timeoutApplyPolicyText(policy.effective))}</div>`;
+      )}</select></label> <button type="button" data-action="device-timeout-apply-save">Save automatic timeout</button><div class="muted">${this._esc(this._timeoutApplyPolicyText(policy.effective))}</div>`;
     return `<div class="timeout-suggestion"><div class="comparison-heading"><b>Radar timeout</b></div>
       <div class="muted" role="status">${this._esc(this._timeoutStatus(found))}</div>${table}${picker}</div>`;
   },
@@ -94,19 +95,12 @@ export const panelTimeoutSuggestion = {
   _wireTimeoutSuggestion(card, id) {
     const override = card.querySelector('[data-action="device-timeout-apply"]');
     if (!override) return;
-    override.onchange = () => {
-      const mode = override.value;
-      override.blur();
-      return this._action(override, async () => {
-        try {
-          await this._call("configure_device_timeout_apply", {
-            device_id: id,
-            mode,
-          });
-        } finally {
-          await this._load(true);
-        }
-      });
-    };
+    this._wirePicker(
+      override,
+      card.querySelector('[data-action="device-timeout-apply-save"]'),
+      `timeout-apply:${id}`,
+      (mode) =>
+        this._call("configure_device_timeout_apply", { device_id: id, mode }),
+    );
   },
 };

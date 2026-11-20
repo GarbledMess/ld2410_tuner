@@ -506,6 +506,29 @@ export const panelView = {
     }
   },
 
+  // A picker's unsaved choice, kept across refreshes until its Save button sends it.
+  _pickerValue(key, saved) {
+    return this._pickerDrafts?.has(key)
+      ? this._pickerDrafts.get(key)
+      : String(saved);
+  },
+
+  _wirePicker(select, button, key, save) {
+    this._pickerDrafts ||= new Map();
+    select.onchange = () => this._pickerDrafts.set(key, select.value);
+    button.onclick = () => {
+      const value = select.value;
+      return this._action(button, async () => {
+        try {
+          await save(value);
+        } finally {
+          this._pickerDrafts.delete(key);
+          await this._load(true);
+        }
+      });
+    };
+  },
+
   _fmt(v) {
     return v === undefined || v === null ? "—" : Number(v).toFixed(0);
   },

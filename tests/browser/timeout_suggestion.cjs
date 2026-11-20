@@ -80,6 +80,20 @@ module.exports = async function testTimeoutSuggestion(page) {
   const override = block.locator('[data-action="device-timeout-apply"]');
   assert.match(await override.innerText(), /Inherit global \(Off\)/);
   await override.selectOption("all");
+  await page.evaluate(() => panel._load(true));
+  assert.equal(
+    await page.evaluate(() =>
+      requests.some((m) => m.type.endsWith("/configure_device_timeout_apply")),
+    ),
+    false,
+    "choosing an option saves nothing",
+  );
+  assert.equal(
+    await override.inputValue(),
+    "all",
+    "the choice survives a refresh",
+  );
+  await block.locator('[data-action="device-timeout-apply-save"]').click();
   await page.waitForFunction(() =>
     requests.some((m) => m.type.endsWith("/configure_device_timeout_apply")),
   );

@@ -303,8 +303,9 @@ export const panelSavedResults = {
     return { override: "inherit", global: mode, effective: mode };
   },
 
-  _deviceApplySettingsHtml(d) {
+  _deviceApplySettingsHtml(id, d) {
     const policy = this._deviceApplyPolicy(d);
+    const chosen = this._pickerValue(`auto-apply:${id}`, policy.override);
     const labels = {
       off: "Off",
       overnight: "Overnight learning only",
@@ -319,29 +320,21 @@ export const panelSavedResults = {
     )
       .map(
         ([value, label]) =>
-          `<option value="${value}" ${policy.override === value ? "selected" : ""}>${this._esc(label)}</option>`,
+          `<option value="${value}" ${chosen === value ? "selected" : ""}>${this._esc(label)}</option>`,
       )
       .join(
         "",
-      )}</select></label><div class="muted">${this._esc(this._automaticApplyPolicyText({ auto_apply: policy.effective !== "off", auto_apply_scope: policy.effective }))}</div>`;
+      )}</select></label> <button type="button" data-action="device-auto-apply-save">Save automatic Apply</button><div class="muted">${this._esc(this._automaticApplyPolicyText({ auto_apply: policy.effective !== "off", auto_apply_scope: policy.effective }))}</div>`;
   },
 
   _wireSavedResults(card, id) {
-    const override = card.querySelector('[data-action="device-auto-apply"]');
-    override.onchange = () => {
-      const mode = override.value;
-      override.blur();
-      return this._action(override, async () => {
-        try {
-          await this._call("configure_device_auto_apply", {
-            device_id: id,
-            mode,
-          });
-        } finally {
-          await this._load(true);
-        }
-      });
-    };
+    this._wirePicker(
+      card.querySelector('[data-action="device-auto-apply"]'),
+      card.querySelector('[data-action="device-auto-apply-save"]'),
+      `auto-apply:${id}`,
+      (mode) =>
+        this._call("configure_device_auto_apply", { device_id: id, mode }),
+    );
     const marker = card.querySelector('[data-action="review-nightly"]');
     if (marker)
       marker.onclick = (event) => {
