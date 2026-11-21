@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 from homeassistant.core import callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
@@ -58,11 +59,20 @@ def refresh_devices(runtime, registry: er.EntityRegistry) -> None:
             ingest.end(runtime, device_id, time.time())
         else:
             device["entities"] = dict(info["entities"])
+        _remember_name(runtime, device_id, device)
         device.setdefault("training_state", "unknown")
 
     if before != {key: value.get("entities", {}) for key, value in runtime.data["devices"].items()}:
         runtime._schedule_save()
     lone_labels.refresh(runtime)
+
+
+def _remember_name(runtime, device_id, device):
+    """Keep the radar's name, so it can still be named once it leaves Home Assistant."""
+    found = dr.async_get(runtime.hass).async_get(device_id)
+    name = (found.name_by_user or found.name) if found else None
+    if name:
+        device["last_name"] = name
 
 
 @callback

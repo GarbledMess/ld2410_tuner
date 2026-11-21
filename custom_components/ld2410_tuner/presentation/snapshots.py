@@ -25,7 +25,7 @@ from ..presence import bermuda, rebuilds, sources
 from ..rooms import jobs as room_jobs
 from ..rooms import layout
 from ..rooms import seen_by as room_seen_by
-from ..runtime import bulk_labels, exclusion, history_save
+from ..runtime import bulk_labels, exclusion, history_save, removal
 from ..runtime.schedule import settings
 from ..worker import bridge, codec
 from ..worker.display import check_export
@@ -134,6 +134,9 @@ def snapshot(runtime, room_label_tokens=None, seen_by=None) -> dict[str, Any]:
 
     _snapshot_devices(runtime, registry, result)
     result["excluded_radars"] = exclusion.listed(
+        runtime, lambda device_id: _snapshot_identity(runtime, device_id)
+    )
+    result["departed_radars"] = removal.departed(
         runtime, lambda device_id: _snapshot_identity(runtime, device_id)
     )
     result["label_selections"] = bulk_labels.listed(runtime)
@@ -338,7 +341,7 @@ def _export_device(runtime, did, devreg, registry):
 
 
 def _snapshot_identity(runtime, device_id):
-    name = device_id
+    name = runtime.data["devices"].get(device_id, {}).get("last_name") or device_id
     area_id = None
     devreg = dr.async_get(runtime.hass)
     dev = devreg.async_get(device_id)

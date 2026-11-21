@@ -26,7 +26,7 @@ from ..rooms import jobs as room_jobs
 from ..rooms import learning as room_learning
 from ..rooms import room_labels, room_sources
 from ..worker import priority
-from . import bulk_labels, discovery, exclusion, history_save, schedule
+from . import bulk_labels, discovery, exclusion, history_save, removal, schedule
 
 _LOGGER = logging.getLogger(__name__)
 STATE_SAVE_SECONDS = 300  # Recording state saves; history goes to the day logs.
@@ -189,6 +189,7 @@ class TunerRuntime:
     save_label_template = bulk_labels.save_template
     delete_label_template = bulk_labels.delete_template
     set_excluded = exclusion.set_excluded
+    remove_radar = removal.remove_radar
     bermuda_devices = bermuda.devices
     configure_bermuda = bermuda.configure
     configure_presence_sources = sources.configure

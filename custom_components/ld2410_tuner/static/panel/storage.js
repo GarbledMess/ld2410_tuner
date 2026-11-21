@@ -54,39 +54,88 @@ export const panelStorage = {
     await this._load(true);
   },
 
+  async _removeRadar(item) {
+    const name = item.name || item.device_id;
+    if (
+      !confirm(
+        `Delete ${name} for good? Its recorded history, labels and results are deleted and it is taken out of every room and zone, so it no longer affects the radars that replaced it. Room labels are kept. This cannot be undone.`,
+      )
+    )
+      return false;
+    await this._call("remove_radar", { device_id: item.device_id });
+    await this._load(true);
+    return true;
+  },
+
   // Excluded radars, tucked away at the bottom of the layout, each with a way back.
   _excludedElement() {
-    const excluded = this._data?.excluded_radars || [];
+    return this._radarListElement({
+      items: this._data?.excluded_radars || [],
+      key: "excluded-radars",
+      title: "Excluded radars",
+      description:
+        "Left out of recording, learning, Apply and rooms. Their stored data is kept until you delete it.",
+      include: true,
+    });
+  },
+
+  // Radars that left Home Assistant but whose data the tuner still holds.
+  _departedElement() {
+    return this._radarListElement({
+      items: this._data?.departed_radars || [],
+      key: "departed-radars",
+      title: "Radars no longer in Home Assistant",
+      description:
+        "Their recorded data is still stored and saved zones may still use it. Delete a replaced radar so it cannot affect its room.",
+      include: false,
+    });
+  },
+
+  _radarListElement({ items, key, title, description, include }) {
     const details = document.createElement("details");
-    details.className = "excluded-radars";
-    details.dataset.excludedRadars = "";
-    details.open = !!this._sectionState.get("excluded-radars");
+    details.className = key;
+    details.dataset[
+      key === "excluded-radars" ? "excludedRadars" : "departedRadars"
+    ] = "";
+    details.open = !!this._sectionState.get(key);
     details.addEventListener("toggle", () =>
-      this._sectionState.set("excluded-radars", details.open),
+      this._sectionState.set(key, details.open),
     );
     const summary = document.createElement("summary");
-    summary.textContent = `Excluded radars (${excluded.length})`;
-    const description = document.createElement("span");
-    description.className = "section-description";
-    description.textContent =
-      "Left out of recording, learning, Apply and rooms. Their stored data is kept.";
-    summary.append(description);
+    summary.textContent = `${title} (${items.length})`;
+    const note = document.createElement("span");
+    note.className = "section-description";
+    note.textContent = description;
+    summary.append(note);
     details.append(summary);
-    for (const item of excluded) {
+    for (const item of items) {
       const row = document.createElement("div");
       row.className = "excluded-radar";
       row.dataset.deviceId = item.device_id;
       const name = document.createElement("span");
       name.textContent = item.name || item.device_id;
-      const include = document.createElement("button");
-      include.type = "button";
-      include.dataset.action = "include";
-      include.textContent = "Include again";
-      include.onclick = () =>
-        this._action(include, async () => {
-          await this._setExcluded(item.device_id, false);
+      row.append(name);
+      if (include) {
+        const back = document.createElement("button");
+        back.type = "button";
+        back.dataset.action = "include";
+        back.textContent = "Include again";
+        back.onclick = () =>
+          this._action(back, async () => {
+            await this._setExcluded(item.device_id, false);
+          });
+        row.append(back);
+      }
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "secondary";
+      remove.dataset.action = "remove-radar";
+      remove.textContent = "Delete radar and data";
+      remove.onclick = () =>
+        this._action(remove, async () => {
+          await this._removeRadar(item);
         });
-      row.append(name, include);
+      row.append(remove);
       details.append(row);
     }
     return details;

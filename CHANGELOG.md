@@ -1,5 +1,16 @@
 # Release notes
 
+## Unreleased
+
+- **Delete a replaced radar.** Excluded radars, and radars no longer in Home Assistant,
+  have **Delete radar and data**. It deletes everything the tuner stored for the radar and
+  takes it out of every zone, area override, saved label selection, room assessment and
+  joint result, so an old sensor's history no longer affects the radars that replaced it.
+  Room labels are kept. A zone left with no radar is refused until it gets another one.
+- **Radars no longer in Home Assistant are listed.** A radar whose device was removed
+  stayed in saved zones and area overrides, unseen, with its old history. They are now
+  listed under the room layout, by their last known name.
+
 ## 1.42.0 - 2026-11-19
 
 - **Background work makes room for Home Assistant.** The workers' memory limit used to be

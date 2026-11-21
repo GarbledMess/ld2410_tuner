@@ -212,6 +212,7 @@ def _websocket_routes():
             "invalid_request",
             False,
         ),
+        ("remove_radar", device, "remove_radar", ("device_id",), "invalid_request", False),
         (
             "configure_storage",
             {vol.Required("settings"): dict},

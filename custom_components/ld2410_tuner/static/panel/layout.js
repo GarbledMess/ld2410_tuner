@@ -653,8 +653,11 @@ export const panelLayout = {
     this._wireRoomEditor(footer);
     // Rebuilt on every draw: the footer's own HTML is only rewritten when it changes.
     footer.querySelector("[data-excluded-radars]")?.remove();
+    footer.querySelector("[data-departed-radars]")?.remove();
     if ((this._data?.excluded_radars || []).length)
       footer.append(this._excludedElement());
+    if ((this._data?.departed_radars || []).length)
+      footer.append(this._departedElement());
     return footer;
   },
 

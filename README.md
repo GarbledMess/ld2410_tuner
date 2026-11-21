@@ -215,6 +215,19 @@ assessments without touching the device in Home Assistant, for example after it 
 moved behind metal. Nothing stored is deleted. **Include again** under **Excluded
 radars** brings it back as it was.
 
+### Replacing a radar
+
+Room truth, assessments and Learn read every member's recorded history, so an old
+radar left in a room keeps shaping what its replacement learns. After replacing a
+sensor, add the new radar to the room's zones, then delete the old one: **Delete radar
+and data** under **Excluded radars** (exclude it first if it is still in Home
+Assistant), or under **Radars no longer in Home Assistant** once its device is gone.
+This permanently deletes its recorded history, labels and results, and takes it out of
+every zone, area override, saved label selection, room assessment and joint result.
+Room labels are kept, so the new radar trains on them. A zone whose only radar it is
+must get another radar first. A deleted radar that comes back to Home Assistant
+returns as a new, paused radar with nothing from before.
+
 ## Learning and applying thresholds
 
 **Learn thresholds** starts a server-side job: you can close the tab and come back. A
