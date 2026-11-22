@@ -1,5 +1,25 @@
 # Release notes
 
+## 1.43.0 - 2026-11-21
+
+- **LD2410C radars with Gate Rounding are supported.** The tuner recognises these
+  radars by their Gate Rounding control. It keeps learning, showing and applying the
+  radar's own threshold, offers only the values a rounded control can reach, and writes
+  the control value that stores it. Radars without Gate Rounding are unchanged. The
+  example ESPHome package shows each threshold as the band its radar threshold opens,
+  and gains a name prefix, a Bluetooth setting (off by default) and a default timeout
+  for first installs.
+- **Pickers save with a button.** The presence priority, automatic Apply and automatic
+  timeout pickers no longer save as soon as you pick. Each has a Save button, and an
+  unsaved choice survives a panel refresh until you save it.
+- **Timeout suggestions count each missed second once.** When a zone and its area were
+  both labelled present over the same second, that second was counted twice. It now
+  counts once, at the highest presence priority among the labels that miss it.
+- **Presence lanes are easier to read.** Present is blue, Empty orange and Unknown
+  grey, as solid bars. These colours stay distinct for colour-blind readers. Empty and
+  Unknown used to be dashed and dotted, which made one long period look like many
+  short ones.
+
 ## 1.42.0 - 2026-11-19
 
 - **Background work makes room for Home Assistant.** The workers' memory limit used to be
