@@ -614,6 +614,9 @@ def append_logs(store, now):
 
     Appending a few records is cheap; the worker route started a process and copied each
     growing day log twice for it, every few seconds while recording."""
+    from ..history import location
+
+    location.require(store)
     with store._lock:
         if not _appends_only(store, date_of(now)):
             return None

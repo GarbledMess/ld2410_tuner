@@ -1,5 +1,14 @@
 # Release notes
 
+## 1.44.0 - 2026-11-22
+
+- **Recorded history can live on a USB drive, SD card or network share.** Choose a folder
+  under **Settings → Devices & services → LD2410 Tuner → Configure**. The existing
+  history is moved there safely (copied and checked before the old copy is removed), and
+  nothing is written while the drive or share is not mounted. Labels, settings and
+  results stay in Home Assistant's storage. **Recorded data** shows where history is
+  stored. See [Storage location](docs/storage.md#storage-location).
+
 ## 1.43.0 - 2026-11-21
 
 - **LD2410C radars with Gate Rounding are supported.** The tuner recognises these

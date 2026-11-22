@@ -5,7 +5,8 @@ How recorded history is stored, kept and trimmed. See the
 
 ## Files
 
-History lives beside Home Assistant's JSON store, so backups include it:
+By default history lives beside Home Assistant's JSON store, so backups include it (see
+[Storage location](#storage-location) to keep it elsewhere):
 
 ```text
 <config>/.storage/ld2410_tuner.data                                            labels, settings, results
@@ -39,6 +40,55 @@ At startup, leftovers of an interrupted day finish are removed, the private work
 of storage transactions that never finished (`.storage/ld2410_tuner/.ld2410-storage-*`) are
 deleted, and earlier days' logs are finished. Until then, recovery files from an
 interrupted storage transaction are listed separately in **Recorded data**.
+
+## Storage location
+
+History can live outside Home Assistant's `.storage` folder, for example on a USB drive,
+an SD card or a network share, to spare the system disk or keep more history. Labels,
+settings and saved results always stay in `.storage/ld2410_tuner.data`; exports and the
+panel's files stay there too.
+
+1. Make the folder visible to Home Assistant:
+   - **Home Assistant OS / Supervised, network share:** **Settings → System → Storage →
+     Add network storage**, usage **Share** or **Media**. It appears as `/share/<name>` or
+     `/media/<name>`.
+   - **Home Assistant OS, USB drive or SD card reader:** recent versions mount USB storage
+     under `/media/<label>`.
+   - **Container or Core:** mount the drive or share on the host and bind-mount it into the
+     container; use the path as Home Assistant sees it.
+2. Open **Settings → Devices & services → LD2410 Tuner → Configure**, enter the folder's
+   absolute path and keep **Move the existing history** on. Leave the path empty to go
+   back to Home Assistant's storage. The form checks that the folder exists and that files
+   can be created, synced, renamed and removed in it.
+3. Saving reloads the integration. Before recording starts again, the history is copied
+   into `<folder>/ld2410_tuner/history/` (each file synced, then its size checked), the JSON
+   store is saved with the new location, and only then is the old copy removed. If the move
+   fails (not enough space, the target already holds other history), the log says why and
+   history stays where it was. An interrupted move starts again from the old copy.
+
+With **Move the existing history** off, the tuner starts a new history in the folder (or
+continues one already there) and leaves the current files where they are.
+
+```text
+<folder>/ld2410_tuner/.ld2410_tuner_location                       marker
+<folder>/ld2410_tuner/history/<radar device id>/<YYYY-MM-DD>.day   same layout as above
+```
+
+- **Drive not mounted.** The marker file tells a mounted drive from the empty mount point
+  left when it is not. Without the marker nothing is written there, so history never fills
+  the system disk by accident. At startup the tuner waits, checking every minute, and logs
+  once; the panel appears when the folder is back. If the drive goes away while running,
+  readings are kept in memory and saving is retried, as for any other disk error, until it
+  returns (after 15 minutes the log warns that readings are only in memory, and a restart
+  meanwhile loses them).
+- **Backups.** Home Assistant backups include the history only if they include its
+  folder. Network-storage mounts and external drives are usually not part of a backup;
+  use **Export JSON** or the drive's own backup for anything you want to keep.
+- **Filesystem.** Any Linux filesystem that supports renaming files works, including
+  FAT/exFAT USB sticks, NFS and SMB shares. Hard links are used where available and
+  copies otherwise. A slow share makes saves and cleanups slower, not unsafe.
+- **Size ceiling.** The ceiling in **Recording storage** still applies (it counts the
+  history plus the JSON store); raise it if the new location has room for more.
 
 ## Recording
 

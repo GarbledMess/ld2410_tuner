@@ -6,9 +6,11 @@ import stat
 import tempfile
 import threading
 import time
+import types
 from functools import partial
 from pathlib import Path
 
+from ..history import location
 from . import bridge, priority, protocol, storage_values
 from .supervisor import RecoverableCleanupFailed, Supervisor, owned_preparation
 
@@ -121,10 +123,11 @@ def copy_tree(root, target, selected=None):
     return files
 
 
-def _prepare(holder, root, operation, data, now, snapshot, fs_lock):
+def _prepare(holder, root, operation, data, now, snapshot, fs_lock, marker=None):
     # Refused before anything is copied; here, not on the event loop, where a walk of a large
     # home's data takes about 0.1 s.
     storage_values.validate(data, max_bytes=MESSAGE_BYTES, max_nodes=MESSAGE_NODES)
+    location.require(types.SimpleNamespace(marker=marker))
     root.parent.mkdir(parents=True, exist_ok=True)
     directory = holder["directory"] = Path(tempfile.mkdtemp(prefix=PRIVATE_PREFIX, dir=root.parent))
     request = {
@@ -177,6 +180,7 @@ async def _prepare_request(runtime, holder, operation, data, snapshot):
             time.time(),
             snapshot,
             getattr(runtime._days, "_fs_lock", threading.RLock()),
+            getattr(runtime._days, "marker", None),
         )
     )
 
