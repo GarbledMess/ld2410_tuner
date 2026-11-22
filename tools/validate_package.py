@@ -137,6 +137,7 @@ RUNTIME_FILES = (
     "history/ingest.py",
     "history/convert.py",
     "history/live.py",
+    "history/location.py",
     "history/spans.py",
     "history/summaries.py",
     "history/summary_cache.py",
