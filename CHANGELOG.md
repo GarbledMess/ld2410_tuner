@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 1.44.0 - 2026-11-22
 
 - **Recorded history can live on a USB drive, SD card or network share.** Choose a folder
   under **Settings → Devices & services → LD2410 Tuner → Configure**. The existing
