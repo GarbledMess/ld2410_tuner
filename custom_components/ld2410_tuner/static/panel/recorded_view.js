@@ -79,7 +79,7 @@ function readingView(s, esc) {
 
 export function recordedHtml(s, esc) {
   return `<div class="raw-controls"><button data-raw-inventory ${disabled(s.loading || s.export)}>Refresh days</button></div>
-    ${s.storage ? `<p class="muted">Total recorded history: ${bytes(s.storage.history_bytes ?? s.devices.reduce((sum, d) => sum + d.bytes, 0))}. Retained recovery files: ${bytes(s.storage.recovery_bytes)}. Sizes are actual disk bytes; recovery files are separate from the recordings below.</p>` : ""}
+    ${s.storage ? `<p class="muted">Total recorded history: ${bytes(s.storage.history_bytes ?? s.devices.reduce((sum, d) => sum + d.bytes, 0))}. Retained recovery files: ${bytes(s.storage.recovery_bytes)}. Sizes are actual disk bytes; recovery files are separate from the recordings below.${s.storage.location ? ` Stored in <code>${esc(s.storage.location)}</code> (change it in the integration's options).` : ""}</p>` : ""}
     ${s.loading ? '<p role="status" class="is-busy">Loading recorded data…</p>' : ""}
     ${s.error ? `<p role="alert" class="warn">${esc(s.error)}</p>` : ""}
     ${!s.loading && !s.error && s.started && !s.days ? "<p>No recorded days for this radar.</p>" : ""}

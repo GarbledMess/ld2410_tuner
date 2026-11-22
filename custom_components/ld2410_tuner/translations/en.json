@@ -9,5 +9,27 @@
     "abort": {
       "single_instance_allowed": "LD2410 Tuner is already configured."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Recorded history location",
+        "description": "Recorded history is kept in Home Assistant's storage folder unless you choose another folder here, such as a USB drive, an SD card or a network share mounted into Home Assistant (for example /media/usb or /share/nas). The tuner keeps its files in an ld2410_tuner folder inside it. Labels, settings and results stay in Home Assistant's storage. Saving reloads the integration; recording pauses while the history is copied.",
+        "data": {
+          "history_location": "History folder (empty: Home Assistant storage)",
+          "move_history": "Move the existing history to the new folder"
+        },
+        "data_description": {
+          "history_location": "An absolute path to a folder that already exists. Folders outside Home Assistant's configuration folder may not be included in Home Assistant backups.",
+          "move_history": "Off: start a new history in that folder (or continue one already there) and leave the current files where they are."
+        }
+      }
+    },
+    "error": {
+      "not_absolute": "Enter an absolute path, starting with /.",
+      "missing": "That folder does not exist. Mount the drive or share first.",
+      "not_writable": "Home Assistant cannot create, rename and remove files in that folder.",
+      "inside_storage": "Choose a folder outside Home Assistant's .storage folder; leave the field empty to use the default."
+    }
   }
 }

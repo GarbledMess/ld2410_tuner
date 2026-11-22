@@ -19,7 +19,7 @@ from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import quote, unquote
 
-from . import dayfile, pace, summaries, summary_cache, worker_snapshot
+from . import dayfile, location, pace, summaries, summary_cache, worker_snapshot
 
 DAY = datetime.timedelta(days=1)
 MIB = 1024 * 1024
@@ -101,8 +101,9 @@ def _carry_records(carry, start):
 
 
 class DayStore:
-    def __init__(self, root, *, cache_bytes=64 * MIB):
+    def __init__(self, root, *, cache_bytes=64 * MIB, marker=None):
         self.root = Path(root)
+        self.marker = marker  # A chosen folder's marker: nothing is written while it is missing.
         self._live, self._closing = {}, {}
         self._late = {}  # Device id -> {earlier finished date: guess spans recorded later}.
         self._changes = {}  # (device id, date) -> finished-day writes and deletes so far.
@@ -242,6 +243,7 @@ class DayStore:
 
     def flush(self, now=None):
         """Write buffered records and finish ended days (executor). Returns log bytes written."""
+        location.require(self)
         today = date_of(time.time() if now is None else now)
         with self._lock:
             for device_id, live in list(self._live.items()):

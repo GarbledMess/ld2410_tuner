@@ -207,6 +207,7 @@ def recording_devices(runtime):
         "storage": {
             "history_bytes": sum(item["bytes"] for item in result),
             "recovery_bytes": _recovery_bytes(store),
+            "location": None if store is None else str(store.root),
         },
     }
 

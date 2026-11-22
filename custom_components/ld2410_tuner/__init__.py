@@ -29,7 +29,7 @@ from .const import (
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
 )
-from .history import ingest, pace
+from .history import ingest, location, pace
 from .history.daystore import DayStore
 from .presence import bermuda, rebuilds, reference_training
 from .presentation import export_files
@@ -43,6 +43,7 @@ _STARTUP = f"{DOMAIN}_startup"
 STATIC_PATH = Path(__file__).parent / "static"
 FINAL_SAVE_TIMEOUT = 60  # Shutdown must reach the direct history write.
 FINAL_HISTORY_SAVE_TIMEOUT = 30
+LOCATION_RETRY_SECONDS = 60  # A drive or share that is not mounted yet is checked again.
 
 
 class TunerStore(Store):
@@ -58,12 +59,35 @@ class TunerStore(Store):
         return old_data
 
 
-async def async_setup_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    options = dict(getattr(entry, "options", None) or {})
+    if entry is not None and hasattr(entry, "add_update_listener"):
+        entry.async_on_unload(entry.add_update_listener(_options_updated))
     if DOMAIN not in hass.data and _STARTUP not in hass.data:
-        task = hass.async_create_background_task(_start_runtime(hass), "ld2410_tuner startup")
+        task = hass.async_create_background_task(
+            _start_runtime(hass, options), "ld2410_tuner startup"
+        )
         hass.data[_STARTUP] = task
         task.add_done_callback(partial(_startup_finished, hass))
     return True
+
+
+async def _options_updated(hass, entry):
+    """A new history folder is settled at startup, before anything records into it."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def _settle_location(hass, store, data, options):
+    """Where history lives; waits for a chosen drive or share that is not mounted yet."""
+    reported = False
+    while True:
+        try:
+            return await location.activate(hass, store, data, options)
+        except location.LocationUnavailable as error:
+            if not reported:
+                _LOGGER.error("%s. Recording starts once it is available", error)
+                reported = True
+            await asyncio.sleep(LOCATION_RETRY_SECONDS)
 
 
 def _startup_finished(hass, task):
@@ -76,7 +100,7 @@ def _startup_finished(hass, task):
         )
 
 
-async def _start_runtime(hass):
+async def _start_runtime(hass, options=None):
     store = TunerStore(
         hass,
         STORAGE_VERSION,
@@ -85,8 +109,9 @@ async def _start_runtime(hass):
         minor_version=STORAGE_MINOR_VERSION,
     )
     data = await store.async_load() or {"devices": {}, "training": {}}
+    root, marker = await _settle_location(hass, store, data, options or {})
     runtime = TunerRuntime(hass, store, data)
-    runtime._days = DayStore(Path(hass.config.path(".storage", DOMAIN, "history")))
+    runtime._days = DayStore(root, marker=marker)
     try:
         await startup.initialize(runtime)
     except BaseException:

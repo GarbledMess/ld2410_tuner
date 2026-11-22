@@ -338,6 +338,11 @@ History is stored in `<config>/.storage/ld2410_tuner/history/`, one folder per r
 and one file per day, so it is included in Home Assistant backups. Every gate energy
 change is stored as received, at millisecond resolution, and nothing in between.
 
+To keep history on a USB drive, an SD card or a network share instead, mount it into
+Home Assistant and enter its folder under **Settings → Devices & services → LD2410 Tuner
+→ Configure** (see [Storage location](docs/storage.md#storage-location)). Labels,
+settings and results stay in Home Assistant's storage.
+
 - **Recorded data** on a radar's card lists the stored days and their sizes, shows the
   raw rows 100 at a time, and has **Download day CSV**.
 - **Data & export → Export JSON** downloads everything stored for the radar (can be
