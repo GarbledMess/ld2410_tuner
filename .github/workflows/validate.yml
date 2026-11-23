@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: home-assistant/actions/hassfest@07f46fd2e19967768b5fd3000f91f857452b767c # master
+      - uses: home-assistant/actions/hassfest@07f46fd2e19967768b5fd3000f91f857452b767c # 2026.11.0
 
   tests:
     name: Python regression tests
