@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 1.46.0 - 2026-11-23
 
 - **Gates beyond a radar's range are no longer recorded or graphed.** The tuner reads each
   radar's **Max Move Distance** and **Max Still Distance** settings. Move and still gates
