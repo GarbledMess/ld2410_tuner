@@ -1,6 +1,6 @@
 # Release notes
 
-## Unreleased
+## 1.45.0 - 2026-11-23
 
 - **Far less load on Home Assistant from the radars.** The ESPHome package has a new
   **Combined Gate Report** switch, off by default. When it's on, a radar sends its 18
