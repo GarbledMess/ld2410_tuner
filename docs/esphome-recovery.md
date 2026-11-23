@@ -219,6 +219,40 @@ Bluetooth. Turning Engineering Mode off manually is temporary while recording is
 enabled: it will try to enable it again. Reported on is an ESPHome state check, not
 proof of a hardware acknowledgement.
 
+### Combined Gate Report
+
+Each gate energy is its own sensor, so a radar with Engineering Mode on sends Home
+Assistant up to 18 state changes every 2 seconds. Every one goes through Home Assistant's
+state machine, the recorder database and every open dashboard. In a home with 14 radars
+that came to about 21 gate changes a second, most of all the state changes in the home.
+
+The package's **Combined Gate Report** switch (a configuration entity, **off** by default)
+sends them together instead. While it is on:
+
+- **Gate Energies** (a diagnostic text sensor) carries all 18 energies in one state:
+  G0 Move, G0 Still, G1 Move, … G8 Still, comma separated, empty where unknown
+  (`10,0,20,,…`). It samples every gate as the gate sensors do (every
+  `ld2410_gate_throttle`, with the same Gate Rounding and range rules) and changes only
+  when a gate changed.
+- The 18 gate energy sensors still exist and still report, but refresh at most every
+  `ld2410_combined_gate_refresh` seconds (default `300`). A gate going unknown, or coming
+  back, still reports at once.
+- Presence, the target sensors, distances, thresholds and timeouts are unchanged.
+
+In the same home that measured about 5 combined changes a second in place of 21 gate
+changes, with the same readings.
+
+The tuner turns the switch on for every radar it includes (on startup and with the
+Engineering Mode check every 10 minutes) and reads Gate Energies whenever it holds a
+frame. Without one (older firmware, the switch off, the radar offline) it reads the gate
+sensors as before, so old and new packages and tuners mix freely. Removing the integration
+turns the switches off again. Turn the switch off yourself to get full-rate gate sensors
+back. While the tuner is installed it will turn the switch on again; exclude the radar to
+stop that.
+
+If you purge or exclude the gate sensors from the recorder, add `sensor.*_gate_energies`
+too.
+
 ## Existing firmware without the package
 
 Using this package is optional. Existing ESPHome LD2410 firmware can keep its

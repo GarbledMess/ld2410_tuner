@@ -11,6 +11,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_time_interval
 
 from ..calibration import device_io, recovery
+from . import gate_report
 
 _LOGGER = logging.getLogger(__name__)
 CHECK_INTERVAL = timedelta(minutes=10)
@@ -74,6 +75,7 @@ async def _check_devices(runtime):
                 runtime._engineering_attempts.pop(device_id, None)
             continue
         await _check_off(runtime, device_id, entity_id)
+    await gate_report.ensure_on(runtime)
 
 
 async def _check_off(runtime, device_id, entity_id):

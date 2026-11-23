@@ -1,5 +1,22 @@
 # Release notes
 
+## Unreleased
+
+- **Far less load on Home Assistant from the radars.** The ESPHome package has a new
+  **Combined Gate Report** switch, off by default. When it's on, a radar sends its 18
+  gate energies as one **Gate Energies** state instead of 18 separate sensor changes, and
+  the gate sensors refresh only every 5 minutes. In a 14-radar home, gate state changes
+  dropped from about 21 a second to about 5, with the same readings. That means less work
+  for Home Assistant's main loop, the recorder database and open dashboards. The tuner turns
+  the switch on for the radars it includes and reads Gate Energies. It falls back to the
+  gate sensors on older firmware, so packages and tuners can be updated in either order.
+  Removing the integration turns the switches off again. See
+  [Combined Gate Report](docs/esphome-recovery.md#combined-gate-report).
+- **The package can report distances and summary energies only on presence change.**
+  With `ld2410_summary_on_presence_change: "true"`, Moving/Still Distance, Moving/Still
+  Energy and Detection Distance report once when the radar finds or loses presence and
+  hold that reading. Off by default; the tuner does not use these sensors.
+
 ## 1.44.0 - 2026-11-22
 
 - **Recorded history can live on a USB drive, SD card or network share.** Choose a folder

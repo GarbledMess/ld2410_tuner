@@ -12,7 +12,14 @@ substitutions:
   ld2410_presence_on_delay: 500ms
   ld2410_presence_off_delay: 1s
   ld2410_sensor_throttle: 1s
+  # When "true", Moving/Still Distance, Moving/Still Energy and Detection Distance report once
+  # each time the radar finds or loses presence, then hold that reading (as Presence Found /
+  # Lost Gates do), instead of every ld2410_sensor_throttle. "false" reports them continuously.
+  ld2410_summary_on_presence_change: "false"
   ld2410_gate_throttle: 2s
+  # While Combined Gate Report is on, Gate Energies carries every gate change and each gate
+  # energy sensor refreshes at most this often (seconds); going unknown still shows at once.
+  ld2410_combined_gate_refresh: "300"
   # Initial Gate Rounding value; restored HA setting takes precedence after setup.
   ld2410_gate_rounding: "10"
   # The radar keeps its Bluetooth setting in its own flash. When "true", the first
@@ -91,12 +98,28 @@ sensor:
       device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
+        - lambda: |-
+            if (!${ld2410_summary_on_presence_change}) return x;
+            // One reading per radar presence change, held until the next.
+            static int reported = -1;
+            const int present = id(${ld2410_id}_moving_target).state || id(${ld2410_id}_still_target).state;
+            if (present == reported) return {};
+            reported = present;
+            return x;
     still_distance:
       id: ${ld2410_id}_still_distance
       name: ${ld2410_name_prefix}Still Distance
       device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
+        - lambda: |-
+            if (!${ld2410_summary_on_presence_change}) return x;
+            // One reading per radar presence change, held until the next.
+            static int reported = -1;
+            const int present = id(${ld2410_id}_moving_target).state || id(${ld2410_id}_still_target).state;
+            if (present == reported) return {};
+            reported = present;
+            return x;
     moving_energy:
       id: ${ld2410_id}_moving_energy
       name: ${ld2410_name_prefix}Moving Energy
@@ -107,6 +130,14 @@ sensor:
         - lambda: |-
             if (!std::isfinite(x)) return x;
             return ceilf(fminf(100.0f, fmaxf(0.0f, x)));
+        - lambda: |-
+            if (!${ld2410_summary_on_presence_change}) return x;
+            // One reading per radar presence change, held until the next.
+            static int reported = -1;
+            const int present = id(${ld2410_id}_moving_target).state || id(${ld2410_id}_still_target).state;
+            if (present == reported) return {};
+            reported = present;
+            return x;
     still_energy:
       id: ${ld2410_id}_still_energy
       name: ${ld2410_name_prefix}Still Energy
@@ -117,12 +148,28 @@ sensor:
         - lambda: |-
             if (!std::isfinite(x)) return x;
             return ceilf(fminf(100.0f, fmaxf(0.0f, x)));
+        - lambda: |-
+            if (!${ld2410_summary_on_presence_change}) return x;
+            // One reading per radar presence change, held until the next.
+            static int reported = -1;
+            const int present = id(${ld2410_id}_moving_target).state || id(${ld2410_id}_still_target).state;
+            if (present == reported) return {};
+            reported = present;
+            return x;
     detection_distance:
       id: ${ld2410_id}_detection_distance
       name: ${ld2410_name_prefix}Detection Distance
       device_id: ${ld2410_device_id}
       filters:
         - throttle: ${ld2410_sensor_throttle}
+        - lambda: |-
+            if (!${ld2410_summary_on_presence_change}) return x;
+            // One reading per radar presence change, held until the next.
+            static int reported = -1;
+            const int present = id(${ld2410_id}_moving_target).state || id(${ld2410_id}_still_target).state;
+            if (present == reported) return {};
+            reported = present;
+            return x;
     g0:
       move_energy:
         id: ${ld2410_id}_g0_move_energy
@@ -133,6 +180,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g0_move_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -146,6 +199,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g0_still_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -160,6 +219,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g1_move_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -173,6 +238,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g1_still_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -187,6 +258,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g2_move_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -200,6 +277,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g2_still_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -214,6 +297,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g3_move_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -227,6 +316,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g3_still_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -241,6 +336,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g4_move_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -254,6 +355,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g4_still_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -268,6 +375,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g5_move_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -281,6 +394,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g5_still_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -295,6 +414,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g6_move_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -308,6 +433,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g6_still_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -322,6 +453,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g7_move_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -335,6 +472,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g7_still_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -349,6 +492,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g8_move_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -362,6 +511,12 @@ sensor:
           - throttle: ${ld2410_gate_throttle}
           - lambda: |-
               if (!std::isfinite(x)) return x;
+              // Combined Gate Report on: Gate Energies carries every change, so a sensor that
+              // shows a value refreshes only every ld2410_combined_gate_refresh seconds.
+              static uint32_t refreshed = 0;
+              if (id(${ld2410_id}_combined_gates).state && std::isfinite(id(${ld2410_id}_g8_still_energy).state)
+                  && millis() - refreshed < ${ld2410_combined_gate_refresh} * 1000UL) return {};
+              refreshed = millis();
               const float increment = id(${ld2410_id}_gate_rounding).has_state()
                   ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
               return ceilf(fminf(100.0f, fmaxf(0.0f, roundf(x / increment) * increment)));
@@ -1132,6 +1287,21 @@ switch:
                   then:
                     - logger.log: "Turning off LD2410 Bluetooth (ld2410_bluetooth_default_off)"
                     - switch.turn_off: ${ld2410_id}_bluetooth
+  # Off by default: the package reports each gate on its own, as before. On, Gate Energies
+  # carries every gate in one state, so Home Assistant handles one change per radar frame
+  # instead of one per gate. The LD2410 Tuner turns it on for the radars it includes.
+  - platform: template
+    id: ${ld2410_id}_combined_gates
+    name: ${ld2410_name_prefix}Combined Gate Report
+    device_id: ${ld2410_device_id}
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_off:
+      # No frame: readers use the gate sensors, which resume within ld2410_gate_throttle.
+      - text_sensor.template.publish:
+          id: ${ld2410_id}_gate_energies
+          state: ""
 
 text_sensor:
   - platform: template
@@ -1185,6 +1355,14 @@ text_sensor:
       id: ${ld2410_id}_mac_address
       name: ${ld2410_name_prefix}Mac Address
       device_id: ${ld2410_device_id}
+  # Combined Gate Report: G0 Move, G0 Still, G1 Move, … G8 Still energies, comma separated,
+  # empty where unknown (e.g. "10,0,20,,…"). Empty while the switch is off.
+  - platform: template
+    id: ${ld2410_id}_gate_energies
+    name: ${ld2410_name_prefix}Gate Energies
+    device_id: ${ld2410_device_id}
+    entity_category: diagnostic
+    update_interval: never
 
 button:
   - platform: template
@@ -1454,3 +1632,41 @@ interval:
               - lambda: return !id(${ld2410_id}_recovery_paused);
           then:
             - script.execute: ${ld2410_id}_recover_parameters
+
+  # Combined Gate Report: sample every gate as its sensor does (every ld2410_gate_throttle,
+  # same rounding) and publish Gate Energies only when one changed.
+  - interval: ${ld2410_gate_throttle}
+    then:
+      - lambda: |-
+          if (!id(${ld2410_id}_combined_gates).state) return;
+          sensor::Sensor *gates[] = {
+            id(${ld2410_id}_g0_move_energy),
+            id(${ld2410_id}_g0_still_energy),
+            id(${ld2410_id}_g1_move_energy),
+            id(${ld2410_id}_g1_still_energy),
+            id(${ld2410_id}_g2_move_energy),
+            id(${ld2410_id}_g2_still_energy),
+            id(${ld2410_id}_g3_move_energy),
+            id(${ld2410_id}_g3_still_energy),
+            id(${ld2410_id}_g4_move_energy),
+            id(${ld2410_id}_g4_still_energy),
+            id(${ld2410_id}_g5_move_energy),
+            id(${ld2410_id}_g5_still_energy),
+            id(${ld2410_id}_g6_move_energy),
+            id(${ld2410_id}_g6_still_energy),
+            id(${ld2410_id}_g7_move_energy),
+            id(${ld2410_id}_g7_still_energy),
+            id(${ld2410_id}_g8_move_energy),
+            id(${ld2410_id}_g8_still_energy)
+          };
+          const float increment = id(${ld2410_id}_gate_rounding).has_state()
+              ? id(${ld2410_id}_gate_rounding).state : ${ld2410_gate_rounding};
+          std::string report;
+          for (int i = 0; i < 18; i++) {
+            if (i) report += ',';
+            const float raw = gates[i]->get_raw_state();
+            if (!std::isfinite(raw)) continue;
+            const float value = ceilf(fminf(100.0f, fmaxf(0.0f, roundf(raw / increment) * increment)));
+            report += std::to_string(static_cast<int>(value));
+          }
+          if (report != id(${ld2410_id}_gate_energies).state) id(${ld2410_id}_gate_energies).publish_state(report);

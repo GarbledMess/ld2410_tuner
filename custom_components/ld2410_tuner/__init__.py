@@ -33,7 +33,7 @@ from .history import ingest, location, pace
 from .history.daystore import DayStore
 from .presence import bermuda, rebuilds, reference_training
 from .presentation import export_files
-from .runtime import engineering, schedule
+from .runtime import engineering, gate_report, schedule
 from .runtime.coordinator import TunerRuntime
 from .runtime.websocket import _register_websocket_commands
 from .worker import bridge, startup
@@ -203,6 +203,11 @@ async def async_unload_entry(hass: HomeAssistant, _entry: ConfigEntry) -> bool:
     if frontend.async_panel_exists(hass, "ld2410-tuner"):
         frontend.async_remove_panel(hass, "ld2410-tuner")
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, _entry: ConfigEntry) -> None:
+    """Radars go back to reporting each gate on its own: nothing reads Gate Energies now."""
+    await gate_report.turn_off_all(hass)
 
 
 async def _stop_runtime(runtime):

@@ -8,7 +8,9 @@ import time
 from typing import Any
 
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 
+from .. import entity_index
 from ..calibration.settings import DEFAULT_AUTOMATIC_WEIGHT
 from ..const import (
     ABSENT_BIAS_MAX,
@@ -23,6 +25,7 @@ from ..const import (
     PRESENT_BIAS_MIN,
 )
 from ..history import ingest
+from ..runtime import gate_report
 from . import references, sources
 from .inference import (
     HUMAN_REFERENCE,
@@ -292,7 +295,7 @@ def _sample_device(runtime, device_id, device):
         runtime._source_runtime.pop(device_id, None)
         ingest.end(runtime, device_id, time.time())
         return
-    values = _read_energies(runtime, device)
+    values = _read_energies(runtime, device, device_id)
     runtime._live[device_id] = values  # Drop unavailable readings, never carry them forward.
     if not values:
         runtime._auto_runtime.pop(device_id, None)
@@ -373,7 +376,20 @@ def _classify_radar(runtime, device_id, device, values, now) -> None:
     cadence["inputs"] = _inputs(device)
 
 
-def _read_energies(runtime, device):
+def _combined_frame(runtime, device_id):
+    """The frame the radar's Gate Energies sensor carries, None without one."""
+    radar = entity_index.read(runtime, er.async_get(runtime.hass)).radars.get(device_id)
+    combined = radar and radar["combined"]
+    state = runtime.hass.states.get(combined) if combined else None
+    return gate_report.parse(state.state) if state else None
+
+
+def _read_energies(runtime, device, device_id):
+    """The radar's current readings: its Gate Energies frame when the combined sensor carries
+    one (its gate sensors then refresh only slowly), otherwise its gate sensors."""
+    frame = _combined_frame(runtime, device_id)
+    if frame is not None:
+        return {key: value for key, value in frame.items() if value is not None}
     values = {}
     for entity_id, info in device.get("entities", {}).items():
         state = runtime.hass.states.get(entity_id)

@@ -167,6 +167,7 @@ RUNTIME_FILES = (
     "runtime/tasks.py",
     "runtime/discovery.py",
     "runtime/engineering.py",
+    "runtime/gate_report.py",
     "runtime/bulk_labels.py",
     "runtime/exclusion.py",
     "runtime/websocket.py",

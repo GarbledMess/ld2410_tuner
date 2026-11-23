@@ -6,6 +6,8 @@ from typing import NamedTuple
 
 from .const import GATE_RE
 
+COMBINED_SUFFIX = "gate_energies"
+
 
 class Entities(NamedTuple):
     """What the entity registry held when it was read."""
@@ -13,7 +15,9 @@ class Entities(NamedTuple):
     registry: object
     size: int
     by_device: dict  # device id -> its entities, in registry order.
-    radars: dict  # device id -> {"entities": {energy entity id: {"gate", "kind"}}}.
+    # device id -> {"entities": {energy entity id: {"gate", "kind"}}, "combined": the
+    # radar's Gate Energies sensor (runtime/gate_report.py) or None}.
+    radars: dict
     timing: dict  # device id -> its timing entities by field (calibration/timing_config.py).
 
 
@@ -31,7 +35,7 @@ def read(runtime, registry) -> Entities:
 
 
 def _scan(registry) -> Entities:
-    by_device, radars = {}, {}
+    by_device, radars, combined = {}, {}, {}
     for entity in registry.entities.values():
         if not entity.device_id:
             continue
@@ -39,7 +43,21 @@ def _scan(registry) -> Entities:
         if energy := _energy(entity):
             radar = radars.setdefault(entity.device_id, {"entities": {}})
             radar["entities"][entity.entity_id] = energy
+        elif named(entity, "sensor", COMBINED_SUFFIX):
+            combined.setdefault(entity.device_id, []).append(entity.entity_id)
+    for device_id, radar in radars.items():
+        found = combined.get(device_id, ())
+        radar["combined"] = found[0] if len(found) == 1 else None
     return Entities(registry, len(registry.entities), by_device, radars, {})
+
+
+def named(entry, domain, suffix) -> bool:
+    """Whether a registry ``entry`` is an enabled ``domain`` entity whose id or original name
+    ends with ``suffix``, as the ESPHome package names it."""
+    if entry.domain != domain or getattr(entry, "disabled_by", None):
+        return False
+    name = str(getattr(entry, "original_name", "") or "").lower().replace(" ", "_")
+    return entry.entity_id.endswith(suffix) or name.endswith(suffix)
 
 
 def _energy(entity):

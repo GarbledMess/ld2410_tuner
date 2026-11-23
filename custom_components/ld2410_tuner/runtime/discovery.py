@@ -9,22 +9,22 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
 from .. import entity_index
-from ..const import GATE_RE
+from ..const import GATE_RE, HISTORY_KEYS
 from ..history import ingest
 from ..rooms import groups, lone_labels, membership
+from . import gate_report
 
 
 @callback
 def subscribe_state_changes(runtime) -> None:
-    """Subscribe only to the dynamically discovered LD2410 energy entities."""
+    """Subscribe only to the dynamically discovered LD2410 energy entities and each radar's
+    combined Gate Energies sensor."""
     if runtime.unsub:
         runtime.unsub()
     registry = er.async_get(runtime.hass)
-    entity_ids = [
-        entity_id
-        for radar in entity_index.read(runtime, registry).radars.values()
-        for entity_id in radar["entities"]
-    ]
+    radars = entity_index.read(runtime, registry).radars.values()
+    entity_ids = [entity_id for radar in radars for entity_id in radar["entities"]]
+    entity_ids.extend(radar["combined"] for radar in radars if radar["combined"])
     runtime.unsub = async_track_state_change_event(
         runtime.hass, entity_ids, runtime.handle_state_change
     )
@@ -79,6 +79,7 @@ def handle_state_change(runtime, event) -> None:
 
     match = GATE_RE.match(entity_id.split(".", 1)[1])
     if not match or match.group("metric") != "energy":
+        _combined_change(runtime, registry, entity, new_state)
         return
 
     device = runtime.data["devices"].get(entity.device_id)
@@ -92,6 +93,28 @@ def handle_state_change(runtime, event) -> None:
     else:
         runtime._live.get(entity.device_id, {}).pop(key, None)
     ingest.change(runtime, entity.device_id, {key: value}, _event_time(new_state))
+
+
+def _combined_change(runtime, registry, entity, new_state):
+    """A Gate Energies frame updates every gate at once. Going unavailable makes every gate
+    missing; any other state (no frame) leaves the gate sensors in charge."""
+    radar = entity_index.read(runtime, registry).radars.get(entity.device_id)
+    if not radar or radar["combined"] != entity.entity_id:
+        return
+    if entity.device_id not in runtime.data["devices"]:
+        return
+    frame = gate_report.parse(new_state.state)
+    if frame is None:
+        if new_state.state != "unavailable":
+            return
+        frame = dict.fromkeys(HISTORY_KEYS)
+    live = runtime._live.setdefault(entity.device_id, {})
+    for key, value in frame.items():
+        if value is None:
+            live.pop(key, None)
+        else:
+            live[key] = value
+    ingest.change(runtime, entity.device_id, frame, _event_time(new_state))
 
 
 def _energy(state):
