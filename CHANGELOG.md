@@ -1,5 +1,13 @@
 # Release notes
 
+## Unreleased
+
+- **Gates beyond a radar's range are no longer recorded or graphed.** The tuner reads each
+  radar's **Max Move Distance** and **Max Still Distance** settings. Move and still gates
+  farther out are recorded as missing, and the radar and room graphs leave them out
+  (including history recorded before). Changing a setting takes effect within a couple of
+  seconds. A radar without those settings, or whose settings are unknown, keeps every gate.
+
 ## 1.45.0 - 2026-11-23
 
 - **Far less load on Home Assistant from the radars.** The ESPHome package has a new

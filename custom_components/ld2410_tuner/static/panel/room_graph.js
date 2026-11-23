@@ -131,7 +131,11 @@ export const panelRoomGraph = {
     const signature = JSON.stringify([
       day,
       kind,
-      ids.map((id) => [id, this._data.devices[id].history?.revision || 0]),
+      ids.map((id) => [
+        id,
+        this._data.devices[id].history?.revision || 0,
+        this._data.devices[id].gate_range || null,
+      ]),
     ]);
     if (
       !refresh &&

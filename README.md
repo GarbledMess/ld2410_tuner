@@ -337,6 +337,9 @@ Sources are read every two seconds, so very short pulses can be missed.
 History is stored in `<config>/.storage/ld2410_tuner/history/`, one folder per radar
 and one file per day, so it is included in Home Assistant backups. Every gate energy
 change is stored as received, at millisecond resolution, and nothing in between.
+Gates beyond a radar's **Max Move Distance** / **Max Still Distance** are not recorded
+(the radar never detects there) and are left out of the graphs; a radar without those
+settings records every gate.
 
 To keep history on a USB drive, an SD card or a network share instead, mount it into
 Home Assistant and enter its folder under **Settings → Devices & services → LD2410 Tuner

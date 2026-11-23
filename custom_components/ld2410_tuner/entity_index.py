@@ -19,6 +19,7 @@ class Entities(NamedTuple):
     # radar's Gate Energies sensor (runtime/gate_report.py) or None}.
     radars: dict
     timing: dict  # device id -> its timing entities by field (calibration/timing_config.py).
+    ranges: dict  # device id -> its range settings by kind (gate_range.py).
 
 
 def read(runtime, registry) -> Entities:
@@ -48,7 +49,7 @@ def _scan(registry) -> Entities:
     for device_id, radar in radars.items():
         found = combined.get(device_id, ())
         radar["combined"] = found[0] if len(found) == 1 else None
-    return Entities(registry, len(registry.entities), by_device, radars, {})
+    return Entities(registry, len(registry.entities), by_device, radars, {}, {})
 
 
 def named(entry, domain, suffix) -> bool:

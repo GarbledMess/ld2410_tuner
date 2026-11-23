@@ -12,7 +12,7 @@ from typing import Any
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
-from .. import entity_index
+from .. import entity_index, gate_range
 from ..calibration import automatic, comparison_jobs, timing_config
 from ..calibration import settings as learning_settings
 from ..calibration import thresholds as threshold_domain
@@ -269,6 +269,7 @@ def _snapshot_device(runtime, device_id, device, registry):
         "sample_counts": sample_counts,
         "current_thresholds": current,
         "timing_configuration": read_timing(runtime, device_id),
+        "gate_range": gate_range.limits(runtime, device_id),
         "comparison": comparison_jobs.summary(runtime, device_id, state_get=state_get),
         "last_learning": device.get("last_learning"),
         "learning_results": saved_results(device),

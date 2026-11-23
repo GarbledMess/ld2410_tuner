@@ -164,6 +164,7 @@ async def async_history_series(
     device = runtime.data["devices"].get(device_id)
     if not device:
         raise ValueError("Unknown device")
+    keys = _in_range(runtime, device_id, keys)
     cache_key = _history_cache_key(device_id, device, keys, hours, max_points, end, summary)
     if cache_key in runtime._history_cache:
         runtime._history_cache.move_to_end(cache_key)
@@ -195,7 +196,7 @@ def _start_history_job(runtime, cache_key, parameters):
     head = None
     if not parameters["summary"]:
         found = _heads(
-            runtime, [device_id], parameters["keys"], hours, parameters["max_points"], end
+            runtime, {device_id: parameters["keys"]}, hours, parameters["max_points"], end
         )
         head = found[device_id]
 
@@ -245,12 +246,22 @@ class _Head(NamedTuple):
     resume: dict | None
 
 
-def _heads(runtime, device_ids, keys, hours, max_points, end):
+def _in_range(runtime, device_id, keys):
+    """``keys`` without the gates beyond the radar's range (``gate_range``): the radar never
+    detects there, so they are not charted. Validated keys only, as the chart takes them."""
+    from .. import gate_range
+
+    if getattr(runtime, "hass", None) is None:
+        return keys
+    return gate_range.within(runtime, device_id, [key for key in keys if key in HISTORY_KEYS])
+
+
+def _heads(runtime, device_keys, hours, max_points, end):
     kept = runtime.__dict__.setdefault("_chart_heads", OrderedDict())
     days = getattr(runtime, "_days", None)
     start, bucket_span, _ = chart_window(runtime.data, hours, max_points, end)
     heads = {}
-    for device_id in device_ids:
+    for device_id, keys in device_keys.items():
         # A rewrite (thinning, Trim, Clear) can change buckets that were settled.
         rewrites = 0 if days is None else days.rewrites(device_id)
         slot = (device_id, tuple(sorted(set(keys))), max_points, rewrites)
@@ -296,26 +307,28 @@ async def async_room_series(runtime, device_ids, keys, hours, max_points=400, en
     """Build room charts in one display job, reusing per-device cached charts."""
     end = _room_request(device_ids, keys, hours, end)
     result = {"charts": {}, "errors": {}}
-    misses = {}
+    misses, device_keys = {}, {}
     for device_id in device_ids:
         device = runtime.data["devices"].get(device_id)
         if device is None:
             result["errors"][device_id] = "Unknown device"
             continue
-        key = _history_cache_key(device_id, device, keys, hours, max_points, end)
+        device_keys[device_id] = _in_range(runtime, device_id, keys)
+        key = _history_cache_key(device_id, device, device_keys[device_id], hours, max_points, end)
         if key in runtime._history_cache:
             runtime._history_cache.move_to_end(key)
             result["charts"][device_id] = runtime._history_cache[key]
         else:
             misses[device_id] = key
     if misses:
-        built = await _room_history_job(runtime, misses, keys, hours, max_points, end)
+        wanted = {device_id: device_keys[device_id] for device_id in misses}
+        built = await _room_history_job(runtime, misses, wanted, hours, max_points, end)
         result["charts"].update(built["charts"])
         result["errors"].update(built["errors"])
     return result
 
 
-async def _room_history_job(runtime, misses, keys, hours, max_points, end):
+async def _room_history_job(runtime, misses, device_keys, hours, max_points, end):
     import asyncio
 
     from ..worker.supervisor import Busy
@@ -324,12 +337,12 @@ async def _room_history_job(runtime, misses, keys, hours, max_points, end):
     if job_key not in runtime._history_jobs:
         if len(runtime._history_jobs) >= MAX_HISTORY_JOBS:
             raise Busy("Chart refresh is busy; retry shortly")
-        heads = _heads(runtime, list(misses), keys, hours, max_points, end)
+        heads = _heads(runtime, device_keys, hours, max_points, end)
 
         def prepare():
             parameters = {
                 "device_ids": list(misses),
-                "keys": keys,
+                "keys": device_keys,
                 "hours": hours,
                 "max_points": max_points,
                 "end": end,

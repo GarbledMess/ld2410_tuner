@@ -59,7 +59,7 @@ export const panelChart = {
         <span><i class="lineswatch learned"></i>Learned threshold</span>
         <span><i class="lineswatch noise"></i>Highest not-present sample</span>
       </div>
-      <div class="muted" style="margin-top:6px">All 9 gates of the selected kind are shown together, each in its own color (select a G0–G8 button to highlight its shaded band).</div>`;
+      <div class="muted" style="margin-top:6px">All gates of the selected kind within the radar's range are shown together, each in its own color (select a gate button to highlight its shaded band).</div>`;
   },
 
   _chartKeys(cs) {
@@ -141,7 +141,9 @@ export const panelChart = {
     const { kind, hours } = cs;
     const end = cs.end;
     const revision = this._data?.devices?.[id]?.history?.revision || 0;
-    const key = JSON.stringify([kind, hours, end, revision]);
+    // A changed range charts different gates (gates beyond it are left out).
+    const range = this._data?.devices?.[id]?.gate_range || null;
+    const key = JSON.stringify([kind, hours, end, revision, range]);
     if (cs.loading && cs.pendingKey === key) return;
     const request = (cs.request || 0) + 1;
     cs.request = request;
@@ -182,7 +184,10 @@ export const panelChart = {
       cs.loadedRevision = revision;
       cs.loadedAt = Date.now();
       cs.error = null;
-      cs.cache.set(JSON.stringify([kind, hours, cs.end, revision]), data);
+      cs.cache.set(
+        JSON.stringify([kind, hours, cs.end, revision, range]),
+        data,
+      );
       while (cs.cache.size > 6) cs.cache.delete(cs.cache.keys().next().value);
     } catch (err) {
       if (request === cs.request) cs.error = err?.message || String(err);
@@ -229,7 +234,7 @@ export const panelChart = {
     if (cs.panelOpen && el.contains(active) && active?.tagName === "INPUT")
       return;
     const card = el.closest("[data-device-id]");
-    this._syncChartControls(card, cs);
+    this._syncChartControls(card, cs, d);
     const activeKey = `g${cs.gate}_${cs.kind}`;
     const signature = JSON.stringify([
       Math.round(el.clientWidth),
@@ -345,7 +350,7 @@ export const panelChart = {
       <button type="button" data-action="review-results">${this._esc(status)} · Review device results</button></div>`;
   },
 
-  _syncChartControls(card, cs) {
+  _syncChartControls(card, cs, d) {
     for (const [action, value] of [
       ["chart-kind", cs.kind],
       ["chart-range", cs.hours],
@@ -357,6 +362,15 @@ export const panelChart = {
         control.value = String(value);
     }
     this._updateGateChipHighlight(card, cs.gate);
+    this._syncGateChipRange(card, d?.gate_range?.[cs.kind]);
+  },
+
+  // Gates beyond the radar's range are neither recorded nor charted.
+  _syncGateChipRange(card, farthest) {
+    card.querySelectorAll(".gate-chip").forEach((btn) => {
+      const beyond = farthest != null && Number(btn.dataset.gate) > farthest;
+      if (btn.hidden !== beyond) btn.hidden = beyond;
+    });
   },
 
   _syncRangeOptions(control, value) {

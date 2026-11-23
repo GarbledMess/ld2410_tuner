@@ -8,7 +8,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_state_change_event
 
-from .. import entity_index
+from .. import entity_index, gate_range
 from ..const import GATE_RE, HISTORY_KEYS
 from ..history import ingest
 from ..rooms import groups, lone_labels, membership
@@ -33,6 +33,7 @@ def subscribe_state_changes(runtime) -> None:
 @callback
 def handle_registry_update(runtime, event) -> None:
     entity_index.forget(runtime)
+    gate_range.forget(runtime)
     before = groups.definitions(runtime)[2]
     runtime.refresh_devices(er.async_get(runtime.hass))
     # Radars that lose their entities leave their groups; keep their room evidence current.

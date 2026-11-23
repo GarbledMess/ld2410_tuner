@@ -4,11 +4,14 @@ run changes, and explicit ends of coverage. Nothing is stored that did not chang
 A radar's coverage starts with its full current vector (``runtime._live``) and lasts until an
 explicit end: recording paused or the radar removed, storage blocked, a configuration recovery,
 or the integration stopping. A reading that is unavailable or not a number makes only that gate
-missing. A clock that steps back records at the newest recorded time, never before it.
+missing. A gate beyond the radar's range (``gate_range``) is recorded as missing: the radar
+never detects there, so its readings are not kept. A clock that steps back records at the
+newest recorded time, never before it.
 """
 
 import time
 
+from .. import gate_range
 from ..const import HISTORY_KEYS
 from ..engine.columns import percentage
 from . import dayfile, guesses
@@ -25,7 +28,10 @@ def change(runtime, device_id, updates, timestamp):
     if not _accepting(runtime, device_id):
         end(runtime, device_id, timestamp)
         return False
-    values = _changed(days.current(device_id), runtime._live.get(device_id, {}), updates)
+    out = gate_range.beyond(runtime, device_id)
+    if out:  # Beyond the range: missing, at once, whatever was delivered for them.
+        updates = {**updates, **dict.fromkeys(out)}
+    values = _changed(days.current(device_id), runtime._live.get(device_id, {}), updates, out)
     if values is None:
         return False
     if values:
@@ -35,10 +41,12 @@ def change(runtime, device_id, updates, timestamp):
     return True
 
 
-def _changed(current, live, updates):
+def _changed(current, live, updates, out=gate_range.NONE_BEYOND):
     gates = {GATE[key]: percentage(value) for key, value in updates.items() if key in GATE}
-    if current is None:  # A new session: everything currently known.
-        vector = {gate: percentage(live.get(key)) for key, gate in GATE.items()}
+    if current is None:  # A new session: everything currently known within range.
+        vector = {
+            gate: None if key in out else percentage(live.get(key)) for key, gate in GATE.items()
+        }
         vector.update(gates)
         return vector if any(value is not None for value in vector.values()) else None
     return {gate: value for gate, value in gates.items() if current[gate] != value}

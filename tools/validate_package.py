@@ -114,6 +114,7 @@ RUNTIME_FILES = (
     "config_flow.py",
     "const.py",
     "entity_index.py",
+    "gate_range.py",
     "history/__init__.py",
     "history/cleanup.py",
     "history/guess_check.py",

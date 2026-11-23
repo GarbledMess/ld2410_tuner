@@ -10,7 +10,7 @@ from typing import Any
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 
-from .. import entity_index
+from .. import entity_index, gate_range
 from ..calibration.settings import DEFAULT_AUTOMATIC_WEIGHT
 from ..const import (
     ABSENT_BIAS_MAX,
@@ -295,6 +295,7 @@ def _sample_device(runtime, device_id, device):
         runtime._source_runtime.pop(device_id, None)
         ingest.end(runtime, device_id, time.time())
         return
+    gate_range.refresh(runtime, device_id)  # Kept for the events until the next poll.
     values = _read_energies(runtime, device, device_id)
     runtime._live[device_id] = values  # Drop unavailable readings, never carry them forward.
     if not values:

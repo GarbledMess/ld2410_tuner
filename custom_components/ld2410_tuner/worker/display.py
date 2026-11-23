@@ -37,7 +37,7 @@ def calculate_charts(views, parameters):
                 history_series_multi(
                     views[device_id],
                     device_id=device_id,
-                    keys=parameters["keys"],
+                    keys=_device_keys(parameters["keys"], device_id),
                     hours=parameters["hours"],
                     max_points=parameters["max_points"],
                     end=parameters["end"],
@@ -47,6 +47,11 @@ def calculate_charts(views, parameters):
         except ValueError as error:
             errors[device_id] = str(error)[:500]
     return {"charts": charts, "errors": errors}
+
+
+def _device_keys(keys, device_id):
+    """A room job's keys for one radar: each radar's own (within its range), or shared."""
+    return keys.get(device_id, []) if isinstance(keys, dict) else keys
 
 
 def unpack_charts(value, device_ids):
