@@ -695,7 +695,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.hass = types.SimpleNamespace(
             config=types.SimpleNamespace(path=lambda *parts: str(Path(config, *parts))),
             async_add_executor_job=lambda fn, *args: asyncio.to_thread(fn, *args),
-            states=types.SimpleNamespace(get=self.states.get),
+            states=types.SimpleNamespace(get=lambda entity_id: self.states.get(entity_id.lower())),
             services=types.SimpleNamespace(async_call=AsyncMock(side_effect=self.report_write)),
             async_create_task=asyncio.create_task,
             async_create_background_task=lambda target, name: asyncio.create_task(target),

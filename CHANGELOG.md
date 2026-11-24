@@ -1,5 +1,12 @@
 # Release notes
 
+## 1.46.1 - 2026-11-24
+
+- **Fixed errors flooding the log for radars without range settings.** After 1.46.0, a radar
+  without **Max Move Distance** and **Max Still Distance** settings logged
+  `AttributeError: 'NoneType' object has no attribute 'lower'` on every gate reading. Such
+  radars now keep every gate quietly, as intended.
+
 ## 1.46.0 - 2026-11-23
 
 - **Gates beyond a radar's range are no longer recorded or graphed.** The tuner reads each
