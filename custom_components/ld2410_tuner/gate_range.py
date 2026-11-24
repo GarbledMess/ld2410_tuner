@@ -48,7 +48,10 @@ def _setting(entries, kind):
 def read(runtime, device_id):
     """``{kind: farthest gate or None}``: None where the setting is missing or unknown."""
     found = entities(runtime, device_id)
-    return {kind: _gate(runtime.hass.states.get(found[kind])) for kind in KINDS}
+    return {
+        kind: None if found[kind] is None else _gate(runtime.hass.states.get(found[kind]))
+        for kind in KINDS
+    }
 
 
 def _gate(state):
